@@ -1,0 +1,9 @@
+# nixpacks.toml
+
+[phases.setup]
+# Instala o FFmpeg usando o gestor de pacotes Nix
+nixPkgs = ["...", "ffmpeg"]
+
+[start]
+# Comando para iniciar a aplicação
+cmd = "npm start"
