@@ -12,6 +12,20 @@ const app = express();
 // Define a porta. Railway fornecerá a porta através de process.env.PORT
 const PORT = process.env.PORT || 8080;
 
+// --- Middlewares ---
+
+// --- CORREÇÃO: Configuração do CORS mais explícita ---
+// Isto garante que o servidor aceita pedidos de qualquer origem.
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Habilita o parsing de JSON no corpo das requisições
+app.use(express.json());
+
+
 // --- Configuração do Multer para Upload de Ficheiros ---
 const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) {
@@ -23,46 +37,25 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-// --- Middlewares ---
-app.use(cors());
-app.use(express.json());
 
-
-// --- Rotas ---
-app.get('/', (req, res) => {
-  res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' });
-});
-
-app.post('/api/projects', (req, res) => {
-  const projectData = req.body;
-  console.log('Recebido um novo projeto para salvar:', projectData.name);
-  res.status(201).json({ 
-    message: `Projeto "${projectData.name}" recebido com sucesso!`, 
-    projectId: `proj_${Date.now()}` 
-  });
-});
-
-
-// --- Rotas de Processamento REAL (com FFmpeg) ---
-
-// Função auxiliar para executar comandos FFmpeg e gerir ficheiros
-const runFFmpeg = (command, inputPath, outputPath, res) => {
-    console.log(`[Job Iniciado] Executando: ${command}`);
+// --- Função Auxiliar para Executar FFmpeg ---
+function runFFmpeg(command, inputPath, outputPath, res, friendlyName) {
+    console.log(`[Job Iniciado] ${friendlyName}: ${inputPath}`);
     exec(command, (error, stdout, stderr) => {
         const cleanup = () => {
-            fs.unlink(inputPath, (err) => err && console.error("Falha ao apagar ficheiro de entrada:", err));
+            fs.unlink(inputPath, (err) => err && console.error(`Falha ao apagar ficheiro de entrada (${inputPath}):`, err));
             if (fs.existsSync(outputPath)) {
-                fs.unlink(outputPath, (err) => err && console.error("Falha ao apagar ficheiro de saída:", err));
+                fs.unlink(outputPath, (err) => err && console.error(`Falha ao apagar ficheiro de saída (${outputPath}):`, err));
             }
         };
 
         if (error) {
-            console.error('Erro no FFmpeg:', stderr);
+            console.error(`Erro no FFmpeg (${friendlyName}):`, stderr);
             cleanup();
-            return res.status(500).json({ message: 'Falha ao processar o ficheiro.', error: stderr });
+            return res.status(500).json({ message: `Falha ao processar (${friendlyName}).`, error: stderr });
         }
 
-        console.log(`[Job Concluído] Ficheiro gerado: ${outputPath}`);
+        console.log(`[Job Concluído] ${friendlyName}: ${outputPath}`);
         res.sendFile(path.resolve(outputPath), (err) => {
             if (err) {
                 console.error('Erro ao enviar o ficheiro:', err);
@@ -70,76 +63,91 @@ const runFFmpeg = (command, inputPath, outputPath, res) => {
             cleanup();
         });
     });
-};
+}
 
-// Rota para inverter um vídeo
+// --- Rotas ---
+
+app.get('/', (req, res) => {
+    res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' });
+});
+
+app.post('/api/projects', (req, res) => {
+    const projectData = req.body;
+    console.log('Recebido um novo projeto para salvar:', projectData.name);
+    res.status(201).json({
+        message: `Projeto "${projectData.name}" recebido com sucesso!`,
+        projectId: `proj_${Date.now()}`
+    });
+});
+
+// --- Rotas de Processamento REAL com FFmpeg ---
+
 app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro de vídeo foi enviado.' });
     const { path: inputPath, filename } = req.file;
     const outputPath = path.join(uploadDir, `reversed-${filename}`);
     const command = `ffmpeg -i "${inputPath}" -vf reverse "${outputPath}"`;
-    runFFmpeg(command, inputPath, outputPath, res);
+    runFFmpeg(command, inputPath, outputPath, res, "Reverso");
 });
 
-// Rota para extrair o áudio de um vídeo
 app.post('/api/process/extract-audio-real', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro de vídeo foi enviado.' });
     const { path: inputPath, filename } = req.file;
-    const outputFilename = `audio-${path.parse(filename).name}.mp3`;
-    const outputPath = path.join(uploadDir, outputFilename);
-    const command = `ffmpeg -i "${inputPath}" -vn -acodec libmp3lame -q:a 2 "${outputPath}"`;
-    runFFmpeg(command, inputPath, outputPath, res);
+    const outputPath = path.join(uploadDir, `audio-${path.parse(filename).name}.mp3`);
+    const command = `ffmpeg -i "${inputPath}" -q:a 0 -map a "${outputPath}"`;
+    runFFmpeg(command, inputPath, outputPath, res, "Extrair Áudio");
 });
 
-// Rota para estabilizar um vídeo
 app.post('/api/process/stabilize-real', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro de vídeo foi enviado.' });
     const { path: inputPath, filename } = req.file;
     const outputPath = path.join(uploadDir, `stabilized-${filename}`);
-    // O filtro 'deshake' é uma forma simples de estabilização
-    const command = `ffmpeg -i "${inputPath}" -vf deshake "${outputPath}"`;
-    runFFmpeg(command, inputPath, outputPath, res);
+    const command = `ffmpeg -i "${inputPath}" -vf vidstabtransform,unsharp=5:5:0.8:3:3:0.4 -vcodec libx264 -preset slow "${outputPath}"`;
+    runFFmpeg(command, inputPath, outputPath, res, "Estabilização");
 });
 
-// Rota para aplicar Borrão de Movimento
 app.post('/api/process/motionblur-real', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro de vídeo foi enviado.' });
     const { path: inputPath, filename } = req.file;
     const outputPath = path.join(uploadDir, `motionblur-${filename}`);
-    // O filtro 'tblend' mistura frames para criar um efeito de borrão
-    const command = `ffmpeg -i "${inputPath}" -vf "tblend=average,framestep=2" "${outputPath}"`;
-    runFFmpeg(command, inputPath, outputPath, res);
+    const command = `ffmpeg -i "${inputPath}" -vf "tblend=average,framestep=2,minterpolate" "${outputPath}"`;
+    runFFmpeg(command, inputPath, outputPath, res, "Borrão de Movimento");
 });
 
-// Rota para reduzir o ruído de um áudio
-app.post('/api/process/reduce-noise-real', upload.single('audio'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+app.post('/api/process/reduce-noise-real', upload.single('video'), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro de vídeo foi enviado.' });
     const { path: inputPath, filename } = req.file;
     const outputPath = path.join(uploadDir, `denoised-${filename}`);
-    // O filtro 'anlmdn' é eficaz para reduzir ruído de fundo
-    const command = `ffmpeg -i "${inputPath}" -af anlmdn=s=7 "${outputPath}"`;
-    runFFmpeg(command, inputPath, outputPath, res);
+    const command = `ffmpeg -i "${inputPath}" -vf "hqdn3d=luma_spatial=4:chroma_spatial=3:luma_tmp=6:chroma_tmp=4" -c:a copy "${outputPath}"`;
+    runFFmpeg(command, inputPath, outputPath, res, "Redução de Ruído (Vídeo)");
 });
+
+app.post('/api/process/isolate-voice-real', upload.single('video'), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro de vídeo foi enviado.' });
+    const { path: inputPath, filename } = req.file;
+    const outputPath = path.join(uploadDir, `isolated-${path.parse(filename).name}.mp3`);
+    const command = `ffmpeg -i "${inputPath}" -af "pan=mono|c0=c1" "${outputPath}"`;
+    runFFmpeg(command, inputPath, outputPath, res, "Isolar Voz (Mono)");
+});
+
 
 // --- Rotas de Processamento com IA (Placeholders) ---
-// Estas funcionalidades exigem modelos de IA e não podem ser feitas apenas com FFmpeg.
+const placeholderRoutes = [
+    '/api/process/reframe', '/api/process/mask', '/api/process/enhance-voice', '/api/process/remove-bg',
+    '/api/process/auto-captions', '/api/process/retouch', '/api/process/ai-removal', '/api/process/ai-expand',
+    '/api/process/lip-sync', '/api/process/camera-track', '/api/process/video-translate'
+];
+placeholderRoutes.forEach(route => {
+    app.post(route, (req, res) => {
+        const featureName = route.split('/').pop();
+        console.log(`[Job Placeholder] Pedido recebido para: ${featureName}`);
+        res.status(501).json({ message: `A funcionalidade '${featureName}' ainda não foi implementada.` });
+    });
+});
 
-app.post('/api/process/remove-bg', (req, res) => {
-    res.status(501).json({ message: 'Funcionalidade não implementada. Requer um serviço de IA.' });
-});
-app.post('/api/process/auto-captions', (req, res) => {
-    res.status(501).json({ message: 'Funcionalidade não implementada. Requer um serviço de IA.' });
-});
-app.post('/api/process/retouch', (req, res) => {
-    res.status(501).json({ message: 'Funcionalidade não implementada. Requer um serviço de IA.' });
-});
-app.post('/api/process/ai-removal', (req, res) => {
-    res.status(501).json({ message: 'Funcionalidade não implementada. Requer um serviço de IA.' });
-});
-// ... (e assim por diante para as outras rotas de IA)
 
 // --- Iniciar o Servidor ---
 app.listen(PORT, () => {
-  console.log(`Servidor a escutar na porta ${PORT}`);
+    console.log(`Servidor a escutar na porta ${PORT}`);
 });
 
