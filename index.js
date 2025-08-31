@@ -1,12 +1,29 @@
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
 
 // Inicializa a aplicação Express
 const app = express();
 
 // Define a porta. Railway fornecerá a porta através de process.env.PORT
 const PORT = process.env.PORT || 8080;
+
+// --- Configuração do Multer para Upload de Ficheiros ---
+// Cria uma pasta temporária para guardar os vídeos recebidos
+const uploadDir = 'uploads';
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir);
+}
+// Configura o multer para guardar os ficheiros no disco
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadDir),
+    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+});
+const upload = multer({ storage: storage });
 
 // --- Middlewares ---
 // Habilita o CORS para permitir que o seu frontend se comunique com este backend
@@ -35,6 +52,51 @@ app.post('/api/projects', (req, res) => {
     projectId: `proj_${Date.now()}` 
   });
 });
+
+
+// --- Rota de Processamento de Vídeo REAL ---
+// Esta rota recebe um ficheiro de vídeo, inverte-o com FFmpeg e devolve o resultado.
+app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ message: 'Nenhum ficheiro de vídeo foi enviado.' });
+    }
+
+    const inputPath = req.file.path;
+    const outputPath = path.join(uploadDir, `reversed-${req.file.filename}`);
+    
+    console.log(`[Job Iniciado] A inverter vídeo: ${inputPath}`);
+
+    // Comando FFmpeg para inverter o vídeo
+    const ffmpegCommand = `ffmpeg -i "${inputPath}" -vf reverse "${outputPath}"`;
+
+    exec(ffmpegCommand, (error, stdout, stderr) => {
+        // Função de limpeza para apagar os ficheiros temporários
+        const cleanup = () => {
+            fs.unlink(inputPath, (err) => err && console.error("Falha ao apagar ficheiro de entrada:", err));
+            if (fs.existsSync(outputPath)) {
+                fs.unlink(outputPath, (err) => err && console.error("Falha ao apagar ficheiro de saída:", err));
+            }
+        };
+
+        if (error) {
+            console.error('Erro no FFmpeg:', stderr);
+            cleanup();
+            return res.status(500).json({ message: 'Falha ao processar o vídeo.', error: stderr });
+        }
+
+        console.log(`[Job Concluído] Vídeo invertido: ${outputPath}`);
+        
+        // Envia o ficheiro de vídeo processado de volta para o cliente
+        res.sendFile(path.resolve(outputPath), (err) => {
+            if (err) {
+                console.error('Erro ao enviar o ficheiro:', err);
+            }
+            // Após enviar (ou falhar ao enviar), limpa os ficheiros
+            cleanup();
+        });
+    });
+});
+
 
 // --- Rotas de Processamento de Vídeo (Placeholders) ---
 // Estas rotas simulam o início de um trabalho pesado no backend.
