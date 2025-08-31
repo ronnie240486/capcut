@@ -11,7 +11,7 @@ RUN npm install --omit=dev
 COPY . .
 
 # expor a porta
-EXPOSE 3000
+EXPOSE 8080
 
 # comando padrão
 CMD ["npm", "start"]
