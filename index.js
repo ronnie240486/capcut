@@ -1,125 +1,160 @@
-// index.js — Mock backend para assets/effects/templates do CapCut
+// Importa os módulos necessários
 const express = require('express');
-const path = require('path');
-const fs = require('fs');
-const morgan = require('morgan');
-const { v4: uuidv4 } = require('uuid');
-const multer = require('multer');
-const cors = require('cors'); // Importa o pacote CORS
+const cors = require('cors');
 
-const PORT = process.env.PORT || 3000;
+// Inicializa a aplicação Express
 const app = express();
 
-// --- CONFIGURAÇÃO ESSENCIAL ---
-app.use(cors()); // Habilita o CORS para todas as rotas
-app.use(morgan('dev'));
+// Define a porta. Railway fornecerá a porta através de process.env.PORT
+const PORT = process.env.PORT || 3001;
+
+// --- Middlewares ---
+// Habilita o CORS para permitir que o seu frontend se comunique com este backend
+app.use(cors());
+// Habilita o parsing de JSON no corpo das requisições
 app.use(express.json());
 
-// Ajuste este caminho para a pasta onde você extraiu os assets no servidor
-const BASE = path.resolve(__dirname, 'capcut_extracted');
-const ASSETS = path.join(BASE, 'assets');
-const RES = path.join(BASE, 'res');
 
-// Serve arquivos estáticos (assets/res)
-app.use('/static/assets', express.static(ASSETS));
-app.use('/static/res', express.static(RES));
+// --- Rotas ---
 
-// --- Helpers para listar arquivos ---
-function walkDir(dir, exts = []) {
-  const out = [];
-  if (!fs.existsSync(dir)) {
-    console.error(`AVISO: O diretório de assets não foi encontrado em: ${dir}`);
-    return out;
-  }
-  const stack = [dir];
-  while (stack.length) {
-    const cur = stack.pop();
-    const files = fs.readdirSync(cur);
-    for (const f of files) {
-      const fp = path.join(cur, f);
-      const stat = fs.statSync(fp);
-      if (stat.isDirectory()) {
-        stack.push(fp);
-      } else {
-        if (!exts.length || exts.includes(path.extname(f).toLowerCase())) {
-          out.push(path.relative(dir, fp).split(path.sep).join('/'));
-        }
-      }
-    }
-  }
-  return out;
-}
-
-// --- Endpoints ---
-
-// Rota de teste para verificar se o servidor está no ar
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Servidor está rodando!' });
+// Rota principal (Health Check)
+// Usada para verificar se o servidor está a funcionar corretamente.
+app.get('/', (req, res) => {
+  res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' });
 });
 
-// Lista templates detectados (.js template files)
-app.get('/api/templates', (req, res) => {
-  const templates = walkDir(ASSETS, ['.js']).filter(p => p.toLowerCase().includes('template') || p.toLowerCase().includes('/pages/'));
-  res.json({ count: templates.length, templates });
+// Rota de exemplo para salvar um projeto (funcionalidade a ser implementada)
+app.post('/api/projects', (req, res) => {
+  const projectData = req.body;
+  console.log('Recebido um novo projeto para salvar:', projectData.name);
+  
+  // Aqui viria a lógica para salvar os dados num banco de dados.
+  // Por enquanto, apenas retornamos uma mensagem de sucesso.
+  res.status(201).json({ 
+    message: `Projeto "${projectData.name}" recebido com sucesso!`, 
+    projectId: `proj_${Date.now()}` 
+  });
 });
 
-// Lista efeitos
-app.get('/api/effects', (req, res) => {
-  const candidates = walkDir(ASSETS, ['.json', '.dat', '.model', '.bin', '.so', '.ttf', '.png', '.mp3', '.wav']);
-  const effects = candidates.filter(p => /effect|filter|transition|fx|sticker|preset/i.test(p));
-  res.json({ count: effects.length, effects });
+// --- Rotas de Processamento de Vídeo (Placeholders) ---
+// Estas rotas simulam o início de um trabalho pesado no backend.
+
+// Rota para processar o reverso de um vídeo
+app.post('/api/process/reverse', (req, res) => {
+    const { clipId } = req.body;
+    console.log(`[Job Iniciado] Invertendo o clipe: ${clipId}`);
+    res.status(202).json({ message: 'O processo de inversão foi iniciado.', jobId: `reverse_${Date.now()}` });
 });
 
-// Lista audios
-app.get('/api/audios', (req, res) => {
-  const audios = walkDir(ASSETS, ['.mp3', '.wav', '.m4a', '.ogg']);
-  res.json({ count: audios.length, audios });
+// Rota para estabilizar um vídeo
+app.post('/api/process/stabilize', (req, res) => {
+    const { clipId } = req.body;
+    console.log(`[Job Iniciado] Estabilizando o clipe: ${clipId}`);
+    res.status(202).json({ message: 'O processo de estabilização foi iniciado.', jobId: `stabilize_${Date.now()}` });
 });
 
-// Baixar asset direto
-app.get('/api/asset', (req, res) => {
-  const file = req.query.file;
-  if (!file) return res.status(400).json({ error: 'file param required' });
-  const full = path.join(ASSETS, file);
-  if (!fs.existsSync(full)) return res.status(404).json({ error: 'not found' });
-  res.sendFile(full);
+// Rota para reenquadrar um vídeo
+app.post('/api/process/reframe', (req, res) => {
+    const { clipId, targetAspectRatio } = req.body;
+    console.log(`[Job Iniciado] Reenquadrando o clipe: ${clipId} para ${targetAspectRatio}`);
+    res.status(202).json({ message: 'O processo de reenquadramento foi iniciado.', jobId: `reframe_${Date.now()}` });
 });
 
-// Criar job de "aplicar efeito" (simulado)
-const upload = multer({ dest: path.join(__dirname, 'uploads') });
-const JOBS = {};
-
-app.post('/api/apply-effect', upload.single('video'), (req, res) => {
-  const { effect, params } = req.body;
-  const inputFile = req.file ? req.file.path : null;
-  const jobId = uuidv4();
-  JOBS[jobId] = { id: jobId, status: 'queued', effect, params: params ? JSON.parse(params) : {}, inputFile, createdAt: Date.now() };
-
-  setTimeout(() => {
-    JOBS[jobId].status = 'processing';
-    setTimeout(() => {
-      JOBS[jobId].status = 'done';
-      JOBS[jobId].result = { url: `/static/res/result_${jobId}.mp4` };
-    }, 2500);
-  }, 800);
-
-  res.json({ jobId, status: JOBS[jobId].status });
+// Rota para aplicar borrão de movimento
+app.post('/api/process/motionblur', (req, res) => {
+    const { clipId, intensity } = req.body;
+    console.log(`[Job Iniciado] Aplicando borrão de movimento no clipe: ${clipId} com intensidade ${intensity}`);
+    res.status(202).json({ message: 'O processo de borrão de movimento foi iniciado.', jobId: `motionblur_${Date.now()}` });
 });
 
-// Consultar status do job
-app.get('/api/job/:id', (req, res) => {
-  const j = JOBS[req.params.id];
-  if (!j) return res.status(404).json({ error: 'job not found' });
-  res.json(j);
+// Rota para processamento de máscara
+app.post('/api/process/mask', (req, res) => {
+    const { clipId, maskType } = req.body;
+    console.log(`[Job Iniciado] Aplicando máscara do tipo '${maskType}' no clipe: ${clipId}`);
+    res.status(202).json({ message: 'O processo de máscara foi iniciado.', jobId: `mask_${Date.now()}` });
 });
 
-// Endpoint para listar strings do código
-app.get('/api/strings', (req, res) => {
-  const stringsPath = path.join(__dirname, 'extracted_strings.json');
-  if (fs.existsSync(stringsPath)) {
-    const data = JSON.parse(fs.readFileSync(stringsPath, 'utf8'));
-    res.json({ count: Object.keys(data).length, data });
-  } else {
-    res.json({ count: 0, data: {}, hint: 'gere extracted_strings.json' });
-  }
+
+// --- Rotas de Processamento de Áudio (Placeholders) ---
+
+app.post('/api/process/extract-audio', (req, res) => {
+    const { clipId } = req.body;
+    console.log(`[Job Iniciado] Extraindo áudio do clipe: ${clipId}`);
+    res.status(202).json({ message: 'A extração de áudio foi iniciada.', jobId: `extract-audio_${Date.now()}` });
 });
+
+app.post('/api/process/isolate-voice', (req, res) => {
+    const { clipId } = req.body;
+    console.log(`[Job Iniciado] Isolando voz do clipe: ${clipId}`);
+    res.status(202).json({ message: 'O processo de isolamento de voz foi iniciado.', jobId: `isolate-voice_${Date.now()}` });
+});
+
+app.post('/api/process/reduce-noise', (req, res) => {
+    const { clipId, level } = req.body;
+    console.log(`[Job Iniciado] Reduzindo ruído do clipe: ${clipId} com nível ${level}`);
+    res.status(202).json({ message: 'A redução de ruído foi iniciada.', jobId: `reduce-noise_${Date.now()}` });
+});
+
+app.post('/api/process/enhance-voice', (req, res) => {
+    const { clipId } = req.body;
+    console.log(`[Job Iniciado] Aprimorando voz do clipe: ${clipId}`);
+    res.status(202).json({ message: 'O aprimoramento de voz foi iniciado.', jobId: `enhance-voice_${Date.now()}` });
+});
+
+
+// --- Rotas de Processamento com IA (Placeholders) ---
+
+app.post('/api/process/remove-bg', (req, res) => {
+    const { clipId } = req.body;
+    console.log(`[Job Iniciado] Removendo fundo do clipe: ${clipId}`);
+    res.status(202).json({ message: 'A remoção de fundo foi iniciada.', jobId: `remove-bg_${Date.now()}` });
+});
+
+app.post('/api/process/auto-captions', (req, res) => {
+    const { clipId, language } = req.body;
+    console.log(`[Job Iniciado] Gerando legendas automáticas para o clipe: ${clipId} em ${language}`);
+    res.status(202).json({ message: 'A geração de legendas foi iniciada.', jobId: `auto-captions_${Date.now()}` });
+});
+
+app.post('/api/process/retouch', (req, res) => {
+    const { clipId, settings } = req.body;
+    console.log(`[Job Iniciado] Aplicando retoque no clipe: ${clipId}`, settings);
+    res.status(202).json({ message: 'O processo de retoque foi iniciado.', jobId: `retouch_${Date.now()}` });
+});
+
+app.post('/api/process/ai-removal', (req, res) => {
+    const { clipId, objectToRemove } = req.body;
+    console.log(`[Job Iniciado] Removendo objeto '${objectToRemove}' do clipe: ${clipId}`);
+    res.status(202).json({ message: 'A remoção com IA foi iniciada.', jobId: `ai-removal_${Date.now()}` });
+});
+
+app.post('/api/process/ai-expand', (req, res) => {
+    const { clipId, direction } = req.body;
+    console.log(`[Job Iniciado] Expandindo clipe: ${clipId} na direção ${direction}`);
+    res.status(202).json({ message: 'A expansão com IA foi iniciada.', jobId: `ai-expand_${Date.now()}` });
+});
+
+app.post('/api/process/lip-sync', (req, res) => {
+    const { videoClipId, audioClipId } = req.body;
+    console.log(`[Job Iniciado] Sincronizando lábios do clipe ${videoClipId} com o áudio ${audioClipId}`);
+    res.status(202).json({ message: 'A sincronização labial foi iniciada.', jobId: `lip-sync_${Date.now()}` });
+});
+
+app.post('/api/process/camera-track', (req, res) => {
+    const { clipId, objectToTrack } = req.body;
+    console.log(`[Job Iniciado] Rastreando objeto '${objectToTrack}' no clipe: ${clipId}`);
+    res.status(202).json({ message: 'O rastreio de câmera foi iniciado.', jobId: `camera-track_${Date.now()}` });
+});
+
+app.post('/api/process/video-translate', (req, res) => {
+    const { clipId, targetLanguage } = req.body;
+    console.log(`[Job Iniciado] Traduzindo vídeo do clipe: ${clipId} para ${targetLanguage}`);
+    res.status(202).json({ message: 'A tradução de vídeo foi iniciada.', jobId: `video-translate_${Date.now()}` });
+});
+
+
+// --- Iniciar o Servidor ---
+app.listen(PORT, () => {
+  console.log(`Servidor a escutar na porta ${PORT}`);
+});
+
