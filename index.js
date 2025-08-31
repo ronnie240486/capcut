@@ -6,7 +6,7 @@ const cors = require('cors');
 const app = express();
 
 // Define a porta. Railway fornecerá a porta através de process.env.PORT
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8080;
 
 // --- Middlewares ---
 // Habilita o CORS para permitir que o seu frontend se comunique com este backend
