@@ -310,11 +310,12 @@ app.post('/api/process/video-translate', upload.single('video'), (req, res) => s
 app.listen(PORT, () => {
   console.log(`Servidor a escutar na porta ${PORT}`);
 });
-```
 
-/*
---- Passo 2: Atualizar o Editor (`editor_de_texto.html`)
-*/
+### Passo 2: Atualizar o Editor (`editor_de_texto.html`)
+                                  ^^^^^^^^^^^^^^^
+
+SyntaxError: Unexpected identifier
+    at internalCompileFunction (node:internal/vm:76:18)
 
 Agora, vamos ligar todos os botões que faltavam às novas rotas que criámos.
 
