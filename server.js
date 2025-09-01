@@ -32,6 +32,15 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
+// No ficheiro server.js
+
+// Adicionar este middleware logo após a configuração do CORS
+app.use((req, res, next) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  next();
+});
+
 // --- Configuração do Multer para Upload de Ficheiros ---
 const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) {
