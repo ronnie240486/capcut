@@ -293,6 +293,32 @@ app.post('/api/process/stabilize-real', upload.single('video'), (req, res) => {
         });
     });
 });
+// Exemplo simplificado: rota de estabilização
+app.post('/api/process/stabilize-real', upload.single('video'), (req, res) => {
+  const input = req.file?.path;
+  if (!input) return res.status(400).json({ message: 'Nenhum vídeo enviado' });
+
+  const outputPath = path.join(uploadDir, `stabilized-${Date.now()}.mp4`);
+
+  // ffmpeg comando simplificado: desfoque de tremido (vidstabdetect + vidstabtransform)
+  const ffmpegProcess = spawn(ffmpegPath, [
+    '-i', input,
+    '-vf', 'vidstabdetect=shakiness=5:accuracy=15,vidstabtransform=smoothing=30:input="transforms.trf"',
+    '-c:v', 'libx264',
+    '-preset', 'fast',
+    '-pix_fmt', 'yuv420p',
+    outputPath
+  ]);
+
+  ffmpegProcess.stderr.on('data', d => console.error('[FFmpeg STDERR]:', d.toString()));
+
+  ffmpegProcess.on('close', code => {
+    fs.unlink(input, () => {});
+    if (code !== 0) return res.status(500).json({ message: 'Falha na estabilização' });
+    res.sendFile(outputPath, () => fs.unlink(outputPath, () => {}));
+  });
+});
+
 
 
 // --- Rotas de Placeholders (Funcionalidades Futuras) ---
