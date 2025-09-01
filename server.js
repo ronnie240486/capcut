@@ -312,7 +312,9 @@ app.listen(PORT, () => {
 });
 ```
 
-### Passo 2: Atualizar o Editor (`editor_de_texto.html`)
+/*
+--- Passo 2: Atualizar o Editor (`editor_de_texto.html`)
+*/
 
 Agora, vamos ligar todos os botões que faltavam às novas rotas que criámos.
 
