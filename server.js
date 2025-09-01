@@ -54,31 +54,55 @@ app.post('/api/projects', (req, res) => {
     res.status(201).json({ message: `Projeto "${project.name}" recebido.`, projectId: `proj_${Date.now()}` });
 });
 
-// --- ROTA DE EXPORTAÇÃO ROBUSTA ---
+// --- ROTA DE EXPORTAÇÃO NO SERVIDOR (ROBUSTA E COM LOGS) ---
 app.post('/api/export', upload.any(), (req, res) => {
     try {
-        console.log('[Export Job] Recebidos ficheiros:', req.files.map(f => f.originalname).join(', '));
-        const projectState = JSON.parse(req.body.projectState);
-        const { clips, totalDuration, media } = projectState;
+        console.log('[Export Job] Body recebido:', req.body);
+        console.log('[Export Job] Files recebidos:', req.files?.map(f => f.originalname) || []);
+
+        // --- Validação do projectState ---
+        let projectState;
+        try {
+            if (!req.body.projectState) {
+                return res.status(400).json({ message: "projectState não fornecido no corpo da requisição." });
+            }
+            projectState = typeof req.body.projectState === 'string'
+                ? JSON.parse(req.body.projectState)
+                : req.body.projectState;
+        } catch (err) {
+            console.error('[Export Job] JSON inválido em projectState:', req.body.projectState);
+            return res.status(400).json({ message: "projectState inválido ou malformado." });
+        }
+
+        const { clips, totalDuration, media } = projectState || {};
+        if (!clips || !Array.isArray(clips) || typeof totalDuration !== 'number') {
+            return res.status(400).json({ message: "Estrutura de projectState inválida ou incompleta." });
+        }
 
         const cleanupFiles = [];
         const inputs = [];
         const fileMap = {};
 
+        // --- Mapear arquivos enviados ---
         req.files.forEach(file => {
             inputs.push('-i', file.path);
             fileMap[file.originalname] = inputs.length / 2 - 1;
             cleanupFiles.push(file.path);
         });
 
+        // --- Caso nenhum arquivo enviado, mas há duração ---
         if (inputs.length === 0 && totalDuration > 0) {
             const outputPath = path.join(uploadDir, `export-${Date.now()}.mp4`);
             const commandArgs = [
                 '-f', 'lavfi', '-i', `color=c=black:s=1280x720:d=${totalDuration}`,
                 '-f', 'lavfi', '-i', 'anullsrc=r=44100',
-                '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-shortest', outputPath
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30',
+                '-shortest', outputPath
             ];
+
+            console.log('[Export Job] Nenhum arquivo enviado, criando vídeo vazio...');
             const ffmpegProcess = spawn(ffmpegPath, commandArgs);
+
             ffmpegProcess.on('close', code => {
                 if (code !== 0) return res.status(500).json({ message: "Falha ao criar vídeo vazio." });
                 res.sendFile(path.resolve(outputPath), (err) => {
@@ -89,20 +113,21 @@ app.post('/api/export', upload.any(), (req, res) => {
             return;
         }
 
+        // --- Montagem do filter_complex e export normal ---
         let filterComplex = '';
         const videoStreamsToOverlay = [];
         const audioStreamsToMix = [];
 
         clips.forEach((clip, index) => {
             const inputIndex = fileMap[clip.fileName];
-            const mediaInfo = media[clip.fileName];
+            const mediaInfo = media?.[clip.fileName];
             if (inputIndex === undefined || !mediaInfo) return;
 
             if (clip.track === 'video') {
                 const streamName = `[v${index}]`;
                 let filters = `scale=1280:720,setsar=1,setpts=PTS-STARTPTS`;
                 filterComplex += `[${inputIndex}:v]${filters}${streamName}; `;
-                videoStreamsToOverlay.push({ stream: streamName, clip: clip });
+                videoStreamsToOverlay.push({ stream: streamName, clip });
             }
 
             if (mediaInfo.hasAudio && (clip.properties.volume === undefined || clip.properties.volume > 0)) {
@@ -110,7 +135,7 @@ app.post('/api/export', upload.any(), (req, res) => {
                 const volume = clip.properties.volume ?? 1;
                 const volumeFilter = (volume !== 1) ? `volume=${volume},` : '';
                 filterComplex += `[${inputIndex}:a]${volumeFilter}asetpts=PTS-STARTPTS,aresample=44100${streamName}; `;
-                audioStreamsToMix.push({ stream: streamName, clip: clip });
+                audioStreamsToMix.push({ stream: streamName, clip });
             }
         });
 
@@ -121,7 +146,9 @@ app.post('/api/export', upload.any(), (req, res) => {
             filterComplex += `${lastOverlay}${vs.stream}overlay=enable='between(t,${vs.clip.start},${vs.clip.start + vs.clip.duration})'${nextOverlay};`;
             lastOverlay = nextOverlay;
         });
-        if (videoStreamsToOverlay.length === 0) filterComplex += `[base]null[outv];`;
+        if (videoStreamsToOverlay.length === 0) {
+            filterComplex += `[base]null[outv];`;
+        }
 
         if (audioStreamsToMix.length > 0) {
             const delayedAudioStreams = [];
@@ -137,10 +164,12 @@ app.post('/api/export', upload.any(), (req, res) => {
         const outputPath = path.join(uploadDir, `export-${Date.now()}.mp4`);
         cleanupFiles.push(outputPath);
 
-        const commandArgs = [...inputs, '-filter_complex', filterComplex, '-map', '[outv]'];
-        if (audioStreamsToMix.length > 0) commandArgs.push('-map', '[outa]');
-        else commandArgs.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest');
-
+        const commandArgs = [ ...inputs, '-filter_complex', filterComplex, '-map', '[outv]' ];
+        if (audioStreamsToMix.length > 0) {
+            commandArgs.push('-map', '[outa]');
+        } else {
+            commandArgs.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest');
+        }
         commandArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-r', '30', '-t', totalDuration, outputPath);
 
         console.log('[Export Job] Comando FFmpeg:', ffmpegPath, commandArgs.join(' '));
@@ -152,7 +181,9 @@ app.post('/api/export', upload.any(), (req, res) => {
             if (code !== 0) {
                 console.error(`[Export Job] FFmpeg terminou com código de erro ${code}`);
                 cleanupFiles.forEach(f => fs.unlink(f, () => {}));
-                if(!res.headersSent) return res.status(500).json({ message: "Falha na exportação do vídeo. Verifique os logs do servidor." });
+                if(!res.headersSent) {
+                    return res.status(500).json({ message: "Falha na exportação do vídeo. Verifique os logs do servidor." });
+                }
                 return;
             }
             console.log('[Export Job] Exportação concluída com sucesso.');
@@ -165,13 +196,17 @@ app.post('/api/export', upload.any(), (req, res) => {
         ffmpegProcess.on('error', (err) => {
             console.error(`[Export Job] Falha ao iniciar FFmpeg:`, err);
             cleanupFiles.forEach(f => fs.unlink(f, () => {}));
-            if (!res.headersSent) res.status(500).json({ message: `Falha ao iniciar a exportação.` });
+            if (!res.headersSent) {
+                res.status(500).json({ message: `Falha ao iniciar a exportação.` });
+            }
         });
+
     } catch (e) {
         console.error('[Export Job] Erro catastrófico:', e);
         res.status(500).json({ message: "Ocorreu um erro inesperado no servidor." });
     }
 });
+
 
 // --- Rotas FFmpeg reais ---
 app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
