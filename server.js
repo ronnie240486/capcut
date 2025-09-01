@@ -240,31 +240,26 @@ app.post('/api/process/isolate-voice-real', upload.single('video'), (req, res) =
     processWithFfmpegStream(req, res, args, 'video/mp4', 'Isolar Voz');
 });
 
+app.post('/api/process/enhance-voice-real', upload.single('video'), (req, res) => {
+    const args = ['-af', 'highpass=f=200,lowpass=f=3000,acompressor=threshold=0.089:ratio=2:attack=20:release=1000', '-f', 'mp4'];
+    processWithFfmpegStream(req, res, args, 'video/mp4', 'Aprimorar Voz');
+});
+
 app.post('/api/process/mask-real', upload.single('video'), (req, res) => {
-    // Aplica uma máscara circular ao vídeo
     const args = ['-vf', "format=rgba,geq=r='r(X,Y)':a='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/3,2)),255,0)'", '-f', 'mp4'];
     processWithFfmpegStream(req, res, args, 'video/mp4', 'Mascarar');
 });
 
+// --- ROTAS NÃO-STREAMING PARA PROCESSOS PESADOS ---
+
 app.post('/api/process/stabilize-real', upload.single('video'), (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
-    }
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
     const { path: inputPath, filename } = req.file;
     const transformsFile = path.join(uploadDir, `${filename}.trf`);
     const outputPath = path.join(uploadDir, `stabilized-${filename}`);
-    
-    const cleanup = () => {
-        [inputPath, transformsFile, outputPath].forEach(file => {
-            if (fs.existsSync(file)) {
-                fs.unlink(file, (err) => err && console.error(`Falha ao apagar ficheiro temporário ${file}:`, err));
-            }
-        });
-    };
-
+    const cleanup = () => { [inputPath, transformsFile, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
     const detectCommand = `${ffmpegPath} -i ${inputPath} -vf vidstabdetect=result=${transformsFile} -f null -`;
     console.log('[Stabilize Job] Passagem 1:', detectCommand);
-
     exec(detectCommand, (err, stdout, stderr) => {
         if (err) {
             console.error('[Stabilize Job] Falha na Passagem 1:', stderr);
@@ -272,10 +267,8 @@ app.post('/api/process/stabilize-real', upload.single('video'), (req, res) => {
             return res.status(500).json({ message: 'Falha na análise do vídeo para estabilização.' });
         }
         console.log('[Stabilize Job] Passagem 1 concluída.');
-
         const transformCommand = `${ffmpegPath} -i ${inputPath} -vf vidstabtransform=input=${transformsFile}:zoom=0:smoothing=10,unsharp=5:5:0.8:3:3:0.4 -vcodec libx264 -preset fast ${outputPath}`;
         console.log('[Stabilize Job] Passagem 2:', transformCommand);
-
         exec(transformCommand, (err2, stdout2, stderr2) => {
             if (err2) {
                 console.error('[Stabilize Job] Falha na Passagem 2:', stderr2);
@@ -283,34 +276,54 @@ app.post('/api/process/stabilize-real', upload.single('video'), (req, res) => {
                 return res.status(500).json({ message: 'Falha ao aplicar a estabilização.' });
             }
             console.log('[Stabilize Job] Passagem 2 concluída.');
-
             res.sendFile(path.resolve(outputPath), (sendErr) => {
-                if (sendErr) {
-                    console.error('Erro ao enviar ficheiro estabilizado:', sendErr);
-                }
+                if (sendErr) console.error('Erro ao enviar ficheiro estabilizado:', sendErr);
                 cleanup();
             });
         });
     });
 });
 
+app.post('/api/process/motionblur-real', upload.single('video'), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    const { path: inputPath, filename } = req.file;
+    const outputPath = path.join(uploadDir, `motionblur-${filename}`);
+    const cleanup = () => { [inputPath, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
+    // Este filtro é experimental e MUITO lento.
+    const command = `${ffmpegPath} -i ${inputPath} -vf "minterpolate='fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1',tblend=all_mode=average,framestep=2" -preset veryfast ${outputPath}`;
+    console.log('[MotionBlur Job] Comando:', command);
+    exec(command, (err, stdout, stderr) => {
+        if (err) {
+            console.error('[MotionBlur Job] Falha:', stderr);
+            cleanup();
+            return res.status(500).json({ message: 'Falha ao aplicar o borrão de movimento.' });
+        }
+        console.log('[MotionBlur Job] Concluído.');
+        res.sendFile(path.resolve(outputPath), (sendErr) => {
+            if (sendErr) console.error('Erro ao enviar ficheiro:', sendErr);
+            cleanup();
+        });
+    });
+});
 
-// --- Rotas de Placeholders (Funcionalidades Futuras) ---
+
+// --- Rotas de Placeholders (Funcionalidades Futuras de IA) ---
 const placeholderRoutes = [
-    '/api/process/motionblur-real', // Motion blur real é muito lento, mantido como placeholder
     '/api/process/reframe',
-    '/api/process/enhance-voice', '/api/process/remove-bg',
-    '/api/process/auto-captions', '/api/process/retouch',
-    '/api/process/ai-removal', '/api/process/ai-expand',
-    '/api/process/lip-sync', '/api/process/camera-track',
+    '/api/process/remove-bg',
+    '/api/process/auto-captions',
+    '/api/process/retouch',
+    '/api/process/ai-removal',
+    '/api/process/ai-expand',
+    '/api/process/lip-sync',
+    '/api/process/camera-track',
     '/api/process/video-translate'
 ];
-
 placeholderRoutes.forEach(route => {
     app.post(route, (req, res) => {
         const functionality = route.split('/').pop();
         console.log(`[Placeholder] Recebido pedido para ${functionality}.`);
-        res.status(501).json({ message: `A funcionalidade '${functionality}' ainda não foi implementada.` });
+        res.status(501).json({ message: `A funcionalidade de IA '${functionality}' ainda não foi implementada.` });
     });
 });
 
@@ -318,4 +331,50 @@ placeholderRoutes.forEach(route => {
 app.listen(PORT, () => {
   console.log(`Servidor a escutar na porta ${PORT}`);
 });
+```
 
+---
+
+### Passo 2: Atualizar o Editor (`editor_de_texto.html`)
+
+Agora, vamos ligar os botões que faltavam às novas rotas que acabámos de criar no servidor.
+
+1.  No seu ficheiro `editor_de_texto.html`, dentro da função `setupEventListeners()`, encontre o objeto `placeholderButtons`.
+2.  **Substitua os objetos `fileUploadButtons` e `placeholderButtons`** pelos seguintes blocos atualizados. Movimentámos os botões para as listas corretas e atualizámos os nomes das rotas.
+
+    ```javascript
+    // Bloco fileUploadButtons ATUALIZADO
+    const fileUploadButtons = {
+        'edit-extract-audio-btn': { endpoint: '/api/process/extract-audio-real', name: 'Extrair Áudio' },
+        'edit-stabilize-btn': { endpoint: '/api/process/stabilize-real', name: 'Estabilização' },
+        'edit-isolate-voice-btn': { endpoint: '/api/process/isolate-voice-real', name: 'Isolar Voz' },
+        'edit-reduce-noise-btn': { endpoint: '/api/process/reduce-noise-real', name: 'Redução de Ruído' },
+        'edit-enhance-voice-btn': { endpoint: '/api/process/enhance-voice-real', name: 'Aprimorar Voz' },
+        'edit-mask-btn': { endpoint: '/api/process/mask-real', name: 'Mascarar' },
+    };
+    Object.entries(fileUploadButtons).forEach(([btnId, data]) => {
+        const btn = document.getElementById(btnId);
+        if (btn) {
+            btn.dataset.endpoint = data.endpoint;
+            btn.addEventListener('click', () => processClipWithFileUpload(data.endpoint, data.name));
+        }
+    });
+
+    // Botão especial para Borrão de Movimento
+    document.getElementById('edit-motionblur-btn')?.addEventListener('click', () => {
+        const clip = getClipById(state.selectedClipId);
+        if (!clip) { showStatusMessage("Selecione um clipe primeiro.", 3000); return; }
+        processClipWithFileUpload('/api/process/motionblur-real', 'Borrão de Mov.');
+    });
+
+    // Bloco placeholderButtons ATUALIZADO
+    const placeholderButtons = {
+        'edit-reframe-btn': { endpoint: '/api/process/reframe' },
+        // ... (outros botões de IA)
+    };
+    Object.entries(placeholderButtons).forEach(([btnId, data]) => {
+        const btn = document.getElementById(btnId);
+        if (btn) {
+            btn.addEventListener('click', () => callBackendProcess(data.endpoint, {}));
+        }
+    });
