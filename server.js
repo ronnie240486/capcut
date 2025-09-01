@@ -4,17 +4,16 @@ const cors = require('cors');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
-const { spawn, exec } = require('child_process'); // Adiciona 'exec'
-const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path; // binário portátil do ffmpeg
+const { spawn, exec } = require('child_process');
+const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 
 // Inicializa a aplicação Express
 const app = express();
 
-// Define a porta. Railway fornecerá a porta através de process.env.PORT
+// Define a porta
 const PORT = process.env.PORT || 8080;
 
 // --- Middlewares ---
-
 app.set('trust proxy', 1);
 const corsOptions = {
   origin: '*', 
@@ -36,21 +35,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Aumenta o limite do corpo da requisição para JSON (útil para salvar projetos grandes)
 app.use(express.json({ limit: '50mb' }));
 
-// --- Configuração do Multer para Upload de Ficheiros ---
+// --- Configuração do Multer ---
 const uploadDir = 'uploads';
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir);
-}
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
 const upload = multer({ storage: storage });
 
-// --- Função Auxiliar Otimizada para Processamento com FFmpeg via Streaming ---
+// --- Funções Auxiliares de Processamento ---
 const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friendlyName) => {
     if (!req.file || !fs.existsSync(req.file.path)) {
         return res.status(400).json({ message: 'Nenhum ficheiro válido foi enviado.' });
@@ -62,9 +58,7 @@ const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friend
     const ffmpegProcess = spawn(ffmpegPath, finalArgs);
     res.setHeader('Content-Type', outputContentType);
     ffmpegProcess.stdout.pipe(res);
-    ffmpegProcess.stderr.on('data', (data) => {
-        console.error(`[FFmpeg STDERR] ${friendlyName}: ${data.toString()}`);
-    });
+    ffmpegProcess.stderr.on('data', (data) => console.error(`[FFmpeg STDERR] ${friendlyName}: ${data.toString()}`));
     ffmpegProcess.on('close', (code) => {
         if (code !== 0) console.error(`[FFmpeg] Processo ${friendlyName} terminou com código de erro ${code}`);
         else console.log(`[Job Concluído] Stream para ${friendlyName} finalizado com sucesso.`);
@@ -73,29 +67,39 @@ const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friend
     ffmpegProcess.on('error', (err) => {
         console.error(`[FFmpeg] Falha ao iniciar o processo ${friendlyName}:`, err);
         fs.unlink(inputPath, (err) => err && console.error("Falha ao apagar ficheiro de entrada:", err));
-        if (!res.headersSent) {
-            res.status(500).json({ message: `Falha ao iniciar o processamento (${friendlyName}).` });
-        }
+        if (!res.headersSent) res.status(500).json({ message: `Falha ao iniciar o processamento (${friendlyName}).` });
     });
-    req.on('close', () => {
-        ffmpegProcess.kill();
-    });
+    req.on('close', () => ffmpegProcess.kill());
+};
+
+const simulateAiProcess = (req, res, friendlyName) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    const inputPath = req.file.path;
+    console.log(`[AI Job Simulado] Iniciado para ${friendlyName} com o ficheiro ${inputPath}`);
+    
+    // Simula um tempo de processamento de 3 segundos
+    setTimeout(() => {
+        console.log(`[AI Job Simulado] ${friendlyName} concluído. A devolver o ficheiro original como exemplo.`);
+        res.sendFile(path.resolve(inputPath), (err) => {
+            if (err) console.error(`Erro ao enviar ficheiro simulado de ${friendlyName}:`, err);
+            // Limpa o ficheiro após o envio
+            fs.unlink(inputPath, (unlinkErr) => unlinkErr && console.error("Falha ao apagar ficheiro de entrada simulado:", unlinkErr));
+        });
+    }, 3000);
 };
 
 // --- Rotas ---
 
-app.get('/', (req, res) => {
-  res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' });
-});
-
+app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
 app.post('/api/projects', (req, res) => {
-  const projectData = req.body;
-  console.log('Recebido um novo projeto para salvar:', projectData.name);
-  res.status(201).json({ message: `Projeto "${projectData.name}" recebido com sucesso!`, projectId: `proj_${Date.now()}` });
+  console.log('Recebido um novo projeto para salvar:', req.body.name);
+  res.status(201).json({ message: `Projeto "${req.body.name}" recebido com sucesso!`, projectId: `proj_${Date.now()}` });
 });
 
-// --- ROTA DE EXPORTAÇÃO NO SERVIDOR (VERSÃO ROBUSTA) ---
+// --- Rota de Exportação ---
+// (Código de exportação robusto omitido por brevidade, mas está aqui no seu ficheiro)
 app.post('/api/export', upload.any(), (req, res) => {
+    // ... (A sua lógica de exportação completa está aqui) ...
     try {
         console.log('[Export Job] Recebidos ficheiros:', req.files.map(f => f.originalname).join(', '));
         const projectState = JSON.parse(req.body.projectState);
@@ -218,40 +222,27 @@ app.post('/api/export', upload.any(), (req, res) => {
 });
 
 
-// --- Rotas de Processamento REAL ---
-
+// --- Rotas de Processamento FFmpeg ---
 app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
-    const args = ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'];
-    processWithFfmpegStream(req, res, args, 'video/mp4', 'Reverso');
+    processWithFfmpegStream(req, res, ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'], 'video/mp4', 'Reverso');
 });
-
 app.post('/api/process/extract-audio-real', upload.single('video'), (req, res) => {
-    const args = ['-vn', '-q:a', '0', '-map', 'a', '-f', 'mp3'];
-    processWithFfmpegStream(req, res, args, 'audio/mpeg', 'Extrair Áudio');
+    processWithFfmpegStream(req, res, ['-vn', '-q:a', '0', '-map', 'a', '-f', 'mp3'], 'audio/mpeg', 'Extrair Áudio');
 });
-
 app.post('/api/process/reduce-noise-real', upload.single('video'), (req, res) => {
-    const args = ['-af', 'afftdn', '-f', 'mp4'];
-    processWithFfmpegStream(req, res, args, 'video/mp4', 'Redução de Ruído');
+    processWithFfmpegStream(req, res, ['-af', 'afftdn', '-f', 'mp4'], 'video/mp4', 'Redução de Ruído');
 });
-
 app.post('/api/process/isolate-voice-real', upload.single('video'), (req, res) => {
-    const args = ['-af', 'lowpass=f=3000,highpass=f=300', '-f', 'mp4'];
-    processWithFfmpegStream(req, res, args, 'video/mp4', 'Isolar Voz');
+    processWithFfmpegStream(req, res, ['-af', 'lowpass=f=3000,highpass=f=300', '-f', 'mp4'], 'video/mp4', 'Isolar Voz');
 });
-
 app.post('/api/process/enhance-voice-real', upload.single('video'), (req, res) => {
-    const args = ['-af', 'highpass=f=200,lowpass=f=3000,acompressor=threshold=0.089:ratio=2:attack=20:release=1000', '-f', 'mp4'];
-    processWithFfmpegStream(req, res, args, 'video/mp4', 'Aprimorar Voz');
+    processWithFfmpegStream(req, res, ['-af', 'highpass=f=200,lowpass=f=3000,acompressor=threshold=0.089:ratio=2:attack=20:release=1000', '-f', 'mp4'], 'video/mp4', 'Aprimorar Voz');
 });
-
 app.post('/api/process/mask-real', upload.single('video'), (req, res) => {
-    const args = ['-vf', "format=rgba,geq=r='r(X,Y)':a='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/3,2)),255,0)'", '-f', 'mp4'];
-    processWithFfmpegStream(req, res, args, 'video/mp4', 'Mascarar');
+    processWithFfmpegStream(req, res, ['-vf', "format=rgba,geq=r='r(X,Y)':a='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/3,2)),255,0)'", '-f', 'mp4'], 'video/mp4', 'Mascarar');
 });
 
-// --- ROTAS NÃO-STREAMING PARA PROCESSOS PESADOS ---
-
+// --- Rotas FFmpeg (Não-Streaming para Processos Pesados) ---
 app.post('/api/process/stabilize-real', upload.single('video'), (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
     const { path: inputPath, filename } = req.file;
@@ -283,13 +274,11 @@ app.post('/api/process/stabilize-real', upload.single('video'), (req, res) => {
         });
     });
 });
-
 app.post('/api/process/motionblur-real', upload.single('video'), (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
     const { path: inputPath, filename } = req.file;
     const outputPath = path.join(uploadDir, `motionblur-${filename}`);
     const cleanup = () => { [inputPath, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
-    // Este filtro é experimental e MUITO lento.
     const command = `${ffmpegPath} -i ${inputPath} -vf "minterpolate='fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1',tblend=all_mode=average,framestep=2" -preset veryfast ${outputPath}`;
     console.log('[MotionBlur Job] Comando:', command);
     exec(command, (err, stdout, stderr) => {
@@ -306,26 +295,16 @@ app.post('/api/process/motionblur-real', upload.single('video'), (req, res) => {
     });
 });
 
-
-// --- Rotas de Placeholders (Funcionalidades Futuras de IA) ---
-const placeholderRoutes = [
-    '/api/process/reframe',
-    '/api/process/remove-bg',
-    '/api/process/auto-captions',
-    '/api/process/retouch',
-    '/api/process/ai-removal',
-    '/api/process/ai-expand',
-    '/api/process/lip-sync',
-    '/api/process/camera-track',
-    '/api/process/video-translate'
-];
-placeholderRoutes.forEach(route => {
-    app.post(route, (req, res) => {
-        const functionality = route.split('/').pop();
-        console.log(`[Placeholder] Recebido pedido para ${functionality}.`);
-        res.status(501).json({ message: `A funcionalidade de IA '${functionality}' ainda não foi implementada.` });
-    });
-});
+// --- Rotas de Simulação de IA ---
+app.post('/api/process/reframe', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Reenquadramento IA'));
+app.post('/api/process/remove-bg', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Remoção de Fundo IA'));
+app.post('/api/process/auto-captions', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Legendas Automáticas IA'));
+app.post('/api/process/retouch', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Retoque IA'));
+app.post('/api/process/ai-removal', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Remoção de Objeto IA'));
+app.post('/api/process/ai-expand', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Expansão IA'));
+app.post('/api/process/lip-sync', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Sincronização Labial IA'));
+app.post('/api/process/camera-track', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Rastreio de Câmera IA'));
+app.post('/api/process/video-translate', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Tradução de Vídeo IA'));
 
 // --- Iniciar o Servidor ---
 app.listen(PORT, () => {
@@ -333,17 +312,15 @@ app.listen(PORT, () => {
 });
 ```
 
----
-
 ### Passo 2: Atualizar o Editor (`editor_de_texto.html`)
 
-Agora, vamos ligar os botões que faltavam às novas rotas que acabámos de criar no servidor.
+Agora, vamos ligar todos os botões que faltavam às novas rotas que criámos.
 
 1.  No seu ficheiro `editor_de_texto.html`, dentro da função `setupEventListeners()`, encontre o objeto `placeholderButtons`.
-2.  **Substitua os objetos `fileUploadButtons` e `placeholderButtons`** pelos seguintes blocos atualizados. Movimentámos os botões para as listas corretas e atualizámos os nomes das rotas.
+2.  **Substitua o bloco de código que define `fileUploadButtons` e `placeholderButtons`** pelo seguinte bloco completo. Ele move todos os botões de IA para a lista correta (`fileUploadButtons`), para que eles enviem o ficheiro ao servidor para a simulação.
 
     ```javascript
-    // Bloco fileUploadButtons ATUALIZADO
+    // Bloco de código para substituir os antigos
     const fileUploadButtons = {
         'edit-extract-audio-btn': { endpoint: '/api/process/extract-audio-real', name: 'Extrair Áudio' },
         'edit-stabilize-btn': { endpoint: '/api/process/stabilize-real', name: 'Estabilização' },
@@ -351,6 +328,17 @@ Agora, vamos ligar os botões que faltavam às novas rotas que acabámos de cria
         'edit-reduce-noise-btn': { endpoint: '/api/process/reduce-noise-real', name: 'Redução de Ruído' },
         'edit-enhance-voice-btn': { endpoint: '/api/process/enhance-voice-real', name: 'Aprimorar Voz' },
         'edit-mask-btn': { endpoint: '/api/process/mask-real', name: 'Mascarar' },
+        'edit-motionblur-btn': { endpoint: '/api/process/motionblur-real', name: 'Borrão de Mov.' },
+        // Botões de IA agora enviam ficheiros para simulação
+        'edit-reframe-btn': { endpoint: '/api/process/reframe', name: 'Reenquadramento IA' },
+        'edit-retouch-btn': { endpoint: '/api/process/retouch', name: 'Retoque IA' },
+        'edit-remove-bg-btn': { endpoint: '/api/process/remove-bg', name: 'Remover Fundo IA' },
+        'edit-ai-removal-btn': { endpoint: '/api/process/ai-removal', name: 'Remoção IA' },
+        'edit-ai-expand-btn': { endpoint: '/api/process/ai-expand', name: 'Expansão IA' },
+        'edit-lip-sync-btn': { endpoint: '/api/process/lip-sync', name: 'Sinc. Labial IA' },
+        'edit-camera-track-btn': { endpoint: '/api/process/camera-track', name: 'Rastreio IA' },
+        'edit-video-translate-btn': { endpoint: '/api/process/video-translate', name: 'Tradução IA' },
+        'legendas-auto-btn': { endpoint: '/api/process/auto-captions', name: 'Legendas IA' }
     };
     Object.entries(fileUploadButtons).forEach(([btnId, data]) => {
         const btn = document.getElementById(btnId);
@@ -360,21 +348,13 @@ Agora, vamos ligar os botões que faltavam às novas rotas que acabámos de cria
         }
     });
 
-    // Botão especial para Borrão de Movimento
-    document.getElementById('edit-motionblur-btn')?.addEventListener('click', () => {
-        const clip = getClipById(state.selectedClipId);
-        if (!clip) { showStatusMessage("Selecione um clipe primeiro.", 3000); return; }
-        processClipWithFileUpload('/api/process/motionblur-real', 'Borrão de Mov.');
-    });
-
-    // Bloco placeholderButtons ATUALIZADO
-    const placeholderButtons = {
-        'edit-reframe-btn': { endpoint: '/api/process/reframe' },
-        // ... (outros botões de IA)
-    };
+    // A lista de placeholders fica vazia por agora
+    const placeholderButtons = {};
     Object.entries(placeholderButtons).forEach(([btnId, data]) => {
         const btn = document.getElementById(btnId);
         if (btn) {
             btn.addEventListener('click', () => callBackendProcess(data.endpoint, {}));
         }
     });
+    
+
