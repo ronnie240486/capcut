@@ -318,40 +318,4 @@ placeholderRoutes.forEach(route => {
 app.listen(PORT, () => {
   console.log(`Servidor a escutar na porta ${PORT}`);
 });
-```
-
----
-
-### Passo 2: Atualizar o Editor (`editor_de_texto.html`)
-
-Agora, vamos ligar o botão "Mascarar" à nova rota que criámos.
-
-1.  No seu ficheiro `editor_de_texto.html`, dentro da função `setupEventListeners()`, encontre o objeto `placeholderButtons`.
-    ```javascript
-    // Linha a encontrar
-    const placeholderButtons = {
-        'edit-mask-btn': { endpoint: '/api/process/mask' },
-        'edit-reframe-btn': { endpoint: '/api/process/reframe' },
-        'edit-enhance-voice-btn': { endpoint: '/api/process/enhance-voice' }
-    };
-    ```
-2.  **Mova a linha `'edit-mask-btn'`** de dentro do objeto `placeholderButtons` para o objeto `fileUploadButtons` que está logo acima.
-
-    **Como vai ficar:**
-    ```javascript
-    // Bloco fileUploadButtons ATUALIZADO
-    const fileUploadButtons = {
-        'edit-extract-audio-btn': { endpoint: '/api/process/extract-audio-real', name: 'Extrair Áudio' },
-        'edit-stabilize-btn': { endpoint: '/api/process/stabilize-real', name: 'Estabilização' },
-        'edit-isolate-voice-btn': { endpoint: '/api/process/isolate-voice-real', name: 'Isolar Voz' },
-        'edit-reduce-noise-btn': { endpoint: '/api/process/reduce-noise-real', name: 'Redução de Ruído' },
-        'edit-mask-btn': { endpoint: '/api/process/mask-real', name: 'Mascarar' }, // <- Linha movida e atualizada
-    };
-
-    // Bloco placeholderButtons ATUALIZADO
-    const placeholderButtons = {
-        'edit-reframe-btn': { endpoint: '/api/process/reframe' },
-        'edit-enhance-voice-btn': { endpoint: '/api/process/enhance-voice' }
-    };
-    
 
