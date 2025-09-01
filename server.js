@@ -32,9 +32,7 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// No ficheiro server.js
-
-// Adicionar este middleware logo após a configuração do CORS
+// Adiciona os cabeçalhos COOP e COEP para permitir o SharedArrayBuffer no frontend
 app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
