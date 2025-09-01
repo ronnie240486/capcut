@@ -224,22 +224,7 @@ app.post('/api/process/isolate-voice-real', upload.single('video'), (req, res) =
   processWithFfmpegStream(req, res, args, 'video/mp4', 'Isolar Voz');
 });
 
-// --- Rotas placeholder ---
-[
-  '/api/process/stabilize-real', '/api/process/motionblur-real',
-  '/api/process/reframe', '/api/process/mask',
-  '/api/process/enhance-voice', '/api/process/remove-bg',
-  '/api/process/auto-captions', '/api/process/retouch',
-  '/api/process/ai-removal', '/api/process/ai-expand',
-  '/api/process/lip-sync', '/api/process/camera-track',
-  '/api/process/video-translate'
-].forEach(route => {
-  app.post(route, (req, res) => {
-    const func = route.split('/').pop();
-    console.log(`[Placeholder] Pedido para ${func}`);
-    res.status(501).json({ message: `Funcionalidade '${func}' ainda não implementada.` });
-  });
-});
+
 
 // --- Iniciar servidor ---
 app.listen(PORT, () => console.log(`Servidor a escutar na porta ${PORT}`));
