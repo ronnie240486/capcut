@@ -1,5 +1,24 @@
+# Dependências do Node
 node_modules/
+
+# Ficheiros de log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Ficheiros de ambiente
 .env
+
+# Pasta de uploads temporários
+uploads/
+
+Most up-to-date file for "README.md" is:
+
+http://googleusercontent.com/immersive_entry_chip/4
+I'm getting the following errors when I run the code:
+ [CONSOLE_ERROR] [Backend] Falha no processamento de Extrair Áudio: Error: Falha ao iniciar o processamento (Extrair Áudio).
+Stack: Error: Falha ao iniciar o processamento (Extrair Áudio).
+    at processClipWithFileUpload (blob:[https://1w86euo6sibzbs1lsnydqtk42am8f668licy8u51u8h3sua62l-h799512671.scf.usercontent.goog/f9369acd-f431-4853-b766-39f7bcd9ea14:1826:31](https://1w86euo6sibzbs1lsnydqtk42am8f668licy8u51u8h3sua62l-h799512671.scf.usercontent.goog/f9369acd-f431-4853-b766-39f7bcd9ea14:1826:31))
+
+Can you fix this?
+For intro and outro, respond in the Portuguese (Portugal) language\.
