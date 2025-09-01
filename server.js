@@ -4,7 +4,8 @@ const cors = require('cors');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process'); // Usa 'spawn' em vez de 'exec' para streaming
+const { spawn } = require('child_process');
+const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path; // binário portátil do ffmpeg
 
 // Inicializa a aplicação Express
 const app = express();
@@ -44,17 +45,17 @@ const upload = multer({ storage: storage });
 
 // --- Função Auxiliar Otimizada para Processamento com FFmpeg via Streaming ---
 const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friendlyName) => {
-    if (!req.file) {
-        return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    if (!req.file || !fs.existsSync(req.file.path)) {
+        return res.status(400).json({ message: 'Nenhum ficheiro válido foi enviado.' });
     }
     const inputPath = req.file.path;
     
     // Adiciona o ficheiro de entrada e os argumentos para streaming
     const finalArgs = ['-i', inputPath, ...ffmpegArgs, 'pipe:1'];
 
-    console.log(`[Job Iniciado] ${friendlyName} com comando: ffmpeg ${finalArgs.join(' ')}`);
+    console.log(`[Job Iniciado] ${friendlyName} com comando: ${ffmpegPath} ${finalArgs.join(' ')}`);
     
-    const ffmpegProcess = spawn('ffmpeg', finalArgs);
+    const ffmpegProcess = spawn(ffmpegPath, finalArgs);
 
     res.setHeader('Content-Type', outputContentType);
 
@@ -63,12 +64,15 @@ const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friend
 
     // Regista os erros do FFmpeg no log do servidor
     ffmpegProcess.stderr.on('data', (data) => {
-        console.error(`[FFmpeg STDERR] ${friendlyName}: ${data}`);
+        console.error(`[FFmpeg STDERR] ${friendlyName}: ${data.toString()}`);
     });
 
     ffmpegProcess.on('close', (code) => {
         if (code !== 0) {
             console.error(`[FFmpeg] Processo ${friendlyName} terminou com código de erro ${code}`);
+            if (!res.headersSent) {
+                res.status(500).json({ message: `Erro no processamento (${friendlyName}), código: ${code}` });
+            }
         } else {
             console.log(`[Job Concluído] Stream para ${friendlyName} finalizado com sucesso.`);
         }
@@ -154,4 +158,3 @@ placeholderRoutes.forEach(route => {
 app.listen(PORT, () => {
   console.log(`Servidor a escutar na porta ${PORT}`);
 });
-
