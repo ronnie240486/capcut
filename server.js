@@ -1,26 +1,28 @@
-// --- Dependências ---
+// Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
+const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path; // binário portátil do ffmpeg
 
-// --- Inicialização ---
+// Inicializa a aplicação Express
 const app = express();
+
+// Define a porta. Railway fornecerá a porta através de process.env.PORT
 const PORT = process.env.PORT || 8080;
 
 // --- Middlewares ---
 app.set('trust proxy', 1);
-
-app.use(cors({
+const corsOptions = {
   origin: '*',
   methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
   preflightContinue: false,
   optionsSuccessStatus: 204
-}));
-app.options('*', cors());
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
@@ -29,13 +31,13 @@ app.use((req, res, next) => {
 });
 
 app.use((req, res, next) => {
-  console.log(`[Request] ${req.method} ${req.originalUrl}`);
+  console.log(`[Request Received] Method: ${req.method}, URL: ${req.originalUrl}`);
   next();
 });
 
 app.use(express.json());
 
-// --- Upload config ---
+// --- Configuração do Multer para Upload de Ficheiros ---
 const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir);
@@ -44,9 +46,9 @@ const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
 });
-const upload = multer({ storage });
+const upload = multer({ storage: storage });
 
-// --- Função auxiliar ---
+// --- Função Auxiliar para Processamento com FFmpeg via Streaming ---
 const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friendlyName) => {
   if (!req.file || !fs.existsSync(req.file.path)) {
     return res.status(400).json({ message: 'Nenhum ficheiro válido foi enviado.' });
@@ -54,57 +56,59 @@ const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friend
   const inputPath = req.file.path;
   const finalArgs = ['-i', inputPath, ...ffmpegArgs, 'pipe:1'];
 
-  console.log(`[Job] ${friendlyName} → ${ffmpegPath} ${finalArgs.join(' ')}`);
+  console.log(`[Job Iniciado] ${friendlyName} com comando: ${ffmpegPath} ${finalArgs.join(' ')}`);
   const ffmpegProcess = spawn(ffmpegPath, finalArgs);
 
   res.setHeader('Content-Type', outputContentType);
   ffmpegProcess.stdout.pipe(res);
 
-  ffmpegProcess.stderr.on('data', d => console.error(`[FFmpeg ${friendlyName}] ${d.toString()}`));
+  ffmpegProcess.stderr.on('data', (data) => {
+    console.error(`[FFmpeg STDERR] ${friendlyName}: ${data.toString()}`);
+  });
 
-  ffmpegProcess.on('close', code => {
+  ffmpegProcess.on('close', (code) => {
     if (code !== 0) {
-      console.error(`[FFmpeg] ${friendlyName} falhou com código ${code}`);
+      console.error(`[FFmpeg] Processo ${friendlyName} terminou com erro ${code}`);
       if (!res.headersSent) {
-        res.status(500).json({ message: `Erro no processamento (${friendlyName})` });
+        res.status(500).json({ message: `Erro no processamento (${friendlyName}), código: ${code}` });
       }
     } else {
-      console.log(`[Job] ${friendlyName} concluído.`);
+      console.log(`[Job Concluído] ${friendlyName} finalizado.`);
     }
-    fs.unlink(inputPath, () => {});
+    fs.unlink(inputPath, (err) => err && console.error("Falha ao apagar ficheiro:", err));
   });
 
-  ffmpegProcess.on('error', err => {
+  ffmpegProcess.on('error', (err) => {
     console.error(`[FFmpeg] Falha ao iniciar ${friendlyName}:`, err);
-    fs.unlink(inputPath, () => {});
+    fs.unlink(inputPath, (err) => err && console.error("Falha ao apagar ficheiro:", err));
     if (!res.headersSent) {
-      res.status(500).json({ message: `Falha ao iniciar o processamento (${friendlyName})` });
+      res.status(500).json({ message: `Falha ao iniciar o processamento (${friendlyName}).` });
     }
   });
 
-  req.on('close', () => ffmpegProcess.kill());
+  req.on('close', () => {
+    ffmpegProcess.kill();
+  });
 };
 
-// --- Rotas simples ---
+// --- Rotas básicas ---
 app.get('/', (req, res) => {
-  res.status(200).json({ message: '🚀 Backend ProEdit está ativo!' });
+  res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' });
 });
 
 app.post('/api/projects', (req, res) => {
-  console.log('[Projects] Novo projeto:', req.body.name);
-  res.status(201).json({ message: `Projeto "${req.body.name}" recebido.`, projectId: `proj_${Date.now()}` });
+  const projectData = req.body;
+  console.log('Recebido um novo projeto:', projectData.name);
+  res.status(201).json({ message: `Projeto "${projectData.name}" recebido!`, projectId: `proj_${Date.now()}` });
 });
 
-// --- Exportação robusta ---
+// --- ROTA DE EXPORTAÇÃO (ROBUSTA) ---
 app.post('/api/export', upload.any(), (req, res) => {
   try {
-    console.log('[Export] Arquivos recebidos:', req.files.map(f => f.originalname));
-    const projectState = JSON.parse(req.body.projectState);
-    const { clips, totalDuration, media } = projectState;
+    console.log('[Export Job] Recebidos ficheiros:', req.files.map(f => f.originalname).join(', '));
 
-    console.log('[Export Debug] Clips:', clips);
-    console.log('[Export Debug] Media:', media);
-    console.log('[Export Debug] totalDuration:', totalDuration);
+    const projectState = JSON.parse(req.body.projectState || "{}");
+    const { clips = [], totalDuration = 0, media = {} } = projectState;
 
     const cleanupFiles = [];
     const inputs = [];
@@ -116,22 +120,21 @@ app.post('/api/export', upload.any(), (req, res) => {
       cleanupFiles.push(file.path);
     });
 
-    console.log('[Export Debug] Inputs:', inputs);
-
-    // Caso sem mídia (somente fundo preto)
     if (inputs.length === 0 && totalDuration > 0) {
       const outputPath = path.join(uploadDir, `export-${Date.now()}.mp4`);
       const commandArgs = [
         '-f', 'lavfi', '-i', `color=c=black:s=1280x720:d=${totalDuration}`,
-        '-f', 'lavfi', '-i', 'anullsrc=r=44100',
+        '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
         '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30',
         '-shortest', outputPath
       ];
-      console.log('[Export Debug] Criando vídeo vazio:', commandArgs.join(' '));
       const ffmpegProcess = spawn(ffmpegPath, commandArgs);
       ffmpegProcess.on('close', code => {
         if (code !== 0) return res.status(500).json({ message: "Falha ao criar vídeo vazio." });
-        res.sendFile(path.resolve(outputPath), () => fs.unlink(outputPath, () => {}));
+        res.sendFile(path.resolve(outputPath), err => {
+          if (err) console.error('Erro ao enviar ficheiro exportado:', err);
+          fs.unlink(outputPath, () => {});
+        });
       });
       return;
     }
@@ -140,101 +143,124 @@ app.post('/api/export', upload.any(), (req, res) => {
     const videoStreams = [];
     const audioStreams = [];
 
-    clips.forEach((clip, idx) => {
+    clips.forEach((clip, index) => {
       const inputIndex = fileMap[clip.fileName];
       const mediaInfo = media[clip.fileName];
-      if (inputIndex === undefined || !mediaInfo) return;
-
-      if (clip.track === 'video') {
-        const stream = `[v${idx}]`;
-        filterComplex += `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS${stream}; `;
-        videoStreams.push({ stream, clip });
+      if (inputIndex === undefined || !mediaInfo) {
+        console.warn(`[Export Job] Clip ignorado: ${clip.fileName}`);
+        return;
       }
 
-      if (mediaInfo.hasAudio && (clip.properties.volume === undefined || clip.properties.volume > 0)) {
-        const stream = `[a${idx}]`;
-        const vol = clip.properties.volume ?? 1;
-        const volFilter = vol !== 1 ? `volume=${vol},` : '';
-        filterComplex += `[${inputIndex}:a]${volFilter}asetpts=PTS-STARTPTS,aresample=44100${stream}; `;
-        audioStreams.push({ stream, clip });
+      if (clip.track === 'video') {
+        const streamName = `[v${index}]`;
+        filterComplex += `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS${streamName}; `;
+        videoStreams.push({ stream: streamName, clip });
+      }
+
+      if (mediaInfo.hasAudio) {
+        const vol = clip.properties?.volume ?? 1;
+        if (vol > 0) {
+          const streamName = `[a${index}]`;
+          const volFilter = (vol !== 1) ? `volume=${vol},` : '';
+          filterComplex += `[${inputIndex}:a]${volFilter}asetpts=PTS-STARTPTS,aresample=44100${streamName}; `;
+          audioStreams.push({ stream: streamName, clip });
+        }
       }
     });
 
     filterComplex += `color=s=1280x720:c=black:d=${totalDuration}[base];`;
-    let last = '[base]';
-    videoStreams.forEach((vs, i) => {
-      const next = (i === videoStreams.length - 1) ? '[outv]' : `[ov${i}]`;
-      filterComplex += `${last}${vs.stream}overlay=enable='between(t,${vs.clip.start},${vs.clip.start + vs.clip.duration})'${next};`;
-      last = next;
+    let lastOverlay = '[base]';
+    videoStreams.forEach((vs, idx) => {
+      const nextOverlay = (idx === videoStreams.length - 1) ? '[outv]' : `[ov${idx}]`;
+      filterComplex += `${lastOverlay}${vs.stream}overlay=enable='between(t,${vs.clip.start},${vs.clip.start + vs.clip.duration})'${nextOverlay};`;
+      lastOverlay = nextOverlay;
     });
-    if (videoStreams.length === 0) filterComplex += `[base]null[outv];`;
+    if (videoStreams.length === 0) {
+      filterComplex += `[base]null[outv];`;
+    }
 
     if (audioStreams.length > 0) {
       const delayed = [];
-      audioStreams.forEach((as, i) => {
-        const d = `[ad${i}]`;
-        const delay = as.clip.start * 1000;
-        filterComplex += `${as.stream}adelay=${delay}|${delay}${d}; `;
-        delayed.push(d);
+      audioStreams.forEach((as, idx) => {
+        const delayedStream = `[ad${idx}]`;
+        const delayMs = Math.max(0, as.clip.start * 1000);
+        filterComplex += `${as.stream}adelay=${delayMs}|${delayMs}${delayedStream}; `;
+        delayed.push(delayedStream);
       });
       filterComplex += `${delayed.join('')}amix=inputs=${delayed.length}:dropout_transition=3[outa];`;
+    } else {
+      filterComplex += `anullsrc=r=44100:cl=stereo[outa];`;
     }
 
     const outputPath = path.join(uploadDir, `export-${Date.now()}.mp4`);
     cleanupFiles.push(outputPath);
 
-    const commandArgs = [...inputs, '-filter_complex', filterComplex, '-map', '[outv]'];
-    if (audioStreams.length > 0) {
-      commandArgs.push('-map', '[outa]');
-    } else {
-      commandArgs.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest');
-    }
-    commandArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-r', '30', '-t', totalDuration, outputPath);
+    const commandArgs = [
+      ...inputs,
+      '-filter_complex', filterComplex,
+      '-map', '[outv]', '-map', '[outa]',
+      '-c:v', 'libx264', '-preset', 'veryfast',
+      '-pix_fmt', 'yuv420p', '-r', '30',
+      '-t', totalDuration,
+      outputPath
+    ];
 
-    console.log('[Export Debug] filter_complex:', filterComplex);
-    console.log('[Export Debug] Comando final:', ffmpegPath, commandArgs.join(' '));
-
+    console.log('[Export Job] Comando FFmpeg:', ffmpegPath, commandArgs.join(' '));
     const ffmpegProcess = spawn(ffmpegPath, commandArgs);
-    ffmpegProcess.stderr.on('data', d => console.error(`[FFmpeg Export] ${d.toString()}`));
+
+    ffmpegProcess.stderr.on('data', d => console.error(`[FFmpeg Export STDERR]: ${d.toString()}`));
 
     ffmpegProcess.on('close', code => {
       if (code !== 0) {
-        console.error(`[Export] FFmpeg falhou com código ${code}`);
+        console.error(`[Export Job] FFmpeg terminou com erro ${code}`);
         cleanupFiles.forEach(f => fs.unlink(f, () => {}));
-        if (!res.headersSent) res.status(500).json({ message: "Falha na exportação." });
+        if (!res.headersSent) {
+          return res.status(500).json({ message: "Falha na exportação do vídeo. Verifique os logs do servidor." });
+        }
         return;
       }
-      console.log('[Export] Sucesso!');
-      res.sendFile(path.resolve(outputPath), () => cleanupFiles.forEach(f => fs.unlink(f, () => {})));
+      console.log('[Export Job] Exportação concluída.');
+      res.sendFile(path.resolve(outputPath), err => {
+        if (err) console.error('Erro ao enviar export:', err);
+        cleanupFiles.forEach(f => fs.unlink(f, () => {}));
+      });
     });
 
     ffmpegProcess.on('error', err => {
-      console.error('[Export] Erro ao iniciar FFmpeg:', err);
+      console.error(`[Export Job] Falha ao iniciar FFmpeg:`, err);
       cleanupFiles.forEach(f => fs.unlink(f, () => {}));
-      if (!res.headersSent) res.status(500).json({ message: "Falha ao iniciar exportação." });
+      if (!res.headersSent) {
+        res.status(500).json({ message: `Falha ao iniciar a exportação.` });
+      }
     });
-
   } catch (e) {
-    console.error('[Export] Erro fatal:', e);
-    res.status(500).json({ message: "Erro inesperado no servidor." });
+    console.error('[Export Job] Erro inesperado:', e);
+    res.status(500).json({ message: "Ocorreu um erro inesperado no servidor." });
   }
 });
 
-// --- Rotas reais de processamento ---
+// --- Rotas de Processamento em tempo real ---
 app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
-  processWithFfmpegStream(req, res, ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'], 'video/mp4', 'Reverso');
-});
-app.post('/api/process/extract-audio-real', upload.single('video'), (req, res) => {
-  processWithFfmpegStream(req, res, ['-vn', '-q:a', '0', '-map', 'a', '-f', 'mp3'], 'audio/mpeg', 'Extrair Áudio');
-});
-app.post('/api/process/reduce-noise-real', upload.single('video'), (req, res) => {
-  processWithFfmpegStream(req, res, ['-af', 'afftdn', '-f', 'mp4'], 'video/mp4', 'Redução de Ruído');
-});
-app.post('/api/process/isolate-voice-real', upload.single('video'), (req, res) => {
-  processWithFfmpegStream(req, res, ['-af', 'lowpass=f=3000,highpass=f=300', '-f', 'mp4'], 'video/mp4', 'Isolar Voz');
+  const args = ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'];
+  processWithFfmpegStream(req, res, args, 'video/mp4', 'Reverso');
 });
 
-// --- Placeholders ---
+app.post('/api/process/extract-audio-real', upload.single('video'), (req, res) => {
+  const args = ['-vn', '-q:a', '0', '-map', 'a', '-f', 'mp3'];
+  processWithFfmpegStream(req, res, args, 'audio/mpeg', 'Extrair Áudio');
+});
+
+app.post('/api/process/reduce-noise-real', upload.single('video'), (req, res) => {
+  const args = ['-af', 'afftdn', '-f', 'mp4'];
+  processWithFfmpegStream(req, res, args, 'video/mp4', 'Redução de Ruído');
+});
+
+app.post('/api/process/isolate-voice-real', upload.single('video'), (req, res) => {
+  const args = ['-af', 'lowpass=f=3000,highpass=f=300', '-f', 'mp4'];
+  processWithFfmpegStream(req, res, args, 'video/mp4', 'Isolar Voz');
+});
+
+// --- Rotas Placeholder ---
 [
   '/api/process/stabilize-real', '/api/process/motionblur-real',
   '/api/process/reframe', '/api/process/mask',
@@ -251,7 +277,7 @@ app.post('/api/process/isolate-voice-real', upload.single('video'), (req, res) =
   });
 });
 
-// --- Start ---
+// --- Iniciar o Servidor ---
 app.listen(PORT, () => {
-  console.log(`Servidor ativo na porta ${PORT}`);
+  console.log(`Servidor a escutar na porta ${PORT}`);
 });
