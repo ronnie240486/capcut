@@ -97,9 +97,7 @@ app.post('/api/projects', (req, res) => {
 });
 
 // --- Rota de Exportação ---
-// (Código de exportação robusto omitido por brevidade, mas está aqui no seu ficheiro)
 app.post('/api/export', upload.any(), (req, res) => {
-    // ... (A sua lógica de exportação completa está aqui) ...
     try {
         console.log('[Export Job] Recebidos ficheiros:', req.files.map(f => f.originalname).join(', '));
         const projectState = JSON.parse(req.body.projectState);
@@ -310,54 +308,4 @@ app.post('/api/process/video-translate', upload.single('video'), (req, res) => s
 app.listen(PORT, () => {
   console.log(`Servidor a escutar na porta ${PORT}`);
 });
-
-### Passo 2: Atualizar o Editor (`editor_de_texto.html`)
-                                  ^^^^^^^^^^^^^^^
-
-SyntaxError: Unexpected identifier
-    at internalCompileFunction (node:internal/vm:76:18)
-
-Agora, vamos ligar todos os botões que faltavam às novas rotas que criámos.
-
-1.  No seu ficheiro `editor_de_texto.html`, dentro da função `setupEventListeners()`, encontre o objeto `placeholderButtons`.
-2.  **Substitua o bloco de código que define `fileUploadButtons` e `placeholderButtons`** pelo seguinte bloco completo. Ele move todos os botões de IA para a lista correta (`fileUploadButtons`), para que eles enviem o ficheiro ao servidor para a simulação.
-
-    ```javascript
-    // Bloco de código para substituir os antigos
-    const fileUploadButtons = {
-        'edit-extract-audio-btn': { endpoint: '/api/process/extract-audio-real', name: 'Extrair Áudio' },
-        'edit-stabilize-btn': { endpoint: '/api/process/stabilize-real', name: 'Estabilização' },
-        'edit-isolate-voice-btn': { endpoint: '/api/process/isolate-voice-real', name: 'Isolar Voz' },
-        'edit-reduce-noise-btn': { endpoint: '/api/process/reduce-noise-real', name: 'Redução de Ruído' },
-        'edit-enhance-voice-btn': { endpoint: '/api/process/enhance-voice-real', name: 'Aprimorar Voz' },
-        'edit-mask-btn': { endpoint: '/api/process/mask-real', name: 'Mascarar' },
-        'edit-motionblur-btn': { endpoint: '/api/process/motionblur-real', name: 'Borrão de Mov.' },
-        // Botões de IA agora enviam ficheiros para simulação
-        'edit-reframe-btn': { endpoint: '/api/process/reframe', name: 'Reenquadramento IA' },
-        'edit-retouch-btn': { endpoint: '/api/process/retouch', name: 'Retoque IA' },
-        'edit-remove-bg-btn': { endpoint: '/api/process/remove-bg', name: 'Remover Fundo IA' },
-        'edit-ai-removal-btn': { endpoint: '/api/process/ai-removal', name: 'Remoção IA' },
-        'edit-ai-expand-btn': { endpoint: '/api/process/ai-expand', name: 'Expansão IA' },
-        'edit-lip-sync-btn': { endpoint: '/api/process/lip-sync', name: 'Sinc. Labial IA' },
-        'edit-camera-track-btn': { endpoint: '/api/process/camera-track', name: 'Rastreio IA' },
-        'edit-video-translate-btn': { endpoint: '/api/process/video-translate', name: 'Tradução IA' },
-        'legendas-auto-btn': { endpoint: '/api/process/auto-captions', name: 'Legendas IA' }
-    };
-    Object.entries(fileUploadButtons).forEach(([btnId, data]) => {
-        const btn = document.getElementById(btnId);
-        if (btn) {
-            btn.dataset.endpoint = data.endpoint;
-            btn.addEventListener('click', () => processClipWithFileUpload(data.endpoint, data.name));
-        }
-    });
-
-    // A lista de placeholders fica vazia por agora
-    const placeholderButtons = {};
-    Object.entries(placeholderButtons).forEach(([btnId, data]) => {
-        const btn = document.getElementById(btnId);
-        if (btn) {
-            btn.addEventListener('click', () => callBackendProcess(data.endpoint, {}));
-        }
-    });
-    
 
