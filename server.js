@@ -4,7 +4,7 @@ const cors = require('cors');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 
 // Inicializa a aplicação Express
@@ -41,8 +41,55 @@ const upload = multer({ storage: storage });
 // --- Sistema de Tarefas Assíncronas (Simulado em Memória) ---
 const jobs = {};
 
+// --- Funções Auxiliares de Processamento ---
+const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friendlyName) => {
+    if (!req.file || !fs.existsSync(req.file.path)) {
+        return res.status(400).json({ message: 'Nenhum ficheiro válido foi enviado.' });
+    }
+    const inputPath = req.file.path;
+    const finalArgs = ['-i', inputPath, ...ffmpegArgs, 'pipe:1'];
+    console.log(`[Job Iniciado] ${friendlyName} com comando: ${ffmpegPath} ${finalArgs.join(' ')}`);
+    
+    const ffmpegProcess = spawn(ffmpegPath, finalArgs);
+    res.setHeader('Content-Type', outputContentType);
+    ffmpegProcess.stdout.pipe(res);
+    ffmpegProcess.stderr.on('data', (data) => console.error(`[FFmpeg STDERR] ${friendlyName}: ${data.toString()}`));
+    ffmpegProcess.on('close', (code) => {
+        if (code !== 0) console.error(`[FFmpeg] Processo ${friendlyName} terminou com código de erro ${code}`);
+        else console.log(`[Job Concluído] Stream para ${friendlyName} finalizado com sucesso.`);
+        fs.unlink(inputPath, (err) => err && console.error("Falha ao apagar ficheiro de entrada:", err));
+    });
+    ffmpegProcess.on('error', (err) => {
+        console.error(`[FFmpeg] Falha ao iniciar o processo ${friendlyName}:`, err);
+        fs.unlink(inputPath, (err) => err && console.error("Falha ao apagar ficheiro de entrada:", err));
+        if (!res.headersSent) res.status(500).json({ message: `Falha ao iniciar o processamento (${friendlyName}).` });
+    });
+    req.on('close', () => ffmpegProcess.kill());
+};
+
+const simulateAiProcess = (req, res, friendlyName) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    const inputPath = req.file.path;
+    console.log(`[AI Job Simulado] Iniciado para ${friendlyName} com o ficheiro ${inputPath}`);
+    
+    // Simula um tempo de processamento de 3 segundos
+    setTimeout(() => {
+        console.log(`[AI Job Simulado] ${friendlyName} concluído. A devolver o ficheiro original como exemplo.`);
+        res.sendFile(path.resolve(inputPath), (err) => {
+            if (err) console.error(`Erro ao enviar ficheiro simulado de ${friendlyName}:`, err);
+            // Limpa o ficheiro após o envio
+            fs.unlink(inputPath, (unlinkErr) => unlinkErr && console.error("Falha ao apagar ficheiro de entrada simulado:", unlinkErr));
+        });
+    }, 3000);
+};
+
 // --- Rotas ---
+
 app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
+app.post('/api/projects', (req, res) => {
+  console.log('Recebido um novo projeto para salvar:', req.body.name);
+  res.status(201).json({ message: `Projeto "${req.body.name}" recebido com sucesso!`, projectId: `proj_${Date.now()}` });
+});
 
 // --- ROTA DE EXPORTAÇÃO (NOVO FLUXO) ---
 
@@ -191,26 +238,6 @@ function processExportJob(jobId) {
         console.error('[Export Job] Erro catastrófico:', e);
     }
 }
-
-
-// --- Outras Rotas de Processamento (mantidas como antes) ---
-// ... (O seu código para reverso, extrair áudio, etc., permanece aqui)
-app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
-    const args = ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'];
-    processWithFfmpegStream(req, res, args, 'video/mp4', 'Reverso');
-});
-
-app.post('/api/process/extract-audio-real', upload.single('video'), (req, res) => {
-    const args = ['-vn', '-q:a', '0', '-map', 'a', '-f', 'mp3'];
-    processWithFfmpegStream(req, res, args, 'audio/mpeg', 'Extrair Áudio');
-});
-// ...(etc.)
-
-app.listen(PORT, () => {
-  console.log(`Servidor a escutar na porta ${PORT}`);
-});
-
-
 
 
 // --- Rotas de Processamento FFmpeg ---
