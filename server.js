@@ -77,12 +77,10 @@ const simulateAiProcess = (req, res, friendlyName) => {
     const inputPath = req.file.path;
     console.log(`[AI Job Simulado] Iniciado para ${friendlyName} com o ficheiro ${inputPath}`);
     
-    // Simula um tempo de processamento de 3 segundos
     setTimeout(() => {
         console.log(`[AI Job Simulado] ${friendlyName} concluído. A devolver o ficheiro original como exemplo.`);
         res.sendFile(path.resolve(inputPath), (err) => {
             if (err) console.error(`Erro ao enviar ficheiro simulado de ${friendlyName}:`, err);
-            // Limpa o ficheiro após o envio
             fs.unlink(inputPath, (unlinkErr) => unlinkErr && console.error("Falha ao apagar ficheiro de entrada simulado:", unlinkErr));
         });
     }, 3000);
@@ -96,21 +94,23 @@ app.post('/api/projects', (req, res) => {
   res.status(201).json({ message: `Projeto "${req.body.name}" recebido com sucesso!`, projectId: `proj_${Date.now()}` });
 });
 
-// --- Rota de Exportação ---
+// --- ROTA DE EXPORTAÇÃO NO SERVIDOR (VERSÃO ROBUSTA E PROFISSIONAL) ---
 app.post('/api/export', upload.any(), (req, res) => {
     try {
-        console.log('[Export Job] Recebidos ficheiros:', req.files.map(f => f.originalname).join(', '));
+        if (!req.body.projectState) {
+            return res.status(400).json({ message: "Dados do projeto em falta." });
+        }
+        console.log('[Export Job] A iniciar exportação...');
         const projectState = JSON.parse(req.body.projectState);
         const { clips, totalDuration, media } = projectState;
-        
-        const cleanupFiles = [];
+
+        const cleanupFiles = req.files.map(f => f.path);
         const inputs = [];
         const fileMap = {};
         
         req.files.forEach(file => {
             inputs.push('-i', file.path);
             fileMap[file.originalname] = inputs.length / 2 - 1;
-            cleanupFiles.push(file.path);
         });
 
         if (inputs.length === 0 && totalDuration > 0) {
@@ -128,87 +128,91 @@ app.post('/api/export', upload.any(), (req, res) => {
         }
 
         let filterComplex = '';
-        const videoStreamsToOverlay = [];
-        const audioStreamsToMix = [];
-
-        clips.forEach((clip, index) => {
-            const inputIndex = fileMap[clip.fileName];
-            const mediaInfo = media[clip.fileName];
-            if (inputIndex === undefined || !mediaInfo) return;
-
-            if (clip.track === 'video') {
-                const streamName = `[v${index}]`;
-                let filters = `scale=1280:720,setsar=1,setpts=PTS-STARTPTS`;
-                filterComplex += `[${inputIndex}:v]${filters}${streamName}; `;
-                videoStreamsToOverlay.push({ stream: streamName, clip: clip });
-            }
-
-            if (mediaInfo.hasAudio && (clip.properties.volume === undefined || clip.properties.volume > 0)) {
-                 const streamName = `[a${index}]`;
-                 const volume = clip.properties.volume ?? 1;
-                 const volumeFilter = (volume !== 1) ? `volume=${volume},` : '';
-                 filterComplex += `[${inputIndex}:a]${volumeFilter}asetpts=PTS-STARTPTS,aresample=44100${streamName}; `;
-                 audioStreamsToMix.push({ stream: streamName, clip: clip });
-            }
+        const videoStreams = clips.filter(c => c.track === 'video');
+        const audioStreams = clips.filter(c => {
+            const mediaInfo = media[c.fileName];
+            return mediaInfo && mediaInfo.hasAudio && (c.properties.volume === undefined || c.properties.volume > 0);
         });
 
-        filterComplex += `color=s=1280x720:c=black:d=${totalDuration}[base];`;
+        // Prepara todos os streams de vídeo (escala, etc.)
+        videoStreams.forEach((clip, index) => {
+            const inputIndex = fileMap[clip.fileName];
+            filterComplex += `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${index}]; `;
+        });
+        
+        // Constrói a cadeia de sobreposição de vídeos
+        filterComplex += `color=s=1280x720:c=black:d=${totalDuration}[base]; `;
         let lastOverlay = '[base]';
-        videoStreamsToOverlay.forEach((vs, index) => {
-            const nextOverlay = (index === videoStreamsToOverlay.length - 1) ? '[outv]' : `[ov${index}]`;
-            filterComplex += `${lastOverlay}${vs.stream}overlay=enable='between(t,${vs.clip.start},${vs.clip.start + vs.clip.duration})'${nextOverlay};`;
+        videoStreams.forEach((clip, index) => {
+            const nextOverlay = (index === videoStreams.length - 1) ? '[outv]' : `[ov${index}]`;
+            filterComplex += `${lastOverlay}[v${index}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}; `;
             lastOverlay = nextOverlay;
         });
-        if (videoStreamsToOverlay.length === 0) {
-            filterComplex += `[base]null[outv];`;
+        if (videoStreams.length === 0) {
+            filterComplex += `[base]null[outv]; `;
         }
 
-        if (audioStreamsToMix.length > 0) {
+        // Prepara e mistura os streams de áudio
+        if (audioStreams.length > 0) {
             const delayedAudioStreams = [];
-            audioStreamsToMix.forEach((as, index) => {
-                const delayedStream = `[ad${index}]`;
-                const delayMs = as.clip.start * 1000;
-                filterComplex += `${as.stream}adelay=${delayMs}|${delayMs}${delayedStream}; `;
-                delayedAudioStreams.push(delayedStream);
+            audioStreams.forEach((clip, index) => {
+                const inputIndex = fileMap[clip.fileName];
+                const volume = clip.properties.volume ?? 1;
+                const volumeFilter = (volume !== 1) ? `volume=${volume}` : 'anull';
+                const startMs = clip.start * 1000;
+                
+                filterComplex += `[${inputIndex}:a]${volumeFilter},asetpts=PTS-STARTPTS,aresample=44100[a${index}_pre]; `;
+                filterComplex += `[a${index}_pre]adelay=${startMs}|${startMs}[a${index}]; `;
+                delayedAudioStreams.push(`[a${index}]`);
             });
-            filterComplex += `${delayedAudioStreams.join('')}amix=inputs=${delayedAudioStreams.length}:dropout_transition=3[outa];`;
+            filterComplex += `${delayedAudioStreams.join('')}amix=inputs=${delayedAudioStreams.length}:dropout_transition=3[outa]`;
         }
 
         const outputPath = path.join(uploadDir, `export-${Date.now()}.mp4`);
         cleanupFiles.push(outputPath);
 
-        const commandArgs = [ ...inputs, '-filter_complex', filterComplex, '-map', '[outv]' ];
-        if (audioStreamsToMix.length > 0) {
+        const commandArgs = [ ...inputs, '-filter_complex', filterComplex.trim(), '-map', '[outv]' ];
+        if (audioStreams.length > 0) {
             commandArgs.push('-map', '[outa]');
         } else {
+            // Adiciona uma faixa de áudio silenciosa se não houver áudio para garantir a compatibilidade
             commandArgs.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest');
         }
         commandArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-r', '30', '-t', totalDuration, outputPath);
 
-        console.log('[Export Job] Comando FFmpeg:', ffmpegPath, commandArgs.join(' '));
+        console.log(`[Export Job] Comando FFmpeg Final: ${ffmpegPath} ${commandArgs.join(' ')}`);
         const ffmpegProcess = spawn(ffmpegPath, commandArgs);
         
-        ffmpegProcess.stderr.on('data', (data) => console.error(`[FFmpeg Export STDERR]: ${data.toString()}`));
+        let ffmpegErrors = '';
+        ffmpegProcess.stderr.on('data', (data) => {
+            const errLine = data.toString();
+            console.error(`[FFmpeg Export STDERR]: ${errLine}`);
+            ffmpegErrors += errLine;
+        });
 
         ffmpegProcess.on('close', (code) => {
+            cleanupFiles.forEach(f => fs.existsSync(f) && fs.unlink(f, () => {}));
             if (code !== 0) {
                 console.error(`[Export Job] FFmpeg terminou com código de erro ${code}`);
-                cleanupFiles.forEach(f => fs.unlink(f, () => {}));
                 if(!res.headersSent) {
-                    return res.status(500).json({ message: "Falha na exportação do vídeo. Verifique os logs do servidor." });
+                    return res.status(500).json({ 
+                        message: "Falha na exportação do vídeo. O FFmpeg encontrou um erro.",
+                        details: ffmpegErrors.slice(-1000) // Envia os últimos 1000 caracteres do erro
+                    });
                 }
                 return;
             }
             console.log('[Export Job] Exportação concluída com sucesso.');
             res.sendFile(path.resolve(outputPath), (err) => {
                 if (err) console.error('Erro ao enviar ficheiro exportado:', err);
-                cleanupFiles.forEach(f => fs.unlink(f, () => {}));
+                // A limpeza já está agendada, mas fazemos aqui de novo por segurança
+                cleanupFiles.forEach(f => fs.existsSync(f) && fs.unlink(f, () => {}));
             });
         });
 
          ffmpegProcess.on('error', (err) => {
             console.error(`[Export Job] Falha ao iniciar FFmpeg:`, err);
-            cleanupFiles.forEach(f => fs.unlink(f, () => {}));
+            cleanupFiles.forEach(f => fs.existsSync(f) && fs.unlink(f, () => {}));
             if (!res.headersSent) {
                 res.status(500).json({ message: `Falha ao iniciar a exportação.` });
             }
