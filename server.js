@@ -5,7 +5,7 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const { spawn, exec } = require('child_process');
-const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
+
 
 // Inicializa a aplicação Express
 const app = express();
