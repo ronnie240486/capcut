@@ -116,20 +116,23 @@ app.get('/api/export/download/:jobId', (req, res) => {
 });
 
 // --- LÓGICA DE PROCESSAMENTO DA TAREFA DE EXPORTAÇÃO (VERSÃO CORRIGIDA) ---
+// ############ INÍCIO DO BLOCO PARA SUBSTITUIR ############
+
 function processExportJob(jobId) {
     const job = jobs[jobId];
     job.status = 'processing';
     job.progress = 0;
-    
+
     try {
         const { files, projectState } = job;
         const { clips, totalDuration, media } = projectState;
-        
+
         const commandArgs = [];
         const fileMap = {};
-        
+
         files.forEach(file => {
             const mediaInfo = media[file.originalname];
+            // Se for uma imagem, adiciona a opção de loop ANTES do -i
             if (mediaInfo && mediaInfo.type === 'image') {
                 commandArgs.push('-loop', '1');
             }
@@ -152,7 +155,7 @@ function processExportJob(jobId) {
             if (inputIndex === undefined) return;
             filterComplex += `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${index}]; `;
         });
-        
+
         filterComplex += `color=s=1280x720:c=black:d=${totalDuration}[base]; `;
         let lastOverlay = '[base]';
         videoStreams.forEach((clip, index) => {
@@ -160,7 +163,9 @@ function processExportJob(jobId) {
             filterComplex += `${lastOverlay}[v${index}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}; `;
             lastOverlay = nextOverlay;
         });
-        if (videoStreams.length === 0) filterComplex += `[base]null[outv]; `;
+        if (videoStreams.length === 0) {
+            filterComplex += `[base]null[outv]; `;
+        }
 
         if (audioStreams.length > 0) {
             const delayedAudioStreams = [];
@@ -179,17 +184,19 @@ function processExportJob(jobId) {
 
         const outputPath = path.join(uploadDir, `${jobId}.mp4`);
         job.outputPath = outputPath;
-        
+
+        // Adiciona uma fonte de áudio silenciosa se não houver áudio no projeto
         if (audioStreams.length === 0) {
              commandArgs.push('-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=44100`);
         }
-        
+
         commandArgs.push('-filter_complex', filterComplex.trim(), '-map', '[outv]');
 
         if (audioStreams.length > 0) {
             commandArgs.push('-map', '[outa]');
         } else {
-            const silentAudioInputIndex = files.length;
+            // Mapeia o áudio silencioso para a saída
+            const silentAudioInputIndex = files.length; // O anullsrc é o último input
             commandArgs.push('-map', `${silentAudioInputIndex}:a`);
         }
 
@@ -201,7 +208,7 @@ function processExportJob(jobId) {
 
         console.log(`[Export Job] Comando FFmpeg: ffmpeg ${commandArgs.join(' ')}`);
         const ffmpegProcess = spawn('ffmpeg', commandArgs);
-        
+
         ffmpegProcess.stdio[1].on('data', data => {
             const progressMatch = data.toString().match(/out_time_ms=(\d+)/);
             if (progressMatch) {
@@ -228,7 +235,7 @@ function processExportJob(jobId) {
                 console.log('[Export Job] Exportação concluída com sucesso.');
             }
         });
-        
+
         ffmpegProcess.on('error', (err) => {
             job.status = 'failed';
             job.error = 'Falha ao iniciar o processo FFmpeg.';
@@ -242,6 +249,7 @@ function processExportJob(jobId) {
     }
 }
 
+// ############ FIM DO BLOCO PARA SUBSTITUIR ############
 // ############ FIM DO BLOCO PARA SUBSTITUIR ############
 
 
