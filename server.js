@@ -221,7 +221,7 @@ function processExportJob(jobId) {
         commandArgs.push(
             "-c:v", "libx264",
             "-c:a", "aac",
-            "-preset", "veryfast",
+            "-preset", "ultrafast",
             "-pix_fmt", "yuv420p",
             "-r", "30",
             "-shortest",
