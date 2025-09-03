@@ -144,7 +144,14 @@ function processExportJob(jobId) {
 
         videoStreams.forEach((clip, index) => {
             const inputIndex = fileMap[clip.fileName];
-            filterComplex += `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${index}]; `;
+            if (inputIndex === undefined) return;
+            const mediaType = media[clip.fileName].type;
+            if (mediaType === 'image') {
+                inputs.splice(inputIndex * 2, 0, '-loop', '1');
+                filterComplex += `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${index}]; `;
+            } else {
+                filterComplex += `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${index}]; `;
+            }
         });
         
         filterComplex += `color=s=1280x720:c=black:d=${totalDuration}[base]; `;
@@ -160,6 +167,7 @@ function processExportJob(jobId) {
             const delayedAudioStreams = [];
             audioStreams.forEach((clip, index) => {
                 const inputIndex = fileMap[clip.fileName];
+                if (inputIndex === undefined) return;
                 const volume = clip.properties.volume ?? 1;
                 const volumeFilter = (volume !== 1) ? `volume=${volume}` : 'anull';
                 const startMs = clip.start * 1000;
@@ -173,13 +181,26 @@ function processExportJob(jobId) {
         const outputPath = path.join(uploadDir, `${jobId}.mp4`);
         job.outputPath = outputPath;
 
-        const commandArgs = [ ...inputs, '-filter_complex', filterComplex.trim(), '-map', '[outv]' ];
+        const commandArgs = [ ...inputs ];
+        
+        if (audioStreams.length === 0) {
+             commandArgs.push('-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=44100`);
+        }
+        
+        commandArgs.push('-filter_complex', filterComplex.trim(), '-map', '[outv]');
+
         if (audioStreams.length > 0) {
             commandArgs.push('-map', '[outa]');
         } else {
-            commandArgs.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-shortest');
+            const silentAudioInputIndex = inputs.length / 2;
+            commandArgs.push('-map', `${silentAudioInputIndex}:a`);
         }
-        commandArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-r', '30', '-progress', 'pipe:1', '-t', totalDuration, outputPath);
+
+        commandArgs.push(
+            '-c:v', 'libx264', '-c:a', 'aac', '-preset', 'veryfast', 
+            '-pix_fmt', 'yuv420p', '-r', '30', '-shortest',
+            '-progress', 'pipe:1', '-t', totalDuration, outputPath
+        );
 
         console.log(`[Export Job] Comando FFmpeg: ffmpeg ${commandArgs.join(' ')}`);
         const ffmpegProcess = spawn('ffmpeg', commandArgs);
