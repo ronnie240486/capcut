@@ -115,24 +115,31 @@ app.get('/api/export/download/:jobId', (req, res) => {
     });
 });
 
-// --- LÓGICA DE PROCESSAMENTO DA TAREFA DE EXPORTAÇÃO ---
+// ############ INÍCIO DO BLOCO PARA SUBSTITUIR ############
+
 function processExportJob(jobId) {
     const job = jobs[jobId];
     job.status = 'processing';
     job.progress = 0;
-    
+
     try {
         const { files, projectState } = job;
         const { clips, totalDuration, media } = projectState;
-        
-        const inputs = [];
+
+        let inputsWithOptions = [];
         const fileMap = {};
         files.forEach(file => {
-            inputs.push('-i', file.path);
-            fileMap[file.originalname] = inputs.length / 2 - 1;
+            const mediaInfo = media[file.originalname];
+            let inputOptions = [];
+            // Se for uma imagem, adiciona a opção de loop ANTES do -i
+            if (mediaInfo && mediaInfo.type === 'image') {
+                inputOptions.push('-loop', '1');
+            }
+            inputsWithOptions.push({ options: inputOptions, path: file.path });
+            fileMap[file.originalname] = inputsWithOptions.length - 1;
         });
 
-        if (inputs.length === 0 && totalDuration > 0) {
+        if (files.length === 0 && totalDuration > 0) {
             job.status = 'failed';
             job.error = 'Não foram enviados ficheiros para um projeto com duração.';
             return;
@@ -145,15 +152,9 @@ function processExportJob(jobId) {
         videoStreams.forEach((clip, index) => {
             const inputIndex = fileMap[clip.fileName];
             if (inputIndex === undefined) return;
-            const mediaType = media[clip.fileName].type;
-            if (mediaType === 'image') {
-                inputs.splice(inputIndex * 2, 0, '-loop', '1');
-                filterComplex += `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${index}]; `;
-            } else {
-                filterComplex += `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${index}]; `;
-            }
+            filterComplex += `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${index}]; `;
         });
-        
+
         filterComplex += `color=s=1280x720:c=black:d=${totalDuration}[base]; `;
         let lastOverlay = '[base]';
         videoStreams.forEach((clip, index) => {
@@ -181,18 +182,21 @@ function processExportJob(jobId) {
         const outputPath = path.join(uploadDir, `${jobId}.mp4`);
         job.outputPath = outputPath;
 
-        const commandArgs = [ ...inputs ];
-        
+        const commandArgs = [];
+        inputsWithOptions.forEach(input => {
+            commandArgs.push(...input.options, '-i', input.path);
+        });
+
         if (audioStreams.length === 0) {
              commandArgs.push('-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=44100`);
         }
-        
+
         commandArgs.push('-filter_complex', filterComplex.trim(), '-map', '[outv]');
 
         if (audioStreams.length > 0) {
             commandArgs.push('-map', '[outa]');
         } else {
-            const silentAudioInputIndex = inputs.length / 2;
+            const silentAudioInputIndex = inputsWithOptions.length;
             commandArgs.push('-map', `${silentAudioInputIndex}:a`);
         }
 
@@ -204,7 +208,7 @@ function processExportJob(jobId) {
 
         console.log(`[Export Job] Comando FFmpeg: ffmpeg ${commandArgs.join(' ')}`);
         const ffmpegProcess = spawn('ffmpeg', commandArgs);
-        
+
         ffmpegProcess.stdio[1].on('data', data => {
             const progressMatch = data.toString().match(/out_time_ms=(\d+)/);
             if (progressMatch) {
@@ -231,7 +235,7 @@ function processExportJob(jobId) {
                 console.log('[Export Job] Exportação concluída com sucesso.');
             }
         });
-        
+
         ffmpegProcess.on('error', (err) => {
             job.status = 'failed';
             job.error = 'Falha ao iniciar o processo FFmpeg.';
@@ -244,6 +248,8 @@ function processExportJob(jobId) {
         console.error('[Export Job] Erro catastrófico:', e);
     }
 }
+
+// ############ FIM DO BLOCO PARA SUBSTITUIR ############
 
 
 // --- Rotas de Processamento FFmpeg ---
