@@ -6,7 +6,6 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, exec } = require('child_process');
 
-
 // Inicializa a aplicação Express
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -38,7 +37,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-// --- Sistema de Tarefas Assíncronas (Simulado em Memória) ---
+// --- Sistema de Tarefas Assíncronas ---
 const jobs = {};
 
 // --- Funções Auxiliares de Processamento ---
@@ -48,9 +47,9 @@ const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friend
     }
     const inputPath = req.file.path;
     const finalArgs = ['-i', inputPath, ...ffmpegArgs, 'pipe:1'];
-    console.log(`[Job Iniciado] ${friendlyName} com comando: ${ffmpegPath} ${finalArgs.join(' ')}`);
+    console.log(`[Job Iniciado] ${friendlyName} com comando: ffmpeg ${finalArgs.join(' ')}`);
     
-    const ffmpegProcess = spawn(ffmpegPath, finalArgs);
+    const ffmpegProcess = spawn('ffmpeg', finalArgs); // CORREÇÃO: Usa 'ffmpeg' diretamente
     res.setHeader('Content-Type', outputContentType);
     ffmpegProcess.stdout.pipe(res);
     ffmpegProcess.stderr.on('data', (data) => console.error(`[FFmpeg STDERR] ${friendlyName}: ${data.toString()}`));
@@ -72,48 +71,33 @@ const simulateAiProcess = (req, res, friendlyName) => {
     const inputPath = req.file.path;
     console.log(`[AI Job Simulado] Iniciado para ${friendlyName} com o ficheiro ${inputPath}`);
     
-    // Simula um tempo de processamento de 3 segundos
     setTimeout(() => {
         console.log(`[AI Job Simulado] ${friendlyName} concluído. A devolver o ficheiro original como exemplo.`);
         res.sendFile(path.resolve(inputPath), (err) => {
             if (err) console.error(`Erro ao enviar ficheiro simulado de ${friendlyName}:`, err);
-            // Limpa o ficheiro após o envio
             fs.unlink(inputPath, (unlinkErr) => unlinkErr && console.error("Falha ao apagar ficheiro de entrada simulado:", unlinkErr));
         });
     }, 3000);
 };
 
 // --- Rotas ---
-
 app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
-app.post('/api/projects', (req, res) => {
-  console.log('Recebido um novo projeto para salvar:', req.body.name);
-  res.status(201).json({ message: `Projeto "${req.body.name}" recebido com sucesso!`, projectId: `proj_${Date.now()}` });
-});
 
 // --- ROTA DE EXPORTAÇÃO (NOVO FLUXO) ---
-
-// PASSO 1: Iniciar a tarefa de exportação
 app.post('/api/export/start', upload.any(), (req, res) => {
     const jobId = `export_${Date.now()}`;
+    if (!req.body.projectState) {
+        return res.status(400).json({ message: 'Dados do projeto em falta.' });
+    }
     jobs[jobId] = { status: 'pending', files: req.files, projectState: JSON.parse(req.body.projectState) };
-    
-    res.status(202).json({ jobId }); // Responde imediatamente com o ID da tarefa
-
-    // Inicia o processamento em segundo plano
+    res.status(202).json({ jobId });
     processExportJob(jobId);
 });
-
-// PASSO 2: Verificar o estado da tarefa
 app.get('/api/export/status/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
-    if (!job) {
-        return res.status(404).json({ message: 'Tarefa não encontrada.' });
-    }
+    if (!job) return res.status(404).json({ message: 'Tarefa não encontrada.' });
     res.status(200).json({ status: job.status, progress: job.progress, downloadUrl: job.downloadUrl, error: job.error });
 });
-
-// PASSO 3: Fazer o download do vídeo finalizado
 app.get('/api/export/download/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
     if (!job || job.status !== 'completed' || !job.outputPath) {
@@ -121,13 +105,11 @@ app.get('/api/export/download/:jobId', (req, res) => {
     }
     res.download(path.resolve(job.outputPath), `ProEdit_Export.mp4`, (err) => {
         if (err) console.error("Erro ao fazer o download do ficheiro:", err);
-        // Limpa a tarefa e os ficheiros após o download
         if (fs.existsSync(job.outputPath)) fs.unlink(job.outputPath, () => {});
         job.files.forEach(f => fs.existsSync(f.path) && fs.unlink(f.path, () => {}));
         delete jobs[req.params.jobId];
     });
 });
-
 
 // --- LÓGICA DE PROCESSAMENTO DA TAREFA DE EXPORTAÇÃO ---
 function processExportJob(jobId) {
@@ -147,9 +129,8 @@ function processExportJob(jobId) {
         });
 
         if (inputs.length === 0 && totalDuration > 0) {
-            // Lógica para vídeo vazio... (pode ser simplificada)
-            job.status = 'completed';
-            job.downloadUrl = `/api/export/download/${jobId}`; // Aponta para um ficheiro que seria criado
+            job.status = 'failed';
+            job.error = 'Não foram enviados ficheiros para um projeto com duração.';
             return;
         }
 
@@ -196,8 +177,8 @@ function processExportJob(jobId) {
         }
         commandArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-r', '30', '-progress', 'pipe:1', '-t', totalDuration, outputPath);
 
-        console.log(`[Export Job] Comando FFmpeg: ${ffmpegPath} ${commandArgs.join(' ')}`);
-        const ffmpegProcess = spawn(ffmpegPath, commandArgs);
+        console.log(`[Export Job] Comando FFmpeg: ffmpeg ${commandArgs.join(' ')}`); // CORREÇÃO
+        const ffmpegProcess = spawn('ffmpeg', commandArgs); // CORREÇÃO
         
         ffmpegProcess.stdio[1].on('data', data => {
             const progressMatch = data.toString().match(/out_time_ms=(\d+)/);
@@ -238,6 +219,19 @@ function processExportJob(jobId) {
         console.error('[Export Job] Erro catastrófico:', e);
     }
 }
+
+
+// --- Outras Rotas de Processamento ---
+// (O restante do seu ficheiro permanece igual)
+app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
+    processWithFfmpegStream(req, res, ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'], 'video/mp4', 'Reverso');
+});
+// ...etc
+
+app.listen(PORT, () => {
+  console.log(`Servidor a escutar na porta ${PORT}`);
+});
+
 
 
 // --- Rotas de Processamento FFmpeg ---
