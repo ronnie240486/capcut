@@ -156,34 +156,33 @@ function processExportJob(jobId) {
             filterChains.push(`[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${index}]`);
         });
 
-        let videoOutput = '[outv]';
+        let videoChain = `color=s=1280x720:c=black:d=${totalDuration}[base]`;
         if (videoStreams.length > 0) {
-            let overlayChain = `color=s=1280x720:c=black:d=${totalDuration}[base]`;
             let lastOverlay = '[base]';
             videoStreams.forEach((clip, index) => {
-                const nextOverlay = (index === videoStreams.length - 1) ? videoOutput : `[ov${index}]`;
-                overlayChain += `;${lastOverlay}[v${index}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
+                const nextOverlay = (index === videoStreams.length - 1) ? '[outv]' : `[ov${index}]`;
+                videoChain += `;${lastOverlay}[v${index}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
                 lastOverlay = nextOverlay;
             });
-            filterChains.push(overlayChain);
         } else {
-            filterChains.push(`color=s=1280x720:c=black:d=${totalDuration}${videoOutput}`);
+            videoChain += `;[base]null[outv]`;
         }
+        filterChains.push(videoChain);
 
-        let audioOutput = '[outa]';
         if (audioStreams.length > 0) {
-            const delayedAudioStreams = [];
+            const delayedAudioChains = [];
+            const mixedAudioStreams = [];
             audioStreams.forEach((clip, index) => {
                 const inputIndex = fileMap[clip.fileName];
                 if (inputIndex === undefined) return;
                 const volume = clip.properties.volume ?? 1;
                 const volumeFilter = (volume !== 1) ? `volume=${volume}` : 'anull';
-                const startMs = clip.start * 1000;
-                filterChains.push(`[${inputIndex}:a]${volumeFilter},asetpts=PTS-STARTPTS,aresample=44100[a${index}_pre]`);
-                filterChains.push(`[a${index}_pre]adelay=${startMs}|${startMs}[a${index}]`);
-                delayedAudioStreams.push(`[a${index}]`);
+                delayedAudioChains.push(`[${inputIndex}:a]${volumeFilter},asetpts=PTS-STARTPTS,aresample=44100[a${index}_pre]`);
+                delayedAudioChains.push(`[a${index}_pre]adelay=${clip.start * 1000}|${clip.start * 1000}[a${index}]`);
+                mixedAudioStreams.push(`[a${index}]`);
             });
-            filterChains.push(`${delayedAudioStreams.join('')}amix=inputs=${delayedAudioStreams.length}:dropout_transition=3${audioOutput}`);
+            filterChains.push(...delayedAudioChains);
+            filterChains.push(`${mixedAudioStreams.join('')}amix=inputs=${mixedAudioStreams.length}:dropout_transition=3[outa]`);
         }
 
         const outputPath = path.join(uploadDir, `${jobId}.mp4`);
@@ -193,10 +192,10 @@ function processExportJob(jobId) {
              commandArgs.push('-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=44100`);
         }
 
-        commandArgs.push('-filter_complex', filterChains.join(';'), '-map', videoOutput);
+        commandArgs.push('-filter_complex', filterChains.join(';'), '-map', '[outv]');
 
         if (audioStreams.length > 0) {
-            commandArgs.push('-map', audioOutput);
+            commandArgs.push('-map', '[outa]');
         } else {
             const silentAudioInputIndex = files.length;
             commandArgs.push('-map', `${silentAudioInputIndex}:a`);
@@ -251,7 +250,6 @@ function processExportJob(jobId) {
     }
 }
 
-// ############ FIM DO BLOCO PARA SUBSTITUIR ############
 // ############ FIM DO BLOCO PARA SUBSTITUIR ############
 
 
