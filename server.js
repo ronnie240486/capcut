@@ -48,7 +48,7 @@ const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friend
     const inputPath = req.file.path;
     const finalArgs = ['-i', inputPath, ...ffmpegArgs, 'pipe:1'];
     console.log(`[Job Iniciado] ${friendlyName} com comando: ffmpeg ${finalArgs.join(' ')}`);
-    
+
     const ffmpegProcess = spawn('ffmpeg', finalArgs);
     res.setHeader('Content-Type', outputContentType);
     ffmpegProcess.stdout.pipe(res);
@@ -70,7 +70,7 @@ const simulateAiProcess = (req, res, friendlyName) => {
     if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
     const inputPath = req.file.path;
     console.log(`[AI Job Simulado] Iniciado para ${friendlyName} com o ficheiro ${inputPath}`);
-    
+
     setTimeout(() => {
         console.log(`[AI Job Simulado] ${friendlyName} concluído. A devolver o ficheiro original como exemplo.`);
         res.sendFile(path.resolve(inputPath), (err) => {
@@ -120,59 +120,36 @@ function processExportJob(jobId) {
     const job = jobs[jobId];
     job.status = "processing";
     job.progress = 0;
-
-    // Sanitiza nomes de ficheiros para evitar problemas no FFmpeg
-    const sanitizeFileName = (name) =>
-        name.replace(/[^\w.\-]/g, "_");
-
     try {
         const { files, projectState } = job;
         const { clips, totalDuration, media } = projectState;
-
         if (files.length === 0 && totalDuration > 0) {
             job.status = "failed";
             job.error = "Não foram enviados ficheiros para um projeto com duração.";
             return;
         }
-
         const commandArgs = [];
         const fileMap = {};
-
-        // --- Entradas de mídia ---
         files.forEach(file => {
-            const safeName = sanitizeFileName(file.originalname);
             const mediaInfo = media[file.originalname];
-
             if (mediaInfo?.type === "image") {
-                // imagens precisam de loop antes do -i
                 commandArgs.push("-loop", "1");
             }
-
             commandArgs.push("-i", file.path);
-
-            // índice do input no comando do FFmpeg
-            const inputCount = commandArgs.filter(arg => arg === "-i").length;
-            fileMap[safeName] = inputCount - 1;
+            fileMap[file.originalname] = commandArgs.filter(arg => arg === "-i").length - 1;
         });
-
-        // --- Preparação dos filtros ---
         const filterChains = [];
-
         const videoClips = clips.filter(c => c.track === "video");
         const audioClips = clips.filter(
             c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0
         );
-
-        // Filtros de vídeo
         videoClips.forEach((clip, idx) => {
-            const safeName = sanitizeFileName(clip.fileName);
-            const inputIndex = fileMap[safeName];
+            const inputIndex = fileMap[clip.fileName];
             if (inputIndex === undefined) return;
             filterChains.push(
                 `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${idx}]`
             );
         });
-
         let videoChain = `color=s=1280x720:c=black:d=${totalDuration}[base]`;
         if (videoClips.length > 0) {
             let prevOverlay = "[base]";
@@ -186,58 +163,43 @@ function processExportJob(jobId) {
             videoChain += ";[base]null[outv]";
         }
         filterChains.push(videoChain);
-
-        // Filtros de áudio
         if (audioClips.length > 0) {
             const delayed = [];
             const mixed = [];
-
             audioClips.forEach((clip, idx) => {
-                const safeName = sanitizeFileName(clip.fileName);
-                const inputIndex = fileMap[safeName];
+                const inputIndex = fileMap[clip.fileName];
                 if (inputIndex === undefined) return;
-
                 const volume = clip.properties.volume ?? 1;
                 const volFilter = volume !== 1 ? `volume=${volume}` : "anull";
-
                 delayed.push(
                     `[${inputIndex}:a]${volFilter},asetpts=PTS-STARTPTS,aresample=44100[a${idx}_pre]`,
                     `[a${idx}_pre]adelay=${clip.start * 1000}|${clip.start * 1000}[a${idx}]`
                 );
-
                 mixed.push(`[a${idx}]`);
             });
-
             filterChains.push(...delayed);
             filterChains.push(
                 `${mixed.join("")}amix=inputs=${mixed.length}:dropout_transition=3[outa]`
             );
         }
-
-        // --- Saída ---
         const outputPath = path.join(uploadDir, `${jobId}.mp4`);
         job.outputPath = outputPath;
-
-        // Áudio silencioso caso não tenha nenhum
         if (audioClips.length === 0) {
             commandArgs.push(
                 "-f", "lavfi",
                 "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"
             );
         }
-
         commandArgs.push(
             "-filter_complex", filterChains.join(";"),
             "-map", "[outv]"
         );
-
         if (audioClips.length > 0) {
             commandArgs.push("-map", "[outa]");
         } else {
             const silentIndex = files.length;
             commandArgs.push("-map", `${silentIndex}:a`);
         }
-
         commandArgs.push(
             "-c:v", "libx264",
             "-c:a", "aac",
@@ -249,13 +211,8 @@ function processExportJob(jobId) {
             "-t", totalDuration,
             outputPath
         );
-
         console.log(`[Export Job] FFmpeg: ffmpeg ${commandArgs.join(" ")}`);
-
-        // --- Execução do FFmpeg ---
         const ffmpegProcess = spawn("ffmpeg", commandArgs);
-
-        // progresso
         ffmpegProcess.stdout.on("data", data => {
             const match = data.toString().match(/out_time_ms=(\d+)/);
             if (match) {
@@ -263,14 +220,11 @@ function processExportJob(jobId) {
                 job.progress = Math.min(100, (processed / totalDuration) * 100);
             }
         });
-
-        // logs de erro
         let ffmpegErrors = "";
         ffmpegProcess.stderr.on("data", data => {
             ffmpegErrors += data.toString();
             console.error(`[FFmpeg STDERR]: ${data}`);
         });
-
         ffmpegProcess.on("close", code => {
             if (code !== 0) {
                 job.status = "failed";
@@ -283,86 +237,23 @@ function processExportJob(jobId) {
                 console.log("[Export Job] Exportação concluída com sucesso.");
             }
         });
-
         ffmpegProcess.on("error", err => {
             job.status = "failed";
             job.error = "Falha ao iniciar o processo FFmpeg.";
             console.error("[Export Job] Erro ao iniciar FFmpeg:", err);
         });
-
     } catch (err) {
         job.status = "failed";
         job.error = "Ocorreu um erro inesperado no servidor.";
         console.error("[Export Job] Erro catastrófico:", err);
     }
 }
-// --- Função de Exportação Adaptada para Imagens e Vídeos ---
-function processExportJobAutoExport(jobId) {
-    const job = jobs[jobId];
-    job.status = "processing";
-    job.progress = 0;
 
-    try {
-        const { files, projectState } = job;
-        const { clips, totalDuration, media } = projectState;
-
-        if (!files || files.length === 0) {
-            job.status = "failed";
-            job.error = "Nenhum ficheiro enviado.";
-            return;
-        }
-
-        // Detecta se há apenas imagens
-        const hasVideo = clips.some(c => media[c.fileName]?.type === "video");
-        const hasImage = clips.some(c => media[c.fileName]?.type === "image");
-
-        files.forEach(file => {
-            const ext = path.extname(file.filename).toLowerCase();
-            const outputFileName = `${path.parse(file.filename).name}${hasVideo ? ".mp4" : ".png"}`;
-            const outputPath = path.join(uploadDir, outputFileName);
-
-            if (hasVideo) {
-                // Se for vídeo, converte para MP4 se necessário
-                const ffmpegArgs = ['-i', file.path, '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-c:a', 'aac', '-movflags', '+faststart', outputPath];
-                const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
-                ffmpegProcess.on('close', code => {
-                    if (code === 0) {
-                        console.log(`[Export Job] Vídeo exportado: ${outputPath}`);
-                        job.status = 'completed';
-                        job.downloadUrl = `/uploads/${outputFileName}`;
-                    } else {
-                        job.status = 'failed';
-                        job.error = 'Falha ao exportar vídeo.';
-                    }
-                    fs.existsSync(file.path) && fs.unlinkSync(file.path);
-                });
-            } else if (hasImage) {
-                // Se for imagem, copia diretamente (ou converte para PNG se não for)
-                const imgOutput = outputPath;
-                fs.copyFile(file.path, imgOutput, err => {
-                    if (err) {
-                        job.status = 'failed';
-                        job.error = 'Falha ao exportar imagem.';
-                        console.error(err);
-                    } else {
-                        job.status = 'completed';
-                        job.downloadUrl = `/uploads/${outputFileName}`;
-                        console.log(`[Export Job] Imagem exportada: ${imgOutput}`);
-                    }
-                    fs.existsSync(file.path) && fs.unlinkSync(file.path);
-                });
-            }
-        });
-    } catch (err) {
-        job.status = 'failed';
-        job.error = 'Erro inesperado durante exportação.';
-        console.error(err);
-    }
-}
-
-
-// ############ FIM DO BLOCO PARA SUBSTITUIR ############
-
+// --- Rota de Transcodificação ---
+app.post('/api/process/transcode', upload.single('video'), (req, res) => {
+    const args = ['-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', '-pix_fmt', 'yuv420p', '-f', 'mp4'];
+    processWithFfmpegStream(req, res, args, 'video/mp4', 'Transcodificar');
+});
 
 // --- Rotas de Processamento FFmpeg ---
 app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
@@ -452,4 +343,3 @@ app.post('/api/process/video-translate', upload.single('video'), (req, res) => s
 app.listen(PORT, () => {
   console.log(`Servidor a escutar na porta ${PORT}`);
 });
-
