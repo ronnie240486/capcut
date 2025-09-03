@@ -146,27 +146,31 @@ function processExportJob(jobId) {
             return;
         }
 
-        let filterComplex = '';
+        const filterChains = [];
         const videoStreams = clips.filter(c => c.track === 'video');
         const audioStreams = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
 
         videoStreams.forEach((clip, index) => {
             const inputIndex = fileMap[clip.fileName];
             if (inputIndex === undefined) return;
-            filterComplex += `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${index}]; `;
+            filterChains.push(`[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${index}]`);
         });
 
-        filterComplex += `color=s=1280x720:c=black:d=${totalDuration}[base]; `;
-        let lastOverlay = '[base]';
-        videoStreams.forEach((clip, index) => {
-            const nextOverlay = (index === videoStreams.length - 1) ? '[outv]' : `[ov${index}]`;
-            filterComplex += `${lastOverlay}[v${index}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}; `;
-            lastOverlay = nextOverlay;
-        });
-        if (videoStreams.length === 0) {
-            filterComplex += `[base]null[outv]; `;
+        let videoOutput = '[outv]';
+        if (videoStreams.length > 0) {
+            let overlayChain = `color=s=1280x720:c=black:d=${totalDuration}[base]`;
+            let lastOverlay = '[base]';
+            videoStreams.forEach((clip, index) => {
+                const nextOverlay = (index === videoStreams.length - 1) ? videoOutput : `[ov${index}]`;
+                overlayChain += `;${lastOverlay}[v${index}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
+                lastOverlay = nextOverlay;
+            });
+            filterChains.push(overlayChain);
+        } else {
+            filterChains.push(`color=s=1280x720:c=black:d=${totalDuration}${videoOutput}`);
         }
 
+        let audioOutput = '[outa]';
         if (audioStreams.length > 0) {
             const delayedAudioStreams = [];
             audioStreams.forEach((clip, index) => {
@@ -175,28 +179,26 @@ function processExportJob(jobId) {
                 const volume = clip.properties.volume ?? 1;
                 const volumeFilter = (volume !== 1) ? `volume=${volume}` : 'anull';
                 const startMs = clip.start * 1000;
-                filterComplex += `[${inputIndex}:a]${volumeFilter},asetpts=PTS-STARTPTS,aresample=44100[a${index}_pre]; `;
-                filterComplex += `[a${index}_pre]adelay=${startMs}|${startMs}[a${index}]; `;
+                filterChains.push(`[${inputIndex}:a]${volumeFilter},asetpts=PTS-STARTPTS,aresample=44100[a${index}_pre]`);
+                filterChains.push(`[a${index}_pre]adelay=${startMs}|${startMs}[a${index}]`);
                 delayedAudioStreams.push(`[a${index}]`);
             });
-            filterComplex += `${delayedAudioStreams.join('')}amix=inputs=${delayedAudioStreams.length}:dropout_transition=3[outa]`;
+            filterChains.push(`${delayedAudioStreams.join('')}amix=inputs=${delayedAudioStreams.length}:dropout_transition=3${audioOutput}`);
         }
 
         const outputPath = path.join(uploadDir, `${jobId}.mp4`);
         job.outputPath = outputPath;
 
-        // Adiciona uma fonte de áudio silenciosa se não houver áudio no projeto
         if (audioStreams.length === 0) {
              commandArgs.push('-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=44100`);
         }
 
-        commandArgs.push('-filter_complex', filterComplex.trim(), '-map', '[outv]');
+        commandArgs.push('-filter_complex', filterChains.join(';'), '-map', videoOutput);
 
         if (audioStreams.length > 0) {
-            commandArgs.push('-map', '[outa]');
+            commandArgs.push('-map', audioOutput);
         } else {
-            // Mapeia o áudio silencioso para a saída
-            const silentAudioInputIndex = files.length; // O anullsrc é o último input
+            const silentAudioInputIndex = files.length;
             commandArgs.push('-map', `${silentAudioInputIndex}:a`);
         }
 
