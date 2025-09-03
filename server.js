@@ -37,7 +37,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-// --- Sistema de Tarefas Assíncronas ---
+// --- Sistema de Tarefas Assíncronas (Simulado em Memória) ---
 const jobs = {};
 
 // --- Funções Auxiliares de Processamento ---
@@ -49,7 +49,7 @@ const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friend
     const finalArgs = ['-i', inputPath, ...ffmpegArgs, 'pipe:1'];
     console.log(`[Job Iniciado] ${friendlyName} com comando: ffmpeg ${finalArgs.join(' ')}`);
     
-    const ffmpegProcess = spawn('ffmpeg', finalArgs); // CORREÇÃO: Usa 'ffmpeg' diretamente
+    const ffmpegProcess = spawn('ffmpeg', finalArgs);
     res.setHeader('Content-Type', outputContentType);
     ffmpegProcess.stdout.pipe(res);
     ffmpegProcess.stderr.on('data', (data) => console.error(`[FFmpeg STDERR] ${friendlyName}: ${data.toString()}`));
@@ -82,6 +82,10 @@ const simulateAiProcess = (req, res, friendlyName) => {
 
 // --- Rotas ---
 app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
+app.post('/api/projects', (req, res) => {
+  console.log('Recebido um novo projeto para salvar:', req.body.name);
+  res.status(201).json({ message: `Projeto "${req.body.name}" recebido com sucesso!`, projectId: `proj_${Date.now()}` });
+});
 
 // --- ROTA DE EXPORTAÇÃO (NOVO FLUXO) ---
 app.post('/api/export/start', upload.any(), (req, res) => {
@@ -177,8 +181,8 @@ function processExportJob(jobId) {
         }
         commandArgs.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-r', '30', '-progress', 'pipe:1', '-t', totalDuration, outputPath);
 
-        console.log(`[Export Job] Comando FFmpeg: ffmpeg ${commandArgs.join(' ')}`); // CORREÇÃO
-        const ffmpegProcess = spawn('ffmpeg', commandArgs); // CORREÇÃO
+        console.log(`[Export Job] Comando FFmpeg: ffmpeg ${commandArgs.join(' ')}`);
+        const ffmpegProcess = spawn('ffmpeg', commandArgs);
         
         ffmpegProcess.stdio[1].on('data', data => {
             const progressMatch = data.toString().match(/out_time_ms=(\d+)/);
@@ -221,19 +225,6 @@ function processExportJob(jobId) {
 }
 
 
-// --- Outras Rotas de Processamento ---
-// (O restante do seu ficheiro permanece igual)
-app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
-    processWithFfmpegStream(req, res, ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'], 'video/mp4', 'Reverso');
-});
-// ...etc
-
-app.listen(PORT, () => {
-  console.log(`Servidor a escutar na porta ${PORT}`);
-});
-
-
-
 // --- Rotas de Processamento FFmpeg ---
 app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
     processWithFfmpegStream(req, res, ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'], 'video/mp4', 'Reverso');
@@ -261,7 +252,7 @@ app.post('/api/process/stabilize-real', upload.single('video'), (req, res) => {
     const transformsFile = path.join(uploadDir, `${filename}.trf`);
     const outputPath = path.join(uploadDir, `stabilized-${filename}`);
     const cleanup = () => { [inputPath, transformsFile, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
-    const detectCommand = `${ffmpegPath} -i ${inputPath} -vf vidstabdetect=result=${transformsFile} -f null -`;
+    const detectCommand = `ffmpeg -i ${inputPath} -vf vidstabdetect=result=${transformsFile} -f null -`;
     console.log('[Stabilize Job] Passagem 1:', detectCommand);
     exec(detectCommand, (err, stdout, stderr) => {
         if (err) {
@@ -270,7 +261,7 @@ app.post('/api/process/stabilize-real', upload.single('video'), (req, res) => {
             return res.status(500).json({ message: 'Falha na análise do vídeo para estabilização.' });
         }
         console.log('[Stabilize Job] Passagem 1 concluída.');
-        const transformCommand = `${ffmpegPath} -i ${inputPath} -vf vidstabtransform=input=${transformsFile}:zoom=0:smoothing=10,unsharp=5:5:0.8:3:3:0.4 -vcodec libx264 -preset fast ${outputPath}`;
+        const transformCommand = `ffmpeg -i ${inputPath} -vf vidstabtransform=input=${transformsFile}:zoom=0:smoothing=10,unsharp=5:5:0.8:3:3:0.4 -vcodec libx264 -preset fast ${outputPath}`;
         console.log('[Stabilize Job] Passagem 2:', transformCommand);
         exec(transformCommand, (err2, stdout2, stderr2) => {
             if (err2) {
@@ -291,7 +282,7 @@ app.post('/api/process/motionblur-real', upload.single('video'), (req, res) => {
     const { path: inputPath, filename } = req.file;
     const outputPath = path.join(uploadDir, `motionblur-${filename}`);
     const cleanup = () => { [inputPath, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
-    const command = `${ffmpegPath} -i ${inputPath} -vf "minterpolate='fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1',tblend=all_mode=average,framestep=2" -preset veryfast ${outputPath}`;
+    const command = `ffmpeg -i ${inputPath} -vf "minterpolate='fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1',tblend=all_mode=average,framestep=2" -preset veryfast ${outputPath}`;
     console.log('[MotionBlur Job] Comando:', command);
     exec(command, (err, stdout, stderr) => {
         if (err) {
