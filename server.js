@@ -248,6 +248,70 @@ function processExportJob(jobId) {
         console.error("[Export Job] Erro catastrófico:", err);
     }
 }
+// --- Função de Exportação Adaptada para Imagens e Vídeos ---
+function processExportJobAutoExport(jobId) {
+    const job = jobs[jobId];
+    job.status = "processing";
+    job.progress = 0;
+
+    try {
+        const { files, projectState } = job;
+        const { clips, totalDuration, media } = projectState;
+
+        if (!files || files.length === 0) {
+            job.status = "failed";
+            job.error = "Nenhum ficheiro enviado.";
+            return;
+        }
+
+        // Detecta se há apenas imagens
+        const hasVideo = clips.some(c => media[c.fileName]?.type === "video");
+        const hasImage = clips.some(c => media[c.fileName]?.type === "image");
+
+        files.forEach(file => {
+            const ext = path.extname(file.filename).toLowerCase();
+            const outputFileName = `${path.parse(file.filename).name}${hasVideo ? ".mp4" : ".png"}`;
+            const outputPath = path.join(uploadDir, outputFileName);
+
+            if (hasVideo) {
+                // Se for vídeo, converte para MP4 se necessário
+                const ffmpegArgs = ['-i', file.path, '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-c:a', 'aac', '-movflags', '+faststart', outputPath];
+                const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
+                ffmpegProcess.on('close', code => {
+                    if (code === 0) {
+                        console.log(`[Export Job] Vídeo exportado: ${outputPath}`);
+                        job.status = 'completed';
+                        job.downloadUrl = `/uploads/${outputFileName}`;
+                    } else {
+                        job.status = 'failed';
+                        job.error = 'Falha ao exportar vídeo.';
+                    }
+                    fs.existsSync(file.path) && fs.unlinkSync(file.path);
+                });
+            } else if (hasImage) {
+                // Se for imagem, copia diretamente (ou converte para PNG se não for)
+                const imgOutput = outputPath;
+                fs.copyFile(file.path, imgOutput, err => {
+                    if (err) {
+                        job.status = 'failed';
+                        job.error = 'Falha ao exportar imagem.';
+                        console.error(err);
+                    } else {
+                        job.status = 'completed';
+                        job.downloadUrl = `/uploads/${outputFileName}`;
+                        console.log(`[Export Job] Imagem exportada: ${imgOutput}`);
+                    }
+                    fs.existsSync(file.path) && fs.unlinkSync(file.path);
+                });
+            }
+        });
+    } catch (err) {
+        job.status = 'failed';
+        job.error = 'Erro inesperado durante exportação.';
+        console.error(err);
+    }
+}
+
 
 // --- Rota de Transcodificação ---
 app.post('/api/process/transcode', upload.single('video'), (req, res) => {
