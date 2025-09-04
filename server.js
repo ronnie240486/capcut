@@ -141,6 +141,15 @@ function processExportJob(jobId) {
     try {
         const { files, projectState } = job;
         const { clips, totalDuration, media } = projectState;
+      const aspectRatio = projectState.projectAspectRatio || '16:9';
+let width = 1280;
+let height = 720;
+
+if (aspectRatio === '9:16') { width = 720; height = 1280; }
+else if (aspectRatio === '1:1') { width = 1080; height = 1080; }
+else if (aspectRatio === '4:3') { width = 1280; height = 960; }
+else if (aspectRatio === '4:5') { width = 1080; height = 1350; }
+// O padrão é 16:9 (1280x720)
         if (files.length === 0 && totalDuration > 0) {
             job.status = "failed";
             job.error = "Não foram enviados ficheiros para um projeto com duração.";
