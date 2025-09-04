@@ -138,23 +138,41 @@ function processExportJob(jobId) {
     const job = jobs[jobId];
     job.status = "processing";
     job.progress = 0;
+
     try {
         const { files, projectState } = job;
-        const { clips, totalDuration, media } = projectState;
-      const aspectRatio = projectState.projectAspectRatio || '16:9';
-let width = 1280;
-let height = 720;
 
-if (aspectRatio === '9:16') { width = 720; height = 1280; }
-else if (aspectRatio === '1:1') { width = 1080; height = 1080; }
-else if (aspectRatio === '4:3') { width = 1280; height = 960; }
-else if (aspectRatio === '4:5') { width = 1080; height = 1350; }
-// O padrão é 16:9 (1280x720)
+        // VERIFICAÇÃO ESSENCIAL: Garante que projectState existe e é um objeto.
+        if (!projectState || typeof projectState !== 'object') {
+            throw new Error("Os dados do projeto (projectState) estão inválidos ou em falta.");
+        }
+
+        // AGORA, desestruturamos o objeto com segurança.
+        const { clips, totalDuration, media, projectAspectRatio } = projectState;
+
+        // Se alguma destas propriedades essenciais estiver em falta, a exportação falha.
+        if (!clips || !media || totalDuration === undefined) {
+             throw new Error("Dados essenciais (clips, media, totalDuration) em falta no projectState.");
+        }
+
+        // --- Lógica de Proporção (Aspect Ratio) ---
+        const aspectRatio = projectAspectRatio || '16:9';
+        let width = 1280;
+        let height = 720;
+
+        if (aspectRatio === '9:16') { width = 720; height = 1280; }
+        else if (aspectRatio === '1:1') { width = 1080; height = 1080; }
+        else if (aspectRatio === '4:3') { width = 1280; height = 960; }
+        else if (aspectRatio === '4:5') { width = 1080; height = 1350; }
+        // O padrão é 16:9 (1280x720)
+
+        // --- Continuação da Lógica Original ---
         if (files.length === 0 && totalDuration > 0) {
             job.status = "failed";
             job.error = "Não foram enviados ficheiros para um projeto com duração.";
             return;
         }
+
         const commandArgs = [];
         const fileMap = {};
         files.forEach(file => {
@@ -165,19 +183,24 @@ else if (aspectRatio === '4:5') { width = 1080; height = 1350; }
             commandArgs.push("-i", file.path);
             fileMap[file.originalname] = commandArgs.filter(arg => arg === "-i").length - 1;
         });
+
         const filterChains = [];
         const videoClips = clips.filter(c => c.track === "video");
         const audioClips = clips.filter(
             c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0
         );
+
         videoClips.forEach((clip, idx) => {
             const inputIndex = fileMap[clip.fileName];
             if (inputIndex === undefined) return;
+            // Usa as novas dimensões de largura e altura
             filterChains.push(
-                `[${inputIndex}:v]scale=1280:720,setsar=1,setpts=PTS-STARTPTS[v${idx}]`
+                `[${inputIndex}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS[v${idx}]`
             );
         });
-        let videoChain = `color=s=1280x720:c=black:d=${totalDuration}[base]`;
+
+        // Usa as novas dimensões de largura e altura
+        let videoChain = `color=s=${width}x${height}:c=black:d=${totalDuration}[base]`;
         if (videoClips.length > 0) {
             let prevOverlay = "[base]";
             videoClips.forEach((clip, idx) => {
@@ -190,6 +213,7 @@ else if (aspectRatio === '4:5') { width = 1080; height = 1350; }
             videoChain += ";[base]null[outv]";
         }
         filterChains.push(videoChain);
+
         if (audioClips.length > 0) {
             const delayed = [];
             const mixed = [];
@@ -209,6 +233,7 @@ else if (aspectRatio === '4:5') { width = 1080; height = 1350; }
                 `${mixed.join("")}amix=inputs=${mixed.length}:dropout_transition=3[outa]`
             );
         }
+
         const outputPath = path.join(uploadDir, `${jobId}.mp4`);
         job.outputPath = outputPath;
         if (audioClips.length === 0) {
@@ -217,29 +242,34 @@ else if (aspectRatio === '4:5') { width = 1080; height = 1350; }
                 "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"
             );
         }
+
         commandArgs.push(
             "-filter_complex", filterChains.join(";"),
             "-map", "[outv]"
         );
+
         if (audioClips.length > 0) {
             commandArgs.push("-map", "[outa]");
         } else {
             const silentIndex = files.length;
             commandArgs.push("-map", `${silentIndex}:a`);
         }
+
         commandArgs.push(
             "-c:v", "libx264",
             "-c:a", "aac",
-            "-preset", "ultrafast",
+            "-preset", "veryfast",
             "-pix_fmt", "yuv420p",
             "-r", "30",
-            "-shortest",
+            // "-shortest", // REMOVIDO PARA CORRIGIR PROBLEMA DE ÁUDIO
             "-progress", "pipe:1",
             "-t", totalDuration,
             outputPath
         );
+
         console.log(`[Export Job] FFmpeg: ffmpeg ${commandArgs.join(" ")}`);
         const ffmpegProcess = spawn("ffmpeg", commandArgs);
+
         ffmpegProcess.stdout.on("data", data => {
             const match = data.toString().match(/out_time_ms=(\d+)/);
             if (match) {
@@ -247,11 +277,13 @@ else if (aspectRatio === '4:5') { width = 1080; height = 1350; }
                 job.progress = Math.min(100, (processed / totalDuration) * 100);
             }
         });
+
         let ffmpegErrors = "";
         ffmpegProcess.stderr.on("data", data => {
             ffmpegErrors += data.toString();
             console.error(`[FFmpeg STDERR]: ${data}`);
         });
+
         ffmpegProcess.on("close", code => {
             if (code !== 0) {
                 job.status = "failed";
@@ -264,78 +296,17 @@ else if (aspectRatio === '4:5') { width = 1080; height = 1350; }
                 console.log("[Export Job] Exportação concluída com sucesso.");
             }
         });
+
         ffmpegProcess.on("error", err => {
             job.status = "failed";
             job.error = "Falha ao iniciar o processo FFmpeg.";
             console.error("[Export Job] Erro ao iniciar FFmpeg:", err);
         });
+
     } catch (err) {
         job.status = "failed";
-        job.error = "Ocorreu um erro inesperado no servidor.";
+        job.error = "Ocorreu um erro inesperado no servidor: " + err.message;
         console.error("[Export Job] Erro catastrófico:", err);
-    }
-}
-// --- Função de Exportação Adaptada para Imagens e Vídeos ---
-function processExportJobAutoExport(jobId) {
-    const job = jobs[jobId];
-    job.status = "processing";
-    job.progress = 0;
-
-    try {
-        const { files, projectState } = job;
-        const { clips, totalDuration, media } = projectState;
-
-        if (!files || files.length === 0) {
-            job.status = "failed";
-            job.error = "Nenhum ficheiro enviado.";
-            return;
-        }
-
-        // Detecta se há apenas imagens
-        const hasVideo = clips.some(c => media[c.fileName]?.type === "video");
-        const hasImage = clips.some(c => media[c.fileName]?.type === "image");
-
-        files.forEach(file => {
-            const ext = path.extname(file.filename).toLowerCase();
-            const outputFileName = `${path.parse(file.filename).name}${hasVideo ? ".mp4" : ".png"}`;
-            const outputPath = path.join(uploadDir, outputFileName);
-
-            if (hasVideo) {
-                // Se for vídeo, converte para MP4 se necessário
-                const ffmpegArgs = ['-i', file.path, '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-c:a', 'aac', '-movflags', '+faststart', outputPath];
-                const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
-                ffmpegProcess.on('close', code => {
-                    if (code === 0) {
-                        console.log(`[Export Job] Vídeo exportado: ${outputPath}`);
-                        job.status = 'completed';
-                        job.downloadUrl = `/uploads/${outputFileName}`;
-                    } else {
-                        job.status = 'failed';
-                        job.error = 'Falha ao exportar vídeo.';
-                    }
-                    fs.existsSync(file.path) && fs.unlinkSync(file.path);
-                });
-            } else if (hasImage) {
-                // Se for imagem, copia diretamente (ou converte para PNG se não for)
-                const imgOutput = outputPath;
-                fs.copyFile(file.path, imgOutput, err => {
-                    if (err) {
-                        job.status = 'failed';
-                        job.error = 'Falha ao exportar imagem.';
-                        console.error(err);
-                    } else {
-                        job.status = 'completed';
-                        job.downloadUrl = `/uploads/${outputFileName}`;
-                        console.log(`[Export Job] Imagem exportada: ${imgOutput}`);
-                    }
-                    fs.existsSync(file.path) && fs.unlinkSync(file.path);
-                });
-            }
-        });
-    } catch (err) {
-        job.status = 'failed';
-        job.error = 'Erro inesperado durante exportação.';
-        console.error(err);
     }
 }
 
