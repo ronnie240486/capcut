@@ -1,4 +1,5 @@
 
+
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -142,125 +143,60 @@ function processExportJob(jobId) {
 
     try {
         const { files, projectState } = job;
-
-        // VERIFICAÇÃO ESSENCIAL: Garante que projectState existe e é um objeto.
-        if (!projectState || typeof projectState !== 'object') {
-            throw new Error("Os dados do projeto (projectState) estão inválidos ou em falta.");
-        }
-
-        // AGORA, desestruturamos o objeto com segurança.
+        if (!projectState || typeof projectState !== 'object') throw new Error("Os dados do projeto (projectState) estão inválidos ou em falta.");
         const { clips, totalDuration, media, projectAspectRatio } = projectState;
+        if (!clips || !media || totalDuration === undefined) throw new Error("Dados essenciais (clips, media, totalDuration) em falta no projectState.");
 
-        // Se alguma destas propriedades essenciais estiver em falta, a exportação falha.
-        if (!clips || !media || totalDuration === undefined) {
-             throw new Error("Dados essenciais (clips, media, totalDuration) em falta no projectState.");
-        }
-
-        // --- ATUALIZAÇÃO: Lógica de Proporção (Aspect Ratio) ---
-        // Esta secção define a resolução de saída do vídeo com base na proporção enviada pelo editor.
         const aspectRatio = projectAspectRatio || '16:9';
-        let width = 1280;
-        let height = 720;
-
+        let width = 1280, height = 720;
         if (aspectRatio === '9:16') { width = 720; height = 1280; }
         else if (aspectRatio === '1:1') { width = 1080; height = 1080; }
         else if (aspectRatio === '4:3') { width = 1280; height = 960; }
-        // O padrão é 16:9 (1280x720)
-
-        // --- Continuação da Lógica Original ---
-        if (files.length === 0 && totalDuration > 0) {
-            job.status = "failed";
-            job.error = "Não foram enviados ficheiros para um projeto com duração.";
-            return;
-        }
+        
+        if (files.length === 0 && totalDuration > 0) { job.status = "failed"; job.error = "Não foram enviados ficheiros para um projeto com duração."; return; }
 
         const commandArgs = [];
         const fileMap = {};
         files.forEach(file => {
             const mediaInfo = media[file.originalname];
-            if (mediaInfo?.type === "image") {
-                commandArgs.push("-loop", "1");
-            }
+            if (mediaInfo?.type === "image") commandArgs.push("-loop", "1");
             commandArgs.push("-i", file.path);
             fileMap[file.originalname] = commandArgs.filter(arg => arg === "-i").length - 1;
         });
 
-        const filterChains = [];
-        const videoClips = clips.filter(c => c.track === "video");
-        const audioClips = clips.filter(
-            c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0
-        );
-
-        // --- ATUALIZAÇÃO: Lógica de Filtros e Efeitos ---
-        videoClips.forEach((clip, idx) => {
+        let filterChains = [];
+        const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
+        
+        clips.filter(c => c.track === 'video' || c.track === 'camada').forEach((clip, vIdx) => {
             const inputIndex = fileMap[clip.fileName];
             if (inputIndex === undefined) return;
 
-            // --- INÍCIO DA LÓGICA DE FILTROS ADICIONADA ---
-            const clipSpecificFilters = [];
-
-            // 1. Ajustes manuais (Brilho, Contraste, etc.) do inspetor
+            let clipSpecificFilters = [];
             const adj = clip.properties.adjustments;
             if (adj) {
-                // O brilho no FFmpeg vai de -1.0 a 1.0. O editor envia de 0.0 a 2.0, por isso ajustamos.
                 const ffmpegBrightness = (adj.brightness || 1.0) - 1.0;
-                const eqFilter = `eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}`;
-                clipSpecificFilters.push(eqFilter);
-
-                if (adj.hue && adj.hue !== 0) {
-                    clipSpecificFilters.push(`hue=h=${adj.hue}`);
-                }
+                clipSpecificFilters.push(`eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}:hue=${(adj.hue || 0) * (Math.PI/180)}`);
             }
+            if (clip.properties.mirror) clipSpecificFilters.push('hflip');
 
-            // 2. Efeitos predefinidos (Vintage, Noir, etc.)
-            const effectId = clip.effect;
-            if (effectId && effectId !== 'none') {
-                let effectFFmpegFilter = '';
-                // Este 'switch' traduz o nome do efeito do editor para um comando de filtro do FFmpeg
-                switch (effectId) {
-                    case 'vintage':
-                        effectFFmpegFilter = 'vignette,gblur=sigma=0.2,eq=contrast=0.8:saturation=1.2';
-                        break;
-                    case 'noir':
-                        effectFFmpegFilter = 'format=gray,eq=contrast=1.3';
-                        break;
-                    case 'grayscale':
-                        effectFFmpegFilter = 'format=gray';
-                        break;
-                    case 'vivid':
-                        effectFFmpegFilter = 'eq=saturation=1.8';
-                        break;
-                    case 'cool':
-                        effectFFmpegFilter = 'hue=s=1.1:H=-15';
-                        break;
-                    case 'warm':
-                        effectFFmpegFilter = 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131'; // Simulação de Sépia
-                        break;
-                    // --- IMPORTANTE: Adicione um 'case' para cada um dos seus efeitos aqui ---
-                }
-                if (effectFFmpegFilter) {
-                    clipSpecificFilters.push(effectFFmpegFilter);
-                }
-            }
-            
-            const effectsString = clipSpecificFilters.length > 0 ? `,${clipSpecificFilters.join(',')}` : '';
-            // --- FIM DA LÓGICA DE FILTROS ADICIONADA ---
+            const speed = clip.properties.speed || 1;
+            const speedCurve = clip.properties.speedCurve;
+            let speedFilter = `setpts=PTS/${speed}`;
 
-            // Monta a cadeia de filtros final para este clipe, incluindo proporção e efeitos
-            // A parte 'scale' e 'pad' lida com a PROPORÇÃO do vídeo.
-            filterChains.push(
-                `[${inputIndex}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2${effectsString},setsar=1,setpts=PTS-STARTPTS[v${idx}]`
-            );
+            const preFilter = `[${inputIndex}:v]${clipSpecificFilters.length > 0 ? clipSpecificFilters.join(',')+',' : ''}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+            filterChains.push(`${preFilter}[vpre${vIdx}]`);
+            filterChains.push(`[vpre${vIdx}]${speedFilter}[v${vIdx}]`);
         });
 
-        // Usa as novas dimensões de largura e altura
         let videoChain = `color=s=${width}x${height}:c=black:d=${totalDuration}[base]`;
-        if (videoClips.length > 0) {
+        const videoClipsToOverlay = clips.filter(c => c.track === 'video' || c.track === 'camada');
+        if (videoClipsToOverlay.length > 0) {
             let prevOverlay = "[base]";
-            videoClips.forEach((clip, idx) => {
-                const isLast = idx === videoClips.length - 1;
+            videoClipsToOverlay.forEach((clip, idx) => {
+                const isLast = idx === videoClipsToOverlay.length - 1;
                 const nextOverlay = isLast ? "[outv]" : `[ov${idx}]`;
-                videoChain += `;${prevOverlay}[v${idx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
+                const vIdx = clips.filter(c => c.track === 'video' || c.track === 'camada').indexOf(clip);
+                videoChain += `;${prevOverlay}[v${vIdx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
                 prevOverlay = nextOverlay;
             });
         } else {
@@ -269,100 +205,86 @@ function processExportJob(jobId) {
         filterChains.push(videoChain);
 
         if (audioClips.length > 0) {
-            const delayed = [];
-            const mixed = [];
+            const delayed = [], mixed = [];
             audioClips.forEach((clip, idx) => {
                 const inputIndex = fileMap[clip.fileName];
                 if (inputIndex === undefined) return;
                 const volume = clip.properties.volume ?? 1;
+                const speed = clip.properties.speed || 1;
+                let atempoFilter = '';
+                let currentSpeed = speed;
+                while(currentSpeed > 2.0) { atempoFilter += 'atempo=2.0,'; currentSpeed /= 2.0; }
+                while(currentSpeed < 0.5) { atempoFilter += 'atempo=0.5,'; currentSpeed /= 0.5; }
+                if(currentSpeed !== 1.0) atempoFilter += `atempo=${currentSpeed}`;
+                if (atempoFilter.endsWith(',')) atempoFilter = atempoFilter.slice(0, -1);
+
                 const volFilter = volume !== 1 ? `volume=${volume}` : "anull";
-                delayed.push(
-                    `[${inputIndex}:a]${volFilter},asetpts=PTS-STARTPTS,aresample=44100[a${idx}_pre]`,
-                    `[a${idx}_pre]adelay=${clip.start * 1000}|${clip.start * 1000}[a${idx}]`
-                );
+                delayed.push(`[${inputIndex}:a]${volFilter},asetpts=PTS-STARTPTS${atempoFilter ? ',' + atempoFilter : ''},aresample=44100[a${idx}_pre]`);
+                delayed.push(`[a${idx}_pre]adelay=${clip.start * 1000}|${clip.start * 1000}[a${idx}]`);
                 mixed.push(`[a${idx}]`);
             });
             filterChains.push(...delayed);
-            filterChains.push(
-                `${mixed.join("")}amix=inputs=${mixed.length}:dropout_transition=3[outa]`
-            );
+            filterChains.push(`${mixed.join("")}amix=inputs=${mixed.length}:dropout_transition=3[outa]`);
         }
 
         const outputPath = path.join(uploadDir, `${jobId}.mp4`);
         job.outputPath = outputPath;
-        if (audioClips.length === 0) {
-            commandArgs.push(
-                "-f", "lavfi",
-                "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"
-            );
-        }
-
-        commandArgs.push(
-            "-filter_complex", filterChains.join(";"),
-            "-map", "[outv]"
-        );
-
-        if (audioClips.length > 0) {
-            commandArgs.push("-map", "[outa]");
-        } else {
-            const silentIndex = files.length;
-            commandArgs.push("-map", `${silentIndex}:a`);
-        }
-
-        commandArgs.push(
-            "-c:v", "libx264",
-            "-c:a", "aac",
-            "-preset", "veryfast",
-            "-pix_fmt", "yuv420p",
-            "-r", "30",
-            // "-shortest", // REMOVIDO PARA CORRIGIR PROBLEMA DE ÁUDIO
-            "-progress", "pipe:1",
-            "-t", totalDuration,
-            outputPath
-        );
+        if (audioClips.length === 0) commandArgs.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
+        commandArgs.push("-filter_complex", filterChains.join(";"), "-map", "[outv]");
+        if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
+        else { const silentIndex = files.length; commandArgs.push("-map", `${silentIndex}:a`); }
+        commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30", "-progress", "pipe:1", "-t", totalDuration, outputPath);
 
         console.log(`[Export Job] FFmpeg: ffmpeg ${commandArgs.join(" ")}`);
         const ffmpegProcess = spawn("ffmpeg", commandArgs);
-
-        ffmpegProcess.stdout.on("data", data => {
-            const match = data.toString().match(/out_time_ms=(\d+)/);
-            if (match) {
-                const processed = parseInt(match[1], 10) / 1e6;
-                job.progress = Math.min(100, (processed / totalDuration) * 100);
-            }
-        });
-
+        ffmpegProcess.stdout.on("data", data => { const match = data.toString().match(/out_time_ms=(\d+)/); if (match) { const processed = parseInt(match[1], 10) / 1e6; job.progress = Math.min(100, (processed / totalDuration) * 100); } });
         let ffmpegErrors = "";
-        ffmpegProcess.stderr.on("data", data => {
-            ffmpegErrors += data.toString();
-            console.error(`[FFmpeg STDERR]: ${data}`);
-        });
-
+        ffmpegProcess.stderr.on("data", data => { ffmpegErrors += data.toString(); console.error(`[FFmpeg STDERR]: ${data}`); });
         ffmpegProcess.on("close", code => {
-            if (code !== 0) {
-                job.status = "failed";
-                job.error = "Falha no FFmpeg. " + ffmpegErrors.slice(-800);
-                console.error(`[Export Job] FFmpeg terminou com erro ${code}`);
-            } else {
-                job.status = "completed";
-                job.progress = 100;
-                job.downloadUrl = `/api/export/download/${jobId}`;
-                console.log("[Export Job] Exportação concluída com sucesso.");
-            }
+            if (code !== 0) { job.status = "failed"; job.error = "Falha no FFmpeg. " + ffmpegErrors.slice(-800); }
+            else { job.status = "completed"; job.progress = 100; job.downloadUrl = `/api/export/download/${jobId}`; }
         });
-
-        ffmpegProcess.on("error", err => {
-            job.status = "failed";
-            job.error = "Falha ao iniciar o processo FFmpeg.";
-            console.error("[Export Job] Erro ao iniciar FFmpeg:", err);
-        });
-
-    } catch (err) {
-        job.status = "failed";
-        job.error = "Ocorreu um erro inesperado no servidor: " + err.message;
-        console.error("[Export Job] Erro catastrófico:", err);
-    }
+        ffmpegProcess.on("error", err => { job.status = "failed"; job.error = "Falha ao iniciar o processo FFmpeg."; });
+    } catch (err) { job.status = "failed"; job.error = "Ocorreu um erro inesperado no servidor: " + err.message; console.error("[Export Job] Erro catastrófico:", err); }
 }
+
+app.post('/api/process/scene-detect', upload.single('video'), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    const { path: inputPath } = req.file;
+    const command = `ffmpeg -i "${inputPath}" -vf "select='gt(scene,0.4)',showinfo" -f null - 2>&1`;
+    exec(command, (err, stdout, stderr) => {
+        fs.unlink(inputPath, () => {});
+        if (err) { console.error('Scene Detect Error:', stderr); return res.status(500).send('Falha ao detectar cenas.'); }
+        const timestamps = (stderr.match(/pts_time:([\d.]+)/g) || []).map(s => parseFloat(s.split(':')[1]));
+        res.json(timestamps);
+    });
+});
+
+app.post('/api/process/normalize-audio', upload.single('video'), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    const { path: inputPath, filename } = req.file;
+    const outputPath = path.join(uploadDir, `normalized-${filename}`);
+    const command = `ffmpeg -i "${inputPath}" -af loudnorm -y "${outputPath}"`;
+    exec(command, (err, stdout, stderr) => {
+        fs.unlink(inputPath, () => {});
+        if (err) { console.error('Normalize Error:', stderr); fs.existsSync(outputPath) && fs.unlink(outputPath, () => {}); return res.status(500).send('Falha ao normalizar áudio.'); }
+        res.sendFile(path.resolve(outputPath), (sendErr) => { if (sendErr) console.error('Erro ao enviar ficheiro normalizado:', sendErr); fs.unlink(outputPath, () => {}); });
+    });
+});
+
+const voiceEffects = {
+    'chipmunk': 'asetrate=44100*1.5,atempo=1/1.5',
+    'robot': 'afftfilt=real=\'hypot(re,im)*cos(0)\':imag=\'hypot(re,im)*sin(0)\'',
+    'deep': 'asetrate=44100*0.7,atempo=1/0.7',
+    'echo': 'aecho=0.8:0.9:1000:0.3',
+    'vibrato': 'vibrato=f=5.0:d=0.5',
+};
+
+Object.entries(voiceEffects).forEach(([name, filter]) => {
+    app.post(`/api/process/voice-effect-${name}`, upload.single('video'), (req, res) => {
+        processWithFfmpegStream(req, res, ['-af', filter, '-f', 'mp4'], 'video/mp4', `Efeito de Voz: ${name}`);
+    });
+});
 
 
 // --- Rota de Transcodificação ---
@@ -396,6 +318,37 @@ app.post('/api/process/remove-silence-real', upload.single('video'), (req, res) 
     const filter = `silenceremove=stop_periods=-1:stop_duration=${duration}:stop_threshold=${threshold}dB`;
     const ffmpegArgs = ['-af', filter, '-f', 'mp4'];
     processWithFfmpegStream(req, res, ffmpegArgs, 'video/mp4', 'Remover Silêncio');
+});
+
+// --- NOVA ROTA: Extrair Frame ---
+app.post('/api/process/extract-frame', upload.single('video'), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    
+    const { path: inputPath, filename } = req.file;
+    const timestamp = req.body.timestamp || '0';
+    const outputFilename = `frame-${path.parse(filename).name}-${Date.now()}.png`;
+    const outputPath = path.join(uploadDir, outputFilename);
+
+    const cleanup = () => { [inputPath, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
+
+    // Comando FFmpeg para extrair um único frame como PNG
+    const command = `ffmpeg -i "${inputPath}" -ss ${timestamp} -vframes 1 -f image2 "${outputPath}"`;
+
+    console.log('[Extract Frame] Comando:', command);
+
+    exec(command, (err, stdout, stderr) => {
+        if (err) {
+            console.error('[Extract Frame] Falha:', stderr);
+            cleanup();
+            return res.status(500).json({ message: 'Falha ao extrair o frame do vídeo.' });
+        }
+        
+        console.log('[Extract Frame] Concluído.');
+        res.sendFile(path.resolve(outputPath), (sendErr) => {
+            if (sendErr) console.error('Erro ao enviar frame:', sendErr);
+            cleanup();
+        });
+    });
 });
 
 
@@ -452,16 +405,76 @@ app.post('/api/process/motionblur-real', upload.single('video'), (req, res) => {
     });
 });
 
-// --- Rotas de Simulação de IA ---
-app.post('/api/process/reframe', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Reenquadramento IA'));
-app.post('/api/process/remove-bg', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Remoção de Fundo IA'));
-app.post('/api/process/auto-captions', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Legendas Automáticas IA'));
-app.post('/api/process/retouch', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Retoque IA'));
-app.post('/api/process/ai-removal', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Remoção de Objeto IA'));
-app.post('/api/process/ai-expand', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Expansão IA'));
-app.post('/api/process/lip-sync', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Sincronização Labial IA'));
-app.post('/api/process/camera-track', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Rastreio de Câmera IA'));
-app.post('/api/process/video-translate', upload.single('video'), (req, res) => simulateAiProcess(req, res, 'Tradução de Vídeo IA'));
+// --- Rotas de IA (REAIS e NÃO IMPLEMENTADAS) ---
+app.post('/api/process/remove-bg-real', upload.single('video'), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    const { path: inputPath, filename } = req.file;
+    const outputFilename = `bg-removed-${path.parse(filename).name}.webm`;
+    const outputPath = path.join(uploadDir, outputFilename);
+    const cleanup = () => { [inputPath, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
+    console.log('[Remove-BG] Chamando script Python...');
+    const pythonProcess = spawn('python', ['remove_background.py', inputPath, outputPath]);
+    pythonProcess.stdout.on('data', (data) => console.log(`[Python STDOUT]: ${data}`));
+    pythonProcess.stderr.on('data', (data) => console.error(`[Python STDERR]: ${data}`));
+    pythonProcess.on('close', (code) => {
+        if (code !== 0) {
+            cleanup();
+            return res.status(500).json({ message: 'O script de remoção de fundo falhou. Verifique se Python, moviepy e rembg estão instalados no servidor.' });
+        }
+        console.log('[Remove-BG] Concluído! Enviando vídeo...');
+        res.sendFile(path.resolve(outputPath), (sendErr) => {
+            if (sendErr) console.error('Erro ao enviar vídeo com fundo removido:', sendErr);
+            cleanup();
+        });
+    });
+});
+
+// --- NOVA ROTA: Câmera Lenta Mágica (AI Frame Interpolation) ---
+app.post('/api/process/interpolate-real', upload.single('video'), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    
+    const { path: inputPath, filename } = req.file;
+    const outputFilename = `interpolated-${path.parse(filename).name}.mp4`;
+    const outputPath = path.join(uploadDir, outputFilename);
+    
+    const cleanup = () => { [inputPath, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
+
+    console.log('[AI Interpolation] Chamando script Python...');
+    
+    // Chama o script Python, passando o arquivo de entrada e o de saída como argumentos
+    const pythonProcess = spawn('python', ['interpolate_video.py', inputPath, outputPath]);
+
+    pythonProcess.stdout.on('data', (data) => console.log(`[Python STDOUT]: ${data}`));
+    pythonProcess.stderr.on('data', (data) => console.error(`[Python STDERR]: ${data}`));
+
+    pythonProcess.on('close', (code) => {
+        if (code !== 0) {
+            cleanup();
+            return res.status(500).json({ message: 'O script de interpolação de frames falhou. Verifique as dependências de IA no servidor.' });
+        }
+        
+        console.log('[AI Interpolation] Concluído! Enviando vídeo...');
+        res.sendFile(path.resolve(outputPath), (sendErr) => {
+            if (sendErr) console.error('Erro ao enviar vídeo interpolado:', sendErr);
+            cleanup();
+        });
+    });
+});
+
+
+const notImplemented = (req, res) => {
+    if (req.file && fs.existsSync(req.file.path)) fs.unlink(req.file.path, () => {});
+    res.status(501).json({ message: 'Funcionalidade ainda não implementada no servidor.' });
+};
+app.post('/api/process/reframe', upload.single('video'), notImplemented);
+app.post('/api/process/remove-bg', upload.single('video'), notImplemented); // Rota antiga simulada
+app.post('/api/process/auto-captions', upload.single('video'), simulateAiProcess); // Mantendo simulação por enquanto
+app.post('/api/process/retouch', upload.single('video'), notImplemented);
+app.post('/api/process/ai-removal', upload.single('video'), notImplemented);
+app.post('/api/process/ai-expand', upload.single('video'), notImplemented);
+app.post('/api/process/lip-sync', upload.single('video'), notImplemented);
+app.post('/api/process/camera-track', upload.single('video'), notImplemented);
+app.post('/api/process/video-translate', upload.single('video'), notImplemented);
 
 // --- Iniciar o Servidor ---
 app.listen(PORT, () => {
