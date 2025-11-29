@@ -182,22 +182,20 @@ function processScriptToVideoJob(jobId) {
             // 2. Construir comando complexo
             let inputs = '';
             let filterComplex = '';
-            let concatV = '';
-            let concatA = '';
+            let concatSegments = '';
 
             for (let i = 0; i < images.length; i++) {
                 inputs += `-loop 1 -t ${durations[i]} -i "${images[i].path}" -i "${audios[i].path}" `;
                 // Efeito Ken Burns aleatório
-                const zoomStart = 1 + Math.random() * 0.3;
-                const zoomEnd = 1 + Math.random() * 0.3;
                 // zoompan com duração fixa baseada em frames (25fps)
                 const frames = Math.ceil(durations[i] * 25);
                 filterComplex += `[${i*2}:v]scale=1280:720,setsar=1,zoompan=z='min(zoom+0.0015,1.5)':d=${frames}:s=1280x720[v${i}]; `;
-                concatV += `[v${i}]`;
-                concatA += `[${i*2+1}:a]`;
+                
+                // IMPORTANTE: Intercalar Video e Audio para o filtro concat (V, A, V, A...)
+                concatSegments += `[v${i}][${i*2+1}:a]`;
             }
 
-            filterComplex += `${concatV}${concatA}concat=n=${images.length}:v=1:a=1[outv][outa]`;
+            filterComplex += `${concatSegments}concat=n=${images.length}:v=1:a=1[outv][outa]`;
 
             const command = `ffmpeg ${inputs} -filter_complex "${filterComplex}" -map "[outv]" -map "[outa]" -c:v libx264 -pix_fmt yuv420p -shortest "${outputPath}"`;
             
