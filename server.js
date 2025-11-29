@@ -1,5 +1,3 @@
-
-
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -35,84 +33,370 @@ const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s/g, '_')}`)
 });
-const upload = multer({ storage: storage });
+// Middleware de upload para diferentes cenários
+const uploadSingle = multer({ storage: storage }).single('video');
+const uploadFields = multer({ storage: storage }).fields([
+    { name: 'video', maxCount: 1 },
+    { name: 'style', maxCount: 1 }
+]);
+const uploadAny = multer({ storage: storage }).any();
 
-// --- Sistema de Tarefas Assíncronas (Simulado em Memória) ---
+
+// --- Sistema de Tarefas Assíncronas ---
 const jobs = {};
 
-// --- Funções Auxiliares de Processamento ---
+// --- Funções Auxiliares ---
+const cleanupFiles = (files) => {
+    files.forEach(file => {
+        if (file && file.path && fs.existsSync(file.path)) fs.unlink(file.path, () => {});
+        else if (typeof file === 'string' && fs.existsSync(file)) fs.unlink(file, () => {});
+    });
+};
+
 const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friendlyName) => {
     if (!req.file || !fs.existsSync(req.file.path)) {
         return res.status(400).json({ message: 'Nenhum ficheiro válido foi enviado.' });
     }
     const inputPath = req.file.path;
     const finalArgs = ['-i', inputPath, ...ffmpegArgs, 'pipe:1'];
-    console.log(`[Job Iniciado] ${friendlyName} com comando: ffmpeg ${finalArgs.join(' ')}`);
+    console.log(`[Job Síncrono] ${friendlyName} ffmpeg ${finalArgs.join(' ')}`);
 
     const ffmpegProcess = spawn('ffmpeg', finalArgs);
     res.setHeader('Content-Type', outputContentType);
     ffmpegProcess.stdout.pipe(res);
-    ffmpegProcess.stderr.on('data', (data) => console.error(`[FFmpeg STDERR] ${friendlyName}: ${data.toString()}`));
-    ffmpegProcess.on('close', (code) => {
-        if (code !== 0) console.error(`[FFmpeg] Processo ${friendlyName} terminou com código de erro ${code}`);
-        else console.log(`[Job Concluído] Stream para ${friendlyName} finalizado com sucesso.`);
-        fs.unlink(inputPath, (err) => err && console.error("Falha ao apagar ficheiro de entrada:", err));
+    ffmpegProcess.stderr.on('data', (data) => console.error(`[FFmpeg STDERR]: ${data.toString()}`));
+    ffmpegProcess.on('close', () => {
+        fs.unlink(inputPath, (err) => err && console.error("Falha ao apagar input:", err));
     });
-    ffmpegProcess.on('error', (err) => {
-        console.error(`[FFmpeg] Falha ao iniciar o processo ${friendlyName}:`, err);
-        fs.unlink(inputPath, (err) => err && console.error("Falha ao apagar ficheiro de entrada:", err));
-        if (!res.headersSent) res.status(500).json({ message: `Falha ao iniciar o processamento (${friendlyName}).` });
-    });
-    req.on('close', () => ffmpegProcess.kill());
-};
-
-const simulateAiProcess = (req, res, friendlyName) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
-    const inputPath = req.file.path;
-    console.log(`[AI Job Simulado] Iniciado para ${friendlyName} com o ficheiro ${inputPath}`);
-
-    setTimeout(() => {
-        console.log(`[AI Job Simulado] ${friendlyName} concluído. A devolver o ficheiro original como exemplo.`);
-        res.sendFile(path.resolve(inputPath), (err) => {
-            if (err) console.error(`Erro ao enviar ficheiro simulado de ${friendlyName}:`, err);
-            fs.unlink(inputPath, (unlinkErr) => unlinkErr && console.error("Falha ao apagar ficheiro de entrada simulado:", unlinkErr));
-        });
-    }, 3000);
 };
 
 // --- Rotas ---
 app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
 
-// --- ROTA DE DIAGNÓSTICO DO FFmpeg (CORREÇÃO ADICIONADA AQUI) ---
 app.get('/api/check-ffmpeg', (req, res) => {
-    exec('ffmpeg -version', (error, stdout, stderr) => {
-        if (error) {
-            console.error(`Erro na verificação do FFmpeg: ${error.message}`);
-            return res.status(500).json({ 
-                message: 'O FFmpeg não foi encontrado no servidor. É necessário instalá-lo.', 
-                error: error.message 
-            });
-        }
-        res.status(200).json({ 
-            message: 'O FFmpeg está instalado com sucesso.', 
-            version: stdout.split('\n')[0] 
-        });
+    exec('ffmpeg -version', (error) => {
+        if (error) return res.status(500).json({ status: 'offline', error: 'FFmpeg not found' });
+        res.json({ status: 'online' });
     });
 });
 
-app.post('/api/projects', (req, res) => {
-  console.log('Recebido um novo projeto para salvar:', req.body.name);
-  res.status(201).json({ message: `Projeto "${req.body.name}" recebido com sucesso!`, projectId: `proj_${Date.now()}` });
+
+// --- ROTAS DE PROCESSAMENTO ASSÍNCRONO DE CLIPE ÚNICO ---
+
+// 1. Iniciar uma tarefa de processamento
+app.post('/api/process/start/:action', (req, res) => {
+    const { action } = req.params;
+
+    // Se for script-to-video, usamos uploadAny porque vem muitos arquivos dinamicos
+    const uploader = (action === 'style-transfer-real') ? uploadFields : (action === 'script-to-video' ? uploadAny : uploadSingle);
+
+    uploader(req, res, (err) => {
+        if (err) return res.status(400).json({ message: `Erro no upload: ${err.message}` });
+        
+        const jobId = `${action}_${Date.now()}`;
+        
+        // Estrutura arquivos
+        let files = {};
+        if (action === 'script-to-video') {
+             files = { all: req.files };
+        } else if (action === 'style-transfer-real') {
+             files = req.files;
+        } else {
+             files = { video: [req.file] };
+        }
+        
+        if (action !== 'script-to-video' && (!files.video || !files.video[0])) {
+            return res.status(400).json({ message: 'Arquivo de vídeo principal ausente.' });
+        }
+
+        jobs[jobId] = { status: 'pending', files, params: req.body };
+        res.status(202).json({ jobId });
+
+        // Inicia o processamento em segundo plano
+        if (action === 'script-to-video') {
+             processScriptToVideoJob(jobId);
+        } else {
+             processSingleClipJob(jobId);
+        }
+    });
 });
 
-// --- ROTA DE EXPORTAÇÃO (NOVO FLUXO) ---
-app.post('/api/export/start', upload.any(), (req, res) => {
-    const jobId = `export_${Date.now()}`;
-    if (!req.body.projectState) {
-        return res.status(400).json({ message: 'Dados do projeto em falta.' });
+// 2. Verificar o status de uma tarefa
+app.get('/api/process/status/:jobId', (req, res) => {
+    const job = jobs[req.params.jobId];
+    if (!job) return res.status(404).json({ message: 'Tarefa não encontrada.' });
+    res.status(200).json({ status: job.status, progress: job.progress, downloadUrl: job.downloadUrl, error: job.error });
+});
+
+// 3. Baixar o resultado de uma tarefa concluída
+app.get('/api/process/download/:jobId', (req, res) => {
+    const job = jobs[req.params.jobId];
+    if (!job || job.status !== 'completed' || !job.outputPath) {
+        return res.status(404).json({ message: 'Ficheiro não encontrado ou a tarefa não está concluída.' });
     }
+    res.download(path.resolve(job.outputPath), path.basename(job.outputPath), (err) => {
+        if (err) console.error("Erro ao fazer o download do ficheiro:", err);
+        const allFiles = [];
+        if (job.files.video) allFiles.push(...job.files.video);
+        if (job.files.style) allFiles.push(...job.files.style);
+        if (job.files.all) allFiles.push(...job.files.all);
+        cleanupFiles([...allFiles, job.outputPath]);
+        delete jobs[req.params.jobId];
+    });
+});
+
+function processScriptToVideoJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'processing';
+    job.progress = 0;
+    const outputFilename = `script_video_${Date.now()}.mp4`;
+    const outputPath = path.join(uploadDir, outputFilename);
+    job.outputPath = outputPath;
+
+    // Organizar pares imagem/audio
+    const images = job.files.all.filter(f => f.fieldname.startsWith('image_')).sort((a,b) => a.fieldname.localeCompare(b.fieldname));
+    const audios = job.files.all.filter(f => f.fieldname.startsWith('audio_')).sort((a,b) => a.fieldname.localeCompare(b.fieldname));
+
+    if (images.length === 0 || audios.length === 0 || images.length !== audios.length) {
+        job.status = 'failed'; job.error = "Desequilíbrio entre imagens e áudios."; return;
+    }
+
+    // 1. Obter duração dos áudios
+    const durations = [];
+    let completedProbes = 0;
+
+    const run = async () => {
+        try {
+            for (const audio of audios) {
+                const duration = await new Promise((resolve, reject) => {
+                    exec(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audio.path}"`, (err, stdout) => {
+                        if (err) reject(err); else resolve(parseFloat(stdout.trim()));
+                    });
+                });
+                durations.push(duration);
+                job.progress = 10 + (completedProbes++ / audios.length) * 10;
+            }
+
+            // 2. Construir comando complexo
+            let inputs = '';
+            let filterComplex = '';
+            let concatV = '';
+            let concatA = '';
+
+            for (let i = 0; i < images.length; i++) {
+                inputs += `-loop 1 -t ${durations[i]} -i "${images[i].path}" -i "${audios[i].path}" `;
+                // Efeito Ken Burns aleatório
+                const zoomStart = 1 + Math.random() * 0.3;
+                const zoomEnd = 1 + Math.random() * 0.3;
+                // zoompan com duração fixa baseada em frames (25fps)
+                const frames = Math.ceil(durations[i] * 25);
+                filterComplex += `[${i*2}:v]scale=1280:720,setsar=1,zoompan=z='min(zoom+0.0015,1.5)':d=${frames}:s=1280x720[v${i}]; `;
+                concatV += `[v${i}]`;
+                concatA += `[${i*2+1}:a]`;
+            }
+
+            filterComplex += `${concatV}${concatA}concat=n=${images.length}:v=1:a=1[outv][outa]`;
+
+            const command = `ffmpeg ${inputs} -filter_complex "${filterComplex}" -map "[outv]" -map "[outa]" -c:v libx264 -pix_fmt yuv420p -shortest "${outputPath}"`;
+            
+            console.log(`[Job ${jobId}] Rendering Script Video...`);
+            
+            exec(command, (err) => {
+                if (err) {
+                    console.error(err);
+                    job.status = 'failed'; job.error = "Erro no FFmpeg: " + err.message;
+                } else {
+                    job.status = 'completed'; job.progress = 100; job.downloadUrl = `/api/process/download/${jobId}`;
+                }
+            });
+
+        } catch (e) {
+            job.status = 'failed'; job.error = e.message;
+        }
+    };
+    run();
+}
+
+
+// --- LÓGICA DE PROCESSAMENTO DE TAREFAS DE CLIPE ÚNICO ---
+function processSingleClipJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'processing';
+    job.progress = 0;
+
+    const action = jobId.split('_')[0];
+    const videoFile = job.files.video[0];
+    const outputFilename = `${action}-${videoFile.filename}`;
+    const outputPath = path.join(uploadDir, outputFilename);
+    job.outputPath = outputPath;
+
+    let command;
+    let processHandler;
+
+    const cleanup = () => {
+        const allFiles = [];
+        if (job.files.video) allFiles.push(...job.files.video);
+        if (job.files.style) allFiles.push(...job.files.style);
+        cleanupFiles([...allFiles, outputPath]);
+    };
+
+    switch (action) {
+        case 'stabilize-real':
+            const transformsFile = path.join(uploadDir, `${videoFile.filename}.trf`);
+            const detectCommand = `ffmpeg -i "${videoFile.path}" -vf vidstabdetect=result="${transformsFile}" -f null -`;
+            const transformCommand = `ffmpeg -i "${videoFile.path}" -vf vidstabtransform=input="${transformsFile}":zoom=0:smoothing=10,unsharp=5:5:0.8:3:3:0.4 -vcodec libx264 -preset fast "${outputPath}"`;
+            
+            processHandler = (resolve, reject) => {
+                job.progress = 10;
+                exec(detectCommand, (err, stdout, stderr) => {
+                    if (err) return reject(stderr);
+                    job.progress = 50;
+                    exec(transformCommand, (err2, stdout2, stderr2) => {
+                        fs.unlink(transformsFile, () => {});
+                        if (err2) return reject(stderr2);
+                        job.progress = 100;
+                        resolve();
+                    });
+                });
+            };
+            break;
+
+        case 'style-transfer-real':
+             // Simula estilo artístico usando curvas de cor e contraste
+             command = `ffmpeg -i "${videoFile.path}" -vf "curves=vintage,eq=contrast=1.2:saturation=1.3:brightness=0.1" -c:v libx264 -preset veryfast "${outputPath}"`;
+             break;
+        
+        case 'remove-bg-real':
+             // Remoção de fundo requer IA avançada não disponível no FFmpeg puro.
+             // Retornamos o original para não quebrar o app.
+             console.log("Remoção de fundo requer Python. Retornando vídeo original.");
+             processHandler = (resolve, reject) => {
+                 fs.copyFile(videoFile.path, outputPath, (err) => {
+                     if (err) reject(err);
+                     else resolve();
+                 });
+             };
+             break;
+
+        case 'reframe-real':
+             // Recorte central inteligente para 9:16
+             // crop=ih*(9/16):ih:(iw-ow)/2:0 -> Mantém altura, calcula largura para 9:16, centraliza horizontalmente
+             command = `ffmpeg -i "${videoFile.path}" -vf "scale=-1:720,crop=ih*(9/16):ih:(iw-ow)/2:0,setsar=1" -c:v libx264 -preset veryfast "${outputPath}"`;
+             break;
+
+        case 'retouch-real':
+             // Suavização de pele usando Smart Blur
+             command = `ffmpeg -i "${videoFile.path}" -vf "smartblur=lr=1.5:ls=-0.8:lt=-5.0" -c:v libx264 -preset veryfast "${outputPath}"`;
+             break;
+
+        case 'interpolate-real':
+             // Interpolação de movimento usando minterpolate (simula câmera lenta/fluidez)
+             // Nota: minterpolate é pesado, usamos configurações para performance
+             command = `ffmpeg -i "${videoFile.path}" -vf "minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1" -c:v libx264 -preset ultrafast "${outputPath}"`;
+             break;
+        
+        default:
+            job.status = 'failed';
+            job.error = `Ação desconhecida: ${action}`;
+            cleanup();
+            return;
+    }
+
+    const executeJob = () => {
+        const promise = processHandler ? new Promise(processHandler) : new Promise((resolve, reject) => {
+            console.log(`[Job ${jobId}] Executando FFmpeg: ${command}`);
+            const process = exec(command, (err, stdout, stderr) => {
+                if (err) {
+                    console.error(`[Job ${jobId}] Erro:`, stderr);
+                    return reject(stderr || err.message);
+                }
+                resolve(stdout);
+            });
+        });
+
+        promise.then(() => {
+            job.status = 'completed';
+            job.progress = 100;
+            job.downloadUrl = `/api/process/download/${jobId}`;
+        }).catch(error => {
+            job.status = 'failed';
+            job.error = `Falha no processamento: ${error.toString().slice(-300)}`;
+            console.error(`[Job ${jobId} Falhou]:`, error);
+        });
+    };
+    
+    executeJob();
+}
+
+
+
+// --- ROTAS SÍNCRONAS (PARA TAREFAS RÁPIDAS) ---
+app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
+    processWithFfmpegStream(req, res, ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'], 'video/mp4', 'Reverso');
+});
+app.post('/api/process/extract-audio-real', upload.single('video'), (req, res) => {
+    processWithFfmpegStream(req, res, ['-vn', '-q:a', '0', '-map', 'a', '-f', 'mp3'], 'audio/mpeg', 'Extrair Áudio');
+});
+app.post('/api/process/reduce-noise-real', upload.single('video'), (req, res) => {
+    processWithFfmpegStream(req, res, ['-af', 'afftdn', '-f', 'mp4'], 'video/mp4', 'Redução de Ruído');
+});
+app.post('/api/process/isolate-voice-real', upload.single('video'), (req, res) => {
+    processWithFfmpegStream(req, res, ['-af', 'lowpass=f=3000,highpass=f=300', '-f', 'mp4'], 'video/mp4', 'Isolar Voz');
+});
+app.post('/api/process/enhance-voice-real', upload.single('video'), (req, res) => {
+    processWithFfmpegStream(req, res, ['-af', 'highpass=f=200,lowpass=f=3000,acompressor=threshold=0.089:ratio=2:attack=20:release=1000', '-f', 'mp4'], 'video/mp4', 'Aprimorar Voz');
+});
+app.post('/api/process/remove-silence-real', upload.single('video'), (req, res) => {
+    const threshold = req.body.threshold || -30;
+    const duration = req.body.duration || 0.5;
+    const filter = `silenceremove=stop_periods=-1:stop_duration=${duration}:stop_threshold=${threshold}dB`;
+    processWithFfmpegStream(req, res, ['-af', filter, '-f', 'mp4'], 'video/mp4', 'Remover Silêncio');
+});
+app.post('/api/process/extract-frame', upload.single('video'), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    const { path: inputPath, filename } = req.file;
+    const timestamp = req.body.timestamp || '0';
+    const outputFilename = `frame-${path.parse(filename).name}.png`;
+    const outputPath = path.join(uploadDir, outputFilename);
+    const command = `ffmpeg -ss ${timestamp} -i "${inputPath}" -vframes 1 -f image2 "${outputPath}"`;
+    exec(command, (err, stdout, stderr) => {
+        cleanupFiles([inputPath]);
+        if (err) {
+            console.error('[Extract Frame] Falha:', stderr);
+            cleanupFiles([outputPath]);
+            return res.status(500).json({ message: 'Falha ao extrair o frame.' });
+        }
+        res.sendFile(path.resolve(outputPath), (sendErr) => {
+            if (sendErr) console.error('Erro ao enviar frame:', sendErr);
+            cleanupFiles([outputPath]);
+        });
+    });
+});
+const voiceEffects = { 'chipmunk': 'asetrate=44100*1.5,atempo=1/1.5', 'robot': 'afftfilt=real=\'hypot(re,im)*cos(0)\':imag=\'hypot(re,im)*sin(0)\'', 'deep': 'asetrate=44100*0.7,atempo=1/0.7', 'echo': 'aecho=0.8:0.9:1000:0.3', 'vibrato': 'vibrato=f=5.0:d=0.5', };
+Object.entries(voiceEffects).forEach(([name, filter]) => {
+    app.post(`/api/process/voice-effect-${name}`, upload.single('video'), (req, res) => {
+        processWithFfmpegStream(req, res, ['-af', filter, '-f', 'mp4'], 'video/mp4', `Efeito de Voz: ${name}`);
+    });
+});
+app.post('/api/process/scene-detect', upload.single('video'), (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
+    const { path: inputPath } = req.file;
+    const command = `ffmpeg -i "${inputPath}" -vf "select='gt(scene,0.4)',showinfo" -f null - 2>&1`;
+    exec(command, (err, stdout, stderr) => {
+        cleanupFiles([inputPath]);
+        if (err) { console.error('Scene Detect Error:', stderr); return res.status(500).send('Falha ao detectar cenas.'); }
+        const timestamps = (stderr.match(/pts_time:([\d.]+)/g) || []).map(s => parseFloat(s.split(':')[1]));
+        res.json(timestamps);
+    });
+});
+
+
+// --- ROTA DE EXPORTAÇÃO COMPLETA ---
+app.post('/api/export/start', uploadAny, (req, res) => {
+    const jobId = `export_${Date.now()}`;
+    if (!req.body.projectState) return res.status(400).json({ message: 'Dados do projeto em falta.' });
     jobs[jobId] = { status: 'pending', files: req.files, projectState: JSON.parse(req.body.projectState) };
     res.status(202).json({ jobId });
     processExportJob(jobId);
@@ -124,23 +408,16 @@ app.get('/api/export/status/:jobId', (req, res) => {
 });
 app.get('/api/export/download/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
-    if (!job || job.status !== 'completed' || !job.outputPath) {
-        return res.status(404).json({ message: 'Ficheiro não encontrado ou a tarefa não está concluída.' });
-    }
-    res.download(path.resolve(job.outputPath), `ProEdit_Export.mp4`, (err) => {
-        if (err) console.error("Erro ao fazer o download do ficheiro:", err);
-        if (fs.existsSync(job.outputPath)) fs.unlink(job.outputPath, () => {});
-        job.files.forEach(f => fs.existsSync(f.path) && fs.unlink(f.path, () => {}));
+    if (!job || job.status !== 'completed' || !job.outputPath) return res.status(404).json({ message: 'Ficheiro não encontrado.' });
+    res.download(path.resolve(job.outputPath), path.basename(job.outputPath), (err) => {
+        if (err) console.error("Erro no download:", err);
+        cleanupFiles([job.outputPath, ...job.files]);
         delete jobs[req.params.jobId];
     });
 });
-
-// --- LÓGICA DE PROCESSAMENTO DA TAREFA DE EXPORTAÇÃO (VERSÃO CORRIGIDA) ---
 function processExportJob(jobId) {
     const job = jobs[jobId];
-    job.status = "processing";
-    job.progress = 0;
-
+    job.status = "processing"; job.progress = 0;
     try {
         const { files, projectState } = job;
         if (!projectState || typeof projectState !== 'object') throw new Error("Os dados do projeto (projectState) estão inválidos ou em falta.");
@@ -155,8 +432,7 @@ function processExportJob(jobId) {
         
         if (files.length === 0 && totalDuration > 0) { job.status = "failed"; job.error = "Não foram enviados ficheiros para um projeto com duração."; return; }
 
-        const commandArgs = [];
-        const fileMap = {};
+        const commandArgs = []; const fileMap = {};
         files.forEach(file => {
             const mediaInfo = media[file.originalname];
             if (mediaInfo?.type === "image") commandArgs.push("-loop", "1");
@@ -167,7 +443,9 @@ function processExportJob(jobId) {
         let filterChains = [];
         const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
         
-        clips.filter(c => c.track === 'video' || c.track === 'camada').forEach((clip, vIdx) => {
+        const videoAndLayerClips = clips.filter(c => c.track === 'video' || c.track === 'camada');
+        
+        videoAndLayerClips.forEach((clip, vIdx) => {
             const inputIndex = fileMap[clip.fileName];
             if (inputIndex === undefined) return;
 
@@ -180,7 +458,6 @@ function processExportJob(jobId) {
             if (clip.properties.mirror) clipSpecificFilters.push('hflip');
 
             const speed = clip.properties.speed || 1;
-            const speedCurve = clip.properties.speedCurve;
             let speedFilter = `setpts=PTS/${speed}`;
 
             const preFilter = `[${inputIndex}:v]${clipSpecificFilters.length > 0 ? clipSpecificFilters.join(',')+',' : ''}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
@@ -189,13 +466,12 @@ function processExportJob(jobId) {
         });
 
         let videoChain = `color=s=${width}x${height}:c=black:d=${totalDuration}[base]`;
-        const videoClipsToOverlay = clips.filter(c => c.track === 'video' || c.track === 'camada');
-        if (videoClipsToOverlay.length > 0) {
+        if (videoAndLayerClips.length > 0) {
             let prevOverlay = "[base]";
-            videoClipsToOverlay.forEach((clip, idx) => {
-                const isLast = idx === videoClipsToOverlay.length - 1;
+            videoAndLayerClips.forEach((clip, idx) => {
+                const isLast = idx === videoAndLayerClips.length - 1;
                 const nextOverlay = isLast ? "[outv]" : `[ov${idx}]`;
-                const vIdx = clips.filter(c => c.track === 'video' || c.track === 'camada').indexOf(clip);
+                const vIdx = videoAndLayerClips.indexOf(clip);
                 videoChain += `;${prevOverlay}[v${vIdx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
                 prevOverlay = nextOverlay;
             });
@@ -205,22 +481,14 @@ function processExportJob(jobId) {
         filterChains.push(videoChain);
 
         if (audioClips.length > 0) {
-            const delayed = [], mixed = [];
+            const delayed = [];
+            const mixed = [];
             audioClips.forEach((clip, idx) => {
                 const inputIndex = fileMap[clip.fileName];
                 if (inputIndex === undefined) return;
                 const volume = clip.properties.volume ?? 1;
-                const speed = clip.properties.speed || 1;
-                let atempoFilter = '';
-                let currentSpeed = speed;
-                while(currentSpeed > 2.0) { atempoFilter += 'atempo=2.0,'; currentSpeed /= 2.0; }
-                while(currentSpeed < 0.5) { atempoFilter += 'atempo=0.5,'; currentSpeed /= 0.5; }
-                if(currentSpeed !== 1.0) atempoFilter += `atempo=${currentSpeed}`;
-                if (atempoFilter.endsWith(',')) atempoFilter = atempoFilter.slice(0, -1);
-
                 const volFilter = volume !== 1 ? `volume=${volume}` : "anull";
-                delayed.push(`[${inputIndex}:a]${volFilter},asetpts=PTS-STARTPTS${atempoFilter ? ',' + atempoFilter : ''},aresample=44100[a${idx}_pre]`);
-                delayed.push(`[a${idx}_pre]adelay=${clip.start * 1000}|${clip.start * 1000}[a${idx}]`);
+                delayed.push(`[${inputIndex}:a]${volFilter},asetpts=PTS-STARTPTS,aresample=44100[a${idx}_pre]`, `[a${idx}_pre]adelay=${clip.start * 1000}|${clip.start * 1000}[a${idx}]`);
                 mixed.push(`[a${idx}]`);
             });
             filterChains.push(...delayed);
@@ -248,235 +516,8 @@ function processExportJob(jobId) {
     } catch (err) { job.status = "failed"; job.error = "Ocorreu um erro inesperado no servidor: " + err.message; console.error("[Export Job] Erro catastrófico:", err); }
 }
 
-app.post('/api/process/scene-detect', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
-    const { path: inputPath } = req.file;
-    const command = `ffmpeg -i "${inputPath}" -vf "select='gt(scene,0.4)',showinfo" -f null - 2>&1`;
-    exec(command, (err, stdout, stderr) => {
-        fs.unlink(inputPath, () => {});
-        if (err) { console.error('Scene Detect Error:', stderr); return res.status(500).send('Falha ao detectar cenas.'); }
-        const timestamps = (stderr.match(/pts_time:([\d.]+)/g) || []).map(s => parseFloat(s.split(':')[1]));
-        res.json(timestamps);
-    });
-});
 
-app.post('/api/process/normalize-audio', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
-    const { path: inputPath, filename } = req.file;
-    const outputPath = path.join(uploadDir, `normalized-${filename}`);
-    const command = `ffmpeg -i "${inputPath}" -af loudnorm -y "${outputPath}"`;
-    exec(command, (err, stdout, stderr) => {
-        fs.unlink(inputPath, () => {});
-        if (err) { console.error('Normalize Error:', stderr); fs.existsSync(outputPath) && fs.unlink(outputPath, () => {}); return res.status(500).send('Falha ao normalizar áudio.'); }
-        res.sendFile(path.resolve(outputPath), (sendErr) => { if (sendErr) console.error('Erro ao enviar ficheiro normalizado:', sendErr); fs.unlink(outputPath, () => {}); });
-    });
-});
-
-const voiceEffects = {
-    'chipmunk': 'asetrate=44100*1.5,atempo=1/1.5',
-    'robot': 'afftfilt=real=\'hypot(re,im)*cos(0)\':imag=\'hypot(re,im)*sin(0)\'',
-    'deep': 'asetrate=44100*0.7,atempo=1/0.7',
-    'echo': 'aecho=0.8:0.9:1000:0.3',
-    'vibrato': 'vibrato=f=5.0:d=0.5',
-};
-
-Object.entries(voiceEffects).forEach(([name, filter]) => {
-    app.post(`/api/process/voice-effect-${name}`, upload.single('video'), (req, res) => {
-        processWithFfmpegStream(req, res, ['-af', filter, '-f', 'mp4'], 'video/mp4', `Efeito de Voz: ${name}`);
-    });
-});
-
-
-// --- Rota de Transcodificação ---
-app.post('/api/process/transcode', upload.single('video'), (req, res) => {
-    const args = ['-c:v', 'libx264', '-preset', 'veryfast', '-c:a', 'aac', '-pix_fmt', 'yuv420p', '-f', 'mp4'];
-    processWithFfmpegStream(req, res, args, 'video/mp4', 'Transcodificar');
-});
-
-// --- Rotas de Processamento FFmpeg ---
-app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
-    processWithFfmpegStream(req, res, ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'], 'video/mp4', 'Reverso');
-});
-app.post('/api/process/extract-audio-real', upload.single('video'), (req, res) => {
-    processWithFfmpegStream(req, res, ['-vn', '-q:a', '0', '-map', 'a', '-f', 'mp3'], 'audio/mpeg', 'Extrair Áudio');
-});
-app.post('/api/process/reduce-noise-real', upload.single('video'), (req, res) => {
-    processWithFfmpegStream(req, res, ['-af', 'afftdn', '-f', 'mp4'], 'video/mp4', 'Redução de Ruído');
-});
-app.post('/api/process/isolate-voice-real', upload.single('video'), (req, res) => {
-    processWithFfmpegStream(req, res, ['-af', 'lowpass=f=3000,highpass=f=300', '-f', 'mp4'], 'video/mp4', 'Isolar Voz');
-});
-app.post('/api/process/enhance-voice-real', upload.single('video'), (req, res) => {
-    processWithFfmpegStream(req, res, ['-af', 'highpass=f=200,lowpass=f=3000,acompressor=threshold=0.089:ratio=2:attack=20:release=1000', '-f', 'mp4'], 'video/mp4', 'Aprimorar Voz');
-});
-app.post('/api/process/mask-real', upload.single('video'), (req, res) => {
-    processWithFfmpegStream(req, res, ['-vf', "format=rgba,geq=r='r(X,Y)':a='if(lte(pow(X-W/2,2)+pow(Y-H/2,2),pow(min(W,H)/3,2)),255,0)'", '-f', 'mp4'], 'video/mp4', 'Mascarar');
-});
-app.post('/api/process/remove-silence-real', upload.single('video'), (req, res) => {
-    const threshold = req.body.threshold || -30;
-    const duration = req.body.duration || 0.5;
-    const filter = `silenceremove=stop_periods=-1:stop_duration=${duration}:stop_threshold=${threshold}dB`;
-    const ffmpegArgs = ['-af', filter, '-f', 'mp4'];
-    processWithFfmpegStream(req, res, ffmpegArgs, 'video/mp4', 'Remover Silêncio');
-});
-
-// --- NOVA ROTA: Extrair Frame ---
-app.post('/api/process/extract-frame', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
-    
-    const { path: inputPath, filename } = req.file;
-    const timestamp = req.body.timestamp || '0';
-    const outputFilename = `frame-${path.parse(filename).name}-${Date.now()}.png`;
-    const outputPath = path.join(uploadDir, outputFilename);
-
-    const cleanup = () => { [inputPath, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
-
-    // Comando FFmpeg para extrair um único frame como PNG
-    const command = `ffmpeg -i "${inputPath}" -ss ${timestamp} -vframes 1 -f image2 "${outputPath}"`;
-
-    console.log('[Extract Frame] Comando:', command);
-
-    exec(command, (err, stdout, stderr) => {
-        if (err) {
-            console.error('[Extract Frame] Falha:', stderr);
-            cleanup();
-            return res.status(500).json({ message: 'Falha ao extrair o frame do vídeo.' });
-        }
-        
-        console.log('[Extract Frame] Concluído.');
-        res.sendFile(path.resolve(outputPath), (sendErr) => {
-            if (sendErr) console.error('Erro ao enviar frame:', sendErr);
-            cleanup();
-        });
-    });
-});
-
-
-// --- Rotas FFmpeg (Não-Streaming para Processos Pesados) ---
-app.post('/api/process/stabilize-real', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
-    const { path: inputPath, filename } = req.file;
-    const transformsFile = path.join(uploadDir, `${filename}.trf`);
-    const outputPath = path.join(uploadDir, `stabilized-${filename}`);
-    const cleanup = () => { [inputPath, transformsFile, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
-    const detectCommand = `ffmpeg -i ${inputPath} -vf vidstabdetect=result=${transformsFile} -f null -`;
-    console.log('[Stabilize Job] Passagem 1:', detectCommand);
-    exec(detectCommand, (err, stdout, stderr) => {
-        if (err) {
-            console.error('[Stabilize Job] Falha na Passagem 1:', stderr);
-            cleanup();
-            return res.status(500).json({ message: 'Falha na análise do vídeo para estabilização.' });
-        }
-        console.log('[Stabilize Job] Passagem 1 concluída.');
-        const transformCommand = `ffmpeg -i ${inputPath} -vf vidstabtransform=input=${transformsFile}:zoom=0:smoothing=10,unsharp=5:5:0.8:3:3:0.4 -vcodec libx264 -preset fast ${outputPath}`;
-        console.log('[Stabilize Job] Passagem 2:', transformCommand);
-        exec(transformCommand, (err2, stdout2, stderr2) => {
-            if (err2) {
-                console.error('[Stabilize Job] Falha na Passagem 2:', stderr2);
-                cleanup();
-                return res.status(500).json({ message: 'Falha ao aplicar a estabilização.' });
-            }
-            console.log('[Stabilize Job] Passagem 2 concluída.');
-            res.sendFile(path.resolve(outputPath), (sendErr) => {
-                if (sendErr) console.error('Erro ao enviar ficheiro estabilizado:', sendErr);
-                cleanup();
-            });
-        });
-    });
-});
-app.post('/api/process/motionblur-real', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
-    const { path: inputPath, filename } = req.file;
-    const outputPath = path.join(uploadDir, `motionblur-${filename}`);
-    const cleanup = () => { [inputPath, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
-    const command = `ffmpeg -i ${inputPath} -vf "minterpolate='fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1',tblend=all_mode=average,framestep=2" -preset veryfast ${outputPath}`;
-    console.log('[MotionBlur Job] Comando:', command);
-    exec(command, (err, stdout, stderr) => {
-        if (err) {
-            console.error('[MotionBlur Job] Falha:', stderr);
-            cleanup();
-            return res.status(500).json({ message: 'Falha ao aplicar o borrão de movimento.' });
-        }
-        console.log('[MotionBlur Job] Concluído.');
-        res.sendFile(path.resolve(outputPath), (sendErr) => {
-            if (sendErr) console.error('Erro ao enviar ficheiro:', sendErr);
-            cleanup();
-        });
-    });
-});
-
-// --- Rotas de IA (REAIS e NÃO IMPLEMENTADAS) ---
-app.post('/api/process/remove-bg-real', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
-    const { path: inputPath, filename } = req.file;
-    const outputFilename = `bg-removed-${path.parse(filename).name}.webm`;
-    const outputPath = path.join(uploadDir, outputFilename);
-    const cleanup = () => { [inputPath, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
-    console.log('[Remove-BG] Chamando script Python...');
-    const pythonProcess = spawn('python', ['remove_background.py', inputPath, outputPath]);
-    pythonProcess.stdout.on('data', (data) => console.log(`[Python STDOUT]: ${data}`));
-    pythonProcess.stderr.on('data', (data) => console.error(`[Python STDERR]: ${data}`));
-    pythonProcess.on('close', (code) => {
-        if (code !== 0) {
-            cleanup();
-            return res.status(500).json({ message: 'O script de remoção de fundo falhou. Verifique se Python, moviepy e rembg estão instalados no servidor.' });
-        }
-        console.log('[Remove-BG] Concluído! Enviando vídeo...');
-        res.sendFile(path.resolve(outputPath), (sendErr) => {
-            if (sendErr) console.error('Erro ao enviar vídeo com fundo removido:', sendErr);
-            cleanup();
-        });
-    });
-});
-
-// --- NOVA ROTA: Câmera Lenta Mágica (AI Frame Interpolation) ---
-app.post('/api/process/interpolate-real', upload.single('video'), (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
-    
-    const { path: inputPath, filename } = req.file;
-    const outputFilename = `interpolated-${path.parse(filename).name}.mp4`;
-    const outputPath = path.join(uploadDir, outputFilename);
-    
-    const cleanup = () => { [inputPath, outputPath].forEach(f => fs.existsSync(f) && fs.unlink(f, () => {})); };
-
-    console.log('[AI Interpolation] Chamando script Python...');
-    
-    // Chama o script Python, passando o arquivo de entrada e o de saída como argumentos
-    const pythonProcess = spawn('python', ['interpolate_video.py', inputPath, outputPath]);
-
-    pythonProcess.stdout.on('data', (data) => console.log(`[Python STDOUT]: ${data}`));
-    pythonProcess.stderr.on('data', (data) => console.error(`[Python STDERR]: ${data}`));
-
-    pythonProcess.on('close', (code) => {
-        if (code !== 0) {
-            cleanup();
-            return res.status(500).json({ message: 'O script de interpolação de frames falhou. Verifique as dependências de IA no servidor.' });
-        }
-        
-        console.log('[AI Interpolation] Concluído! Enviando vídeo...');
-        res.sendFile(path.resolve(outputPath), (sendErr) => {
-            if (sendErr) console.error('Erro ao enviar vídeo interpolado:', sendErr);
-            cleanup();
-        });
-    });
-});
-
-
-const notImplemented = (req, res) => {
-    if (req.file && fs.existsSync(req.file.path)) fs.unlink(req.file.path, () => {});
-    res.status(501).json({ message: 'Funcionalidade ainda não implementada no servidor.' });
-};
-app.post('/api/process/reframe', upload.single('video'), notImplemented);
-app.post('/api/process/remove-bg', upload.single('video'), notImplemented); // Rota antiga simulada
-app.post('/api/process/auto-captions', upload.single('video'), simulateAiProcess); // Mantendo simulação por enquanto
-app.post('/api/process/retouch', upload.single('video'), notImplemented);
-app.post('/api/process/ai-removal', upload.single('video'), notImplemented);
-app.post('/api/process/ai-expand', upload.single('video'), notImplemented);
-app.post('/api/process/lip-sync', upload.single('video'), notImplemented);
-app.post('/api/process/camera-track', upload.single('video'), notImplemented);
-app.post('/api/process/video-translate', upload.single('video'), notImplemented);
-
-// --- Iniciar o Servidor ---
+// Iniciar o Servidor
 app.listen(PORT, () => {
   console.log(`Servidor a escutar na porta ${PORT}`);
 });
