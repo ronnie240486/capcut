@@ -331,28 +331,28 @@ function processSingleClipJob(jobId) {
 
 
 // --- ROTAS SÍNCRONAS (PARA TAREFAS RÁPIDAS) ---
-app.post('/api/process/reverse-real', uploadSingle, (req, res) => {
+app.post('/api/process/reverse-real', upload.single('video'), (req, res) => {
     processWithFfmpegStream(req, res, ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'], 'video/mp4', 'Reverso');
 });
-app.post('/api/process/extract-audio-real', uploadSingle, (req, res) => {
+app.post('/api/process/extract-audio-real', upload.single('video'), (req, res) => {
     processWithFfmpegStream(req, res, ['-vn', '-q:a', '0', '-map', 'a', '-f', 'mp3'], 'audio/mpeg', 'Extrair Áudio');
 });
-app.post('/api/process/reduce-noise-real', uploadSingle, (req, res) => {
+app.post('/api/process/reduce-noise-real', upload.single('video'), (req, res) => {
     processWithFfmpegStream(req, res, ['-af', 'afftdn', '-f', 'mp4'], 'video/mp4', 'Redução de Ruído');
 });
-app.post('/api/process/isolate-voice-real', uploadSingle, (req, res) => {
+app.post('/api/process/isolate-voice-real', upload.single('video'), (req, res) => {
     processWithFfmpegStream(req, res, ['-af', 'lowpass=f=3000,highpass=f=300', '-f', 'mp4'], 'video/mp4', 'Isolar Voz');
 });
-app.post('/api/process/enhance-voice-real', uploadSingle, (req, res) => {
+app.post('/api/process/enhance-voice-real', upload.single('video'), (req, res) => {
     processWithFfmpegStream(req, res, ['-af', 'highpass=f=200,lowpass=f=3000,acompressor=threshold=0.089:ratio=2:attack=20:release=1000', '-f', 'mp4'], 'video/mp4', 'Aprimorar Voz');
 });
-app.post('/api/process/remove-silence-real', uploadSingle, (req, res) => {
+app.post('/api/process/remove-silence-real', upload.single('video'), (req, res) => {
     const threshold = req.body.threshold || -30;
     const duration = req.body.duration || 0.5;
     const filter = `silenceremove=stop_periods=-1:stop_duration=${duration}:stop_threshold=${threshold}dB`;
     processWithFfmpegStream(req, res, ['-af', filter, '-f', 'mp4'], 'video/mp4', 'Remover Silêncio');
 });
-app.post('/api/process/extract-frame', uploadSingle, (req, res) => {
+app.post('/api/process/extract-frame', upload.single('video'), (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
     const { path: inputPath, filename } = req.file;
     const timestamp = req.body.timestamp || '0';
@@ -374,11 +374,11 @@ app.post('/api/process/extract-frame', uploadSingle, (req, res) => {
 });
 const voiceEffects = { 'chipmunk': 'asetrate=44100*1.5,atempo=1/1.5', 'robot': 'afftfilt=real=\'hypot(re,im)*cos(0)\':imag=\'hypot(re,im)*sin(0)\'', 'deep': 'asetrate=44100*0.7,atempo=1/0.7', 'echo': 'aecho=0.8:0.9:1000:0.3', 'vibrato': 'vibrato=f=5.0:d=0.5', };
 Object.entries(voiceEffects).forEach(([name, filter]) => {
-    app.post(`/api/process/voice-effect-${name}`, uploadSingle, (req, res) => {
+    app.post(`/api/process/voice-effect-${name}`, upload.single('video'), (req, res) => {
         processWithFfmpegStream(req, res, ['-af', filter, '-f', 'mp4'], 'video/mp4', `Efeito de Voz: ${name}`);
     });
 });
-app.post('/api/process/scene-detect', uploadSingle, (req, res) => {
+app.post('/api/process/scene-detect', upload.single('video'), (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
     const { path: inputPath } = req.file;
     const command = `ffmpeg -i "${inputPath}" -vf "select='gt(scene,0.4)',showinfo" -f null - 2>&1`;
