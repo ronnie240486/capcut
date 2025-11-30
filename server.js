@@ -165,20 +165,16 @@ function processScriptToVideoJob(jobId) {
     }
 
     // 1. Obter duração dos áudios
-    const durations = [];
-    let completedProbes = 0;
-
     const run = async () => {
         try {
-            for (const audio of audios) {
-                const duration = await new Promise((resolve, reject) => {
-                    exec(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audio.path}"`, (err, stdout) => {
-                        if (err) reject(err); else resolve(parseFloat(stdout.trim()));
-                    });
+            const durationPromises = audios.map(audio => new Promise((resolve, reject) => {
+                exec(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audio.path}"`, (err, stdout) => {
+                    if (err) reject(err); else resolve(parseFloat(stdout.trim()));
                 });
-                durations.push(duration);
-                job.progress = 10 + (completedProbes++ / audios.length) * 10;
-            }
+            }));
+
+            const durations = await Promise.all(durationPromises);
+            job.progress = 20;
 
             // 2. Construir comando complexo
             let inputs = '';
@@ -193,12 +189,15 @@ function processScriptToVideoJob(jobId) {
                 filterComplex += `[${i*2}:v]scale=1280:720,setsar=1,zoompan=z='min(zoom+0.0015,1.5)':d=${frames}:s=1280x720[v${i}]; `;
                 
                 // IMPORTANTE: Intercalar Video e Audio para o filtro concat (V, A, V, A...)
-                concatSegments += `[v${i}][${i*2+1}:a]`;
+                // Usar aresample para garantir sincronia
+                filterComplex += `[${i*2+1}:a]aresample=async=1[a${i}]; `;
+                concatSegments += `[v${i}][a${i}]`;
             }
 
             filterComplex += `${concatSegments}concat=n=${images.length}:v=1:a=1[outv][outa]`;
 
-            const command = `ffmpeg ${inputs} -filter_complex "${filterComplex}" -map "[outv]" -map "[outa]" -c:v libx264 -pix_fmt yuv420p -shortest "${outputPath}"`;
+            // Adicionado -preset superfast para renderização mais rápida
+            const command = `ffmpeg ${inputs} -filter_complex "${filterComplex}" -map "[outv]" -map "[outa]" -c:v libx264 -preset superfast -pix_fmt yuv420p -c:a aac "${outputPath}"`;
             
             console.log(`[Job ${jobId}] Rendering Script Video...`);
             
