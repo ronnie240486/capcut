@@ -1,4 +1,3 @@
-
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -42,6 +41,7 @@ const uploadFields = multer({ storage: storage }).fields([
     { name: 'video', maxCount: 1 },
     { name: 'style', maxCount: 1 }
 ]);
+const uploadRawAudio = multer({ storage: storage }).single('audio');
 const uploadAny = multer({ storage: storage }).any();
 
 
@@ -80,6 +80,39 @@ app.get('/api/check-ffmpeg', (req, res) => {
     exec('ffmpeg -version', (error) => {
         if (error) return res.status(500).json({ status: 'offline', error: 'FFmpeg not found' });
         res.json({ status: 'online' });
+    });
+});
+
+
+// --- ROTA DE UTILITÁRIO: Converter RAW Audio (PCM) para WAV ---
+app.post('/api/util/convert-raw-audio', uploadRawAudio, (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Nenhum arquivo de áudio enviado.' });
+    
+    // O Gemini retorna PCM 16-bit little-endian, mono, 24000Hz
+    // Precisamos converter isso para um container WAV válido
+    const inputPath = req.file.path;
+    
+    // Argumentos:
+    // -f s16le: Formato de entrada raw PCM signed 16-bit little-endian
+    // -ar 24000: Taxa de amostragem de entrada
+    // -ac 1: Canais de entrada (mono)
+    // -i input: Arquivo de entrada
+    // -f wav: Formato de saída
+    const ffmpegArgs = ['-f', 's16le', '-ar', '24000', '-ac', '1', '-i', inputPath, '-f', 'wav', 'pipe:1'];
+    
+    console.log(`[Convert Audio] Convertendo RAW PCM para WAV...`);
+    
+    const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
+    res.setHeader('Content-Type', 'audio/wav');
+    ffmpegProcess.stdout.pipe(res);
+    
+    ffmpegProcess.stderr.on('data', (data) => {
+        // console.error(`[FFmpeg Convert Audio]: ${data}`); // Verbose
+    });
+    
+    ffmpegProcess.on('close', (code) => {
+        fs.unlink(inputPath, (err) => {});
+        if (code !== 0) console.error(`[Convert Audio] Falha com código ${code}`);
     });
 });
 
