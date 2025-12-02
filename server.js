@@ -202,6 +202,8 @@ app.post('/api/process/start/:action', (req, res) => {
         // Inicia o processamento em segundo plano
         if (action === 'script-to-video') {
              processScriptToVideoJob(jobId);
+        } else if (action === 'video-to-cartoon-real') {
+             processVideoToCartoonAIJob(jobId);
         } else {
              processSingleClipJob(jobId);
         }
@@ -357,6 +359,112 @@ async function processViralCutsJob(jobId) {
         job.error = e.message;
         // Try cleanup
         if(fs.existsSync(audioPath)) fs.unlink(audioPath, ()=>{});
+    }
+}
+
+async function processVideoToCartoonAIJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'processing';
+    job.progress = 0;
+    
+    const videoFile = job.files.video[0];
+    const apiKey = job.params.apiKey; 
+    const style = job.params.style || 'anime';
+    
+    // Parse params object if it came as string
+    let params = {};
+    if (job.params && job.params.params) {
+        try { params = JSON.parse(job.params.params); } catch(e) {}
+    }
+    const safeStyle = params.style || style;
+
+    const outputFilename = `cartoon_${Date.now()}.mp4`;
+    const outputPath = path.join(uploadDir, outputFilename);
+    const framePath = path.join(uploadDir, `frame_${jobId}.jpg`);
+    const genImagePath = path.join(uploadDir, `gen_${jobId}.png`);
+    
+    job.outputPath = outputPath;
+
+    try {
+        if (!apiKey) throw new Error("API Key ausente. Configure no frontend ou .env");
+
+        // 1. Extract a reference frame (at 1 second or middle)
+        console.log(`[Job ${jobId}] Extracting Frame...`);
+        await new Promise((resolve, reject) => {
+            exec(`ffmpeg -ss 00:00:01 -i "${videoFile.path}" -vframes 1 -q:v 2 "${framePath}"`, (err) => {
+                if (err) {
+                    // Try at 0s if 1s fails (short video)
+                    exec(`ffmpeg -i "${videoFile.path}" -vframes 1 -q:v 2 "${framePath}"`, (err2) => {
+                       if (err2) reject(err2); else resolve();
+                    });
+                } else resolve();
+            });
+        });
+        job.progress = 20;
+
+        // 2. Generate Image using Gemini 2.5 Flash Image
+        console.log(`[Job ${jobId}] Generating AI Cartoon (${safeStyle})...`);
+        const imageBuffer = fs.readFileSync(framePath);
+        const base64Image = imageBuffer.toString('base64');
+
+        let prompt = "";
+        if (safeStyle === 'anime') prompt = "Transform this image into a high-quality Anime style illustration. Vibrant colors, cel shading, anime character design. Maintain the composition.";
+        else if (safeStyle === 'pixar') prompt = "Transform this image into a 3D Pixar/Disney style render. Cute, smooth textures, warm lighting, 3D character design.";
+        else if (safeStyle === 'sketch') prompt = "Transform this image into a charcoal sketch or pencil drawing. Black and white, artistic strokes, high contrast.";
+        else if (safeStyle === 'oil') prompt = "Transform this image into a classic Oil Painting. Visible brush strokes, textured, artistic.";
+        else prompt = "Turn this into a cartoon.";
+
+        const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [
+                        { text: prompt },
+                        { inline_data: { mime_type: "image/jpeg", data: base64Image } }
+                    ]
+                }]
+            })
+        });
+
+        if (!aiResponse.ok) throw new Error(`Gemini API Error: ${await aiResponse.text()}`);
+        
+        const aiData = await aiResponse.json();
+        const outputPart = aiData.candidates?.[0]?.content?.parts?.find(p => p.inline_data);
+        
+        if (!outputPart) {
+             console.error("AI Response:", JSON.stringify(aiData));
+             throw new Error("A IA não retornou uma imagem.");
+        }
+
+        const genImageBuffer = Buffer.from(outputPart.inline_data.data, 'base64');
+        fs.writeFileSync(genImagePath, genImageBuffer);
+        job.progress = 60;
+
+        // 3. Create Video (Loop Image + Original Audio)
+        console.log(`[Job ${jobId}] Rendering Final Video...`);
+        // -shortest ensures the video ends when the audio ends
+        // If audio is missing, it creates a 5s static video
+        await new Promise((resolve, reject) => {
+            const cmd = `ffmpeg -loop 1 -i "${genImagePath}" -i "${videoFile.path}" -map 0:v -map 1:a? -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest "${outputPath}"`;
+            exec(cmd, (err) => {
+                if (err) reject(err); else resolve();
+            });
+        });
+
+        // Cleanup
+        fs.unlink(framePath, ()=>{});
+        fs.unlink(genImagePath, ()=>{});
+
+        job.status = 'completed';
+        job.progress = 100;
+        job.downloadUrl = `/api/process/download/${jobId}`;
+
+    } catch (e) {
+        console.error(`[Video-to-Cartoon Error]`, e);
+        job.status = 'failed';
+        job.error = e.message;
+        if (fs.existsSync(framePath)) fs.unlink(framePath, ()=>{});
     }
 }
 
@@ -558,24 +666,10 @@ function processSingleClipJob(jobId) {
              break;
              
         case 'video-to-cartoon-real':
+             // This case is deprecated/replaced by the AI handler, but kept as fallback or for older calls
              const style = params.style || 'anime';
-             
-             // NOTA: 'smartblur' foi removido porque muitas builds FFmpeg não o incluem, causando falha silenciosa.
-             // Usamos 'median' (suavização que preserva bordas) e 'unsharp' (nitidez) como alternativas universais.
-             // Adicionado -c:a copy para garantir que o áudio não seja perdido.
-             
              if (style === 'anime') {
-                 // Anime: Cores saturadas, suavização mediana, bordas nítidas
                  command = `ffmpeg -i "${videoFile.path}" -vf "median=3,unsharp=5:5:1.0:5:5:0.0,eq=saturation=1.5:contrast=1.1" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
-             } else if (style === 'pixar') {
-                 // Pixar: Muito suave, cores vibrantes, leve brilho
-                 command = `ffmpeg -i "${videoFile.path}" -vf "gblur=sigma=2,unsharp=5:5:0.8:3:3:0.0,eq=saturation=1.3:brightness=0.05" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
-             } else if (style === 'sketch') {
-                 // Sketch: Detectar bordas, inverter para fundo branco, converter para cinza
-                 command = `ffmpeg -i "${videoFile.path}" -vf "edgedetect=low=0.1:high=0.4,negate,format=gray" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
-             } else if (style === 'oil') {
-                 // Óleo: Desfoque pesado (Box Blur) para remover detalhes finos + saturação
-                 command = `ffmpeg -i "${videoFile.path}" -vf "boxblur=3:1,eq=saturation=1.4:contrast=1.1" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
              } else {
                  command = `ffmpeg -i "${videoFile.path}" -vf "eq=saturation=1.3" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
              }
