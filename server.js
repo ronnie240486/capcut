@@ -556,21 +556,24 @@ function processSingleClipJob(jobId) {
              // Some filters (like edgedetect) output grayscale (gray), which browsers hate.
              // We add format=yuv420p filter AND -pix_fmt yuv420p flag.
              
+             let vf = "";
              if (style === 'anime') {
                  // Anime: Saturated, Median Blur, Unsharp
-                 command = `ffmpeg -i "${videoFile.path}" -vf "median=3,unsharp=5:5:1.0:5:5:0.0,eq=saturation=1.5:contrast=1.1,format=yuv420p" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
+                 vf = "median=3,unsharp=5:5:1.0:5:5:0.0,eq=saturation=1.5:contrast=1.1,format=yuv420p";
              } else if (style === 'pixar') {
                  // Pixar: Gaussian blur, bright colors
-                 command = `ffmpeg -i "${videoFile.path}" -vf "gblur=sigma=2,unsharp=5:5:0.8:3:3:0.0,eq=saturation=1.3:brightness=0.05,format=yuv420p" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
+                 vf = "gblur=sigma=2,unsharp=5:5:0.8:3:3:0.0,eq=saturation=1.3:brightness=0.05,format=yuv420p";
              } else if (style === 'sketch') {
                  // Sketch: Edgedetect -> Invert -> Grayscale. We must convert back to yuv420p.
-                 command = `ffmpeg -i "${videoFile.path}" -vf "edgedetect=low=0.1:high=0.4,negate,format=gray,format=yuv420p" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
+                 vf = "edgedetect=low=0.1:high=0.4,negate,format=gray,format=yuv420p";
              } else if (style === 'oil') {
                  // Oil: Heavy Box Blur
-                 command = `ffmpeg -i "${videoFile.path}" -vf "boxblur=3:1,eq=saturation=1.4:contrast=1.1,format=yuv420p" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
+                 vf = "boxblur=3:1,eq=saturation=1.4:contrast=1.1,format=yuv420p";
              } else {
-                 command = `ffmpeg -i "${videoFile.path}" -vf "eq=saturation=1.3,format=yuv420p" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
+                 vf = "eq=saturation=1.3,format=yuv420p";
              }
+             
+             command = `ffmpeg -i "${videoFile.path}" -vf "${vf}" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              break;
              
         case 'face-zoom-real':
