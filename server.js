@@ -1,3 +1,6 @@
+
+
+
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -37,11 +40,11 @@ const storage = multer.diskStorage({
 });
 // Middleware de upload para diferentes cenários
 const uploadSingle = multer({ storage: storage }).single('video');
+const uploadAudio = multer({ storage: storage }).single('audio'); // ADICIONADO: Upload específico para áudio
 const uploadFields = multer({ storage: storage }).fields([
     { name: 'video', maxCount: 1 },
     { name: 'style', maxCount: 1 }
 ]);
-const uploadRawAudio = multer({ storage: storage }).single('audio');
 const uploadAny = multer({ storage: storage }).any();
 
 
@@ -56,23 +59,6 @@ const cleanupFiles = (files) => {
     });
 };
 
-const processWithFfmpegStream = (req, res, ffmpegArgs, outputContentType, friendlyName) => {
-    if (!req.file || !fs.existsSync(req.file.path)) {
-        return res.status(400).json({ message: 'Nenhum ficheiro válido foi enviado.' });
-    }
-    const inputPath = req.file.path;
-    const finalArgs = ['-i', inputPath, ...ffmpegArgs, 'pipe:1'];
-    console.log(`[Job Síncrono] ${friendlyName} ffmpeg ${finalArgs.join(' ')}`);
-
-    const ffmpegProcess = spawn('ffmpeg', finalArgs);
-    res.setHeader('Content-Type', outputContentType);
-    ffmpegProcess.stdout.pipe(res);
-    ffmpegProcess.stderr.on('data', (data) => console.error(`[FFmpeg STDERR]: ${data.toString()}`));
-    ffmpegProcess.on('close', () => {
-        fs.unlink(inputPath, (err) => err && console.error("Falha ao apagar input:", err));
-    });
-};
-
 // --- Rotas ---
 app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
 
@@ -80,39 +66,6 @@ app.get('/api/check-ffmpeg', (req, res) => {
     exec('ffmpeg -version', (error) => {
         if (error) return res.status(500).json({ status: 'offline', error: 'FFmpeg not found' });
         res.json({ status: 'online' });
-    });
-});
-
-
-// --- ROTA DE UTILITÁRIO: Converter RAW Audio (PCM) para WAV ---
-app.post('/api/util/convert-raw-audio', uploadRawAudio, (req, res) => {
-    if (!req.file) return res.status(400).json({ message: 'Nenhum arquivo de áudio enviado.' });
-    
-    // O Gemini retorna PCM 16-bit little-endian, mono, 24000Hz
-    // Precisamos converter isso para um container WAV válido
-    const inputPath = req.file.path;
-    
-    // Argumentos:
-    // -f s16le: Formato de entrada raw PCM signed 16-bit little-endian
-    // -ar 24000: Taxa de amostragem de entrada
-    // -ac 1: Canais de entrada (mono)
-    // -i input: Arquivo de entrada
-    // -f wav: Formato de saída
-    const ffmpegArgs = ['-f', 's16le', '-ar', '24000', '-ac', '1', '-i', inputPath, '-f', 'wav', 'pipe:1'];
-    
-    console.log(`[Convert Audio] Convertendo RAW PCM para WAV...`);
-    
-    const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
-    res.setHeader('Content-Type', 'audio/wav');
-    ffmpegProcess.stdout.pipe(res);
-    
-    ffmpegProcess.stderr.on('data', (data) => {
-        // console.error(`[FFmpeg Convert Audio]: ${data}`); // Verbose
-    });
-    
-    ffmpegProcess.on('close', (code) => {
-        fs.unlink(inputPath, (err) => {});
-        if (code !== 0) console.error(`[Convert Audio] Falha com código ${code}`);
     });
 });
 
@@ -259,7 +212,24 @@ function processSingleClipJob(jobId) {
 
     const action = jobId.split('_')[0];
     const videoFile = job.files.video[0];
-    const outputFilename = `${action}-${videoFile.filename}`;
+    
+    // Parse params if sent as string (FormData)
+    let params = {};
+    if (job.params && job.params.params) {
+        try {
+            params = typeof job.params.params === 'string' ? JSON.parse(job.params.params) : job.params.params;
+        } catch(e) { console.error("Error parsing params", e); }
+    } else if (job.params) {
+        params = job.params;
+    }
+
+    let outputExtension = '.mp4';
+    // Use .wav for pure audio processing to ensure quality and prevent video container errors
+    if (['extract-audio-real', 'remove-silence-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real'].includes(action)) {
+        outputExtension = '.wav';
+    }
+
+    const outputFilename = `${action}-${Date.now()}${outputExtension}`;
     const outputPath = path.join(uploadDir, outputFilename);
     job.outputPath = outputPath;
 
@@ -275,6 +245,7 @@ function processSingleClipJob(jobId) {
 
     // Filtros FFmpeg para substituir os scripts Python
     switch (action) {
+        // --- VIDEO TOOLS ---
         case 'stabilize-real':
             const transformsFile = path.join(uploadDir, `${videoFile.filename}.trf`);
             const detectCommand = `ffmpeg -i "${videoFile.path}" -vf vidstabdetect=result="${transformsFile}" -f null -`;
@@ -296,13 +267,11 @@ function processSingleClipJob(jobId) {
             break;
 
         case 'style-transfer-real':
-             // Simula estilo artístico usando curvas de cor e contraste
              command = `ffmpeg -i "${videoFile.path}" -vf "curves=vintage,eq=contrast=1.2:saturation=1.3:brightness=0.1" -c:v libx264 -preset veryfast "${outputPath}"`;
              break;
         
         case 'remove-bg-real':
-             // Remoção de fundo requer IA avançada não disponível no FFmpeg puro.
-             // Retornamos o original para não quebrar o app.
+             // Simulação simples pois requer IA
              console.log("Remoção de fundo requer Python. Retornando vídeo original.");
              processHandler = (resolve, reject) => {
                  fs.copyFile(videoFile.path, outputPath, (err) => {
@@ -313,20 +282,99 @@ function processSingleClipJob(jobId) {
              break;
 
         case 'reframe-real':
-             // Recorte central inteligente para 9:16
-             // crop=ih*(9/16):ih:(iw-ow)/2:0 -> Mantém altura, calcula largura para 9:16, centraliza horizontalmente
-             command = `ffmpeg -i "${videoFile.path}" -vf "scale=-1:720,crop=ih*(9/16):ih:(iw-ow)/2:0,setsar=1" -c:v libx264 -preset veryfast "${outputPath}"`;
+             // Auto Reframe to 9:16 (Vertical)
+             // Mode 'crop': Center Crop (scales height to 1280, crops width to 720 center)
+             // Mode 'blur': Stacked blurred background + scaled original foreground
+             const reframeMode = params.mode || 'crop';
+             
+             if (reframeMode === 'crop') {
+                 // Scale height to 1280 (HD Vertical height), maintain aspect ratio, then crop center 720 width
+                 command = `ffmpeg -i "${videoFile.path}" -vf "scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1" -c:v libx264 -preset veryfast "${outputPath}"`;
+             } else {
+                 // Blur Mode: Background is scaled to fill 9:16 (blurred), Foreground is scaled to fit width (centered)
+                 command = `ffmpeg -i "${videoFile.path}" -vf "split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2" -c:v libx264 -preset veryfast "${outputPath}"`;
+             }
              break;
 
         case 'retouch-real':
-             // Suavização de pele usando Smart Blur
              command = `ffmpeg -i "${videoFile.path}" -vf "smartblur=lr=1.5:ls=-0.8:lt=-5.0" -c:v libx264 -preset veryfast "${outputPath}"`;
              break;
 
         case 'interpolate-real':
-             // Interpolação de movimento usando minterpolate (simula câmera lenta/fluidez)
-             // Nota: minterpolate é pesado, usamos configurações para performance
              command = `ffmpeg -i "${videoFile.path}" -vf "minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1" -c:v libx264 -preset ultrafast "${outputPath}"`;
+             break;
+        
+        case 'reverse-real':
+             command = `ffmpeg -i "${videoFile.path}" -vf reverse -af areverse -c:v libx264 -preset veryfast "${outputPath}"`;
+             break;
+             
+        case 'upscale-real':
+             // Upscaling to 4K (3840x2160)
+             // uses lanczos scaling algorithm + unsharp mask to simulate detail enhancement
+             // CRF 18 for high quality
+             command = `ffmpeg -i "${videoFile.path}" -vf "scale=3840:2160:flags=lanczos,unsharp=5:5:1.0:5:5:0.0" -c:v libx264 -preset superfast -crf 18 "${outputPath}"`;
+             break;
+             
+        case 'magic-erase-real':
+             const { x, y, w, h } = params;
+             // Use delogo to remove object in the bounding box
+             // ensure dimensions are valid
+             const dx = Math.round(x);
+             const dy = Math.round(y);
+             const dw = Math.round(w);
+             const dh = Math.round(h);
+             command = `ffmpeg -i "${videoFile.path}" -vf "delogo=x=${dx}:y=${dy}:w=${dw}:h=${dh}:show=0" -c:v libx264 -preset veryfast "${outputPath}"`;
+             break;
+             
+        case 'video-to-cartoon-real':
+             const style = params.style || 'anime';
+             
+             if (style === 'anime') {
+                 // Anime: High saturation, slight smoothing (smartblur), slight edge sharpen
+                 command = `ffmpeg -i "${videoFile.path}" -vf "eq=saturation=1.5:contrast=1.1,smartblur=lr=2.0:ls=-0.9:lt=-5.0,unsharp=3:3:1.0:3:3:0.0" -c:v libx264 -preset veryfast "${outputPath}"`;
+             } else if (style === 'pixar') {
+                 // Pixar: Very smooth (median filter), vibrant colors, soft contrast
+                 // Note: 'median' filter might be slow, so we use smartblur for speed with high radius
+                 command = `ffmpeg -i "${videoFile.path}" -vf "eq=saturation=1.4:contrast=1.05:brightness=0.02,smartblur=lr=3.0:ls=-0.5:lt=-2.0" -c:v libx264 -preset veryfast "${outputPath}"`;
+             } else if (style === 'sketch') {
+                 // Sketch: Edge detection + Grayscale + Invert (black lines on white)
+                 command = `ffmpeg -i "${videoFile.path}" -vf "edgedetect=low=0.1:high=0.4,negate,format=gray" -c:v libx264 -preset veryfast "${outputPath}"`;
+             } else if (style === 'oil') {
+                 // Oil Painting: Heavy smoothing/noise reduction to lose detail, posterization effect
+                 command = `ffmpeg -i "${videoFile.path}" -vf "smartblur=lr=5:ls=-1.0:lt=-10.0,eq=saturation=1.3" -c:v libx264 -preset veryfast "${outputPath}"`;
+             } else {
+                 // Default fallback
+                 command = `ffmpeg -i "${videoFile.path}" -vf "eq=saturation=1.3" -c:v libx264 -preset veryfast "${outputPath}"`;
+             }
+             break;
+
+        // --- AUDIO TOOLS ---
+        case 'extract-audio-real':
+             // Extract audio as WAV
+             command = `ffmpeg -i "${videoFile.path}" -vn -acodec pcm_s16le -ar 44100 -ac 2 "${outputPath}"`;
+             break;
+        
+        case 'remove-silence-real':
+             const silThreshold = params.threshold || -30;
+             const silDuration = params.duration || 0.5;
+             // Use -vn to ignore video stream (prevents errors if input is audio-only OR prevents desync if input is video)
+             // Returns cleaned audio file.
+             command = `ffmpeg -i "${videoFile.path}" -vn -af "silenceremove=start_periods=1:start_duration=${silDuration}:start_threshold=${silThreshold}dB:stop_periods=-1:stop_duration=${silDuration}:stop_threshold=${silThreshold}dB" -acodec pcm_s16le "${outputPath}"`;
+             break;
+
+        case 'reduce-noise-real':
+             const noiseIntensity = params.intensity || 50; 
+             command = `ffmpeg -i "${videoFile.path}" -vn -af "afftdn" -acodec pcm_s16le "${outputPath}"`;
+             break;
+             
+        case 'isolate-voice-real':
+             const isoMode = params.mode || 'voice';
+             const isoFilter = isoMode === 'voice' ? 'lowpass=f=3000,highpass=f=300' : 'bandreject=f=1000:width_type=h:w=2000';
+             command = `ffmpeg -i "${videoFile.path}" -vn -af "${isoFilter}" -acodec pcm_s16le "${outputPath}"`;
+             break;
+
+        case 'enhance-voice-real':
+             command = `ffmpeg -i "${videoFile.path}" -vn -af "highpass=f=200,lowpass=f=3000,acompressor=threshold=0.089:ratio=2:attack=20:release=1000" -acodec pcm_s16le "${outputPath}"`;
              break;
         
         default:
@@ -363,29 +411,66 @@ function processSingleClipJob(jobId) {
 }
 
 
+// --- ROTA DE CONVERSÃO DE ÁUDIO BRUTO (TTS) ---
+app.post('/api/util/convert-raw-audio', uploadAudio, (req, res) => {
+    if (!req.file || !fs.existsSync(req.file.path)) {
+        return res.status(400).json({ message: 'Nenhum arquivo de áudio enviado.' });
+    }
 
-// --- ROTAS SÍNCRONAS (PARA TAREFAS RÁPIDAS) ---
-app.post('/api/process/reverse-real', uploadSingle, (req, res) => {
-    processWithFfmpegStream(req, res, ['-vf', 'reverse', '-af', 'areverse', '-f', 'mp4'], 'video/mp4', 'Reverso');
+    const inputPath = req.file.path;
+    const speed = parseFloat(req.body.speed) || 1.0;
+    const pitch = parseFloat(req.body.pitch) || 0;
+
+    const args = [
+        '-f', 's16le',
+        '-ar', '24000',
+        '-ac', '1',
+        '-i', inputPath
+    ];
+
+    // Build FFmpeg filter chain for Speed and Pitch
+    const filters = [];
+    
+    // Pitch Logic: 
+    // Slider is -10 to 10. We map this to a factor (0.5x to 1.5x roughly).
+    // asetrate changes both pitch and speed. We compensate speed with atempo.
+    if (pitch !== 0) {
+        const pitchFactor = 1 + (pitch / 20); // -10 -> 0.5, +10 -> 1.5
+        // Raw rate from Gemini is 24000Hz
+        const newRate = Math.round(24000 * pitchFactor);
+        
+        filters.push(`asetrate=${newRate}`);
+        // We must compensate the tempo change caused by asetrate
+        // If asetrate speeds up (factor > 1), atempo must slow down (1/factor)
+        filters.push(`atempo=${1/pitchFactor}`);
+    }
+
+    // Speed Logic:
+    // Simple atempo filter
+    if (speed !== 1.0) {
+        filters.push(`atempo=${speed}`);
+    }
+
+    if (filters.length > 0) {
+        args.push('-af', filters.join(','));
+    }
+
+    args.push('-f', 'wav', 'pipe:1');
+
+    console.log(`[TTS Convert] Converting Raw PCM to WAV with filters: ${filters.join(', ')}`);
+    
+    const ffmpeg = spawn('ffmpeg', args);
+
+    res.setHeader('Content-Type', 'audio/wav');
+    ffmpeg.stdout.pipe(res);
+
+    ffmpeg.stderr.on('data', d => console.error(`[FFmpeg TTS]: ${d.toString()}`));
+    
+    ffmpeg.on('close', () => {
+        fs.unlink(inputPath, () => {});
+    });
 });
-app.post('/api/process/extract-audio-real', uploadSingle, (req, res) => {
-    processWithFfmpegStream(req, res, ['-vn', '-q:a', '0', '-map', 'a', '-f', 'mp3'], 'audio/mpeg', 'Extrair Áudio');
-});
-app.post('/api/process/reduce-noise-real', uploadSingle, (req, res) => {
-    processWithFfmpegStream(req, res, ['-af', 'afftdn', '-f', 'mp4'], 'video/mp4', 'Redução de Ruído');
-});
-app.post('/api/process/isolate-voice-real', uploadSingle, (req, res) => {
-    processWithFfmpegStream(req, res, ['-af', 'lowpass=f=3000,highpass=f=300', '-f', 'mp4'], 'video/mp4', 'Isolar Voz');
-});
-app.post('/api/process/enhance-voice-real', uploadSingle, (req, res) => {
-    processWithFfmpegStream(req, res, ['-af', 'highpass=f=200,lowpass=f=3000,acompressor=threshold=0.089:ratio=2:attack=20:release=1000', '-f', 'mp4'], 'video/mp4', 'Aprimorar Voz');
-});
-app.post('/api/process/remove-silence-real', uploadSingle, (req, res) => {
-    const threshold = req.body.threshold || -30;
-    const duration = req.body.duration || 0.5;
-    const filter = `silenceremove=stop_periods=-1:stop_duration=${duration}:stop_threshold=${threshold}dB`;
-    processWithFfmpegStream(req, res, ['-af', filter, '-f', 'mp4'], 'video/mp4', 'Remover Silêncio');
-});
+
 app.post('/api/process/extract-frame', uploadSingle, (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
     const { path: inputPath, filename } = req.file;
@@ -406,12 +491,7 @@ app.post('/api/process/extract-frame', uploadSingle, (req, res) => {
         });
     });
 });
-const voiceEffects = { 'chipmunk': 'asetrate=44100*1.5,atempo=1/1.5', 'robot': 'afftfilt=real=\'hypot(re,im)*cos(0)\':imag=\'hypot(re,im)*sin(0)\'', 'deep': 'asetrate=44100*0.7,atempo=1/0.7', 'echo': 'aecho=0.8:0.9:1000:0.3', 'vibrato': 'vibrato=f=5.0:d=0.5', };
-Object.entries(voiceEffects).forEach(([name, filter]) => {
-    app.post(`/api/process/voice-effect-${name}`, uploadSingle, (req, res) => {
-        processWithFfmpegStream(req, res, ['-af', filter, '-f', 'mp4'], 'video/mp4', `Efeito de Voz: ${name}`);
-    });
-});
+
 app.post('/api/process/scene-detect', uploadSingle, (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
     const { path: inputPath } = req.file;
