@@ -519,22 +519,24 @@ function processSingleClipJob(jobId) {
         case 'video-to-cartoon-real':
              const style = params.style || 'anime';
              
+             // NOTA: 'smartblur' foi removido porque muitas builds FFmpeg não o incluem, causando falha silenciosa.
+             // Usamos 'median' (suavização que preserva bordas) e 'unsharp' (nitidez) como alternativas universais.
+             // Adicionado -c:a copy para garantir que o áudio não seja perdido.
+             
              if (style === 'anime') {
-                 // Anime: High saturation, slight smoothing (smartblur), slight edge sharpen
-                 command = `ffmpeg -i "${videoFile.path}" -vf "eq=saturation=1.5:contrast=1.1,smartblur=lr=2.0:ls=-0.9:lt=-5.0,unsharp=3:3:1.0:3:3:0.0" -c:v libx264 -preset veryfast "${outputPath}"`;
+                 // Anime: Cores saturadas, suavização mediana, bordas nítidas
+                 command = `ffmpeg -i "${videoFile.path}" -vf "median=3,unsharp=5:5:1.0:5:5:0.0,eq=saturation=1.5:contrast=1.1" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
              } else if (style === 'pixar') {
-                 // Pixar: Very smooth (median filter), vibrant colors, soft contrast
-                 // Note: 'median' filter might be slow, so we use smartblur for speed with high radius
-                 command = `ffmpeg -i "${videoFile.path}" -vf "eq=saturation=1.4:contrast=1.05:brightness=0.02,smartblur=lr=3.0:ls=-0.5:lt=-2.0" -c:v libx264 -preset veryfast "${outputPath}"`;
+                 // Pixar: Muito suave, cores vibrantes, leve brilho
+                 command = `ffmpeg -i "${videoFile.path}" -vf "gblur=sigma=2,unsharp=5:5:0.8:3:3:0.0,eq=saturation=1.3:brightness=0.05" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
              } else if (style === 'sketch') {
-                 // Sketch: Edge detection + Grayscale + Invert (black lines on white)
-                 command = `ffmpeg -i "${videoFile.path}" -vf "edgedetect=low=0.1:high=0.4,negate,format=gray" -c:v libx264 -preset veryfast "${outputPath}"`;
+                 // Sketch: Detectar bordas, inverter para fundo branco, converter para cinza
+                 command = `ffmpeg -i "${videoFile.path}" -vf "edgedetect=low=0.1:high=0.4,negate,format=gray" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
              } else if (style === 'oil') {
-                 // Oil Painting: Heavy smoothing/noise reduction to lose detail, posterization effect
-                 command = `ffmpeg -i "${videoFile.path}" -vf "smartblur=lr=5:ls=-1.0:lt=-10.0,eq=saturation=1.3" -c:v libx264 -preset veryfast "${outputPath}"`;
+                 // Óleo: Desfoque pesado (Box Blur) para remover detalhes finos + saturação
+                 command = `ffmpeg -i "${videoFile.path}" -vf "boxblur=3:1,eq=saturation=1.4:contrast=1.1" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
              } else {
-                 // Default fallback
-                 command = `ffmpeg -i "${videoFile.path}" -vf "eq=saturation=1.3" -c:v libx264 -preset veryfast "${outputPath}"`;
+                 command = `ffmpeg -i "${videoFile.path}" -vf "eq=saturation=1.3" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
              }
              break;
              
