@@ -68,6 +68,178 @@ app.get('/api/check-ffmpeg', (req, res) => {
     });
 });
 
+// --- AI ENDPOINTS (MOVED FROM FRONTEND) ---
+
+// 1. Analyze Script (Gemini Text)
+app.post('/api/ai/analyze-script', async (req, res) => {
+    const { script } = req.body;
+    const apiKey = process.env.API_KEY;
+    
+    if (!apiKey) return res.status(500).json({ message: 'API Key do servidor não configurada.' });
+    if (!script) return res.status(400).json({ message: 'Script vazio.' });
+
+    try {
+        const prompt = `
+            Analyze the following script/article and break it down into 3 to 10 visual scenes for a video.
+            Return ONLY a JSON array of objects. Each object must have:
+            - "id": a unique string
+            - "narration": 1-2 sentences of text for the narrator to read (condensed from source)
+            - "visual": a detailed image generation prompt describing what should be seen (style-agnostic, just content)
+            
+            Script:
+            ${script}
+        `;
+
+        const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        });
+
+        if (!aiResponse.ok) throw new Error(`Gemini API Error: ${await aiResponse.text()}`);
+        
+        const aiData = await aiResponse.json();
+        let text = aiData.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+        text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        
+        res.json({ scenes: JSON.parse(text) });
+    } catch (e) {
+        console.error("Analyze Script Error:", e);
+        res.status(500).json({ message: e.message });
+    }
+});
+
+// 2. Generate Image (Gemini Image)
+app.post('/api/ai/generate-image', async (req, res) => {
+    const { prompt } = req.body;
+    const apiKey = process.env.API_KEY;
+
+    if (!apiKey) return res.status(500).json({ message: 'API Key do servidor não configurada.' });
+    if (!prompt) return res.status(400).json({ message: 'Prompt vazio.' });
+
+    try {
+        const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        });
+
+        if (!aiResponse.ok) throw new Error(`Gemini API Error: ${await aiResponse.text()}`);
+        
+        const aiData = await aiResponse.json();
+        const outputPart = aiData.candidates?.[0]?.content?.parts?.find(p => p.inline_data);
+        
+        if (!outputPart) throw new Error("A IA não retornou imagem.");
+
+        const base64 = outputPart.inline_data.data;
+        const buffer = Buffer.from(base64, 'base64');
+        const filename = `AI_Gen_${Date.now()}_${Math.random().toString(36).substr(7)}.png`;
+        const filepath = path.join(uploadDir, filename);
+        
+        fs.writeFileSync(filepath, buffer);
+        
+        // Return URL for frontend to download
+        res.json({ url: `/uploads/${filename}`, filename: filename });
+        
+        // Serve static files logic is implicitly handled by download route usually, 
+        // but let's add a specific static serve for uploads if needed or use download endpoint style
+        // For simplicity, we'll use the existing /api/process/download logic structure or send file directly?
+        // Let's return the URL and have a route to serve it.
+        
+    } catch (e) {
+        console.error("Generate Image Error:", e);
+        res.status(500).json({ message: e.message });
+    }
+});
+
+// Route to serve generated assets
+app.get('/uploads/:filename', (req, res) => {
+    const filepath = path.join(uploadDir, req.params.filename);
+    if(fs.existsSync(filepath)) res.sendFile(path.resolve(filepath));
+    else res.status(404).send('File not found');
+});
+
+// 3. Generate Speech (TTS + Convert)
+app.post('/api/ai/generate-speech', async (req, res) => {
+    const { text, voice, speed, pitch } = req.body;
+    const apiKey = process.env.API_KEY;
+
+    if (!apiKey) return res.status(500).json({ message: 'API Key do servidor não configurada.' });
+    
+    try {
+        // A. Call Gemini TTS
+        // Voice Logic: Parse custom prompts passed from frontend or use defaults
+        // The frontend sends a voiceId which might map to a base model in constants.ts
+        // But here we need the "base" name (Kore, Puck, etc).
+        // Since logic is in constants.ts, frontend should pass the mapped base voice or we rely on default.
+        // For simplicity, we'll assume 'voice' param is the base voice name (e.g. 'Kore') 
+        // OR the frontend handles mapping before sending.
+        // Actually, previous code handled mapping in `getTTSPromptAndVoice`. 
+        // We will accept `promptText` and `baseVoice` directly to be flexible.
+        
+        const promptText = req.body.promptText || text;
+        const baseVoice = req.body.baseVoice || voice || 'Kore';
+
+        const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ parts: [{ text: promptText }] }],
+                config: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: baseVoice } } } }
+            })
+        });
+
+        if (!aiResponse.ok) throw new Error(`Gemini API Error: ${await aiResponse.text()}`);
+        
+        const aiData = await aiResponse.json();
+        const base64Audio = aiData.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        
+        if (!base64Audio) throw new Error("No audio returned from Gemini.");
+
+        // B. Convert PCM to WAV using FFmpeg
+        const pcmBuffer = Buffer.from(base64Audio, 'base64');
+        const pcmPath = path.join(uploadDir, `tts_raw_${Date.now()}.pcm`);
+        const wavPath = path.join(uploadDir, `tts_${Date.now()}.wav`);
+        
+        fs.writeFileSync(pcmPath, pcmBuffer);
+
+        // FFmpeg Conversion
+        const speedVal = parseFloat(speed) || 1.0;
+        const pitchVal = parseFloat(pitch) || 0;
+        
+        const filters = [];
+        if (pitchVal !== 0) {
+            const pitchFactor = 1 + (pitchVal / 20);
+            const newRate = Math.round(24000 * pitchFactor);
+            filters.push(`asetrate=${newRate}`);
+            filters.push(`atempo=${1/pitchFactor}`);
+        }
+        if (speedVal !== 1.0) {
+            filters.push(`atempo=${speedVal}`);
+        }
+        
+        const filterArg = filters.length > 0 ? `-af "${filters.join(',')}"` : '';
+        
+        const cmd = `ffmpeg -f s16le -ar 24000 -ac 1 -i "${pcmPath}" ${filterArg} "${wavPath}"`;
+        
+        await new Promise((resolve, reject) => {
+            exec(cmd, (err) => {
+                fs.unlink(pcmPath, ()=>{});
+                if (err) reject(err); else resolve();
+            });
+        });
+
+        // C. Return URL
+        const filename = path.basename(wavPath);
+        res.json({ url: `/uploads/${filename}`, filename });
+
+    } catch (e) {
+        console.error("Generate Speech Error:", e);
+        res.status(500).json({ message: e.message });
+    }
+});
+
+
 // --- ROTA DE SCRAPING DE URL (NOVO) ---
 app.post('/api/util/fetch-url', async (req, res) => {
     const { url } = req.body;
@@ -272,7 +444,6 @@ async function processViralCutsJob(jobId) {
         job.progress = 20;
 
         // Step 2: Send Audio to Gemini for Analysis
-        // We use native fetch here to call Gemini REST API
         if (!apiKey) throw new Error("API Key is required for analysis (Check server .env or client settings).");
         
         console.log(`[Job ${jobId}] Analyzing with Gemini...`);
