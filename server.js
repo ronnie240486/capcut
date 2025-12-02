@@ -167,6 +167,132 @@ app.post('/api/util/fetch-url', async (req, res) => {
 });
 
 
+// --- ROTA DE EXPORTAÇÃO COMPLETA ---
+app.post('/api/export/start', uploadAny, (req, res) => {
+    const jobId = `export_${Date.now()}`;
+    if (!req.body.projectState) return res.status(400).json({ message: 'Dados do projeto em falta.' });
+    jobs[jobId] = { status: 'pending', files: req.files, projectState: JSON.parse(req.body.projectState) };
+    res.status(202).json({ jobId });
+    processExportJob(jobId);
+});
+app.get('/api/export/status/:jobId', (req, res) => {
+    const job = jobs[req.params.jobId];
+    if (!job) return res.status(404).json({ message: 'Tarefa não encontrada.' });
+    res.status(200).json({ status: job.status, progress: job.progress, downloadUrl: job.downloadUrl, error: job.error });
+});
+app.get('/api/export/download/:jobId', (req, res) => {
+    const job = jobs[req.params.jobId];
+    if (!job || job.status !== 'completed' || !job.outputPath) return res.status(404).json({ message: 'Ficheiro não encontrado.' });
+    res.download(path.resolve(job.outputPath), path.basename(job.outputPath), (err) => {
+        if (err) console.error("Erro no download:", err);
+        cleanupFiles([job.outputPath, ...job.files]);
+        delete jobs[req.params.jobId];
+    });
+});
+function processExportJob(jobId) {
+    const job = jobs[jobId];
+    job.status = "processing"; job.progress = 0;
+    try {
+        const { files, projectState } = job;
+        if (!projectState || typeof projectState !== 'object') throw new Error("Os dados do projeto (projectState) estão inválidos ou em falta.");
+        const { clips, totalDuration, media, projectAspectRatio } = projectState;
+        if (!clips || !media || totalDuration === undefined) throw new Error("Dados essenciais (clips, media, totalDuration) em falta no projectState.");
+
+        const aspectRatio = projectAspectRatio || '16:9';
+        let width = 1280, height = 720;
+        if (aspectRatio === '9:16') { width = 720; height = 1280; }
+        else if (aspectRatio === '1:1') { width = 1080; height = 1080; }
+        else if (aspectRatio === '4:3') { width = 1280; height = 960; }
+        
+        if (files.length === 0 && totalDuration > 0) { job.status = "failed"; job.error = "Não foram enviados ficheiros para um projeto com duração."; return; }
+
+        const commandArgs = []; const fileMap = {};
+        files.forEach(file => {
+            const mediaInfo = media[file.originalname];
+            if (mediaInfo?.type === "image") commandArgs.push("-loop", "1");
+            commandArgs.push("-i", file.path);
+            fileMap[file.originalname] = commandArgs.filter(arg => arg === "-i").length - 1;
+        });
+
+        let filterChains = [];
+        const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
+        
+        const videoAndLayerClips = clips.filter(c => c.track === 'video' || c.track === 'camada');
+        
+        videoAndLayerClips.forEach((clip, vIdx) => {
+            const inputIndex = fileMap[clip.fileName];
+            if (inputIndex === undefined) return;
+
+            let clipSpecificFilters = [];
+            const adj = clip.properties.adjustments;
+            if (adj) {
+                const ffmpegBrightness = (adj.brightness || 1.0) - 1.0;
+                clipSpecificFilters.push(`eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}:hue=${(adj.hue || 0) * (Math.PI/180)}`);
+            }
+            if (clip.properties.mirror) clipSpecificFilters.push('hflip');
+
+            const speed = clip.properties.speed || 1;
+            let speedFilter = `setpts=PTS/${speed}`;
+
+            const preFilter = `[${inputIndex}:v]${clipSpecificFilters.length > 0 ? clipSpecificFilters.join(',')+',' : ''}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+            filterChains.push(`${preFilter}[vpre${vIdx}]`);
+            filterChains.push(`[vpre${vIdx}]${speedFilter}[v${vIdx}]`);
+        });
+
+        let videoChain = `color=s=${width}x${height}:c=black:d=${totalDuration}[base]`;
+        if (videoAndLayerClips.length > 0) {
+            let prevOverlay = "[base]";
+            videoAndLayerClips.forEach((clip, idx) => {
+                const isLast = idx === videoAndLayerClips.length - 1;
+                const nextOverlay = isLast ? "[outv]" : `[ov${idx}]`;
+                const vIdx = videoAndLayerClips.indexOf(clip);
+                videoChain += `;${prevOverlay}[v${vIdx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
+                prevOverlay = nextOverlay;
+            });
+        } else {
+            videoChain += ";[base]null[outv]";
+        }
+        filterChains.push(videoChain);
+
+        if (audioClips.length > 0) {
+            const delayed = [];
+            const mixed = [];
+            audioClips.forEach((clip, idx) => {
+                const inputIndex = fileMap[clip.fileName];
+                if (inputIndex === undefined) return;
+                const volume = clip.properties.volume ?? 1;
+                const volFilter = volume !== 1 ? `volume=${volume}` : "anull";
+                delayed.push(`[${inputIndex}:a]${volFilter},asetpts=PTS-STARTPTS,aresample=44100[a${idx}_pre]`, `[a${idx}_pre]adelay=${clip.start * 1000}|${clip.start * 1000}[a${idx}]`);
+                mixed.push(`[a${idx}]`);
+            });
+            filterChains.push(...delayed);
+            filterChains.push(`${mixed.join("")}amix=inputs=${mixed.length}:dropout_transition=3[outa]`);
+        }
+
+        const outputPath = path.join(uploadDir, `${jobId}.mp4`);
+        job.outputPath = outputPath;
+        if (audioClips.length === 0) commandArgs.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
+        commandArgs.push("-filter_complex", filterChains.join(";"), "-map", "[outv]");
+        if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
+        else { const silentIndex = files.length; commandArgs.push("-map", `${silentIndex}:a`); }
+        
+        // Added -pix_fmt yuv420p for compatibility
+        commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30", "-progress", "pipe:1", "-t", totalDuration, outputPath);
+
+        console.log(`[Export Job] FFmpeg: ffmpeg ${commandArgs.join(" ")}`);
+        const ffmpegProcess = spawn("ffmpeg", commandArgs);
+        ffmpegProcess.stdout.on("data", data => { const match = data.toString().match(/out_time_ms=(\d+)/); if (match) { const processed = parseInt(match[1], 10) / 1e6; job.progress = Math.min(100, (processed / totalDuration) * 100); } });
+        let ffmpegErrors = "";
+        ffmpegProcess.stderr.on("data", data => { ffmpegErrors += data.toString(); console.error(`[FFmpeg STDERR]: ${data}`); });
+        ffmpegProcess.on("close", code => {
+            if (code !== 0) { job.status = "failed"; job.error = "Falha no FFmpeg. " + ffmpegErrors.slice(-800); }
+            else { job.status = "completed"; job.progress = 100; job.downloadUrl = `/api/export/download/${jobId}`; }
+        });
+        ffmpegProcess.on("error", err => { job.status = "failed"; job.error = "Falha ao iniciar o processo FFmpeg."; });
+    } catch (err) { job.status = "failed"; job.error = "Ocorreu um erro inesperado no servidor: " + err.message; console.error("[Export Job] Erro catastrófico:", err); }
+}
+
+
 // --- ROTAS DE PROCESSAMENTO ASSÍNCRONO DE CLIPE ÚNICO ---
 
 // 1. Iniciar uma tarefa de processamento
@@ -451,11 +577,9 @@ function processSingleClipJob(jobId) {
     }
 
     let outputExtension = '.mp4';
-    // Use .wav for pure audio processing to ensure quality and prevent video container errors
     if (['extract-audio-real', 'remove-silence-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real'].includes(action)) {
         outputExtension = '.wav';
     }
-    // Use .png for stickers to support transparency
     if (action === 'stickerize-real') {
         outputExtension = '.png';
     }
@@ -475,10 +599,7 @@ function processSingleClipJob(jobId) {
         cleanupFiles([...allFiles, outputPath]);
     };
 
-    // Filtros FFmpeg para substituir os scripts Python
-    // IMPORTANT: Added -pix_fmt yuv420p to all video encoding commands to ensure browser compatibility.
     switch (action) {
-        // --- VIDEO TOOLS ---
         case 'stabilize-real':
             const transformsFile = path.join(uploadDir, `${videoFile.filename}.trf`);
             const detectCommand = `ffmpeg -i "${videoFile.path}" -vf vidstabdetect=result="${transformsFile}" -f null -`;
@@ -504,8 +625,6 @@ function processSingleClipJob(jobId) {
              break;
         
         case 'remove-bg-real':
-             // Simulação simples pois requer IA
-             console.log("Remoção de fundo requer Python. Retornando vídeo original.");
              processHandler = (resolve, reject) => {
                  fs.copyFile(videoFile.path, outputPath, (err) => {
                      if (err) reject(err);
@@ -515,7 +634,6 @@ function processSingleClipJob(jobId) {
              break;
 
         case 'reframe-real':
-             // Auto Reframe to 9:16 (Vertical)
              const reframeMode = params.mode || 'crop';
              if (reframeMode === 'crop') {
                  command = `ffmpeg -i "${videoFile.path}" -vf "scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1" -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
@@ -552,26 +670,25 @@ function processSingleClipJob(jobId) {
         case 'video-to-cartoon-real':
              const style = params.style || 'anime';
              
-             // IMPORTANT: Force pixel format to yuv420p. 
-             // Some filters (like edgedetect) output grayscale (gray), which browsers hate.
-             // We add format=yuv420p filter AND -pix_fmt yuv420p flag.
+             let filters = [];
              
-             let vf = "";
              if (style === 'anime') {
-                 // Anime: Saturated, Median Blur, Unsharp
-                 vf = "median=3,unsharp=5:5:1.0:5:5:0.0,eq=saturation=1.5:contrast=1.1,format=yuv420p";
+                 filters = ["median=3", "unsharp=5:5:1.0:5:5:0.0", "eq=saturation=1.5:contrast=1.1"];
              } else if (style === 'pixar') {
-                 // Pixar: Gaussian blur, bright colors
-                 vf = "gblur=sigma=2,unsharp=5:5:0.8:3:3:0.0,eq=saturation=1.3:brightness=0.05,format=yuv420p";
+                 filters = ["gblur=sigma=2", "unsharp=5:5:0.8:3:3:0.0", "eq=saturation=1.3:brightness=0.05"];
              } else if (style === 'sketch') {
-                 // Sketch: Edgedetect -> Invert -> Grayscale. We must convert back to yuv420p.
-                 vf = "edgedetect=low=0.1:high=0.4,negate,format=gray,format=yuv420p";
+                 // Important: negate/edgedetect can output gray/mono. We must convert back to valid pixel format for web video.
+                 filters = ["edgedetect=low=0.1:high=0.4", "negate", "format=gray"]; 
              } else if (style === 'oil') {
-                 // Oil: Heavy Box Blur
-                 vf = "boxblur=3:1,eq=saturation=1.4:contrast=1.1,format=yuv420p";
+                 filters = ["boxblur=3:1", "eq=saturation=1.4:contrast=1.1"];
              } else {
-                 vf = "eq=saturation=1.3,format=yuv420p";
+                 filters = ["eq=saturation=1.3"];
              }
+             
+             // Ensure YUV420P pixel format for browser compatibility (fix for "disappearing image")
+             filters.push("format=yuv420p");
+             
+             const vf = filters.join(",");
              
              command = `ffmpeg -i "${videoFile.path}" -vf "${vf}" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              break;
@@ -676,27 +793,16 @@ function processSingleClipJob(jobId) {
     executeJob();
 }
 
-// --- ROTA DE GERAÇÃO DE MÚSICA IA (DSP SYNTHESIS) ---
 app.post('/api/process/generate-music', uploadAny, (req, res) => {
     const { filter, duration } = req.body;
-    
     if (!filter) return res.status(400).json({ message: 'Filtro FFmpeg ausente.' });
-    
     const jobId = `music_gen_${Date.now()}`;
     const outputFilename = `ai_music_${Date.now()}.wav`;
     const outputPath = path.join(uploadDir, outputFilename);
     const dur = parseFloat(duration) || 10;
-
     jobs[jobId] = { status: 'processing', progress: 0, outputPath };
     res.status(202).json({ jobId });
-
-    // Use lavfi source to generate audio based on filter graph
-    // -f lavfi -i "FILTER" -t DURATION ...
-    // Note: complex filters might require explicit null input sometimes, but lavfi source works well.
     const command = `ffmpeg -f lavfi -i "${filter}" -t ${dur} -acodec pcm_s16le -ar 44100 -ac 2 "${outputPath}"`;
-    
-    console.log(`[Music Gen] Generating with filter: ${filter}`);
-
     exec(command, (err, stdout, stderr) => {
         if (err) {
             console.error(`[Music Gen Error]`, stderr);
@@ -710,160 +816,58 @@ app.post('/api/process/generate-music', uploadAny, (req, res) => {
     });
 });
 
-// --- ROTA DE CLONAGEM DE VOZ ---
 app.post('/api/process/voice-clone', uploadAudio, async (req, res) => {
     const audioFile = req.file;
     const text = req.body.text;
-    const apiKey = req.body.apiKey; // Passed from frontend
-
-    if (!audioFile || !text) {
-        return res.status(400).json({ message: 'Áudio e texto são obrigatórios.' });
-    }
-
+    const apiKey = req.body.apiKey; 
+    if (!audioFile || !text) return res.status(400).json({ message: 'Áudio e texto são obrigatórios.' });
     const jobId = `clone_voice_${Date.now()}`;
     const outputFilename = `cloned_voice_${Date.now()}.wav`;
     const outputPath = path.join(uploadDir, outputFilename);
     const tempWavInput = path.join(uploadDir, `input_${Date.now()}.wav`);
-
     jobs[jobId] = { status: 'processing', progress: 0 };
     res.status(202).json({ jobId });
-
     try {
-        // 1. Convert input to standard WAV (for compatibility)
         await new Promise((resolve, reject) => {
-            exec(`ffmpeg -i "${audioFile.path}" -vn -acodec pcm_s16le -ar 44100 -ac 1 "${tempWavInput}"`, (err) => {
-                if(err) reject(err); else resolve();
-            });
+            exec(`ffmpeg -i "${audioFile.path}" -vn -acodec pcm_s16le -ar 44100 -ac 1 "${tempWavInput}"`, (err) => { if(err) reject(err); else resolve(); });
         });
-
         if (apiKey && apiKey.length > 10) {
-            // --- REAL CLONING (ELEVENLABS) ---
-            console.log(`[Voice Clone] Using ElevenLabs API...`);
-            
-            // Note: Since I cannot assume 'axios' or 'form-data' packages are installed in the user's environment based on the rules,
-            // I must use the built-in 'fetch' (available in Node 18+) or fallback to 'https' module.
-            // Assuming modern Node environment.
-            
-            // Step A: Add the voice
             const formData = new FormData();
             const fileData = fs.readFileSync(tempWavInput);
             const fileBlob = new Blob([fileData], { type: 'audio/wav' });
             formData.append('files', fileBlob, 'sample.wav');
             formData.append('name', `Clone-${Date.now()}`);
             formData.append('description', 'User cloned voice from ProEdit');
-
-            const addVoiceRes = await fetch('https://api.elevenlabs.io/v1/voices/add', {
-                method: 'POST',
-                headers: { 'xi-api-key': apiKey },
-                body: formData
-            });
-
-            if (!addVoiceRes.ok) {
-                const errText = await addVoiceRes.text();
-                throw new Error(`ElevenLabs Error (Add Voice): ${errText}`);
-            }
-
+            const addVoiceRes = await fetch('https://api.elevenlabs.io/v1/voices/add', { method: 'POST', headers: { 'xi-api-key': apiKey }, body: formData });
+            if (!addVoiceRes.ok) { const errText = await addVoiceRes.text(); throw new Error(`ElevenLabs Error (Add Voice): ${errText}`); }
             const voiceData = await addVoiceRes.json();
             const voiceId = voiceData.voice_id;
-
-            // Step B: Generate Audio (TTS)
-            const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-                method: 'POST',
-                headers: { 
-                    'xi-api-key': apiKey,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    text: text,
-                    model_id: "eleven_multilingual_v2",
-                    voice_settings: { stability: 0.5, similarity_boost: 0.75 }
-                })
-            });
-
-            if (!ttsRes.ok) {
-                throw new Error(`ElevenLabs Error (TTS): ${await ttsRes.text()}`);
-            }
-
+            const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, { method: 'POST', headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text, model_id: "eleven_multilingual_v2", voice_settings: { stability: 0.5, similarity_boost: 0.75 } }) });
+            if (!ttsRes.ok) throw new Error(`ElevenLabs Error (TTS): ${await ttsRes.text()}`);
             const arrayBuffer = await ttsRes.arrayBuffer();
             fs.writeFileSync(outputPath, Buffer.from(arrayBuffer));
-
-            // Optional: Delete voice to clean up slot (skipping for now to avoid complexity)
-
-        } else {
-            // --- FALLBACK SIMULATION (FFMPEG + GEMINI BASE) ---
-            // If no key, return generic error or fallback message as per user request context
-            // But we already implemented this fallback logic before
-            throw new Error("Chave da API ElevenLabs não fornecida. Configure em Configurações > API.");
-        }
-
-        jobs[jobId] = {
-            status: 'completed',
-            progress: 100,
-            downloadUrl: `/api/process/download/${jobId}`,
-            outputPath: outputPath
-        };
-
-        // Cleanup temp
+        } else { throw new Error("Chave da API ElevenLabs não fornecida. Configure em Configurações > API."); }
+        jobs[jobId] = { status: 'completed', progress: 100, downloadUrl: `/api/process/download/${jobId}`, outputPath: outputPath };
         fs.unlink(audioFile.path, ()=>{});
         if (fs.existsSync(tempWavInput)) fs.unlink(tempWavInput, ()=>{});
-
-    } catch (e) {
-        console.error("Voice Clone Error:", e);
-        jobs[jobId] = { status: 'failed', error: e.message };
-        fs.unlink(audioFile.path, ()=>{});
-    }
+    } catch (e) { console.error("Voice Clone Error:", e); jobs[jobId] = { status: 'failed', error: e.message }; fs.unlink(audioFile.path, ()=>{}); }
 });
 
-
-// --- ROTA DE CONVERSÃO DE ÁUDIO BRUTO (TTS) ---
 app.post('/api/util/convert-raw-audio', uploadAudio, (req, res) => {
-    if (!req.file || !fs.existsSync(req.file.path)) {
-        return res.status(400).json({ message: 'Nenhum arquivo de áudio enviado.' });
-    }
-
+    if (!req.file || !fs.existsSync(req.file.path)) return res.status(400).json({ message: 'Nenhum arquivo de áudio enviado.' });
     const inputPath = req.file.path;
     const speed = parseFloat(req.body.speed) || 1.0;
     const pitch = parseFloat(req.body.pitch) || 0;
-
-    const args = [
-        '-f', 's16le',
-        '-ar', '24000',
-        '-ac', '1',
-        '-i', inputPath
-    ];
-
-    // Build FFmpeg filter chain for Speed and Pitch
+    const args = ['-f', 's16le', '-ar', '24000', '-ac', '1', '-i', inputPath];
     const filters = [];
-    
-    if (pitch !== 0) {
-        const pitchFactor = 1 + (pitch / 20); // -10 -> 0.5, +10 -> 1.5
-        const newRate = Math.round(24000 * pitchFactor);
-        filters.push(`asetrate=${newRate}`);
-        filters.push(`atempo=${1/pitchFactor}`);
-    }
-
-    if (speed !== 1.0) {
-        filters.push(`atempo=${speed}`);
-    }
-
-    if (filters.length > 0) {
-        args.push('-af', filters.join(','));
-    }
-
+    if (pitch !== 0) { const pitchFactor = 1 + (pitch / 20); const newRate = Math.round(24000 * pitchFactor); filters.push(`asetrate=${newRate}`); filters.push(`atempo=${1/pitchFactor}`); }
+    if (speed !== 1.0) filters.push(`atempo=${speed}`);
+    if (filters.length > 0) args.push('-af', filters.join(','));
     args.push('-f', 'wav', 'pipe:1');
-
-    console.log(`[TTS Convert] Converting Raw PCM to WAV with filters: ${filters.join(', ')}`);
-    
     const ffmpeg = spawn('ffmpeg', args);
-
     res.setHeader('Content-Type', 'audio/wav');
     ffmpeg.stdout.pipe(res);
-
-    ffmpeg.stderr.on('data', d => console.error(`[FFmpeg TTS]: ${d.toString()}`));
-    
-    ffmpeg.on('close', () => {
-        fs.unlink(inputPath, () => {});
-    });
+    ffmpeg.on('close', () => { fs.unlink(inputPath, () => {}); });
 });
 
 app.post('/api/process/extract-frame', uploadSingle, (req, res) => {
@@ -875,15 +879,8 @@ app.post('/api/process/extract-frame', uploadSingle, (req, res) => {
     const command = `ffmpeg -ss ${timestamp} -i "${inputPath}" -vframes 1 -f image2 "${outputPath}"`;
     exec(command, (err, stdout, stderr) => {
         cleanupFiles([inputPath]);
-        if (err) {
-            console.error('[Extract Frame] Falha:', stderr);
-            cleanupFiles([outputPath]);
-            return res.status(500).json({ message: 'Falha ao extrair o frame.' });
-        }
-        res.sendFile(path.resolve(outputPath), (sendErr) => {
-            if (sendErr) console.error('Erro ao enviar frame:', sendErr);
-            cleanupFiles([outputPath]);
-        });
+        if (err) { console.error('[Extract Frame] Falha:', stderr); cleanupFiles([outputPath]); return res.status(500).json({ message: 'Falha ao extrair o frame.' }); }
+        res.sendFile(path.resolve(outputPath), (sendErr) => { if (sendErr) console.error('Erro ao enviar frame:', sendErr); cleanupFiles([outputPath]); });
     });
 });
 
@@ -891,142 +888,8 @@ app.post('/api/process/scene-detect', uploadSingle, (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro foi enviado.' });
     const { path: inputPath } = req.file;
     const command = `ffmpeg -i "${inputPath}" -vf "select='gt(scene,0.4)',showinfo" -f null - 2>&1`;
-    exec(command, (err, stdout, stderr) => {
-        cleanupFiles([inputPath]);
-        if (err) { console.error('Scene Detect Error:', stderr); return res.status(500).send('Falha ao detectar cenas.'); }
-        const timestamps = (stderr.match(/pts_time:([\d.]+)/g) || []).map(s => parseFloat(s.split(':')[1]));
-        res.json(timestamps);
-    });
+    exec(command, (err, stdout, stderr) => { cleanupFiles([inputPath]); if (err) { console.error('Scene Detect Error:', stderr); return res.status(500).send('Falha ao detectar cenas.'); } const timestamps = (stderr.match(/pts_time:([\d.]+)/g) || []).map(s => parseFloat(s.split(':')[1])); res.json(timestamps); });
 });
-
-
-// --- ROTA DE EXPORTAÇÃO COMPLETA ---
-app.post('/api/export/start', uploadAny, (req, res) => {
-    const jobId = `export_${Date.now()}`;
-    if (!req.body.projectState) return res.status(400).json({ message: 'Dados do projeto em falta.' });
-    jobs[jobId] = { status: 'pending', files: req.files, projectState: JSON.parse(req.body.projectState) };
-    res.status(202).json({ jobId });
-    processExportJob(jobId);
-});
-app.get('/api/export/status/:jobId', (req, res) => {
-    const job = jobs[req.params.jobId];
-    if (!job) return res.status(404).json({ message: 'Tarefa não encontrada.' });
-    res.status(200).json({ status: job.status, progress: job.progress, downloadUrl: job.downloadUrl, error: job.error });
-});
-app.get('/api/export/download/:jobId', (req, res) => {
-    const job = jobs[req.params.jobId];
-    if (!job || job.status !== 'completed' || !job.outputPath) return res.status(404).json({ message: 'Ficheiro não encontrado.' });
-    res.download(path.resolve(job.outputPath), path.basename(job.outputPath), (err) => {
-        if (err) console.error("Erro no download:", err);
-        cleanupFiles([job.outputPath, ...job.files]);
-        delete jobs[req.params.jobId];
-    });
-});
-function processExportJob(jobId) {
-    const job = jobs[jobId];
-    job.status = "processing"; job.progress = 0;
-    try {
-        const { files, projectState } = job;
-        if (!projectState || typeof projectState !== 'object') throw new Error("Os dados do projeto (projectState) estão inválidos ou em falta.");
-        const { clips, totalDuration, media, projectAspectRatio } = projectState;
-        if (!clips || !media || totalDuration === undefined) throw new Error("Dados essenciais (clips, media, totalDuration) em falta no projectState.");
-
-        const aspectRatio = projectAspectRatio || '16:9';
-        let width = 1280, height = 720;
-        if (aspectRatio === '9:16') { width = 720; height = 1280; }
-        else if (aspectRatio === '1:1') { width = 1080; height = 1080; }
-        else if (aspectRatio === '4:3') { width = 1280; height = 960; }
-        
-        if (files.length === 0 && totalDuration > 0) { job.status = "failed"; job.error = "Não foram enviados ficheiros para um projeto com duração."; return; }
-
-        const commandArgs = []; const fileMap = {};
-        files.forEach(file => {
-            const mediaInfo = media[file.originalname];
-            if (mediaInfo?.type === "image") commandArgs.push("-loop", "1");
-            commandArgs.push("-i", file.path);
-            fileMap[file.originalname] = commandArgs.filter(arg => arg === "-i").length - 1;
-        });
-
-        let filterChains = [];
-        const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
-        
-        const videoAndLayerClips = clips.filter(c => c.track === 'video' || c.track === 'camada');
-        
-        videoAndLayerClips.forEach((clip, vIdx) => {
-            const inputIndex = fileMap[clip.fileName];
-            if (inputIndex === undefined) return;
-
-            let clipSpecificFilters = [];
-            const adj = clip.properties.adjustments;
-            if (adj) {
-                const ffmpegBrightness = (adj.brightness || 1.0) - 1.0;
-                clipSpecificFilters.push(`eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}:hue=${(adj.hue || 0) * (Math.PI/180)}`);
-            }
-            if (clip.properties.mirror) clipSpecificFilters.push('hflip');
-
-            const speed = clip.properties.speed || 1;
-            let speedFilter = `setpts=PTS/${speed}`;
-
-            const preFilter = `[${inputIndex}:v]${clipSpecificFilters.length > 0 ? clipSpecificFilters.join(',')+',' : ''}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
-            filterChains.push(`${preFilter}[vpre${vIdx}]`);
-            filterChains.push(`[vpre${vIdx}]${speedFilter}[v${vIdx}]`);
-        });
-
-        let videoChain = `color=s=${width}x${height}:c=black:d=${totalDuration}[base]`;
-        if (videoAndLayerClips.length > 0) {
-            let prevOverlay = "[base]";
-            videoAndLayerClips.forEach((clip, idx) => {
-                const isLast = idx === videoAndLayerClips.length - 1;
-                const nextOverlay = isLast ? "[outv]" : `[ov${idx}]`;
-                const vIdx = videoAndLayerClips.indexOf(clip);
-                videoChain += `;${prevOverlay}[v${vIdx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
-                prevOverlay = nextOverlay;
-            });
-        } else {
-            videoChain += ";[base]null[outv]";
-        }
-        filterChains.push(videoChain);
-
-        if (audioClips.length > 0) {
-            const delayed = [];
-            const mixed = [];
-            audioClips.forEach((clip, idx) => {
-                const inputIndex = fileMap[clip.fileName];
-                if (inputIndex === undefined) return;
-                const volume = clip.properties.volume ?? 1;
-                const volFilter = volume !== 1 ? `volume=${volume}` : "anull";
-                delayed.push(`[${inputIndex}:a]${volFilter},asetpts=PTS-STARTPTS,aresample=44100[a${idx}_pre]`, `[a${idx}_pre]adelay=${clip.start * 1000}|${clip.start * 1000}[a${idx}]`);
-                mixed.push(`[a${idx}]`);
-            });
-            filterChains.push(...delayed);
-            filterChains.push(`${mixed.join("")}amix=inputs=${mixed.length}:dropout_transition=3[outa]`);
-        }
-
-        const outputPath = path.join(uploadDir, `${jobId}.mp4`);
-        job.outputPath = outputPath;
-        if (audioClips.length === 0) commandArgs.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
-        commandArgs.push("-filter_complex", filterChains.join(";"), "-map", "[outv]");
-        if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
-        else { const silentIndex = files.length; commandArgs.push("-map", `${silentIndex}:a`); }
-        
-        // Added -pix_fmt yuv420p for compatibility
-        commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30", "-progress", "pipe:1", "-t", totalDuration, outputPath);
-
-        console.log(`[Export Job] FFmpeg: ffmpeg ${commandArgs.join(" ")}`);
-        const ffmpegProcess = spawn("ffmpeg", commandArgs);
-        ffmpegProcess.stdout.on("data", data => { const match = data.toString().match(/out_time_ms=(\d+)/); if (match) { const processed = parseInt(match[1], 10) / 1e6; job.progress = Math.min(100, (processed / totalDuration) * 100); } });
-        let ffmpegErrors = "";
-        ffmpegProcess.stderr.on("data", data => { ffmpegErrors += data.toString(); console.error(`[FFmpeg STDERR]: ${data}`); });
-        ffmpegProcess.on("close", code => {
-            if (code !== 0) { job.status = "failed"; job.error = "Falha no FFmpeg. " + ffmpegErrors.slice(-800); }
-            else { job.status = "completed"; job.progress = 100; job.downloadUrl = `/api/export/download/${jobId}`; }
-        });
-        ffmpegProcess.on("error", err => { job.status = "failed"; job.error = "Falha ao iniciar o processo FFmpeg."; });
-    } catch (err) { job.status = "failed"; job.error = "Ocorreu um erro inesperado no servidor: " + err.message; console.error("[Export Job] Erro catastrófico:", err); }
-}
-
 
 // Iniciar o Servidor
-app.listen(PORT, () => {
-  console.log(`Servidor a escutar na porta ${PORT}`);
-});
+app.listen(PORT, () => { console.log(`Servidor a escutar na porta ${PORT}`); });
