@@ -252,7 +252,7 @@ async function processViralCutsJob(jobId) {
     job.progress = 0;
     
     const videoFile = job.files.video[0];
-    const apiKey = job.params.apiKey; // Needed for Gemini
+    const apiKey = job.params.apiKey || process.env.API_KEY; 
     const count = parseInt(job.params.count) || 3;
     const style = job.params.style || 'crop';
     
@@ -273,7 +273,7 @@ async function processViralCutsJob(jobId) {
 
         // Step 2: Send Audio to Gemini for Analysis
         // We use native fetch here to call Gemini REST API
-        if (!apiKey) throw new Error("API Key is required for analysis.");
+        if (!apiKey) throw new Error("API Key is required for analysis (Check server .env or client settings).");
         
         console.log(`[Job ${jobId}] Analyzing with Gemini...`);
         const stats = fs.statSync(audioPath);
@@ -368,7 +368,7 @@ async function processVideoToCartoonAIJob(jobId) {
     job.progress = 0;
     
     const videoFile = job.files.video[0];
-    const apiKey = job.params.apiKey; 
+    const apiKey = job.params.apiKey || process.env.API_KEY; 
     const style = job.params.style || 'anime';
     
     // Parse params object if it came as string
@@ -386,7 +386,7 @@ async function processVideoToCartoonAIJob(jobId) {
     job.outputPath = outputPath;
 
     try {
-        if (!apiKey) throw new Error("API Key ausente. Configure no frontend ou .env");
+        if (!apiKey) throw new Error("API Key ausente. Configure no frontend ou no .env do servidor.");
 
         // 1. Extract a reference frame (at 1 second or middle)
         console.log(`[Job ${jobId}] Extracting Frame...`);
