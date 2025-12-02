@@ -1,3 +1,4 @@
+
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -319,8 +320,9 @@ async function processViralCutsJob(jobId) {
             }
 
             // Cut & Reframe each segment
+            // Added -pix_fmt yuv420p for compatibility
             await new Promise((resolve, reject) => {
-                const cmd = `ffmpeg -ss ${seg.start} -t ${duration} -i "${videoFile.path}" -vf "${vf}" -c:v libx264 -preset ultrafast -c:a aac "${segPath}"`;
+                const cmd = `ffmpeg -ss ${seg.start} -t ${duration} -i "${videoFile.path}" -vf "${vf}" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac "${segPath}"`;
                 exec(cmd, (err) => {
                     if (err) reject(err); else resolve();
                 });
@@ -407,7 +409,7 @@ function processScriptToVideoJob(jobId) {
 
             filterComplex += `${concatSegments}concat=n=${images.length}:v=1:a=1[outv][outa]`;
 
-            // Adicionado -preset superfast para renderização mais rápida
+            // Adicionado -preset superfast para renderização mais rápida e -pix_fmt yuv420p
             const command = `ffmpeg ${inputs} -filter_complex "${filterComplex}" -map "[outv]" -map "[outa]" -c:v libx264 -preset superfast -pix_fmt yuv420p -c:a aac "${outputPath}"`;
             
             console.log(`[Job ${jobId}] Rendering Script Video...`);
@@ -474,12 +476,13 @@ function processSingleClipJob(jobId) {
     };
 
     // Filtros FFmpeg para substituir os scripts Python
+    // IMPORTANT: Added -pix_fmt yuv420p to all video encoding commands to ensure browser compatibility.
     switch (action) {
         // --- VIDEO TOOLS ---
         case 'stabilize-real':
             const transformsFile = path.join(uploadDir, `${videoFile.filename}.trf`);
             const detectCommand = `ffmpeg -i "${videoFile.path}" -vf vidstabdetect=result="${transformsFile}" -f null -`;
-            const transformCommand = `ffmpeg -i "${videoFile.path}" -vf vidstabtransform=input="${transformsFile}":zoom=0:smoothing=10,unsharp=5:5:0.8:3:3:0.4 -vcodec libx264 -preset fast "${outputPath}"`;
+            const transformCommand = `ffmpeg -i "${videoFile.path}" -vf vidstabtransform=input="${transformsFile}":zoom=0:smoothing=10,unsharp=5:5:0.8:3:3:0.4 -vcodec libx264 -preset fast -pix_fmt yuv420p "${outputPath}"`;
             
             processHandler = (resolve, reject) => {
                 job.progress = 10;
@@ -497,7 +500,7 @@ function processSingleClipJob(jobId) {
             break;
 
         case 'style-transfer-real':
-             command = `ffmpeg -i "${videoFile.path}" -vf "curves=vintage,eq=contrast=1.2:saturation=1.3:brightness=0.1" -c:v libx264 -preset veryfast "${outputPath}"`;
+             command = `ffmpeg -i "${videoFile.path}" -vf "curves=vintage,eq=contrast=1.2:saturation=1.3:brightness=0.1" -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              break;
         
         case 'remove-bg-real':
@@ -513,70 +516,60 @@ function processSingleClipJob(jobId) {
 
         case 'reframe-real':
              // Auto Reframe to 9:16 (Vertical)
-             // Mode 'crop': Center Crop (scales height to 1280, crops width to 720 center)
-             // Mode 'blur': Stacked blurred background + scaled original foreground
              const reframeMode = params.mode || 'crop';
-             
              if (reframeMode === 'crop') {
-                 // Scale height to 1280 (HD Vertical height), maintain aspect ratio, then crop center 720 width
-                 command = `ffmpeg -i "${videoFile.path}" -vf "scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1" -c:v libx264 -preset veryfast "${outputPath}"`;
+                 command = `ffmpeg -i "${videoFile.path}" -vf "scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1" -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              } else {
-                 // Blur Mode: Background is scaled to fill 9:16 (blurred), Foreground is scaled to fit width (centered)
-                 command = `ffmpeg -i "${videoFile.path}" -vf "split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2" -c:v libx264 -preset veryfast "${outputPath}"`;
+                 command = `ffmpeg -i "${videoFile.path}" -vf "split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2" -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              }
              break;
 
         case 'retouch-real':
-             command = `ffmpeg -i "${videoFile.path}" -vf "smartblur=lr=1.5:ls=-0.8:lt=-5.0" -c:v libx264 -preset veryfast "${outputPath}"`;
+             command = `ffmpeg -i "${videoFile.path}" -vf "smartblur=lr=1.5:ls=-0.8:lt=-5.0" -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              break;
 
         case 'interpolate-real':
-             command = `ffmpeg -i "${videoFile.path}" -vf "minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1" -c:v libx264 -preset ultrafast "${outputPath}"`;
+             command = `ffmpeg -i "${videoFile.path}" -vf "minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1" -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${outputPath}"`;
              break;
         
         case 'reverse-real':
-             command = `ffmpeg -i "${videoFile.path}" -vf reverse -af areverse -c:v libx264 -preset veryfast "${outputPath}"`;
+             command = `ffmpeg -i "${videoFile.path}" -vf reverse -af areverse -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              break;
              
         case 'upscale-real':
-             // Upscaling to 4K (3840x2160)
-             // uses lanczos scaling algorithm + unsharp mask to simulate detail enhancement
-             // CRF 18 for high quality
-             command = `ffmpeg -i "${videoFile.path}" -vf "scale=3840:2160:flags=lanczos,unsharp=5:5:1.0:5:5:0.0" -c:v libx264 -preset superfast -crf 18 "${outputPath}"`;
+             command = `ffmpeg -i "${videoFile.path}" -vf "scale=3840:2160:flags=lanczos,unsharp=5:5:1.0:5:5:0.0" -c:v libx264 -preset superfast -crf 18 -pix_fmt yuv420p "${outputPath}"`;
              break;
              
         case 'magic-erase-real':
              const { x, y, w, h } = params;
-             // Use delogo to remove object in the bounding box
-             // ensure dimensions are valid
              const dx = Math.round(x);
              const dy = Math.round(y);
              const dw = Math.round(w);
              const dh = Math.round(h);
-             command = `ffmpeg -i "${videoFile.path}" -vf "delogo=x=${dx}:y=${dy}:w=${dw}:h=${dh}:show=0" -c:v libx264 -preset veryfast "${outputPath}"`;
+             command = `ffmpeg -i "${videoFile.path}" -vf "delogo=x=${dx}:y=${dy}:w=${dw}:h=${dh}:show=0" -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              break;
              
         case 'video-to-cartoon-real':
              const style = params.style || 'anime';
              
-             // NOTA: 'smartblur' foi removido porque muitas builds FFmpeg não o incluem, causando falha silenciosa.
-             // Usamos 'median' (suavização que preserva bordas) e 'unsharp' (nitidez) como alternativas universais.
-             // Adicionado -c:a copy para garantir que o áudio não seja perdido.
+             // IMPORTANT: Force pixel format to yuv420p. 
+             // Some filters (like edgedetect) output grayscale (gray), which browsers hate.
+             // We add format=yuv420p filter AND -pix_fmt yuv420p flag.
              
              if (style === 'anime') {
-                 // Anime: Cores saturadas, suavização mediana, bordas nítidas
-                 command = `ffmpeg -i "${videoFile.path}" -vf "median=3,unsharp=5:5:1.0:5:5:0.0,eq=saturation=1.5:contrast=1.1" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
+                 // Anime: Saturated, Median Blur, Unsharp
+                 command = `ffmpeg -i "${videoFile.path}" -vf "median=3,unsharp=5:5:1.0:5:5:0.0,eq=saturation=1.5:contrast=1.1,format=yuv420p" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              } else if (style === 'pixar') {
-                 // Pixar: Muito suave, cores vibrantes, leve brilho
-                 command = `ffmpeg -i "${videoFile.path}" -vf "gblur=sigma=2,unsharp=5:5:0.8:3:3:0.0,eq=saturation=1.3:brightness=0.05" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
+                 // Pixar: Gaussian blur, bright colors
+                 command = `ffmpeg -i "${videoFile.path}" -vf "gblur=sigma=2,unsharp=5:5:0.8:3:3:0.0,eq=saturation=1.3:brightness=0.05,format=yuv420p" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              } else if (style === 'sketch') {
-                 // Sketch: Detectar bordas, inverter para fundo branco, converter para cinza
-                 command = `ffmpeg -i "${videoFile.path}" -vf "edgedetect=low=0.1:high=0.4,negate,format=gray" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
+                 // Sketch: Edgedetect -> Invert -> Grayscale. We must convert back to yuv420p.
+                 command = `ffmpeg -i "${videoFile.path}" -vf "edgedetect=low=0.1:high=0.4,negate,format=gray,format=yuv420p" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              } else if (style === 'oil') {
-                 // Óleo: Desfoque pesado (Box Blur) para remover detalhes finos + saturação
-                 command = `ffmpeg -i "${videoFile.path}" -vf "boxblur=3:1,eq=saturation=1.4:contrast=1.1" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
+                 // Oil: Heavy Box Blur
+                 command = `ffmpeg -i "${videoFile.path}" -vf "boxblur=3:1,eq=saturation=1.4:contrast=1.1,format=yuv420p" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              } else {
-                 command = `ffmpeg -i "${videoFile.path}" -vf "eq=saturation=1.3" -c:a copy -c:v libx264 -preset veryfast "${outputPath}"`;
+                 command = `ffmpeg -i "${videoFile.path}" -vf "eq=saturation=1.3,format=yuv420p" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              }
              break;
              
@@ -585,53 +578,40 @@ function processSingleClipJob(jobId) {
              const intensity = parseFloat(params.intensity) || 1.3;
              const interval = parseInt(params.interval) || 5;
              
-             // Dynamic Zoom / Face Zoom Logic
              if (mode === 'punch') {
-                 // Punch Cut: Hard cut to zoomed version every interval
                  const zoomW = `iw/${intensity}`;
                  const zoomH = `ih/${intensity}`;
                  const cropX = `(iw-ow)/2`;
                  const cropY = `(ih-oh)/2`;
                  const zoomStart = interval * 0.6;
                  
-                 command = `ffmpeg -i "${videoFile.path}" -filter_complex "[0:v]split[v1][v2];[v2]crop=w=${zoomW}:h=${zoomH}:x=${cropX}:y=${cropY},scale=iw:ih[v2scaled];[v1][v2scaled]overlay=0:0:enable='between(mod(t,${interval}),${zoomStart},${interval})'" -c:v libx264 -preset veryfast "${outputPath}"`;
+                 command = `ffmpeg -i "${videoFile.path}" -filter_complex "[0:v]split[v1][v2];[v2]crop=w=${zoomW}:h=${zoomH}:x=${cropX}:y=${cropY},scale=iw:ih[v2scaled];[v1][v2scaled]overlay=0:0:enable='between(mod(t,${interval}),${zoomStart},${interval})'" -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              } else {
-                 // Smooth Zoom: Continuous slow movement using zoompan
                  const durationFrames = 30 * interval;
-                 command = `ffmpeg -i "${videoFile.path}" -vf "zoompan=z='min(zoom+0.0015,${intensity})':d=${durationFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':fps=30" -c:v libx264 -preset veryfast "${outputPath}"`;
+                 command = `ffmpeg -i "${videoFile.path}" -vf "zoompan=z='min(zoom+0.0015,${intensity})':d=${durationFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':fps=30" -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              }
              break;
              
         case 'lip-sync-real':
-             // Dubbing/Lip Sync Simulation: Replace audio of video with new audio file.
-             // Input 0: Video, Input 1: Audio
              if (!job.files.audio || !job.files.audio[0]) {
                  job.status = 'failed'; job.error = "Arquivo de áudio para Lip Sync não encontrado."; cleanup(); return;
              }
              const audioPath = job.files.audio[0].path;
-             // Map video from 0, audio from 1. Copy video codec (fast), re-encode audio if needed (aac).
-             // -shortest: cut video to audio length or vice versa (usually audio dictates length in dubbing).
-             command = `ffmpeg -i "${videoFile.path}" -i "${audioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`;
+             command = `ffmpeg -i "${videoFile.path}" -i "${audioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest -pix_fmt yuv420p "${outputPath}"`;
              break;
              
         case 'stickerize-real':
-             // Remove Chroma Key Green (#00FF00) to create transparency
-             // colorkey=color:similarity:blend
-             // Output to PNG (-c:v png)
              command = `ffmpeg -i "${videoFile.path}" -vf "colorkey=0x00FF00:0.35:0.1" -c:v png -compression_level 0 "${outputPath}"`;
              break;
 
         // --- AUDIO TOOLS ---
         case 'extract-audio-real':
-             // Extract audio as WAV
              command = `ffmpeg -i "${videoFile.path}" -vn -acodec pcm_s16le -ar 44100 -ac 2 "${outputPath}"`;
              break;
         
         case 'remove-silence-real':
              const silThreshold = params.threshold || -30;
              const silDuration = params.duration || 0.5;
-             // Use -vn to ignore video stream (prevents errors if input is audio-only OR prevents desync if input is video)
-             // Returns cleaned audio file.
              command = `ffmpeg -i "${videoFile.path}" -vn -af "silenceremove=start_periods=1:start_duration=${silDuration}:start_threshold=${silThreshold}dB:stop_periods=-1:stop_duration=${silDuration}:stop_threshold=${silThreshold}dB" -acodec pcm_s16le "${outputPath}"`;
              break;
 
@@ -651,18 +631,12 @@ function processSingleClipJob(jobId) {
              break;
              
         case 'auto-ducking-real':
-             // Input 0: Music (Video/Audio File)
-             // Input 1: Voice Control (Audio File)
-             // Use sidechaincompress to compress Input 0 based on Input 1
              if (!job.files.audio || !job.files.audio[0]) {
                  job.status = 'failed'; job.error = "Arquivo de voz para Auto-Ducking não encontrado."; cleanup(); return;
              }
              const voicePath = job.files.audio[0].path;
-             const th = params.threshold || 0.125; // 0-1 amplitude (default 0.125 ~ -18dB)
-             const ratio = params.ratio || 2; // Ratio (default 2)
-             
-             // [0:a] is main, [1:a] is sidechain. Output [outa].
-             // Use -vn to output just audio (safer for "fixing" music track)
+             const th = params.threshold || 0.125;
+             const ratio = params.ratio || 2;
              command = `ffmpeg -i "${videoFile.path}" -i "${voicePath}" -filter_complex "[0:a][1:a]sidechaincompress=threshold=${th}:ratio=${ratio}:attack=20:release=300[outa]" -map "[outa]" -acodec pcm_s16le "${outputPath}"`;
              break;
         
@@ -1031,6 +1005,8 @@ function processExportJob(jobId) {
         commandArgs.push("-filter_complex", filterChains.join(";"), "-map", "[outv]");
         if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
         else { const silentIndex = files.length; commandArgs.push("-map", `${silentIndex}:a`); }
+        
+        // Added -pix_fmt yuv420p for compatibility
         commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30", "-progress", "pipe:1", "-t", totalDuration, outputPath);
 
         console.log(`[Export Job] FFmpeg: ffmpeg ${commandArgs.join(" ")}`);
