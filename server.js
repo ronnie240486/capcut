@@ -75,6 +75,47 @@ app.post('/api/util/fetch-url', async (req, res) => {
 
     try {
         console.log(`[Fetch URL] Fetching content from: ${url}`);
+        
+        // --- YOUTUBE SPECIAL HANDLING ---
+        if (url.includes('youtube.com') || url.includes('youtu.be')) {
+            try {
+                // 1. Get Metadata via oEmbed (Official & Reliable for Title)
+                const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+                const oembedRes = await fetch(oembedUrl);
+                let title = "YouTube Video";
+                let author = "";
+                
+                if (oembedRes.ok) {
+                    const data = await oembedRes.json();
+                    title = data.title;
+                    author = data.author_name;
+                }
+
+                // 2. Get Description from Page HTML (Meta tags)
+                const pageRes = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' } });
+                const html = await pageRes.text();
+                
+                let description = "";
+                // Try standard meta description
+                const descMatch = html.match(/<meta name="description" content="([^"]*)"/i);
+                if (descMatch) {
+                    description = descMatch[1];
+                } else {
+                     // Try og:description
+                     const ogDescMatch = html.match(/<meta property="og:description" content="([^"]*)"/i);
+                     if (ogDescMatch) description = ogDescMatch[1];
+                }
+
+                const text = `Video Title: ${title}\nChannel: ${author}\n\nVideo Description/Context:\n${description}\n\n(Use this information to generate a script about the video topic)`;
+                return res.json({ text });
+
+            } catch (ytErr) {
+                console.warn("YouTube Fetch partial failure, falling back to generic.", ytErr);
+                // Fallback to generic if oembed fails
+            }
+        }
+
+        // --- GENERIC WEB SCRAPER ---
         const response = await fetch(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
