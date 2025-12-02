@@ -1116,6 +1116,25 @@ app.post('/api/process/voice-clone', uploadAudio, async (req, res) => {
     }
 });
 
+   // --- Inject API Key if needed for Viral Cuts or other AI tasks ---
+            if (endpoint.includes('viral-cuts') || endpoint.includes('video-to-cartoon')) {
+                // IMPORTANT: Ensure the key is sent to backend for Gemini REST API usage
+                // Only inject if not provided in options AND if it exists in env
+                if (!options?.apiKey && process.env.API_KEY) {
+                    formData.append('apiKey', process.env.API_KEY);
+                }
+            }
+
+            if (params) formData.append('params', JSON.stringify(params));
+            if (options?.extraFile) formData.append(options.extraFieldName || 'file', options.extraFile);
+            
+            // Append explicit option key if provided (overrides env)
+            if (options?.apiKey) formData.append('apiKey', options.apiKey);
+            
+            const res = await fetch(`${BACKEND_URL}${endpoint}`, { method: 'POST', body: formData });
+            
+            if (res.ok) {
+
 
 // --- ROTA DE CONVERSÃO DE ÁUDIO BRUTO (TTS) ---
 app.post('/api/util/convert-raw-audio', uploadAudio, (req, res) => {
