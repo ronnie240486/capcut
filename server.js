@@ -1,12 +1,3 @@
-
-
-
-
-
-
-
-
-
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -76,6 +67,63 @@ app.get('/api/check-ffmpeg', (req, res) => {
     });
 });
 
+// --- ROTA DE SCRAPING DE URL (NOVO) ---
+app.post('/api/util/fetch-url', async (req, res) => {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ message: 'URL é obrigatória.' });
+
+    try {
+        console.log(`[Fetch URL] Fetching content from: ${url}`);
+        const response = await fetch(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+        });
+        
+        if (!response.ok) throw new Error(`Falha ao acessar URL: ${response.status}`);
+        
+        const html = await response.text();
+        
+        // Simple HTML stripping and content extraction using Regex (since we can't add cheerio)
+        // 1. Remove Scripts and Styles
+        let text = html.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gim, "")
+                       .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gim, "");
+        
+        // 2. Extract Body content (rough approximation)
+        const bodyMatch = text.match(/<body\b[^>]*>([\s\S]*?)<\/body>/im);
+        if (bodyMatch) text = bodyMatch[1];
+
+        // 3. Strip all tags, replacing block tags with newlines
+        text = text.replace(/<\/div>|<\/p>|<\/h[1-6]>|<\/li>/gim, '\n');
+        text = text.replace(/<[^>]+>/gim, '');
+        
+        // 4. Decode HTML Entities (Basic)
+        text = text.replace(/&nbsp;/g, ' ')
+                   .replace(/&amp;/g, '&')
+                   .replace(/&quot;/g, '"')
+                   .replace(/&lt;/g, '<')
+                   .replace(/&gt;/g, '>');
+
+        // 5. Clean up whitespace
+        text = text.split('\n')
+                   .map(line => line.trim())
+                   .filter(line => line.length > 50) // Filter out short lines (menus, links)
+                   .join('\n\n');
+
+        if (text.length < 50) {
+             return res.json({ text: "Não foi possível extrair conteúdo relevante desta URL. O site pode estar bloqueado ou usar renderização complexa." });
+        }
+
+        // Limit length
+        text = text.slice(0, 5000);
+
+        res.json({ text });
+    } catch (e) {
+        console.error("URL Fetch Error:", e);
+        res.status(500).json({ message: 'Erro ao buscar URL: ' + e.message });
+    }
+});
+
 
 // --- ROTAS DE PROCESSAMENTO ASSÍNCRONO DE CLIPE ÚNICO ---
 
@@ -84,7 +132,8 @@ app.post('/api/process/start/:action', (req, res) => {
     const { action } = req.params;
 
     // Se for script-to-video, usamos uploadAny porque vem muitos arquivos dinamicos
-    const uploader = (action === 'style-transfer-real' || action === 'lip-sync-real') ? uploadFields : (action === 'script-to-video' ? uploadAny : uploadSingle);
+    // Se for auto-ducking, usamos uploadFields para pegar video (musica) e audio (voz)
+    const uploader = (action === 'style-transfer-real' || action === 'lip-sync-real' || action === 'auto-ducking-real') ? uploadFields : (action === 'script-to-video' ? uploadAny : uploadSingle);
 
     uploader(req, res, (err) => {
         if (err) return res.status(400).json({ message: `Erro no upload: ${err.message}` });
@@ -95,7 +144,7 @@ app.post('/api/process/start/:action', (req, res) => {
         let files = {};
         if (action === 'script-to-video') {
              files = { all: req.files };
-        } else if (action === 'style-transfer-real' || action === 'lip-sync-real') {
+        } else if (action === 'style-transfer-real' || action === 'lip-sync-real' || action === 'auto-ducking-real') {
              files = req.files;
         } else {
              files = { video: [req.file] };
@@ -233,7 +282,7 @@ function processSingleClipJob(jobId) {
 
     let outputExtension = '.mp4';
     // Use .wav for pure audio processing to ensure quality and prevent video container errors
-    if (['extract-audio-real', 'remove-silence-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real'].includes(action)) {
+    if (['extract-audio-real', 'remove-silence-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real'].includes(action)) {
         outputExtension = '.wav';
     }
 
@@ -419,6 +468,22 @@ function processSingleClipJob(jobId) {
         case 'enhance-voice-real':
              command = `ffmpeg -i "${videoFile.path}" -vn -af "highpass=f=200,lowpass=f=3000,acompressor=threshold=0.089:ratio=2:attack=20:release=1000" -acodec pcm_s16le "${outputPath}"`;
              break;
+             
+        case 'auto-ducking-real':
+             // Input 0: Music (Video/Audio File)
+             // Input 1: Voice Control (Audio File)
+             // Use sidechaincompress to compress Input 0 based on Input 1
+             if (!job.files.audio || !job.files.audio[0]) {
+                 job.status = 'failed'; job.error = "Arquivo de voz para Auto-Ducking não encontrado."; cleanup(); return;
+             }
+             const voicePath = job.files.audio[0].path;
+             const th = params.threshold || 0.125; // 0-1 amplitude (default 0.125 ~ -18dB)
+             const ratio = params.ratio || 2; // Ratio (default 2)
+             
+             // [0:a] is main, [1:a] is sidechain. Output [outa].
+             // Use -vn to output just audio (safer for "fixing" music track)
+             command = `ffmpeg -i "${videoFile.path}" -i "${voicePath}" -filter_complex "[0:a][1:a]sidechaincompress=threshold=${th}:ratio=${ratio}:attack=20:release=300[outa]" -map "[outa]" -acodec pcm_s16le "${outputPath}"`;
+             break;
         
         default:
             job.status = 'failed';
@@ -452,6 +517,40 @@ function processSingleClipJob(jobId) {
     
     executeJob();
 }
+
+// --- ROTA DE GERAÇÃO DE MÚSICA IA (DSP SYNTHESIS) ---
+app.post('/api/process/generate-music', uploadAny, (req, res) => {
+    const { filter, duration } = req.body;
+    
+    if (!filter) return res.status(400).json({ message: 'Filtro FFmpeg ausente.' });
+    
+    const jobId = `music_gen_${Date.now()}`;
+    const outputFilename = `ai_music_${Date.now()}.wav`;
+    const outputPath = path.join(uploadDir, outputFilename);
+    const dur = parseFloat(duration) || 10;
+
+    jobs[jobId] = { status: 'processing', progress: 0, outputPath };
+    res.status(202).json({ jobId });
+
+    // Use lavfi source to generate audio based on filter graph
+    // -f lavfi -i "FILTER" -t DURATION ...
+    // Note: complex filters might require explicit null input sometimes, but lavfi source works well.
+    const command = `ffmpeg -f lavfi -i "${filter}" -t ${dur} -acodec pcm_s16le -ar 44100 -ac 2 "${outputPath}"`;
+    
+    console.log(`[Music Gen] Generating with filter: ${filter}`);
+
+    exec(command, (err, stdout, stderr) => {
+        if (err) {
+            console.error(`[Music Gen Error]`, stderr);
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = "Erro na síntese de áudio.";
+        } else {
+            jobs[jobId].status = 'completed';
+            jobs[jobId].progress = 100;
+            jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+        }
+    });
+});
 
 // --- ROTA DE CLONAGEM DE VOZ ---
 app.post('/api/process/voice-clone', uploadAudio, async (req, res) => {
@@ -534,33 +633,8 @@ app.post('/api/process/voice-clone', uploadAudio, async (req, res) => {
 
         } else {
             // --- FALLBACK SIMULATION (FFMPEG + GEMINI BASE) ---
-            console.log(`[Voice Clone] No API Key. Using Simulation.`);
-            
-            // 1. Analyze pitch of input (very basic)
-            // Since we can't easily analyze pitch without complex filters and parsing, 
-            // we will just apply a generic "modulation" to make it sound "processed"/different.
-            // Or we could use Gemini to generate a base voice.
-            
-            // Note: Since backend can't call Gemini client easily (it's front-end configured usually), 
-            // we will simulate by generating a standard tone using espeak (if installed) or just returning error?
-            // Actually, the prompt says "Use Google Gemini". But backend doesn't have the client initialized with key from env here easily if it's passed from front.
-            // Wait, I can use the same logic as TTS if I had the key.
-            // Simpler Fallback: We can't generate new TTS on backend easily without the key.
-            // I will create a "Simulated" response by just copying the sample (this is bad) or failing gracefully.
-            // BETTER: Return a pre-generated "Error" audio or just fail saying API key needed.
-            
-            // Actually, I can use a trick: If I had `espeak` installed, I could use it.
-            // But I don't.
-            // Let's rely on the Frontend to generate the base audio if key is missing? No, this is a backend route.
-            
-            // Decision: Since I cannot easily generate TTS on backend without setup, 
-            // I will process the input audio to sound like a "Robot" as a placeholder for the "Cloned Voice" to show the pipeline works.
-            // "Cloning failed? Here is a robotic version of your sample" -> This doesn't match the text.
-            
-            // OK, I will assume the user MUST provide the key for this feature to work as intended.
-            // However, to satisfy "Fallback", I will return a success but with a dummy wav file generated by ffmpeg (sine wave).
-            // command = `ffmpeg -f lavfi -i "sine=frequency=1000:duration=5" "${outputPath}"`;
-            
+            // If no key, return generic error or fallback message as per user request context
+            // But we already implemented this fallback logic before
             throw new Error("Chave da API ElevenLabs não fornecida. Configure em Configurações > API.");
         }
 
@@ -603,22 +677,13 @@ app.post('/api/util/convert-raw-audio', uploadAudio, (req, res) => {
     // Build FFmpeg filter chain for Speed and Pitch
     const filters = [];
     
-    // Pitch Logic: 
-    // Slider is -10 to 10. We map this to a factor (0.5x to 1.5x roughly).
-    // asetrate changes both pitch and speed. We compensate speed with atempo.
     if (pitch !== 0) {
         const pitchFactor = 1 + (pitch / 20); // -10 -> 0.5, +10 -> 1.5
-        // Raw rate from Gemini is 24000Hz
         const newRate = Math.round(24000 * pitchFactor);
-        
         filters.push(`asetrate=${newRate}`);
-        // We must compensate the tempo change caused by asetrate
-        // If asetrate speeds up (factor > 1), atempo must slow down (1/factor)
         filters.push(`atempo=${1/pitchFactor}`);
     }
 
-    // Speed Logic:
-    // Simple atempo filter
     if (speed !== 1.0) {
         filters.push(`atempo=${speed}`);
     }
