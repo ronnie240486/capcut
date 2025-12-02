@@ -1,3 +1,6 @@
+// Carrega variáveis de ambiente do arquivo .env (se existir)
+require('dotenv').config();
+
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -57,18 +60,18 @@ const cleanupFiles = (files) => {
     });
 };
 
-// HELPER: Validate API Key strictly
+// HELPER: Validação Rigorosa da API Key
 const getValidApiKey = (clientKey) => {
-    // If client sends a key, verify it's not "undefined", "null", or empty string
+    // 1. Tenta usar a chave enviada pelo cliente (Frontend), se for válida
     if (clientKey && typeof clientKey === 'string' && clientKey !== "undefined" && clientKey !== "null" && clientKey.trim() !== "") {
         return clientKey;
     }
-    // Otherwise, ALWAYS fallback to server environment variable
-    // This assumes the user has configured API_KEY in their hosting provider (e.g., Railway variables)
+    // 2. Se não, usa a chave do servidor (Configurada no .env ou Painel da Hospedagem)
+    // ISSO É CRUCIAL: O servidor deve ter sua própria chave como fallback
     return process.env.API_KEY;
 };
 
-// --- Rotas ---
+// --- Rotas de Saúde ---
 app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
 
 app.get('/api/check-ffmpeg', (req, res) => {
@@ -78,14 +81,14 @@ app.get('/api/check-ffmpeg', (req, res) => {
     });
 });
 
-// --- AI ENDPOINTS (Server-Side Processing) ---
+// --- AI ENDPOINTS (Processamento no Servidor para proteger a Key) ---
 
-// 1. Analyze Script (Gemini Text)
+// 1. Analisar Roteiro (Gemini Text)
 app.post('/api/ai/analyze-script', async (req, res) => {
     const { script } = req.body;
-    const apiKey = getValidApiKey(process.env.API_KEY); // Prioritize server key for direct endpoints
+    const apiKey = getValidApiKey(process.env.API_KEY); // Prioriza chave do servidor
     
-    if (!apiKey) return res.status(500).json({ message: 'API Key do servidor não configurada.' });
+    if (!apiKey) return res.status(500).json({ message: 'API Key do servidor não configurada. Configure o .env' });
     if (!script) return res.status(400).json({ message: 'Script vazio.' });
 
     try {
