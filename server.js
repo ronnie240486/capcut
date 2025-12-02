@@ -391,15 +391,28 @@ async function processVideoToCartoonAIJob(jobId) {
         // 1. Extract a reference frame (at 1 second or middle)
         console.log(`[Job ${jobId}] Extracting Frame...`);
         await new Promise((resolve, reject) => {
-            exec(`ffmpeg -ss 00:00:01 -i "${videoFile.path}" -vframes 1 -q:v 2 "${framePath}"`, (err) => {
-                if (err) {
+            // Using -y to force overwrite
+            const cmd1 = `ffmpeg -y -ss 00:00:01 -i "${videoFile.path}" -vframes 1 -q:v 2 "${framePath}"`;
+            exec(cmd1, (err, stdout, stderr) => {
+                // If error OR file doesn't exist (ffmpeg might not return error code on seek fail sometimes)
+                if (err || !fs.existsSync(framePath)) {
+                    console.warn(`[Job ${jobId}] 1s seek failed or file missing, trying 0s. Error: ${err?.message}`);
                     // Try at 0s if 1s fails (short video)
-                    exec(`ffmpeg -i "${videoFile.path}" -vframes 1 -q:v 2 "${framePath}"`, (err2) => {
-                       if (err2) reject(err2); else resolve();
+                    const cmd2 = `ffmpeg -y -i "${videoFile.path}" -vframes 1 -q:v 2 "${framePath}"`;
+                    exec(cmd2, (err2, stdout2, stderr2) => {
+                       if (err2) reject(new Error(`FFmpeg Error: ${stderr2}`)); 
+                       else if (!fs.existsSync(framePath)) reject(new Error("Failed to create frame file even at 0s."));
+                       else resolve();
                     });
                 } else resolve();
             });
         });
+        
+        // Double check existence
+        if (!fs.existsSync(framePath)) {
+            throw new Error("Frame file not found after extraction.");
+        }
+        
         job.progress = 20;
 
         // 2. Generate Image using Gemini 2.5 Flash Image
@@ -434,7 +447,7 @@ async function processVideoToCartoonAIJob(jobId) {
         
         if (!outputPart) {
              console.error("AI Response:", JSON.stringify(aiData));
-             throw new Error("A IA não retornou uma imagem.");
+             throw new Error("A IA não retornou uma imagem. (Bloqueio de segurança ou erro)");
         }
 
         const genImageBuffer = Buffer.from(outputPart.inline_data.data, 'base64');
