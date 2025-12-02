@@ -1,3 +1,4 @@
+
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -166,6 +167,17 @@ app.post('/api/process/start/:action', (req, res) => {
     });
 });
 
+// Viral Cuts Route (Requires Special Handling for multiple steps)
+app.post('/api/process/viral-cuts', uploadSingle, (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Vídeo é obrigatório.' });
+    
+    const jobId = `viral_cuts_${Date.now()}`;
+    jobs[jobId] = { status: 'pending', files: { video: [req.file] }, params: req.body };
+    res.status(202).json({ jobId });
+    
+    processViralCutsJob(jobId);
+});
+
 // 2. Verificar o status de uma tarefa
 app.get('/api/process/status/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
@@ -190,6 +202,122 @@ app.get('/api/process/download/:jobId', (req, res) => {
         delete jobs[req.params.jobId];
     });
 });
+
+async function processViralCutsJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'processing';
+    job.progress = 0;
+    
+    const videoFile = job.files.video[0];
+    const apiKey = job.params.apiKey; // Needed for Gemini
+    const count = parseInt(job.params.count) || 3;
+    const style = job.params.style || 'crop';
+    
+    const outputFilename = `viral_cuts_${Date.now()}.mp4`;
+    const outputPath = path.join(uploadDir, outputFilename);
+    const audioPath = path.join(uploadDir, `temp_audio_${jobId}.mp3`);
+    job.outputPath = outputPath;
+
+    try {
+        // Step 1: Extract Audio (Low Bitrate to save bandwidth)
+        console.log(`[Job ${jobId}] Extracting Audio...`);
+        await new Promise((resolve, reject) => {
+            exec(`ffmpeg -i "${videoFile.path}" -vn -ar 16000 -ac 1 -ab 32k "${audioPath}"`, (err) => {
+                if (err) reject(err); else resolve();
+            });
+        });
+        job.progress = 20;
+
+        // Step 2: Send Audio to Gemini for Analysis
+        // We use native fetch here to call Gemini REST API
+        if (!apiKey) throw new Error("API Key is required for analysis.");
+        
+        console.log(`[Job ${jobId}] Analyzing with Gemini...`);
+        const stats = fs.statSync(audioPath);
+        const audioBuffer = fs.readFileSync(audioPath);
+        const base64Audio = audioBuffer.toString('base64');
+
+        const aiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [
+                        { text: `Analyze this audio file. Identify exactly ${count} of the most viral, funny, or engaging segments suitable for a TikTok highlight reel. Return strictly a JSON array of objects with 'start' and 'end' times in seconds. Example: [{"start": 10, "end": 45}, ...]. Do not wrap in markdown.` },
+                        { inline_data: { mime_type: "audio/mp3", data: base64Audio } }
+                    ]
+                }]
+            })
+        });
+
+        if (!aiResponse.ok) throw new Error(`Gemini API Error: ${await aiResponse.text()}`);
+        
+        const aiData = await aiResponse.json();
+        const text = aiData.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (!text) throw new Error("No analysis received from AI.");
+        
+        const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        const segments = JSON.parse(cleanJson);
+        job.progress = 50;
+
+        // Step 3: Cut and Concat Segments
+        console.log(`[Job ${jobId}] Cutting ${segments.length} segments...`);
+        
+        const segmentFiles = [];
+        
+        for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            const segPath = path.join(uploadDir, `seg_${jobId}_${i}.mp4`);
+            const duration = seg.end - seg.start;
+            
+            // Reframe Filter based on style
+            let vf = '';
+            if (style === 'crop') {
+                vf = `scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1`;
+            } else {
+                vf = `split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2`;
+            }
+
+            // Cut & Reframe each segment
+            await new Promise((resolve, reject) => {
+                const cmd = `ffmpeg -ss ${seg.start} -t ${duration} -i "${videoFile.path}" -vf "${vf}" -c:v libx264 -preset ultrafast -c:a aac "${segPath}"`;
+                exec(cmd, (err) => {
+                    if (err) reject(err); else resolve();
+                });
+            });
+            segmentFiles.push(segPath);
+        }
+        
+        job.progress = 80;
+
+        // Step 4: Concatenate
+        const concatListPath = path.join(uploadDir, `concat_${jobId}.txt`);
+        const fileContent = segmentFiles.map(f => `file '${path.resolve(f)}'`).join('\n');
+        fs.writeFileSync(concatListPath, fileContent);
+
+        await new Promise((resolve, reject) => {
+            exec(`ffmpeg -f concat -safe 0 -i "${concatListPath}" -c copy "${outputPath}"`, (err) => {
+                if (err) reject(err); else resolve();
+            });
+        });
+
+        // Cleanup intermediate
+        fs.unlink(audioPath, ()=>{});
+        fs.unlink(concatListPath, ()=>{});
+        segmentFiles.forEach(f => fs.unlink(f, ()=>{}));
+
+        job.status = 'completed';
+        job.progress = 100;
+        job.downloadUrl = `/api/process/download/${jobId}`;
+
+    } catch (e) {
+        console.error(`[Viral Cuts Error]`, e);
+        job.status = 'failed';
+        job.error = e.message;
+        // Try cleanup
+        if(fs.existsSync(audioPath)) fs.unlink(audioPath, ()=>{});
+    }
+}
 
 function processScriptToVideoJob(jobId) {
     const job = jobs[jobId];
@@ -284,6 +412,10 @@ function processSingleClipJob(jobId) {
     // Use .wav for pure audio processing to ensure quality and prevent video container errors
     if (['extract-audio-real', 'remove-silence-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real'].includes(action)) {
         outputExtension = '.wav';
+    }
+    // Use .png for stickers to support transparency
+    if (action === 'stickerize-real') {
+        outputExtension = '.png';
     }
 
     const outputFilename = `${action}-${Date.now()}${outputExtension}`;
@@ -438,6 +570,13 @@ function processSingleClipJob(jobId) {
              // Map video from 0, audio from 1. Copy video codec (fast), re-encode audio if needed (aac).
              // -shortest: cut video to audio length or vice versa (usually audio dictates length in dubbing).
              command = `ffmpeg -i "${videoFile.path}" -i "${audioPath}" -map 0:v -map 1:a -c:v copy -c:a aac -shortest "${outputPath}"`;
+             break;
+             
+        case 'stickerize-real':
+             // Remove Chroma Key Green (#00FF00) to create transparency
+             // colorkey=color:similarity:blend
+             // Output to PNG (-c:v png)
+             command = `ffmpeg -i "${videoFile.path}" -vf "colorkey=0x00FF00:0.35:0.1" -c:v png -compression_level 0 "${outputPath}"`;
              break;
 
         // --- AUDIO TOOLS ---
