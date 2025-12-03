@@ -662,9 +662,12 @@ function processSingleClipJob(jobId) {
              const { x, y, w, h } = params;
              const dx = Math.round(x);
              const dy = Math.round(y);
-             const dw = Math.round(w);
-             const dh = Math.round(h);
-             command = `ffmpeg -i "${videoFile.path}" -vf "delogo=x=${dx}:y=${dy}:w=${dw}:h=${dh}:show=0" -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
+             // Ensure width/height are at least 1 to avoid ffmpeg errors
+             const dw = Math.max(1, Math.round(w));
+             const dh = Math.max(1, Math.round(h));
+             
+             // Chain: Delogo -> Scale to Even (Critical for Browser) -> Format YUV420P
+             command = `ffmpeg -i "${videoFile.path}" -vf "delogo=x=${dx}:y=${dy}:w=${dw}:h=${dh}:show=0,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -profile:v main -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              break;
              
         case 'video-to-cartoon-real':
@@ -693,7 +696,8 @@ function processSingleClipJob(jobId) {
              
              const vf = filters.join(",");
              
-             command = `ffmpeg -i "${videoFile.path}" -vf "${vf}" -c:a copy -c:v libx264 -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
+             // Added -profile:v main for maximum compatibility
+             command = `ffmpeg -i "${videoFile.path}" -vf "${vf}" -c:a copy -c:v libx264 -profile:v main -preset veryfast -pix_fmt yuv420p "${outputPath}"`;
              break;
              
         case 'face-zoom-real':
