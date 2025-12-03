@@ -62,20 +62,6 @@ const isImage = (filename) => {
     return ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff'].includes(ext);
 };
 
-// NEW: Helper to get video/image metadata
-const getMediaMetadata = (filePath) => {
-    return new Promise((resolve) => {
-        exec(`ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "${filePath}"`, (err, stdout) => {
-            if (err || !stdout) {
-                // Fallback to defaults if ffprobe fails
-                return resolve({ width: 1920, height: 1080 }); 
-            }
-            const [w, h] = stdout.trim().split('x').map(Number);
-            resolve({ width: w || 1920, height: h || 1080 });
-        });
-    });
-};
-
 // --- Rotas ---
 app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
 
@@ -342,7 +328,7 @@ async function processViralCutsJob(jobId) { /* ... same as previous ... */ }
 function processScriptToVideoJob(jobId) { /* ... same as previous ... */ }
 
 // --- LÓGICA DE PROCESSAMENTO DE TAREFAS DE CLIPE ÚNICO ---
-async function processSingleClipJob(jobId) {
+function processSingleClipJob(jobId) {
     const job = jobs[jobId];
     job.status = 'processing';
     job.progress = 0;
@@ -350,22 +336,28 @@ async function processSingleClipJob(jobId) {
     const action = jobId.split('_')[0];
     const videoFile = job.files.video[0];
     
-    // Parse params if sent as string (FormData)
+    // Parse params
     let params = {};
     if (job.params && job.params.params) {
-        try {
-            params = typeof job.params.params === 'string' ? JSON.parse(job.params.params) : job.params.params;
-        } catch(e) { console.error("Error parsing params", e); }
-    } else if (job.params) {
-        params = job.params;
-    }
+        try { params = typeof job.params.params === 'string' ? JSON.parse(job.params.params) : job.params.params; } catch(e) {}
+    } else if (job.params) params = job.params;
 
+    const inputIsImage = isImage(videoFile.originalname);
+
+    // INTELLIGENT OUTPUT EXTENSION
+    // If input is image, keep it as image for static effects (Magic Eraser, Cartoon).
+    // Face Zoom MUST be mp4 because it adds movement.
     let outputExtension = '.mp4';
+    
+    if (inputIsImage) {
+        if (['magic-erase-real', 'video-to-cartoon-real', 'style-transfer-real', 'stickerize-real', 'retouch-real'].includes(action)) {
+            outputExtension = '.png';
+        }
+    }
+    
+    // Audio tools always wav
     if (['extract-audio-real', 'remove-silence-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real'].includes(action)) {
         outputExtension = '.wav';
-    }
-    if (action === 'stickerize-real') {
-        outputExtension = '.png';
     }
 
     const outputFilename = `${action}-${Date.now()}${outputExtension}`;
@@ -383,151 +375,92 @@ async function processSingleClipJob(jobId) {
         cleanupFiles([...allFiles, outputPath]);
     };
 
-    // CRITICAL: Determine if input is image to loop it
-    const inputIsImage = isImage(videoFile.originalname);
+    // 1. Input Args
+    // If output is video but input is image, loop it. If output is image, just read it.
+    const baseInputArgs = (inputIsImage && outputExtension === '.mp4') ? `-loop 1 -t 5 -i` : `-i`;
     
-    // 1. Input Args: Loop images if making video
-    const baseInputArgs = inputIsImage && outputExtension === '.mp4' ? `-loop 1 -t 5 -i` : `-i`;
-    
-    // 2. Extra Inputs: Generate SILENCE if image->video (Fixes Black Screen on players)
-    // NOTE: Lip Sync provides its own audio, so we skip silence generation for it.
+    // 2. Extra Inputs (Silence for Image->Video)
     let extraInputs = "";
     let outputMapping = "";
-    
     if (inputIsImage && outputExtension === '.mp4' && action !== 'lip-sync-real') {
-        // Add silent audio stream
         extraInputs = `-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100`;
-        // Map Video (0:v) and Silence (1:a), cut to shortest (video duration due to -t 5)
         outputMapping = `-map 0:v -map 1:a -shortest`;
     }
 
-    // 3. Output Flags: Standardize compatibility
-    const outputFlags = `-c:v libx264 -profile:v main -preset veryfast -pix_fmt yuv420p -r 30 -c:a aac -movflags +faststart -threads 2 -max_muxing_queue_size 1024`;
+    // 3. Output Flags
+    // If image output, simple overwrite. If video, use standard compatibility flags.
+    let outputFlags = "";
+    if (outputExtension === '.png') {
+        outputFlags = "-y"; // Just overwrite
+    } else if (outputExtension === '.mp4') {
+        outputFlags = `-c:v libx264 -profile:v main -preset ultrafast -pix_fmt yuv420p -r 30 -c:a aac -movflags +faststart -threads 4`;
+    }
 
-    // 4. Safety Filters: Prevent OOM on 4K images & Fix Formats
-    // Downscale huge images to max 1280 width to save RAM
-    const imageSafetyChain = inputIsImage ? "scale='min(1280,iw)':-2,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" : "null";
-    
-    // Get Metadata for Smart Scaling (Magic Eraser)
-    const metadata = await getMediaMetadata(videoFile.path);
-    const originalW = metadata.width;
+    // 4. Safety Filters
+    // Resize huge images to HD (1280px) to save RAM, unless it's magic eraser (coordinates matter)
     const MAX_WIDTH = 1280;
+    
+    // Magic Eraser needs specific handling for scaling coordinates
+    const originalW = params.originalWidth || 1920; // Preferred from frontend
 
     switch (action) {
-        case 'stabilize-real':
-            const transformsFile = path.join(uploadDir, `${videoFile.filename}.trf`);
-            const detectCommand = `ffmpeg -i "${videoFile.path}" -vf vidstabdetect=result="${transformsFile}" -f null -`;
-            const transformCommand = `ffmpeg -i "${videoFile.path}" -vf vidstabtransform=input="${transformsFile}":zoom=0:smoothing=10,unsharp=5:5:0.8:3:3:0.4 ${outputFlags} "${outputPath}"`;
-            
-            processHandler = (resolve, reject) => {
-                job.progress = 10;
-                exec(detectCommand, (err) => {
-                    if (err) return reject(err);
-                    job.progress = 50;
-                    exec(transformCommand, (err2) => {
-                        fs.unlink(transformsFile, () => {});
-                        if (err2) return reject(err2);
-                        job.progress = 100;
-                        resolve();
-                    });
-                });
-            };
-            break;
-
-        case 'style-transfer-real':
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "curves=vintage,eq=contrast=1.2:saturation=1.3:brightness=0.1,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
-             break;
-        
-        case 'remove-bg-real':
-             processHandler = (resolve, reject) => {
-                 fs.copyFile(videoFile.path, outputPath, (err) => {
-                     if (err) reject(err);
-                     else resolve();
-                 });
-             };
-             break;
-
-        case 'reframe-real':
-             const reframeMode = params.mode || 'crop';
-             if (reframeMode === 'crop') {
-                 command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
-             } else {
-                 command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
-             }
-             break;
-
-        case 'retouch-real':
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "smartblur=lr=1.5:ls=-0.8:lt=-5.0,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
-             break;
-
-        case 'interpolate-real':
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
-             break;
-        
-        case 'reverse-real':
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" -vf reverse -af areverse ${outputFlags} "${outputPath}"`;
-             break;
-             
-        case 'upscale-real':
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "scale=3840:2160:flags=lanczos,unsharp=5:5:1.0:5:5:0.0,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} -c:v libx264 -preset superfast -crf 18 -pix_fmt yuv420p -r 30 -c:a aac -movflags +faststart -threads 2 "${outputPath}"`;
-             break;
-             
         case 'magic-erase-real':
              let { x, y, w, h } = params;
              
-             // SMART SCALING: If image is HUGE, scale processing down to 1280px (HD) to avoid OOM
+             // SCALING LOGIC:
+             // If image is larger than MAX_WIDTH, we scale it down to MAX_WIDTH.
+             // We must also scale the x,y,w,h coordinates to match.
              let processScale = "";
+             let scaleFactor = 1;
+             
              if (originalW > MAX_WIDTH) {
-                 const scaleFactor = MAX_WIDTH / originalW;
-                 // Adjust coordinates to match scaled video
-                 x = x * scaleFactor;
-                 y = y * scaleFactor;
-                 w = w * scaleFactor;
-                 h = h * scaleFactor;
-                 // Add scale filter BEFORE delogo
-                 processScale = `scale=${MAX_WIDTH}:-2,`;
+                 scaleFactor = MAX_WIDTH / originalW;
+                 processScale = `scale=${MAX_WIDTH}:-2,`; // FFmpeg filter to resize
              }
 
-             const dx = Math.round(x);
-             const dy = Math.round(y);
-             const dw = Math.max(1, Math.round(w));
-             const dh = Math.max(1, Math.round(h));
+             // Apply scale factor to coordinates
+             const dx = Math.round(x * scaleFactor);
+             const dy = Math.round(y * scaleFactor);
+             const dw = Math.max(1, Math.round(w * scaleFactor));
+             const dh = Math.max(1, Math.round(h * scaleFactor));
              
-             // Chain: Scale (if needed) -> Delogo -> Ensure Even Dims -> Format
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${processScale}delogo=x=${dx}:y=${dy}:w=${dw}:h=${dh}:show=0,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
+             // Force even dimensions if video, simple resize if image
+             const finalFormat = outputExtension === '.mp4' ? ",scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" : "";
+             
+             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${processScale}delogo=x=${dx}:y=${dy}:w=${dw}:h=${dh}:show=0${finalFormat}" ${outputMapping} ${outputFlags} "${outputPath}"`;
              break;
-             
+
         case 'video-to-cartoon-real':
              const style = params.style || 'anime';
              let filters = [];
              
-             // Prepend safety chain
-             if (inputIsImage) filters.push(imageSafetyChain);
+             // Downscale huge images
+             if (inputIsImage && originalW > MAX_WIDTH) filters.push(`scale=${MAX_WIDTH}:-2`);
 
-             if (style === 'anime') {
-                 filters.push("median=3", "unsharp=5:5:1.0:5:5:0.0", "eq=saturation=1.5:contrast=1.1");
-             } else if (style === 'pixar') {
-                 filters.push("gblur=sigma=2", "unsharp=5:5:0.8:3:3:0.0", "eq=saturation=1.3:brightness=0.05");
-             } else if (style === 'sketch') {
-                 filters.push("edgedetect=low=0.1:high=0.4", "eq=contrast=2.0"); 
-             } else if (style === 'oil') {
-                 filters.push("boxblur=3:1", "eq=saturation=1.4:contrast=1.1");
-             } else {
-                 filters.push("eq=saturation=1.3");
-             }
+             if (style === 'anime') filters.push("median=3", "unsharp=5:5:1.0:5:5:0.0", "eq=saturation=1.5:contrast=1.1");
+             else if (style === 'pixar') filters.push("gblur=sigma=2", "unsharp=5:5:0.8:3:3:0.0", "eq=saturation=1.3:brightness=0.05");
+             else if (style === 'sketch') filters.push("edgedetect=low=0.1:high=0.4", "eq=contrast=2.0"); 
+             else if (style === 'oil') filters.push("boxblur=3:1", "eq=saturation=1.4:contrast=1.1");
              
-             filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2");
-             filters.push("format=yuv420p");
+             // Video standards
+             if (outputExtension === '.mp4') {
+                 filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2");
+                 filters.push("format=yuv420p");
+             }
              
              const vf = filters.join(",");
              command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${vf}" ${outputMapping} ${outputFlags} "${outputPath}"`;
              break;
-             
+
         case 'face-zoom-real':
+             // Face Zoom ALWAYS creates a video, so we keep using MP4 logic
              const mode = params.mode || 'punch';
              const intensity = parseFloat(params.intensity) || 1.3;
              const interval = parseInt(params.interval) || 5;
              
+             // Safety chain for Face Zoom (always video output)
+             const zoomSafety = `scale='min(${MAX_WIDTH},iw)':-2,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p`;
+
              if (mode === 'punch') {
                  const zoomW = `iw/${intensity}`;
                  const zoomH = `ih/${intensity}`;
@@ -535,27 +468,27 @@ async function processSingleClipJob(jobId) {
                  const cropY = `(ih-oh)/2`;
                  const zoomStart = interval * 0.6;
                  
-                 // Apply safety chain BEFORE splitting
-                 command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -filter_complex "[0:v]${imageSafetyChain}[safe];[safe]split[v1][v2];[v2]crop=w=${zoomW}:h=${zoomH}:x=${cropX}:y=${cropY}[v2cropped];[v2cropped][v1]scale2ref[v2scaled][v1ref];[v1ref][v2scaled]overlay=0:0:enable='between(mod(t,${interval}),${zoomStart},${interval})',scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[vout]" -map "[vout]" ${inputIsImage ? '-map 1:a -shortest' : ''} ${outputFlags} "${outputPath}"`;
+                 command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -filter_complex "[0:v]${zoomSafety}[safe];[safe]split[v1][v2];[v2]crop=w=${zoomW}:h=${zoomH}:x=${cropX}:y=${cropY}[v2cropped];[v2cropped][v1]scale2ref[v2scaled][v1ref];[v1ref][v2scaled]overlay=0:0:enable='between(mod(t,${interval}),${zoomStart},${interval})',scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[vout]" -map "[vout]" ${inputIsImage ? '-map 1:a -shortest' : ''} ${outputFlags} "${outputPath}"`;
              } else {
                  const durationFrames = 30 * interval;
-                 command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${imageSafetyChain},zoompan=z='min(zoom+0.0015,${intensity})':d=${durationFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
+                 command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${zoomSafety},zoompan=z='min(zoom+0.0015,${intensity})':d=${durationFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
              }
-             break;
-             
-        case 'lip-sync-real':
-             if (!job.files.audio || !job.files.audio[0]) {
-                 job.status = 'failed'; job.error = "Arquivo de áudio para Lip Sync não encontrado."; cleanup(); return;
-             }
-             const audioPath = job.files.audio[0].path;
-             // Here we use baseInputArgs (loop image) but NOT extraInputs (no silence), we map external audio (1:a)
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" -i "${audioPath}" -map 0:v -map 1:a -shortest ${outputFlags} "${outputPath}"`;
-             break;
-             
-        case 'stickerize-real':
-             command = `ffmpeg -i "${videoFile.path}" -vf "colorkey=0x00FF00:0.35:0.1" -c:v png -compression_level 0 "${outputPath}"`;
              break;
 
+        case 'reframe-real':
+             const reframeMode = params.mode || 'crop';
+             // Reframe can be image->image or video->video
+             const reframeFilter = reframeMode === 'crop' 
+                ? `scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1`
+                : `split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2`;
+             
+             // Ensure even dims if video
+             const finalReframe = outputExtension === '.mp4' ? `${reframeFilter},scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p` : reframeFilter;
+
+             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${finalReframe}" ${outputMapping} ${outputFlags} "${outputPath}"`;
+             break;
+
+        // ... (Audio tools remain the same) ...
         case 'extract-audio-real':
              command = `ffmpeg -i "${videoFile.path}" -vn -acodec pcm_s16le -ar 44100 -ac 2 "${outputPath}"`;
              break;
@@ -583,16 +516,52 @@ async function processSingleClipJob(jobId) {
              command = `ffmpeg -i "${videoFile.path}" -i "${voicePath}" -filter_complex "[0:a][1:a]sidechaincompress=threshold=${th}:ratio=${ratio}:attack=20:release=300[outa]" -map "[outa]" -acodec pcm_s16le "${outputPath}"`;
              break;
         
+        // ... (Lip Sync, etc) ...
+        case 'lip-sync-real':
+             if (!job.files.audio || !job.files.audio[0]) { job.status = 'failed'; job.error = "Erro."; cleanup(); return; }
+             const audioPath = job.files.audio[0].path;
+             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" -i "${audioPath}" -map 0:v -map 1:a -shortest ${outputFlags} "${outputPath}"`;
+             break;
+             
+        case 'stabilize-real':
+            const trfFile = path.join(uploadDir, `${videoFile.filename}.trf`);
+            const detCmd = `ffmpeg -i "${videoFile.path}" -vf vidstabdetect=result="${trfFile}" -f null -`;
+            const transCmd = `ffmpeg -i "${videoFile.path}" -vf vidstabtransform=input="${trfFile}":zoom=0:smoothing=10 ${outputFlags} "${outputPath}"`;
+            processHandler = (resolve, reject) => {
+                exec(detCmd, (err) => {
+                    if(err) return reject(err);
+                    exec(transCmd, (err2) => {
+                        fs.unlink(trfFile,()=>{});
+                        if(err2) return reject(err2);
+                        resolve();
+                    });
+                });
+            };
+            break;
+
+        case 'interpolate-real':
+             // Video only
+             command = `ffmpeg -i "${videoFile.path}" -vf "minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a copy "${outputPath}"`;
+             break;
+             
+        case 'upscale-real':
+             command = `ffmpeg -i "${videoFile.path}" -vf "scale=3840:2160:flags=lanczos,unsharp=5:5:1.0:5:5:0.0,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -preset superfast -crf 20 -pix_fmt yuv420p -c:a copy "${outputPath}"`;
+             break;
+             
+        case 'reverse-real':
+             command = `ffmpeg -i "${videoFile.path}" -vf reverse -af areverse ${outputFlags} "${outputPath}"`;
+             break;
+
         default:
             job.status = 'failed'; job.error = `Ação desconhecida: ${action}`; cleanup(); return;
     }
 
     const executeJob = () => {
         const promise = processHandler ? new Promise(processHandler) : new Promise((resolve, reject) => {
-            console.log(`[Job ${jobId}] Executando FFmpeg: ${command}`);
+            console.log(`[Job ${jobId}] Executando: ${command}`);
             const process = exec(command, (err, stdout, stderr) => {
                 if (err) {
-                    console.error(`[Job ${jobId}] Erro:`, stderr);
+                    console.error(`[Job ${jobId}] Falha:`, stderr);
                     return reject(stderr || err.message);
                 }
                 resolve(stdout);
