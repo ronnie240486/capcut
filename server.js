@@ -62,6 +62,20 @@ const isImage = (filename) => {
     return ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff'].includes(ext);
 };
 
+// NEW: Helper to get video/image metadata
+const getMediaMetadata = (filePath) => {
+    return new Promise((resolve) => {
+        exec(`ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "${filePath}"`, (err, stdout) => {
+            if (err || !stdout) {
+                // Fallback to defaults if ffprobe fails
+                return resolve({ width: 1920, height: 1080 }); 
+            }
+            const [w, h] = stdout.trim().split('x').map(Number);
+            resolve({ width: w || 1920, height: h || 1080 });
+        });
+    });
+};
+
 // --- Rotas ---
 app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
 
@@ -328,7 +342,7 @@ async function processViralCutsJob(jobId) { /* ... same as previous ... */ }
 function processScriptToVideoJob(jobId) { /* ... same as previous ... */ }
 
 // --- LÓGICA DE PROCESSAMENTO DE TAREFAS DE CLIPE ÚNICO ---
-function processSingleClipJob(jobId) {
+async function processSingleClipJob(jobId) {
     const job = jobs[jobId];
     job.status = 'processing';
     job.progress = 0;
@@ -394,10 +408,10 @@ function processSingleClipJob(jobId) {
     // Downscale huge images to max 1280 width to save RAM
     const imageSafetyChain = inputIsImage ? "scale='min(1280,iw)':-2,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" : "null";
     
-    // SAFETY FILTER FOR COORDINATE-DEPENDENT EFFECTS (Magic Eraser)
-    // Does NOT downscale (preserves coordinates) but fixes dimensions/format logic if needed.
-    // Changed from "null" to explicit format to avoid delogo issues.
-    const magicEraserSafetyChain = "format=yuv420p";
+    // Get Metadata for Smart Scaling (Magic Eraser)
+    const metadata = await getMediaMetadata(videoFile.path);
+    const originalW = metadata.width;
+    const MAX_WIDTH = 1280;
 
     switch (action) {
         case 'stabilize-real':
@@ -459,15 +473,28 @@ function processSingleClipJob(jobId) {
              break;
              
         case 'magic-erase-real':
-             const { x, y, w, h } = params;
+             let { x, y, w, h } = params;
+             
+             // SMART SCALING: If image is HUGE, scale processing down to 1280px (HD) to avoid OOM
+             let processScale = "";
+             if (originalW > MAX_WIDTH) {
+                 const scaleFactor = MAX_WIDTH / originalW;
+                 // Adjust coordinates to match scaled video
+                 x = x * scaleFactor;
+                 y = y * scaleFactor;
+                 w = w * scaleFactor;
+                 h = h * scaleFactor;
+                 // Add scale filter BEFORE delogo
+                 processScale = `scale=${MAX_WIDTH}:-2,`;
+             }
+
              const dx = Math.round(x);
              const dy = Math.round(y);
              const dw = Math.max(1, Math.round(w));
              const dh = Math.max(1, Math.round(h));
              
-             // Use magicEraserSafetyChain (Null/No Resize) to keep coordinates valid
-             // Final scale ensures encoding compliance
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${magicEraserSafetyChain},delogo=x=${dx}:y=${dy}:w=${dw}:h=${dh}:show=0,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
+             // Chain: Scale (if needed) -> Delogo -> Ensure Even Dims -> Format
+             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${processScale}delogo=x=${dx}:y=${dy}:w=${dw}:h=${dh}:show=0,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
              break;
              
         case 'video-to-cartoon-real':
