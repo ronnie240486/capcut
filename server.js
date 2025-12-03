@@ -1,5 +1,4 @@
 
-
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -678,15 +677,18 @@ function processSingleClipJob(jobId) {
              } else if (style === 'pixar') {
                  filters = ["gblur=sigma=2", "unsharp=5:5:0.8:3:3:0.0", "eq=saturation=1.3:brightness=0.05"];
              } else if (style === 'sketch') {
-                 // Important: negate/edgedetect can output gray/mono. We must convert back to valid pixel format for web video.
-                 filters = ["edgedetect=low=0.1:high=0.4", "negate", "format=gray"]; 
+                 // Removing 'format=gray' here because we want to output color video (even if monochrome content)
+                 // that is compatible with web players (yuv420p)
+                 filters = ["edgedetect=low=0.1:high=0.4", "negate"]; 
              } else if (style === 'oil') {
                  filters = ["boxblur=3:1", "eq=saturation=1.4:contrast=1.1"];
              } else {
                  filters = ["eq=saturation=1.3"];
              }
              
-             // Ensure YUV420P pixel format for browser compatibility (fix for "disappearing image")
+             // CRITICAL FIX: Ensure even dimensions for libx264 with yuv420p
+             // 'trunc(iw/2)*2' forces width and height to be even numbers.
+             filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2");
              filters.push("format=yuv420p");
              
              const vf = filters.join(",");
