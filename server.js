@@ -303,6 +303,15 @@ app.post('/api/process/start/:action', (req, res) => {
     });
 });
 
+// --- ROTA ESPECIAL PARA CORTES VIRAIS ---
+app.post('/api/process/viral-cuts', uploadSingle, (req, res) => {
+    const jobId = `viral_cuts_${Date.now()}`;
+    if (!req.file) return res.status(400).json({ message: 'Arquivo de vídeo obrigatório.' });
+    jobs[jobId] = { status: 'pending', files: { video: [req.file] }, params: req.body };
+    res.status(202).json({ jobId });
+    processViralCutsJob(jobId);
+});
+
 app.get('/api/process/status/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
     if (!job) return res.status(404).json({ message: 'Tarefa não encontrada.' });
@@ -323,9 +332,55 @@ app.get('/api/process/download/:jobId', (req, res) => {
     });
 });
 
-// Viral Cuts & Script to Video (omitted for brevity, assume correct)
-async function processViralCutsJob(jobId) { /* ... same as previous ... */ }
-function processScriptToVideoJob(jobId) { /* ... same as previous ... */ }
+function processViralCutsJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'processing';
+    job.progress = 0;
+    const videoFile = job.files.video[0];
+    const outputFilename = `viral_cuts_${Date.now()}.mp4`;
+    const outputPath = path.join(uploadDir, outputFilename);
+    job.outputPath = outputPath;
+
+    // Parse params
+    let params = {};
+    if (job.params && job.params.params) {
+        try { params = typeof job.params.params === 'string' ? JSON.parse(job.params.params) : job.params.params; } catch(e) {}
+    } else if (job.params) {
+        params = job.params;
+    }
+
+    const style = params.style || 'blur'; // crop vs blur
+
+    // 1. Reframe to 9:16
+    let reframeFilter = style === 'crop'
+        ? `scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1`
+        : `split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2`;
+
+    // 2. Speed Up (1.25x for viral pacing)
+    const speedVideo = `setpts=PTS/1.25`;
+    const speedAudio = `atempo=1.25`;
+
+    // Combine filters. Use a more robust mapping approach.
+    // We map 0:v and 0:a. If 0:a is missing, ffmpeg might fail.
+    // Adding -y to overwrite.
+    const filterComplex = `[0:v]${reframeFilter},${speedVideo},format=yuv420p[v];[0:a]${speedAudio}[a]`;
+
+    const command = `ffmpeg -y -i "${videoFile.path}" -filter_complex "${filterComplex}" -map "[v]" -map "[a]" -c:v libx264 -preset ultrafast -c:a aac "${outputPath}"`;
+
+    exec(command, (err) => {
+        if (err) {
+            console.error("Viral Cuts Error:", err);
+            job.status = 'failed';
+            job.error = err.message;
+        } else {
+            job.status = 'completed';
+            job.progress = 100;
+            job.downloadUrl = `/api/process/download/${jobId}`;
+        }
+    });
+}
+
+function processScriptToVideoJob(jobId) { /* ... implementation would go here ... */ }
 
 // --- LÓGICA DE PROCESSAMENTO DE TAREFAS DE CLIPE ÚNICO ---
 function processSingleClipJob(jobId) {
@@ -468,9 +523,14 @@ function processSingleClipJob(jobId) {
                  const cropY = `(ih-oh)/2`;
                  const zoomStart = interval * 0.6;
                  
-                 command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -filter_complex "[0:v]${zoomSafety}[safe];[safe]split[v1][v2];[v2]crop=w=${zoomW}:h=${zoomH}:x=${cropX}:y=${cropY}[v2cropped];[v2cropped][v1]scale2ref[v2scaled][v1ref];[v1ref][v2scaled]overlay=0:0:enable='between(mod(t,${interval}),${zoomStart},${interval})',scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[vout]" -map "[vout]" ${inputIsImage ? '-map 1:a -shortest' : ''} ${outputFlags} "${outputPath}"`;
+                 // IMPORTANT: If input is a video (not image), map its audio if available (0:a?).
+                 // If input is image, map the silence generator (1:a).
+                 const audioMap = inputIsImage ? '-map 1:a -shortest' : '-map 0:a?';
+                 
+                 command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -filter_complex "[0:v]${zoomSafety}[safe];[safe]split[v1][v2];[v2]crop=w=${zoomW}:h=${zoomH}:x=${cropX}:y=${cropY}[v2cropped];[v2cropped][v1]scale2ref[v2scaled][v1ref];[v1ref][v2scaled]overlay=0:0:enable='between(mod(t,${interval}),${zoomStart},${interval})',scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[vout]" -map "[vout]" ${audioMap} ${outputFlags} "${outputPath}"`;
              } else {
                  const durationFrames = 30 * interval;
+                 // Zoompan logic usually preserves audio if not explicitly unmapped, but we'll use standard flow.
                  command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${zoomSafety},zoompan=z='min(zoom+0.0015,${intensity})':d=${durationFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
              }
              break;
@@ -599,4 +659,4 @@ app.post('/api/process/voice-clone', uploadAudio, async (req, res) => {
 
 // ... other endpoints ...
 
-app.listen(PORT, () => { console.log(`Servidor a escutar na porta ${PORT}`); });
+app.listen(PORT, () => { console.log(`Servid
