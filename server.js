@@ -1,3 +1,5 @@
+
+
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -14,7 +16,7 @@ const PORT = process.env.PORT || 8080;
 app.set('trust proxy', 1);
 const corsOptions = {
   origin: '*', 
-  methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS",
   preflightContinue: false,
   optionsSuccessStatus: 204
 };
@@ -26,7 +28,7 @@ app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
   next();
 });
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '100mb' })); // Increased limit
 
 // --- Configuração do Multer ---
 const uploadDir = 'uploads';
@@ -66,8 +68,9 @@ const isImage = (filename) => {
 app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
 
 app.get('/api/check-ffmpeg', (req, res) => {
-    exec('ffmpeg -version', (error) => {
-        if (error) return res.status(500).json({ status: 'offline', error: 'FFmpeg not found' });
+    // Added timeout to prevent hanging requests
+    exec('ffmpeg -version', { timeout: 3000 }, (error) => {
+        if (error) return res.status(500).json({ status: 'offline', error: 'FFmpeg not found or timeout' });
         res.json({ status: 'online' });
     });
 });
