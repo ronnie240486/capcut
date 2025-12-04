@@ -599,4 +599,4 @@ app.post('/api/process/voice-clone', uploadAudio, async (req, res) => {
 
 // ... other endpoints ...
 
-app.listen(PORT, () => { console.
+app.listen(PORT, () => { console.log(`Servidor a escutar na porta ${PORT}`); });
