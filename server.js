@@ -280,9 +280,6 @@ function processExportJob(jobId) {
     } catch (err) { job.status = "failed"; job.error = err.message; }
 }
 
-// ... Routes for start/status/download remain ...
-// (Omitting standard boilerplate for brevity, focusing on processSingleClipJob)
-
 app.post('/api/process/start/:action', (req, res) => {
     const { action } = req.params;
     const uploader = (action === 'style-transfer-real' || action === 'lip-sync-real' || action === 'auto-ducking-real') ? uploadFields : (action === 'script-to-video' ? uploadAny : uploadSingle);
@@ -294,12 +291,14 @@ app.post('/api/process/start/:action', (req, res) => {
         let files = {};
         if (action === 'script-to-video') files = { all: req.files };
         else if (action === 'style-transfer-real' || action === 'lip-sync-real' || action === 'auto-ducking-real') files = req.files;
+        else if (action === 'viral-cuts') files = { video: [req.file] };
         else files = { video: [req.file] };
         
         jobs[jobId] = { status: 'pending', files, params: req.body };
         res.status(202).json({ jobId });
 
         if (action === 'script-to-video') processScriptToVideoJob(jobId);
+        else if (action === 'viral-cuts') processViralCutsJob(jobId);
         else processSingleClipJob(jobId);
     });
 });
@@ -324,9 +323,89 @@ app.get('/api/process/download/:jobId', (req, res) => {
     });
 });
 
-// Viral Cuts & Script to Video (omitted for brevity, assume correct)
-async function processViralCutsJob(jobId) { /* ... same as previous ... */ }
-function processScriptToVideoJob(jobId) { /* ... same as previous ... */ }
+// Viral Cuts Logic
+async function processViralCutsJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'processing';
+    job.progress = 10;
+    
+    try {
+        const videoFile = job.files.video[0];
+        const params = job.params || {};
+        const count = parseInt(params.count) || 3;
+        const style = params.style || 'blur'; // crop or blur
+        
+        // 1. Analyze video duration
+        const durationCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoFile.path}"`;
+        const duration = await new Promise((resolve, reject) => {
+            exec(durationCmd, (err, stdout) => err ? reject(err) : resolve(parseFloat(stdout)));
+        });
+
+        // 2. Create clips
+        const segmentDuration = 10;
+        const step = Math.max(15, Math.floor(duration / (count + 1)));
+        
+        // Prepare filter for vertical conversion (9:16)
+        let verticalFilter = "";
+        if (style === 'crop') {
+            // Center crop to 9:16
+            verticalFilter = "scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1";
+        } else {
+            // Blur background
+            verticalFilter = "split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2";
+        }
+
+        const segments = [];
+        for(let i=1; i<=count; i++) {
+            const start = step * i;
+            if (start + segmentDuration < duration) {
+                segments.push({ start, duration: segmentDuration });
+            }
+        }
+        
+        if (segments.length === 0) segments.push({ start: 0, duration: Math.min(duration, 30) });
+
+        // Generate trim filters
+        let trimChain = "";
+        segments.forEach((seg, idx) => {
+            trimChain += `[0:v]trim=${seg.start}:${seg.start+seg.duration},setpts=PTS-STARTPTS,${verticalFilter}[v${idx}];`;
+            trimChain += `[0:a]atrim=${seg.start}:${seg.start+seg.duration},asetpts=PTS-STARTPTS[a${idx}];`;
+        });
+        
+        const vInputs = segments.map((_, i) => `[v${i}]`).join('');
+        const aInputs = segments.map((_, i) => `[a${i}]`).join('');
+        
+        trimChain += `${vInputs}concat=n=${segments.length}:v=1:a=0[outv];${aInputs}concat=n=${segments.length}:v=0:a=1[outa]`;
+
+        const outputPath = path.join(uploadDir, `viral_${Date.now()}.mp4`);
+        job.outputPath = outputPath;
+
+        const cmd = `ffmpeg -i "${videoFile.path}" -filter_complex "${trimChain}" -map "[outv]" -map "[outa]" -c:v libx264 -preset ultrafast -c:a aac "${outputPath}"`;
+        
+        exec(cmd, (error, stdout, stderr) => {
+            if (error) {
+                console.error("Viral Cuts Error:", stderr);
+                job.status = 'failed';
+                job.error = "FFmpeg failed processing viral cuts";
+            } else {
+                job.status = 'completed';
+                job.progress = 100;
+                job.downloadUrl = `/api/process/download/${jobId}`;
+            }
+        });
+
+    } catch (e) {
+        job.status = 'failed';
+        job.error = e.message;
+    }
+}
+
+// Script To Video Logic
+function processScriptToVideoJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'failed';
+    job.error = "Script to video processing not fully implemented on server-side. Use client-side generation.";
+}
 
 // --- LÓGICA DE PROCESSAMENTO DE TAREFAS DE CLIPE ÚNICO ---
 function processSingleClipJob(jobId) {
