@@ -27,7 +27,7 @@ app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
   next();
 });
-app.use(express.json({ limit: '100mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // --- Configuração do Multer ---
 const uploadDir = 'uploads';
@@ -67,13 +67,8 @@ const isImage = (filename) => {
 app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
 
 app.get('/api/check-ffmpeg', (req, res) => {
-    // Timeout de 2 segundos para o comando
-    exec('ffmpeg -version', { timeout: 2000 }, (error) => {
-        // Even if FFmpeg errors out or times out, the server itself is reachable.
-        // We log the error but return online to indicate backend connectivity.
-        if (error) {
-             console.warn("FFmpeg check failed or timed out, but server is responding.", error.message);
-        }
+    exec('ffmpeg -version', (error) => {
+        if (error) return res.status(500).json({ status: 'offline', error: 'FFmpeg not found' });
         res.json({ status: 'online' });
     });
 });
@@ -362,7 +357,7 @@ function processSingleClipJob(jobId) {
     }
     
     // Audio tools always wav
-    if (['extract-audio-real', 'remove-silence-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real'].includes(action)) {
+    if (['extract-audio-real', 'remove-silence-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real', 'voice-fx-real'].includes(action)) {
         outputExtension = '.wav';
     }
 
@@ -514,6 +509,17 @@ function processSingleClipJob(jobId) {
         case 'enhance-voice-real':
              command = `ffmpeg -i "${videoFile.path}" -vn -af "highpass=f=200,lowpass=f=3000,acompressor=threshold=0.089:ratio=2:attack=20:release=1000" -acodec pcm_s16le "${outputPath}"`;
              break;
+        case 'voice-fx-real':
+             const fxType = params.preset;
+             let audioFilter = "";
+             if (fxType === 'robot') audioFilter = "asetrate=44100*0.9,atempo=1.1,echo=0.8:0.9:1000:0.3";
+             else if (fxType === 'squirrel') audioFilter = "asetrate=44100*1.5,atempo=0.7";
+             else if (fxType === 'monster') audioFilter = "asetrate=44100*0.6,atempo=1.5";
+             else if (fxType === 'echo') audioFilter = "aecho=0.8:0.9:1000:0.3";
+             else if (fxType === 'radio') audioFilter = "highpass=f=200,lowpass=f=3000,afftdn";
+             else audioFilter = "anull"; 
+             command = `ffmpeg -i "${videoFile.path}" -vn -af "${audioFilter}" -acodec pcm_s16le "${outputPath}"`;
+             break;
         case 'auto-ducking-real':
              if (!job.files.audio || !job.files.audio[0]) { job.status = 'failed'; job.error = "Erro audio."; cleanup(); return; }
              const voicePath = job.files.audio[0].path;
@@ -605,4 +611,4 @@ app.post('/api/process/voice-clone', uploadAudio, async (req, res) => {
 
 // ... other endpoints ...
 
-app.listen(PORT, () => { console.log(`Server running on port ${PORT}`); });
+app.listen(PORT, () => { console.log(`Servidor a escutar na porta ${PORT}`); });
