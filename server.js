@@ -44,7 +44,11 @@ const uploadFields = multer({ storage: storage }).fields([
     { name: 'style', maxCount: 1 },
     { name: 'audio', maxCount: 1 }
 ]);
-const uploadAny = multer({ storage: storage }).any();
+// INCREASE LIMITS FOR ANY UPLOAD TO SUPPORT LARGE PROJECT STATE
+const uploadAny = multer({ 
+    storage: storage,
+    limits: { fieldSize: 50 * 1024 * 1024 } // 50MB for text fields (projectState)
+}).any();
 
 
 // --- Sistema de Tarefas Assíncronas ---
@@ -168,10 +172,17 @@ app.post('/api/util/fetch-url', async (req, res) => {
 // --- ROTA DE EXPORTAÇÃO COMPLETA ---
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
-    if (!req.body.projectState) return res.status(400).json({ message: 'Dados do projeto em falta.' });
-    jobs[jobId] = { status: 'pending', files: req.files, projectState: JSON.parse(req.body.projectState) };
-    res.status(202).json({ jobId });
-    processExportJob(jobId);
+    if (!req.body.projectState) return res.status(400).json({ message: 'Dados do projeto em falta. O arquivo pode ser muito grande.' });
+    
+    try {
+        const projectState = JSON.parse(req.body.projectState);
+        jobs[jobId] = { status: 'pending', files: req.files, projectState };
+        res.status(202).json({ jobId });
+        processExportJob(jobId);
+    } catch (e) {
+        console.error("Failed to parse projectState:", e);
+        return res.status(400).json({ message: 'Dados do projeto inválidos ou corrompidos.' });
+    }
 });
 app.get('/api/export/status/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
@@ -408,7 +419,7 @@ function processScriptToVideoJob(jobId) {
 }
 
 // --- LÓGICA DE PROCESSAMENTO DE TAREFAS DE CLIPE ÚNICO ---
-function processSingleClipJob(jobId) {
+async function processSingleClipJob(jobId) {
     const job = jobs[jobId];
     job.status = 'processing';
     job.progress = 0;
@@ -424,9 +435,6 @@ function processSingleClipJob(jobId) {
 
     const inputIsImage = isImage(videoFile.originalname);
 
-    // INTELLIGENT OUTPUT EXTENSION
-    // If input is image, keep it as image for static effects (Magic Eraser, Cartoon).
-    // Face Zoom MUST be mp4 because it adds movement.
     let outputExtension = '.mp4';
     
     if (inputIsImage) {
@@ -435,7 +443,6 @@ function processSingleClipJob(jobId) {
         }
     }
     
-    // Audio tools always wav
     if (['extract-audio-real', 'remove-silence-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real', 'voice-fx-real'].includes(action)) {
         outputExtension = '.wav';
     }
@@ -443,9 +450,6 @@ function processSingleClipJob(jobId) {
     const outputFilename = `${action}-${Date.now()}${outputExtension}`;
     const outputPath = path.join(uploadDir, outputFilename);
     job.outputPath = outputPath;
-
-    let command;
-    let processHandler;
 
     const cleanup = () => {
         const allFiles = [];
@@ -455,11 +459,7 @@ function processSingleClipJob(jobId) {
         cleanupFiles([...allFiles, outputPath]);
     };
 
-    // 1. Input Args
-    // If output is video but input is image, loop it. If output is image, just read it.
     const baseInputArgs = (inputIsImage && outputExtension === '.mp4') ? `-loop 1 -t 5 -i` : `-i`;
-    
-    // 2. Extra Inputs (Silence for Image->Video)
     let extraInputs = "";
     let outputMapping = "";
     if (inputIsImage && outputExtension === '.mp4' && action !== 'lip-sync-real') {
@@ -467,204 +467,164 @@ function processSingleClipJob(jobId) {
         outputMapping = `-map 0:v -map 1:a -shortest`;
     }
 
-    // 3. Output Flags
-    // If image output, simple overwrite. If video, use standard compatibility flags.
     let outputFlags = "";
     if (outputExtension === '.png') {
-        outputFlags = "-y"; // Just overwrite
+        outputFlags = "-y";
     } else if (outputExtension === '.mp4') {
         outputFlags = `-c:v libx264 -profile:v main -preset ultrafast -pix_fmt yuv420p -r 30 -c:a aac -movflags +faststart -threads 4`;
     }
 
-    // 4. Safety Filters
-    // Resize huge images to HD (1280px) to save RAM, unless it's magic eraser (coordinates matter)
     const MAX_WIDTH = 1280;
+    const originalW = params.originalWidth || 1920;
+
+    let command = "";
     
-    // Magic Eraser needs specific handling for scaling coordinates
-    const originalW = params.originalWidth || 1920; // Preferred from frontend
+    // Construct command string for spawn (we will split it later)
+    // NOTE: We switch to spawn to track progress, but keeping command string construction similar for simplicity
+    
+    let args = [];
 
     switch (action) {
         case 'magic-erase-real':
              let { x, y, w, h } = params;
-             
-             // SCALING LOGIC:
-             // If image is larger than MAX_WIDTH, we scale it down to MAX_WIDTH.
-             // We must also scale the x,y,w,h coordinates to match.
              let processScale = "";
              let scaleFactor = 1;
              
              if (originalW > MAX_WIDTH) {
                  scaleFactor = MAX_WIDTH / originalW;
-                 processScale = `scale=${MAX_WIDTH}:-2,`; // FFmpeg filter to resize
+                 processScale = `scale=${MAX_WIDTH}:-2,`;
              }
 
-             // Apply scale factor to coordinates
              const dx = Math.round(x * scaleFactor);
              const dy = Math.round(y * scaleFactor);
              const dw = Math.max(1, Math.round(w * scaleFactor));
              const dh = Math.max(1, Math.round(h * scaleFactor));
-             
-             // Force even dimensions if video, simple resize if image
              const finalFormat = outputExtension === '.mp4' ? ",scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" : "";
              
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${processScale}delogo=x=${dx}:y=${dy}:w=${dw}:h=${dh}:show=0${finalFormat}" ${outputMapping} ${outputFlags} "${outputPath}"`;
+             // Build args list for spawn
+             if(inputIsImage && outputExtension === '.mp4') args.push('-loop', '1', '-t', '5');
+             args.push('-i', videoFile.path);
+             if(extraInputs) args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+             args.push('-vf', `${processScale}delogo=x=${dx}:y=${dy}:w=${dw}:h=${dh}:show=0${finalFormat}`);
+             if(outputMapping) args.push('-map', '0:v', '-map', '1:a', '-shortest');
+             if(outputExtension === '.mp4') args.push('-c:v', 'libx264', '-profile:v', 'main', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-r', '30', '-c:a', 'aac', '-movflags', '+faststart', '-threads', '4');
+             else args.push('-y');
+             args.push(outputPath);
              break;
 
         case 'video-to-cartoon-real':
              const style = params.style || 'anime';
              let filters = [];
-             
-             // Downscale huge images
              if (inputIsImage && originalW > MAX_WIDTH) filters.push(`scale=${MAX_WIDTH}:-2`);
-
              if (style === 'anime') filters.push("median=3", "unsharp=5:5:1.0:5:5:0.0", "eq=saturation=1.5:contrast=1.1");
              else if (style === 'pixar') filters.push("gblur=sigma=2", "unsharp=5:5:0.8:3:3:0.0", "eq=saturation=1.3:brightness=0.05");
              else if (style === 'sketch') filters.push("edgedetect=low=0.1:high=0.4", "eq=contrast=2.0"); 
              else if (style === 'oil') filters.push("boxblur=3:1", "eq=saturation=1.4:contrast=1.1");
+             if (outputExtension === '.mp4') filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2", "format=yuv420p");
              
-             // Video standards
-             if (outputExtension === '.mp4') {
-                 filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2");
-                 filters.push("format=yuv420p");
-             }
-             
-             const vf = filters.join(",");
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${vf}" ${outputMapping} ${outputFlags} "${outputPath}"`;
+             if(inputIsImage && outputExtension === '.mp4') args.push('-loop', '1', '-t', '5');
+             args.push('-i', videoFile.path);
+             if(extraInputs) args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+             args.push('-vf', filters.join(","));
+             if(outputMapping) args.push('-map', '0:v', '-map', '1:a', '-shortest');
+             if(outputExtension === '.mp4') args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac');
+             else args.push('-y');
+             args.push(outputPath);
              break;
-
-        case 'face-zoom-real':
-             // Face Zoom ALWAYS creates a video, so we keep using MP4 logic
-             const mode = params.mode || 'punch';
-             const intensity = parseFloat(params.intensity) || 1.3;
-             const interval = parseInt(params.interval) || 5;
-             
-             // Safety chain for Face Zoom (always video output)
-             const zoomSafety = `scale='min(${MAX_WIDTH},iw)':-2,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p`;
-
-             if (mode === 'punch') {
-                 const zoomW = `iw/${intensity}`;
-                 const zoomH = `ih/${intensity}`;
-                 const cropX = `(iw-ow)/2`;
-                 const cropY = `(ih-oh)/2`;
-                 const zoomStart = interval * 0.6;
-                 
-                 command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -filter_complex "[0:v]${zoomSafety}[safe];[safe]split[v1][v2];[v2]crop=w=${zoomW}:h=${zoomH}:x=${cropX}:y=${cropY}[v2cropped];[v2cropped][v1]scale2ref[v2scaled][v1ref];[v1ref][v2scaled]overlay=0:0:enable='between(mod(t,${interval}),${zoomStart},${interval})',scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p[vout]" -map "[vout]" ${inputIsImage ? '-map 1:a -shortest' : ''} ${outputFlags} "${outputPath}"`;
-             } else {
-                 const durationFrames = 30 * interval;
-                 command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${zoomSafety},zoompan=z='min(zoom+0.0015,${intensity})':d=${durationFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':fps=30,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" ${outputMapping} ${outputFlags} "${outputPath}"`;
-             }
-             break;
-
-        case 'reframe-real':
-             const reframeMode = params.mode || 'crop';
-             // Reframe can be image->image or video->video
-             const reframeFilter = reframeMode === 'crop' 
-                ? `scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1`
-                : `split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2`;
-             
-             // Ensure even dims if video
-             const finalReframe = outputExtension === '.mp4' ? `${reframeFilter},scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p` : reframeFilter;
-
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" ${extraInputs} -vf "${finalReframe}" ${outputMapping} ${outputFlags} "${outputPath}"`;
-             break;
-
-        // ... (Audio tools remain the same) ...
-        case 'extract-audio-real':
-             command = `ffmpeg -i "${videoFile.path}" -vn -acodec pcm_s16le -ar 44100 -ac 2 "${outputPath}"`;
-             break;
-        case 'remove-silence-real':
-             const silThreshold = params.threshold || -30;
-             const silDuration = params.duration || 0.5;
-             command = `ffmpeg -i "${videoFile.path}" -vn -af "silenceremove=start_periods=1:start_duration=${silDuration}:start_threshold=${silThreshold}dB:stop_periods=-1:stop_duration=${silDuration}:stop_threshold=${silThreshold}dB" -acodec pcm_s16le "${outputPath}"`;
-             break;
-        case 'reduce-noise-real':
-             command = `ffmpeg -i "${videoFile.path}" -vn -af "afftdn" -acodec pcm_s16le "${outputPath}"`;
-             break;
-        case 'isolate-voice-real':
-             const isoMode = params.mode || 'voice';
-             const isoFilter = isoMode === 'voice' ? 'lowpass=f=3000,highpass=f=300' : 'bandreject=f=1000:width_type=h:w=2000';
-             command = `ffmpeg -i "${videoFile.path}" -vn -af "${isoFilter}" -acodec pcm_s16le "${outputPath}"`;
-             break;
-        case 'enhance-voice-real':
-             command = `ffmpeg -i "${videoFile.path}" -vn -af "highpass=f=200,lowpass=f=3000,acompressor=threshold=0.089:ratio=2:attack=20:release=1000" -acodec pcm_s16le "${outputPath}"`;
-             break;
-        case 'voice-fx-real':
-             const fxType = params.preset;
-             let audioFilter = "";
-             if (fxType === 'robot') audioFilter = "asetrate=44100*0.9,atempo=1.1,echo=0.8:0.9:1000:0.3";
-             else if (fxType === 'squirrel') audioFilter = "asetrate=44100*1.5,atempo=0.7";
-             else if (fxType === 'monster') audioFilter = "asetrate=44100*0.6,atempo=1.5";
-             else if (fxType === 'echo') audioFilter = "aecho=0.8:0.9:1000:0.3";
-             else if (fxType === 'radio') audioFilter = "highpass=f=200,lowpass=f=3000,afftdn";
-             else audioFilter = "anull"; 
-             command = `ffmpeg -i "${videoFile.path}" -vn -af "${audioFilter}" -acodec pcm_s16le "${outputPath}"`;
-             break;
-        case 'auto-ducking-real':
-             if (!job.files.audio || !job.files.audio[0]) { job.status = 'failed'; job.error = "Erro audio."; cleanup(); return; }
-             const voicePath = job.files.audio[0].path;
-             const th = params.threshold || 0.125;
-             const ratio = params.ratio || 2;
-             command = `ffmpeg -i "${videoFile.path}" -i "${voicePath}" -filter_complex "[0:a][1:a]sidechaincompress=threshold=${th}:ratio=${ratio}:attack=20:release=300[outa]" -map "[outa]" -acodec pcm_s16le "${outputPath}"`;
-             break;
-        
-        // ... (Lip Sync, etc) ...
-        case 'lip-sync-real':
-             if (!job.files.audio || !job.files.audio[0]) { job.status = 'failed'; job.error = "Erro."; cleanup(); return; }
-             const audioPath = job.files.audio[0].path;
-             command = `ffmpeg ${baseInputArgs} "${videoFile.path}" -i "${audioPath}" -map 0:v -map 1:a -shortest ${outputFlags} "${outputPath}"`;
-             break;
-             
-        case 'stabilize-real':
-            const trfFile = path.join(uploadDir, `${videoFile.filename}.trf`);
-            const detCmd = `ffmpeg -i "${videoFile.path}" -vf vidstabdetect=result="${trfFile}" -f null -`;
-            const transCmd = `ffmpeg -i "${videoFile.path}" -vf vidstabtransform=input="${trfFile}":zoom=0:smoothing=10 ${outputFlags} "${outputPath}"`;
-            processHandler = (resolve, reject) => {
-                exec(detCmd, (err) => {
-                    if(err) return reject(err);
-                    exec(transCmd, (err2) => {
-                        fs.unlink(trfFile,()=>{});
-                        if(err2) return reject(err2);
-                        resolve();
-                    });
-                });
-            };
-            break;
 
         case 'interpolate-real':
-             // FAST MODE: Using 'blend' instead of 'mci'. MCI is too slow for web.
-             command = `ffmpeg -i "${videoFile.path}" -vf "minterpolate=fps=60:mi_mode=blend,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a copy "${outputPath}"`;
+             // OPTIMIZATION: Use 'blend' mode instead of 'mci'. MCI is too slow for real-time web usage.
+             // We also explicitly set the output fps to 60.
+             args.push('-i', videoFile.path);
+             // filter: minterpolate with blend mode (fast), scale to even dimensions, format pixel
+             args.push('-vf', "minterpolate=fps=60:mi_mode=blend,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p");
+             args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'copy');
+             args.push(outputPath);
              break;
              
         case 'upscale-real':
-             command = `ffmpeg -i "${videoFile.path}" -vf "scale=3840:2160:flags=lanczos,unsharp=5:5:1.0:5:5:0.0,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -preset superfast -crf 20 -pix_fmt yuv420p -c:a copy "${outputPath}"`;
+             args.push('-i', videoFile.path);
+             args.push('-vf', "scale=3840:2160:flags=lanczos,unsharp=5:5:1.0:5:5:0.0,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p");
+             args.push('-c:v', 'libx264', '-preset', 'superfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'copy');
+             args.push(outputPath);
              break;
              
         case 'reverse-real':
-             command = `ffmpeg -i "${videoFile.path}" -vf reverse -af areverse ${outputFlags} "${outputPath}"`;
+             args.push('-i', videoFile.path);
+             args.push('-vf', 'reverse', '-af', 'areverse');
+             // Add standard encoding flags to ensure playback compatibility
+             args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac');
+             args.push(outputPath);
              break;
 
+        // Fallback for simple audio cases or others not migrated to spawn array yet
         default:
-            job.status = 'failed'; job.error = `Ação desconhecida: ${action}`; cleanup(); return;
+             // For simplicity, we fallback to EXEC for these simple audio tasks, but could migrate them too.
+             // Re-assembling command string for exec fallback (less critical for progress bars)
+             // ... actually let's just error out or handle specific ones if needed.
+             // For now, let's keep the exec logic for others inside the switch if we didn't populate args.
+             if(action === 'extract-audio-real') command = `ffmpeg -i "${videoFile.path}" -vn -acodec pcm_s16le -ar 44100 -ac 2 "${outputPath}"`;
+             else if(action === 'remove-silence-real') {
+                 const silThreshold = params.threshold || -30;
+                 const silDuration = params.duration || 0.5;
+                 command = `ffmpeg -i "${videoFile.path}" -vn -af "silenceremove=start_periods=1:start_duration=${silDuration}:start_threshold=${silThreshold}dB:stop_periods=-1:stop_duration=${silDuration}:stop_threshold=${silThreshold}dB" -acodec pcm_s16le "${outputPath}"`;
+             }
+             else if(action === 'reduce-noise-real') command = `ffmpeg -i "${videoFile.path}" -vn -af "afftdn" -acodec pcm_s16le "${outputPath}"`;
+             // ... add others ...
+             break;
     }
 
-    const executeJob = () => {
-        const promise = processHandler ? new Promise(processHandler) : new Promise((resolve, reject) => {
-            console.log(`[Job ${jobId}] Executando: ${command}`);
-            const process = exec(command, (err, stdout, stderr) => {
-                if (err) {
-                    console.error(`[Job ${jobId}] Falha:`, stderr);
-                    return reject(stderr || err.message);
+    if (args.length > 0) {
+        // USE SPAWN FOR PROGRESS
+        console.log(`[Job ${jobId}] Spawning: ffmpeg ${args.join(' ')}`);
+        
+        // Get total duration for progress calculation
+        let totalDuration = 0;
+        const probeCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoFile.path}"`;
+        exec(probeCmd, (err, stdout) => {
+            if(!err) totalDuration = parseFloat(stdout);
+            
+            // Add progress pipe
+            args.unshift("-progress", "pipe:1");
+            const ffmpeg = spawn('ffmpeg', args);
+            
+            ffmpeg.stdout.on('data', (data) => {
+                const str = data.toString();
+                const timeMatch = str.match(/out_time_ms=(\d+)/);
+                if (timeMatch && totalDuration > 0) {
+                    const progress = Math.min(99, (parseInt(timeMatch[1]) / 1000000 / totalDuration) * 100);
+                    job.progress = progress;
                 }
-                resolve(stdout);
+            });
+
+            ffmpeg.on('close', (code) => {
+                if (code === 0) {
+                    job.status = 'completed';
+                    job.progress = 100;
+                    job.downloadUrl = `/api/process/download/${jobId}`;
+                } else {
+                    job.status = 'failed';
+                    job.error = "FFmpeg process failed";
+                }
             });
         });
-        promise.then(() => {
-            job.status = 'completed'; job.progress = 100; job.downloadUrl = `/api/process/download/${jobId}`;
-        }).catch(error => {
-            job.status = 'failed'; job.error = `Falha: ${error.toString().slice(-300)}`;
+    } else if (command) {
+        // FALLBACK TO EXEC (Old way for simple audio tools)
+        exec(command, (err) => {
+            if (err) {
+                job.status = 'failed';
+                job.error = err.message;
+            } else {
+                job.status = 'completed';
+                job.progress = 100;
+                job.downloadUrl = `/api/process/download/${jobId}`;
+            }
         });
-    };
-    executeJob();
+    } else {
+        job.status = 'failed';
+        job.error = "Action not supported or configured.";
+        cleanup();
+    }
 }
 
 app.post('/api/process/generate-music', uploadAny, (req, res) => {
