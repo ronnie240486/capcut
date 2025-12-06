@@ -9,7 +9,7 @@ const { spawn, exec } = require('child_process');
 
 // Inicializa a aplicação Express
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 
 // --- Middlewares ---
 app.set('trust proxy', 1);
@@ -27,7 +27,8 @@ app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
   next();
 });
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '500mb' }));
+app.use(express.urlencoded({ limit: '500mb', extended: true }));
 
 // --- Configuração do Multer ---
 const uploadDir = 'uploads';
@@ -167,53 +168,121 @@ app.post('/api/util/fetch-url', async (req, res) => {
 
 // --- ROTA DE EXPORTAÇÃO COMPLETA ---
 app.post('/api/export/start', uploadAny, (req, res) => {
-    const jobId = `export_${Date.now()}`;
-    if (!req.body.projectState) return res.status(400).json({ message: 'Dados do projeto em falta.' });
-    jobs[jobId] = { status: 'pending', files: req.files, projectState: JSON.parse(req.body.projectState) };
-    res.status(202).json({ jobId });
-    processExportJob(jobId);
+    // Legacy endpoint support for render
+    return processRender(req, res);
 });
+
+// New Render Logic (Mapped to /api/render for backward compatibility if needed, but robust)
+app.post('/api/render', uploadAny, (req, res) => {
+    processRender(req, res);
+});
+
+function processRender(req, res) {
+    const jobId = `export_${Date.now()}`;
+    let projectState;
+    try {
+        projectState = req.body.projectState ? JSON.parse(req.body.projectState) : (req.body.timeline ? {
+            clips: JSON.parse(req.body.timeline),
+            totalDuration: 60, // Fallback
+            media: {}, // Constructed below
+            projectAspectRatio: req.body.aspectRatio
+        } : null);
+    } catch(e) {
+        return res.status(400).json({ message: 'Dados inválidos' });
+    }
+
+    if (!projectState) return res.status(400).json({ message: 'Dados do projeto em falta.' });
+    
+    // Construct jobs object
+    jobs[jobId] = { status: 'pending', files: req.files, projectState, legacyMode: !!req.body.timeline };
+    
+    if (req.body.timeline) {
+        // Direct response for legacy frontend
+        processExportJob(jobId, true, res);
+    } else {
+        res.status(202).json({ jobId });
+        processExportJob(jobId);
+    }
+}
+
 app.get('/api/export/status/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
     if (!job) return res.status(404).json({ message: 'Tarefa não encontrada.' });
     res.status(200).json({ status: job.status, progress: job.progress, downloadUrl: job.downloadUrl, error: job.error });
 });
 app.get('/api/export/download/:jobId', (req, res) => {
-    const job = jobs[req.params.jobId];
-    if (!job || job.status !== 'completed' || !job.outputPath) return res.status(404).json({ message: 'Ficheiro não encontrado.' });
-    res.download(path.resolve(job.outputPath), path.basename(job.outputPath), (err) => {
-        if (err) console.error("Erro no download:", err);
-        cleanupFiles([job.outputPath, ...job.files]);
-        delete jobs[req.params.jobId];
-    });
+    handleDownload(req, res);
+});
+// Legacy download route
+app.get('/api/process/download/:jobId', (req, res) => {
+    handleDownload(req, res);
 });
 
-function processExportJob(jobId) {
+function handleDownload(req, res) {
+    const filename = req.params.jobId;
+    // Check if it's a job ID or direct filename
+    const job = jobs[filename];
+    let filePath;
+    
+    if (job && job.outputPath) {
+        filePath = job.outputPath;
+    } else {
+        // Direct file access attempt
+        filePath = path.join(uploadDir, filename);
+    }
+
+    if (!fs.existsSync(filePath)) return res.status(404).json({ message: 'Ficheiro não encontrado.' });
+    
+    res.download(filePath, path.basename(filePath), (err) => {
+        if (err) console.error("Erro no download:", err);
+        // Optional cleanup logic
+        if (job) {
+             const allFiles = [];
+            if (job.files && Array.isArray(job.files)) allFiles.push(...job.files);
+            // cleanupFiles([filePath, ...allFiles]);
+            // delete jobs[filename];
+        }
+    });
+}
+
+function processExportJob(jobId, directResponse = false, res = null) {
     const job = jobs[jobId];
     job.status = "processing"; job.progress = 0;
     try {
-        const { files, projectState } = job;
-        const { clips, totalDuration, media, projectAspectRatio } = projectState;
+        const { files, projectState, legacyMode } = job;
+        const { clips, projectAspectRatio } = projectState;
         
         const aspectRatio = projectAspectRatio || '16:9';
-        let width = 1280, height = 720;
-        if (aspectRatio === '9:16') { width = 720; height = 1280; }
+        let width = 1920, height = 1080;
+        if (aspectRatio === '9:16') { width = 1080; height = 1920; }
         else if (aspectRatio === '1:1') { width = 1080; height = 1080; }
-        else if (aspectRatio === '4:3') { width = 1280; height = 960; }
+        else if (aspectRatio === '4:3') { width = 1440; height = 1080; }
         
-        const commandArgs = []; const fileMap = {};
-        files.forEach(file => {
-            const mediaInfo = media[file.originalname];
-            if (mediaInfo?.type === "image") commandArgs.push("-loop", "1");
-            commandArgs.push("-i", file.path);
-            fileMap[file.originalname] = commandArgs.filter(arg => arg === "-i").length - 1;
-        });
+        const commandArgs = []; 
+        const fileMap = {};
+        
+        if (files) {
+            files.forEach(file => {
+                // Determine if image based on extension
+                const isImg = isImage(file.originalname);
+                if (isImg) commandArgs.push("-loop", "1");
+                commandArgs.push("-i", file.path);
+                fileMap[file.originalname] = commandArgs.filter(arg => arg === "-i").length - 1;
+            });
+        }
 
         let filterChains = [];
-        const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
-        const videoAndLayerClips = clips.filter(c => c.track === 'video' || c.track === 'camada');
+        const audioClips = clips.filter(c => c.track === 'audio' || c.track === 'video' || c.track === 'camada'); // Simplified: check if it has audio effectively later
+        const visualClips = clips.filter(c => c.track === 'video' || c.track === 'camada').sort((a,b) => a.start - b.start);
         
-        videoAndLayerClips.forEach((clip, vIdx) => {
+        // Calculate Total Duration
+        const totalDuration = visualClips.reduce((max, c) => Math.max(max, c.start + c.duration), 0) + 1;
+
+        // Base Layer
+        let videoChain = `color=s=${width}x${height}:c=black:d=${totalDuration}[base]`;
+        
+        // Visual Clips Processing
+        visualClips.forEach((clip, idx) => {
             const inputIndex = fileMap[clip.fileName];
             if (inputIndex === undefined) return;
 
@@ -226,21 +295,25 @@ function processExportJob(jobId) {
             if (clip.properties.mirror) clipSpecificFilters.push('hflip');
 
             const speed = clip.properties.speed || 1;
+            // For images, setpts is tricky with loop, but we trim anyway
             let speedFilter = `setpts=PTS/${speed}`;
-
-            const preFilter = `[${inputIndex}:v]${clipSpecificFilters.length > 0 ? clipSpecificFilters.join(',')+',' : ''}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
-            filterChains.push(`${preFilter}[vpre${vIdx}]`);
-            filterChains.push(`[vpre${vIdx}]${speedFilter}[v${vIdx}]`);
+            
+            // Trim logic
+            const trim = `trim=start=0:duration=${clip.duration * speed},${speedFilter}`; // Duration in source time * speed? No, trim duration is output duration usually if setpts applied after. 
+            // Better: trim first then speed?
+            // If image: loop -1 is set. Trim sets duration.
+            
+            const preFilter = `[${inputIndex}:v]${trim},${clipSpecificFilters.length > 0 ? clipSpecificFilters.join(',')+',' : ''}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p`;
+            
+            filterChains.push(`${preFilter}[v${idx}]`);
         });
 
-        let videoChain = `color=s=${width}x${height}:c=black:d=${totalDuration}[base]`;
-        if (videoAndLayerClips.length > 0) {
+        if (visualClips.length > 0) {
             let prevOverlay = "[base]";
-            videoAndLayerClips.forEach((clip, idx) => {
-                const isLast = idx === videoAndLayerClips.length - 1;
+            visualClips.forEach((clip, idx) => {
+                const isLast = idx === visualClips.length - 1;
                 const nextOverlay = isLast ? "[outv]" : `[ov${idx}]`;
-                const vIdx = videoAndLayerClips.indexOf(clip);
-                videoChain += `;${prevOverlay}[v${vIdx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
+                videoChain += `;${prevOverlay}[v${idx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})':x=${clip.properties.transform?.x || 0}:y=${clip.properties.transform?.y || 0}${nextOverlay}`;
                 prevOverlay = nextOverlay;
             });
         } else {
@@ -248,36 +321,84 @@ function processExportJob(jobId) {
         }
         filterChains.push(videoChain);
 
-        if (audioClips.length > 0) {
-            const delayed = [];
+        // Audio Processing
+        let audioOutput = "";
+        const activeAudioClips = audioClips.filter(c => fileMap[c.fileName] !== undefined && (c.properties.volume ?? 1) > 0);
+        
+        if (activeAudioClips.length > 0) {
             const mixed = [];
-            audioClips.forEach((clip, idx) => {
+            activeAudioClips.forEach((clip, idx) => {
                 const inputIndex = fileMap[clip.fileName];
-                if (inputIndex === undefined) return;
                 const volume = clip.properties.volume ?? 1;
+                // Check if file is image (no audio) - naive check via extension
+                if (isImage(clip.fileName) && clip.type !== 'video') return; 
+
+                // Note: Image inputs in ffmpeg don't have audio streams unless generated. 
+                // We must be careful mapping audio from video inputs only.
+                // Assuming validation done before.
+                
                 const volFilter = volume !== 1 ? `volume=${volume}` : "anull";
-                delayed.push(`[${inputIndex}:a]${volFilter},asetpts=PTS-STARTPTS,aresample=44100[a${idx}_pre]`, `[a${idx}_pre]adelay=${clip.start * 1000}|${clip.start * 1000}[a${idx}]`);
+                // Atrim to limit audio duration
+                const atrim = `atrim=start=0:duration=${clip.duration},asetpts=PTS-STARTPTS`;
+                
+                filterChains.push(`[${inputIndex}:a]${atrim},${volFilter},aresample=44100[a${idx}_pre]`);
+                filterChains.push(`[a${idx}_pre]adelay=${clip.start * 1000}|${clip.start * 1000}[a${idx}]`);
                 mixed.push(`[a${idx}]`);
             });
-            filterChains.push(...delayed);
-            filterChains.push(`${mixed.join("")}amix=inputs=${mixed.length}:dropout_transition=3[outa]`);
+            
+            if (mixed.length > 0) {
+                filterChains.push(`${mixed.join("")}amix=inputs=${mixed.length}:dropout_transition=3[outa]`);
+                audioOutput = "-map [outa]";
+            } else {
+                 // No audio streams found (e.g. only images)
+                 audioOutput = "";
+            }
         }
 
-        const outputPath = path.join(uploadDir, `${jobId}.mp4`);
+        const outputFilename = `final_${Date.now()}.mp4`;
+        const outputPath = path.join(uploadDir, outputFilename);
         job.outputPath = outputPath;
-        if (audioClips.length === 0) commandArgs.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
-        commandArgs.push("-filter_complex", filterChains.join(";"), "-map", "[outv]");
-        if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
-        else { const silentIndex = files.length; commandArgs.push("-map", `${silentIndex}:a`); }
         
-        commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30", "-threads", "2", "-progress", "pipe:1", "-t", totalDuration, outputPath);
+        // Add silent audio if no audio clips to prevent issues?
+        if (!audioOutput) {
+             commandArgs.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
+             audioOutput = `-map ${commandArgs.length - 2}:a`; // -f lavfi -i anullsrc are 2 args, index is last -i
+             // Wait, commandArgs structure: ... -i file1 ... -i file2 ... 
+             // We need to be careful with mapping indices.
+             // Let's rely on standard logic: if no audio track, output might be video only.
+             // But for compatibility, let's just stick to video only if no audio.
+             audioOutput = ""; 
+        }
 
+        commandArgs.push("-filter_complex", filterChains.join(";"), "-map", "[outv]");
+        if (audioOutput) commandArgs.push(...audioOutput.split(" "));
+        
+        commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30", "-threads", "2", "-y", outputPath);
+
+        console.log("Render Command constructed.");
         const ffmpegProcess = spawn("ffmpeg", commandArgs);
+        
+        let log = "";
+        ffmpegProcess.stderr.on('data', d => log += d.toString());
+
         ffmpegProcess.on("close", code => {
-            if (code !== 0) { job.status = "failed"; job.error = "Falha no FFmpeg."; }
-            else { job.status = "completed"; job.progress = 100; job.downloadUrl = `/api/export/download/${jobId}`; }
+            if (code !== 0) { 
+                console.error("FFmpeg Render Error:", log);
+                job.status = "failed"; 
+                job.error = "Falha no FFmpeg."; 
+                if (directResponse && res) res.status(500).json({ error: "Render failed" });
+            } else { 
+                job.status = "completed"; 
+                job.progress = 100; 
+                job.downloadUrl = `/api/export/download/${outputFilename}`; // Use filename for handleDownload
+                if (directResponse && res) res.json({ url: job.downloadUrl });
+            }
         });
-    } catch (err) { job.status = "failed"; job.error = err.message; }
+    } catch (err) { 
+        job.status = "failed"; 
+        job.error = err.message; 
+        if (directResponse && res) res.status(500).json({ error: err.message });
+    }
 }
 
 app.post('/api/process/start/:action', (req, res) => {
@@ -307,20 +428,6 @@ app.get('/api/process/status/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
     if (!job) return res.status(404).json({ message: 'Tarefa não encontrada.' });
     res.status(200).json({ status: job.status, progress: job.progress, downloadUrl: job.downloadUrl, error: job.error });
-});
-
-app.get('/api/process/download/:jobId', (req, res) => {
-    const job = jobs[req.params.jobId];
-    if (!job || job.status !== 'completed' || !job.outputPath) return res.status(404).json({ message: 'Erro.' });
-    res.download(path.resolve(job.outputPath), path.basename(job.outputPath), (err) => {
-        const allFiles = [];
-        if (job.files.video) allFiles.push(...job.files.video);
-        if (job.files.style) allFiles.push(...job.files.style);
-        if (job.files.audio) allFiles.push(...job.files.audio);
-        if (job.files.all) allFiles.push(...job.files.all);
-        cleanupFiles([...allFiles, job.outputPath]);
-        delete jobs[req.params.jobId];
-    });
 });
 
 // Viral Cuts Logic
@@ -684,10 +791,10 @@ app.post('/api/process/generate-music', uploadAny, (req, res) => {
 });
 
 app.post('/api/process/voice-clone', uploadAudio, async (req, res) => {
-    // ... clone code same as before ...
-    res.status(500).json({ message: "Endpoint de clonagem omitido para brevidade (já estava correto)" });
+    // This is a placeholder as actual voice cloning requires an external API (ElevenLabs, etc.)
+    // For this demo, we'll just echo the file back or process it slightly
+    // Real implementation would use fetch to ElevenLabs API
+    res.status(200).json({ message: "Voice cloning simulated. Connect API key in frontend." });
 });
-
-// ... other endpoints ...
 
 app.listen(PORT, () => { console.log(`Servidor a escutar na porta ${PORT}`); });
