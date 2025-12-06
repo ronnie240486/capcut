@@ -47,7 +47,10 @@ const uploadFields = multer({ storage: storage }).fields([
 // INCREASE LIMITS FOR ANY UPLOAD TO SUPPORT LARGE PROJECT STATE
 const uploadAny = multer({ 
     storage: storage,
-    limits: { fieldSize: 50 * 1024 * 1024 } // 50MB for text fields (projectState)
+    limits: { 
+        fieldSize: 100 * 1024 * 1024, // 100MB for text fields (projectState)
+        fileSize: 5 * 1024 * 1024 * 1024 // 5GB for files
+    } 
 }).any();
 
 
