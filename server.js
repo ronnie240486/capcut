@@ -1,4 +1,3 @@
-
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -286,6 +285,7 @@ async function processViralCutsJob(jobId) {
     const job = jobs[jobId];
     job.status = 'processing'; job.progress = 10;
     try {
+        if (!job.files.video || !job.files.video[0]) throw new Error("Video file missing");
         const videoFile = job.files.video[0];
         const params = job.params || {};
         const count = parseInt(params.count) || 3;
@@ -342,7 +342,23 @@ async function processSingleClipJob(jobId) {
     job.status = 'processing'; job.progress = 0;
 
     const action = jobId.split('_')[0];
-    const videoFile = job.files.video[0];
+    
+    // FIX: Check for file existence safely
+    let videoFile = (job.files.video && job.files.video[0]) ? job.files.video[0] : null;
+    
+    // Fallback: If voice-clone or auto-ducking and no video, check audio
+    if (!videoFile && (action === 'voice-clone' || action === 'auto-ducking-real')) {
+        if (job.files.audio && job.files.audio[0]) {
+            videoFile = job.files.audio[0];
+        }
+    }
+
+    if (!videoFile) {
+        job.status = 'failed';
+        job.error = "Arquivo de entrada não encontrado.";
+        return;
+    }
+
     let params = {};
     if (job.params && job.params.params) {
         try { params = typeof job.params.params === 'string' ? JSON.parse(job.params.params) : job.params.params; } catch(e) {}
