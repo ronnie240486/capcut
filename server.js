@@ -873,7 +873,26 @@ async function processSingleClipJob(jobId) {
                      // Proceed to ffmpeg copy below
                  }
              }
-             
+           // --- FIX FOR SINGLE IMAGE OUTPUT ---
+    if (outputExtension === '.png' || outputExtension === '.jpg') {
+        // Fix for "does not contain an image sequence pattern" error.
+        // We must use -update 1 when writing to a static filename with image2 muxer if not already present.
+        if (!args.includes('-update')) {
+            // Insert before output path (last arg)
+            const out = args.pop();
+            args.push('-update', '1');
+            // Also ensure frames:v 1 is present
+            if (!args.includes('-frames:v')) {
+                args.push('-frames:v', '1');
+            }
+            args.push(out);
+        }
+    }
+
+    // SPAWN PROCESS
+    console.log(`[Job ${jobId}] Spawning: ffmpeg ${args.join(' ')}`);
+
+          
              // Fallback: Just copy/convert the recorded audio
              args.push('-i', videoFile.path);
              args.push('-vn', '-acodec', 'pcm_s16le');
