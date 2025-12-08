@@ -1,5 +1,4 @@
 
-
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -178,7 +177,6 @@ function processExportJob(jobId) {
         const { files, projectState } = job;
         const { clips, totalDuration, media, projectAspectRatio } = projectState;
         
-        // Ensure strictly finite duration (at least 1s)
         const finalDuration = Math.max(1, totalDuration || 10);
         const aspectRatio = projectAspectRatio || '16:9';
         let width = 1280, height = 720;
@@ -191,10 +189,10 @@ function processExportJob(jobId) {
         // 1. Build Inputs
         files.forEach(file => {
             const mediaInfo = media[file.originalname];
-            // Images must have -loop 1 AND -t (duration) to prevent infinite reading issues
+            // CRITICAL: Images must have loop AND t applied on input to work as video streams reliably
             if (mediaInfo?.type === "image") {
                 commandArgs.push("-loop", "1");
-                commandArgs.push("-t", (finalDuration + 5).toString()); // buffer
+                commandArgs.push("-t", (finalDuration + 10).toString()); // buffer
             }
             commandArgs.push("-i", file.path);
             fileMap[file.originalname] = commandArgs.filter(arg => arg === "-i").length - 1;
@@ -203,7 +201,12 @@ function processExportJob(jobId) {
         let filterChains = [];
         const videoAndLayerClips = clips.filter(c => c.track === 'video' || c.track === 'camada');
         
-        // 2. Process Video Clips (Scale, Pad, Speed, Adjustments)
+        // 2. Base Layers (Video & Audio)
+        // Ensure a solid foundation for overlaying
+        filterChains.push(`color=s=${width}x${height}:c=black:d=${finalDuration}[base]`);
+        filterChains.push(`anullsrc=channel_layout=stereo:sample_rate=44100:d=${finalDuration}[silent_base]`);
+
+        // 3. Process Video Clips
         videoAndLayerClips.forEach((clip, vIdx) => {
             const inputIndex = fileMap[clip.fileName];
             if (inputIndex === undefined) return;
@@ -221,6 +224,7 @@ function processExportJob(jobId) {
             let speedFilter = `setpts=PTS/${speed}`;
             
             const mediaStart = clip.mediaStartOffset || 0;
+            // Trim first to ensure we only get the relevant part of the input
             const trimFilter = `trim=start=${mediaStart}:duration=${(mediaStart + duration * speed)}`;
             const resetPts = `setpts=PTS-STARTPTS`; 
 
@@ -237,11 +241,7 @@ function processExportJob(jobId) {
             filterChains.push(`${filterChain}[v${vIdx}]`);
         });
 
-        // 3. Composite Video
-        // Always create a black base canvas for the entire duration.
-        // This is crucial for single image exports to have a define length.
-        filterChains.push(`color=s=${width}x${height}:c=black:d=${finalDuration}[base]`);
-        
+        // 4. Composite Video
         let prevOverlay = "[base]";
         
         videoAndLayerClips.forEach((clip, idx) => {
@@ -252,18 +252,13 @@ function processExportJob(jobId) {
             prevOverlay = nextOverlay;
         });
         
-        // Ensure final output format
         if (videoAndLayerClips.length === 0) {
             filterChains[filterChains.length-1] = `color=s=${width}x${height}:c=black:d=${finalDuration},format=yuv420p[outv]`;
         } else {
             filterChains.push(`[outv_raw]format=yuv420p[outv]`);
         }
 
-        // 4. Process Audio
-        // ALWAYS create a silent audio track for the full duration.
-        // This fixes the "stream map matches no streams" error when no audio exists.
-        filterChains.push(`anullsrc=channel_layout=stereo:sample_rate=44100:d=${finalDuration}[silent_base]`);
-        
+        // 5. Process Audio
         const audioInputs = [`[silent_base]`];
         const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
 
@@ -287,14 +282,12 @@ function processExportJob(jobId) {
             const mediaStart = clip.mediaStartOffset || 0;
             const trimDuration = clip.duration * speed;
             
-            // Resample to 44100 to match anullsrc
             filterChains.push(`[${inputIndex}:a]atrim=start=${mediaStart}:duration=${mediaStart + trimDuration},asetpts=PTS-STARTPTS${tempoFilter},volume=${volume},aresample=44100[a${idx}_proc]`);
             filterChains.push(`[a${idx}_proc]adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}[a${idx}]`);
             audioInputs.push(`[a${idx}]`);
         });
         
-        // Mix everything. amix automatically handles length=longest by default usually, but we ensure inputs match.
-        // We use dropout_transition=0 for clean cuts.
+        // Always mix, even if just silent base. dropout_transition=0 ensures smooth mixing.
         filterChains.push(`${audioInputs.join("")}amix=inputs=${audioInputs.length}:duration=longest:dropout_transition=0[outa]`);
 
         const outputPath = path.join(uploadDir, `${jobId}.mp4`);
@@ -305,9 +298,9 @@ function processExportJob(jobId) {
         commandArgs.push("-map", "[outa]");
 
         // Encoding settings
-        commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", "30", "-threads", "2", "-progress", "pipe:1", "-t", finalDuration.toString(), outputPath);
+        commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", "30", "-t", finalDuration.toString(), outputPath);
 
-        console.log("Spawning FFmpeg with args:", commandArgs.join(" "));
+        console.log("Spawning FFmpeg...");
 
         const ffmpegProcess = spawn("ffmpeg", commandArgs);
         
