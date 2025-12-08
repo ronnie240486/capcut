@@ -160,7 +160,7 @@ const getStyleFilter = (styleId) => {
         case 'matrix': return "colorchannelmixer=0:0:0:0:0:1:0:0:0:0:0:0,eq=contrast=1.5"; // Green channel
         case 'glitch_art': return "chromashift=cb=10:cr=-10,noise=alls=10:allf=t";
         case 'rgb_split': return "chromashift=cb=20:cr=-20";
-        case 'thermal': return "format=gray,eq=contrast=2,colorbalance=rs=1:gs=0:bs=-1"; // Fixed: removed pseudo_palette
+        case 'thermal': return "format=gray,eq=contrast=2,colorbalance=rs=1:gs=0:bs=-1"; 
         case 'hacker': return "format=gray,colorchannelmixer=0:0:0:0:1:1:1:0:0:0:0:0,noise=alls=5:allf=t"; // Green mono
 
         default: return cartoon;
@@ -455,8 +455,10 @@ async function processSingleClipJob(jobId) {
     if (inputIsImage && ['magic-erase-real', 'video-to-cartoon-real', 'style-transfer-real', 'stickerize-real', 'retouch-real'].includes(action)) outputExtension = '.png';
     if (['extract-audio-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real', 'voice-fx-real', 'voice-clone'].includes(action)) outputExtension = '.wav';
     
-    // WebM for transparency support
-    if (action === 'rotoscope-real') outputExtension = '.webm';
+    // WebM for transparency support in video, PNG for image rotoscope
+    if (action === 'rotoscope-real') {
+        outputExtension = inputIsImage ? '.png' : '.webm';
+    }
 
     const outputFilename = `${action}-${Date.now()}${outputExtension}`;
     const outputPath = path.join(uploadDir, outputFilename);
@@ -475,9 +477,17 @@ async function processSingleClipJob(jobId) {
              
              args.push('-i', videoFile.path);
              args.push('-vf', `chromakey=${color}:${similarity}:${smoothness}`);
-             args.push('-c:v', 'libvpx-vp9', '-b:v', '2M'); 
-             args.push('-auto-alt-ref', '0');
-             args.push('-c:a', 'libvorbis');
+             
+             if (outputExtension === '.png') {
+                 // For image input, output PNG with alpha
+                 args.push('-c:v', 'png');
+                 args.push('-f', 'image2');
+             } else {
+                 // For video input, output WebM with alpha
+                 args.push('-c:v', 'libvpx-vp9', '-b:v', '2M'); 
+                 args.push('-auto-alt-ref', '0');
+                 args.push('-c:a', 'libvorbis');
+             }
              args.push(outputPath);
              break;
         }
