@@ -1,4 +1,3 @@
-
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -89,7 +88,6 @@ const getStyleFilter = (styleId) => {
         case 'bokeh_portrait': return "boxblur=2:1,unsharp=5:5:1.5";
 
         // --- DESENHO & SIMPLES ---
-        // FIX: Removed threshold=0 (requires 2 inputs) and replaced with high contrast eq
         case 'stick_figure': return "edgedetect=mode=colormix:high=0,format=gray,eq=contrast=100,negate"; 
         case 'doodle_notebook': return "edgedetect=mode=colormix:high=0,format=gray,negate,noise=alls=10:allf=t";
         case 'blueprint': return "edgedetect=mode=colormix:high=0,format=gray,negate,colorchannelmixer=0:0:0:0:0:0:0:0:1:1:1:0"; 
@@ -338,7 +336,6 @@ function processExportJob(jobId) {
 
 app.post('/api/process/start/:action', (req, res) => {
     const { action } = req.params;
-    // Handle 'ai-dubbing-real' with uploadFields if it might upload audio in the future, but currently it just uploads video
     const uploader = (action === 'style-transfer-real' || action === 'lip-sync-real' || action === 'auto-ducking-real' || action === 'voice-clone') ? uploadFields : (action === 'script-to-video' ? uploadAny : uploadSingle);
 
     uploader(req, res, (err) => {
@@ -452,7 +449,7 @@ async function processSingleClipJob(jobId) {
 
     const inputIsImage = videoFile ? isImage(videoFile.originalname) : false;
     let outputExtension = '.mp4';
-    if (inputIsImage && ['magic-erase-real', 'video-to-cartoon-real', 'style-transfer-real', 'stickerize-real', 'retouch-real'].includes(action)) outputExtension = '.png';
+    if (inputIsImage && ['magic-erase-real', 'video-to-cartoon-real', 'style-transfer-real', 'stickerize-real', 'retouch-real', 'colorize-real', 'reframe-real', 'remove-bg-real', 'upscale-real'].includes(action)) outputExtension = '.png';
     if (['extract-audio-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real', 'voice-fx-real', 'voice-clone'].includes(action)) outputExtension = '.wav';
     
     // WebM for transparency support in video, PNG for image rotoscope
@@ -675,7 +672,7 @@ async function processSingleClipJob(jobId) {
         case 'upscale-real':
              args.push('-i', videoFile.path);
              args.push('-vf', "scale=3840:2160:flags=lanczos,unsharp=5:5:1.0:5:5:0.0,scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p");
-             args.push('-c:v', 'libx264', '-preset', 'superfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'copy');
+             if (outputExtension === '.mp4') args.push('-c:v', 'libx264', '-preset', 'superfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-c:a', 'copy');
              args.push(outputPath);
              break;
              
@@ -699,7 +696,7 @@ async function processSingleClipJob(jobId) {
         case 'reframe-real':
              args.push('-i', videoFile.path);
              args.push('-vf', 'scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1,format=yuv420p');
-             args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'copy');
+             if (outputExtension === '.mp4') args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'copy');
              args.push(outputPath);
              break;
 
@@ -912,6 +909,71 @@ async function processSingleClipJob(jobId) {
              args.push(outputPath);
              break;
         }
+
+        case 'image-to-video-motion':
+             if (!inputIsImage) { job.status = 'failed'; job.error = "Input must be an image."; return; }
+             const motionMode = params.mode || 'zoom-in';
+             const d = 5; // duration 5s
+             
+             args.push('-loop', '1');
+             args.push('-i', videoFile.path);
+             
+             let zoomExpr = "";
+             if (motionMode === 'zoom-in') zoomExpr = `zoom+0.0015`;
+             else if (motionMode === 'zoom-out') zoomExpr = `if(eq(on,1), 1.5, zoom-0.0015)`;
+             else if (motionMode === 'pan-right') zoomExpr = `1.2`;
+             
+             let xExpr = "iw/2-(iw/zoom/2)";
+             let yExpr = "ih/2-(ih/zoom/2)";
+             
+             if (motionMode === 'pan-right') {
+                 xExpr = "x-1"; 
+             }
+
+             args.push('-vf', `zoompan=z='${zoomExpr}':x='${xExpr}':y='${yExpr}':d=${d*25}:s=1280x720,format=yuv420p`);
+             args.push('-t', d.toString());
+             args.push('-c:v', 'libx264', '-preset', 'ultrafast');
+             args.push(outputPath);
+             break;
+
+        case 'particles-real':
+             const pType = params.type || 'rain';
+             
+             if (inputIsImage) {
+                 args.push('-loop', '1');
+                 args.push('-t', '5');
+                 args.push('-i', videoFile.path);
+             } else {
+                 args.push('-i', videoFile.path);
+             }
+
+             let filterComplex = "";
+             if (pType === 'rain') {
+                 filterComplex = `nullsrc=size=1280x720[glass];noise=alls=20:allf=t+u[noise];[glass][noise]overlay=format=auto,geq=r='if(gt(random(1),0.98),255,0)':g='if(gt(random(1),0.98),255,0)':b='if(gt(random(1),0.98),255,0)'[rain];[0:v]scale=1280:720[base];[base][rain]overlay`;
+             } else if (pType === 'snow') {
+                 filterComplex = `nullsrc=size=1280x720[glass];noise=alls=100:allf=t+u[noise];[glass][noise]overlay,scale=iw*0.1:ih*0.1,scale=iw*10:ih*10:flags=neighbor[snow];[0:v]scale=1280:720[base];[base][snow]overlay=format=auto:shortest=1`;
+             } else if (pType === 'old_film') {
+                 filterComplex = `[0:v]eq=saturation=0[bw];nullsrc=size=1280x720[glass];noise=alls=20:allf=t+u[noise];[bw][noise]overlay=shortest=1[grain];[grain]vignette=PI/4[outv]`;
+             } else if (pType === 'nightclub') {
+                 args.push('-vf', 'hue=H=2*PI*t:s=sin(2*PI*t)+1');
+             }
+
+             if (pType !== 'nightclub') {
+                 args.push('-filter_complex', filterComplex);
+                 if (pType === 'old_film') args.push('-map', '[outv]');
+             }
+             
+             args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p');
+             if (!inputIsImage) args.push('-c:a', 'copy');
+             args.push(outputPath);
+             break;
+
+        case 'colorize-real':
+             args.push('-i', videoFile.path);
+             args.push('-vf', 'eq=saturation=2.0:brightness=0.05:contrast=1.1');
+             if (outputExtension === '.mp4') args.push('-c:v', 'libx264', '-preset', 'ultrafast');
+             args.push(outputPath);
+             break;
 
         default:
              job.status = 'failed'; job.error = "Action not supported."; return;
