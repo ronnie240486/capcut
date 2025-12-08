@@ -89,8 +89,8 @@ const getStyleFilter = (styleId) => {
         case 'bokeh_portrait': return "boxblur=2:1,unsharp=5:5:1.5";
 
         // --- DESENHO & SIMPLES ---
-        // FIX: Replaced extractplanes=y with format=gray to prevent stream count errors in simple filtergraphs
-        case 'stick_figure': return "edgedetect=mode=colormix:high=0,format=gray,threshold=0,negate"; 
+        // FIX: Removed threshold=0 (requires 2 inputs) and replaced with high contrast eq
+        case 'stick_figure': return "edgedetect=mode=colormix:high=0,format=gray,eq=contrast=100,negate"; 
         case 'doodle_notebook': return "edgedetect=mode=colormix:high=0,format=gray,negate,noise=alls=10:allf=t";
         case 'blueprint': return "edgedetect=mode=colormix:high=0,format=gray,negate,colorchannelmixer=0:0:0:0:0:0:0:0:1:1:1:0"; 
         case 'line_art': return "edgedetect=mode=colormix:high=0,format=gray,negate"; 
@@ -160,7 +160,7 @@ const getStyleFilter = (styleId) => {
         case 'matrix': return "colorchannelmixer=0:0:0:0:0:1:0:0:0:0:0:0,eq=contrast=1.5"; // Green channel
         case 'glitch_art': return "chromashift=cb=10:cr=-10,noise=alls=10:allf=t";
         case 'rgb_split': return "chromashift=cb=20:cr=-20";
-        case 'thermal': return "format=gray,eq=contrast=2,pseudo_palette"; // Approx
+        case 'thermal': return "format=gray,eq=contrast=2,colorbalance=rs=1:gs=0:bs=-1"; // Fixed: removed pseudo_palette
         case 'hacker': return "format=gray,colorchannelmixer=0:0:0:0:1:1:1:0:0:0:0:0,noise=alls=5:allf=t"; // Green mono
 
         default: return cartoon;
