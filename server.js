@@ -1,4 +1,5 @@
 
+
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -130,7 +131,6 @@ app.post('/api/util/fetch-url', async (req, res) => {
 
     try {
         console.log(`[Fetch URL] Fetching content from: ${url}`);
-        // ... (Scraping logic same as before) ...
         const response = await fetch(url);
         if (!response.ok) throw new Error(`Falha ao acessar URL: ${response.status}`);
         const html = await response.text();
@@ -177,6 +177,9 @@ function processExportJob(jobId) {
     try {
         const { files, projectState } = job;
         const { clips, totalDuration, media, projectAspectRatio } = projectState;
+        
+        // Ensure strictly finite duration (at least 1s)
+        const finalDuration = Math.max(1, totalDuration || 10);
         const aspectRatio = projectAspectRatio || '16:9';
         let width = 1280, height = 720;
         if (aspectRatio === '9:16') { width = 720; height = 1280; }
@@ -188,14 +191,16 @@ function processExportJob(jobId) {
         // 1. Build Inputs
         files.forEach(file => {
             const mediaInfo = media[file.originalname];
-            // Fix: Images need -loop 1 BEFORE -i
-            if (mediaInfo?.type === "image") commandArgs.push("-loop", "1");
+            // Images must have -loop 1 AND -t (duration) to prevent infinite reading issues
+            if (mediaInfo?.type === "image") {
+                commandArgs.push("-loop", "1");
+                commandArgs.push("-t", (finalDuration + 5).toString()); // buffer
+            }
             commandArgs.push("-i", file.path);
             fileMap[file.originalname] = commandArgs.filter(arg => arg === "-i").length - 1;
         });
 
         let filterChains = [];
-        const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
         const videoAndLayerClips = clips.filter(c => c.track === 'video' || c.track === 'camada');
         
         // 2. Process Video Clips (Scale, Pad, Speed, Adjustments)
@@ -204,10 +209,7 @@ function processExportJob(jobId) {
             if (inputIndex === undefined) return;
             let clipSpecificFilters = [];
             
-            // Limit duration for infinite loops (images)
             const duration = clip.duration;
-            const start = clip.start;
-            
             const adj = clip.properties.adjustments;
             if (adj) {
                 const ffmpegBrightness = (adj.brightness || 1.0) - 1.0;
@@ -218,14 +220,10 @@ function processExportJob(jobId) {
             const speed = clip.properties.speed || 1;
             let speedFilter = `setpts=PTS/${speed}`;
             
-            // Start offset handling
             const mediaStart = clip.mediaStartOffset || 0;
-            // Trim logic: trim must happen before setpts for speed
-            // Since images are looped, we don't strictly need trim for them, but for videos we do.
-            const trimFilter = `trim=start=${mediaStart}:duration=${duration*speed}`; // Duration in source time base
-            const resetPts = `setpts=PTS-STARTPTS`; // Reset timestamp after trim
+            const trimFilter = `trim=start=${mediaStart}:duration=${(mediaStart + duration * speed)}`;
+            const resetPts = `setpts=PTS-STARTPTS`; 
 
-            // Combine filters
             // Scale and Pad to project size
             const layoutFilter = `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
             
@@ -240,146 +238,74 @@ function processExportJob(jobId) {
         });
 
         // 3. Composite Video
-        let videoMapLabel = "[outv]";
+        // Always create a black base canvas for the entire duration.
+        // This is crucial for single image exports to have a define length.
+        filterChains.push(`color=s=${width}x${height}:c=black:d=${finalDuration}[base]`);
+        
+        let prevOverlay = "[base]";
+        
+        videoAndLayerClips.forEach((clip, idx) => {
+            const isLast = idx === videoAndLayerClips.length - 1;
+            const nextOverlay = isLast ? "[outv_raw]" : `[ov${idx}]`;
+            // Using enable between to place clips on timeline
+            filterChains.push(`${prevOverlay}[v${idx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`);
+            prevOverlay = nextOverlay;
+        });
+        
+        // Ensure final output format
         if (videoAndLayerClips.length === 0) {
-            filterChains.push(`color=s=${width}x${height}:c=black:d=${totalDuration}[outv]`);
-        } else if (videoAndLayerClips.length === 1) {
-            // Fix for single image error: Avoid overlay if only 1 clip
-            // Just pad the single clip to the total duration using tpad if needed, or loop handling
-            // Since we trimmed the clip to its duration, we need to place it in time.
-            const clip = videoAndLayerClips[0];
-            // If start > 0, we need a base black background
-            if (clip.start > 0.1) {
-                filterChains.push(`color=s=${width}x${height}:c=black:d=${totalDuration}[base]`);
-                filterChains.push(`[base][v0]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'[outv]`);
-            } else {
-                // If it starts at 0, just map it out (assuming duration matches or close enough)
-                // To be safe against FFmpeg duration issues, we can force a black background overlay anyway
-                // This is safer than passing [v0] directly if totalDuration > clipDuration
-                filterChains.push(`color=s=${width}x${height}:c=black:d=${totalDuration}[base]`);
-                filterChains.push(`[base][v0]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'[outv]`);
-            }
+            filterChains[filterChains.length-1] = `color=s=${width}x${height}:c=black:d=${finalDuration},format=yuv420p[outv]`;
         } else {
-            // Multiple clips
-            let videoChain = `color=s=${width}x${height}:c=black:d=${totalDuration}[base]`;
-            filterChains.push(videoChain);
-            
-            let prevOverlay = "[base]";
-            videoAndLayerClips.forEach((clip, idx) => {
-                const isLast = idx === videoAndLayerClips.length - 1;
-                const nextOverlay = isLast ? "[outv]" : `[ov${idx}]`;
-                const vIdx = videoAndLayerClips.indexOf(clip);
-                filterChains.push(`${prevOverlay}[v${vIdx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`);
-                prevOverlay = nextOverlay;
-            });
+            filterChains.push(`[outv_raw]format=yuv420p[outv]`);
         }
 
         // 4. Process Audio
-        let audioMapLabel = "";
-        if (audioClips.length > 0) {
-            const audioInputs = [];
-            audioClips.forEach((clip, idx) => {
-                const inputIndex = fileMap[clip.fileName];
-                if (inputIndex === undefined) return;
-                
-                const volume = clip.properties.volume ?? 1;
-                const speed = clip.properties.speed || 1;
-                
-                // Calculate audio tempo filters (atempo filter limited to 0.5 to 2.0)
-                let tempoFilter = "";
-                if (speed !== 1) {
-                    let s = speed;
-                    let filters = [];
-                    while (s > 2.0) { filters.push("atempo=2.0"); s /= 2.0; }
-                    while (s < 0.5) { filters.push("atempo=0.5"); s /= 0.5; }
-                    filters.push(`atempo=${s}`);
-                    tempoFilter = "," + filters.join(",");
-                }
+        // ALWAYS create a silent audio track for the full duration.
+        // This fixes the "stream map matches no streams" error when no audio exists.
+        filterChains.push(`anullsrc=channel_layout=stereo:sample_rate=44100:d=${finalDuration}[silent_base]`);
+        
+        const audioInputs = [`[silent_base]`];
+        const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
 
-                // Trim Audio
-                const mediaStart = clip.mediaStartOffset || 0;
-                // For audio, trim duration depends on speed. 
-                // duration is the timeline duration. Media duration needed is duration * speed.
-                const trimDuration = clip.duration * speed;
-                
-                // Important: Resample to uniform rate before mixing
-                filterChains.push(`[${inputIndex}:a]atrim=start=${mediaStart}:duration=${trimDuration},asetpts=PTS-STARTPTS${tempoFilter},volume=${volume},aresample=44100[a${idx}_proc]`);
-                filterChains.push(`[a${idx}_proc]adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}[a${idx}]`);
-                audioInputs.push(`[a${idx}]`);
-            });
+        audioClips.forEach((clip, idx) => {
+            const inputIndex = fileMap[clip.fileName];
+            if (inputIndex === undefined) return;
             
-            // Mix all audio
-            if (audioInputs.length > 0) {
-                // amix inputs=N:duration=longest to ensure it doesn't cut off if one clip ends
-                filterChains.push(`${audioInputs.join("")}amix=inputs=${audioInputs.length}:duration=longest:dropout_transition=0[outa]`);
-                audioMapLabel = "[outa]";
+            const volume = clip.properties.volume ?? 1;
+            const speed = clip.properties.speed || 1;
+            
+            let tempoFilter = "";
+            if (speed !== 1) {
+                let s = speed;
+                let filters = [];
+                while (s > 2.0) { filters.push("atempo=2.0"); s /= 2.0; }
+                while (s < 0.5) { filters.push("atempo=0.5"); s /= 0.5; }
+                filters.push(`atempo=${s}`);
+                tempoFilter = "," + filters.join(",");
             }
-        }
+
+            const mediaStart = clip.mediaStartOffset || 0;
+            const trimDuration = clip.duration * speed;
+            
+            // Resample to 44100 to match anullsrc
+            filterChains.push(`[${inputIndex}:a]atrim=start=${mediaStart}:duration=${mediaStart + trimDuration},asetpts=PTS-STARTPTS${tempoFilter},volume=${volume},aresample=44100[a${idx}_proc]`);
+            filterChains.push(`[a${idx}_proc]adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}[a${idx}]`);
+            audioInputs.push(`[a${idx}]`);
+        });
+        
+        // Mix everything. amix automatically handles length=longest by default usually, but we ensure inputs match.
+        // We use dropout_transition=0 for clean cuts.
+        filterChains.push(`${audioInputs.join("")}amix=inputs=${audioInputs.length}:duration=longest:dropout_transition=0[outa]`);
 
         const outputPath = path.join(uploadDir, `${jobId}.mp4`);
         job.outputPath = outputPath;
 
-        // Construct Final Command
-        // Filter Complex
         commandArgs.push("-filter_complex", filterChains.join(";"));
-        
-        // Maps
         commandArgs.push("-map", "[outv]");
-        
-        if (audioMapLabel) {
-            commandArgs.push("-map", audioMapLabel);
-        } else {
-            // Generate silent audio if no audio clips exist, to ensure output file has audio track (good practice for players)
-            // Use lavfi anullsrc
-            // We need to add this as an input actually, or use filter graph to generate it.
-            // Since -filter_complex is already built, let's append a silent generator to it if needed?
-            // Actually, simpler to just add an input.
-            // BUT: We already built the inputs array.
-            // Alternative: use -f lavfi -i anullsrc... as an extra input at the start, but we didn't index it.
-            // Let's assume silent audio is better handled by adding it to filter complex if missing.
-            // Actually, if we just map [outv] and no audio, ffmpeg produces video-only.
-            // Let's create a silent track in filter complex
-            
-            // New logic: ALWAYS generate silent base audio matching total duration
-            // This prevents "Stream map '0:a' matches no streams" errors
-            /* 
-               If we change logic to:
-               anullsrc=channel_layout=stereo:sample_rate=44100:d=TOTAL_DURATION[silent];
-               [silent][outa]amix...
-            */
-           // For simplicity in this fix, if no audio clips, generate silence and map it.
-           // Since we can't easily append input now without messing indexes, we use filter source.
-           const silentChain = `anullsrc=channel_layout=stereo:sample_rate=44100:d=${totalDuration}[silent_a]`;
-           // We have to append this to filterChains and map [silent_a]
-           // But filter_complex is a single string argument usually.
-           
-           // Re-construct filter_complex
-           const newComplex = filterChains.join(";") + (filterChains.length > 0 ? ";" : "") + silentChain;
-           
-           // Reset commandArgs filter complex
-           commandArgs.pop(); // remove previous filter_complex
-           commandArgs.pop(); // remove -filter_complex flag
-           
-           commandArgs.push("-filter_complex", newComplex);
-           commandArgs.push("-map", "[outv]");
-           commandArgs.push("-map", "[silent_a]"); 
-           // NOTE: If audioClips exist, we map [outa]. If not, [silent_a].
-           // But wait, if audio clips exist, we don't want silent_a? Or maybe we do as background?
-           // If audio clips exist, we ignore silent_a.
-           // Correct approach:
-           if (audioMapLabel) {
-               // We revert to mapping [outa] and don't add silent chain (or ignore it)
-               commandArgs.pop(); // remove silent map
-               commandArgs.pop(); // remove outv map
-               commandArgs.pop(); // remove complex
-               commandArgs.pop(); // remove flag
-               commandArgs.push("-filter_complex", filterChains.join(";"));
-               commandArgs.push("-map", "[outv]");
-               commandArgs.push("-map", "[outa]");
-           }
-        }
+        commandArgs.push("-map", "[outa]");
 
-        commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", "30", "-threads", "2", "-progress", "pipe:1", "-t", totalDuration.toString(), outputPath);
+        // Encoding settings
+        commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", "30", "-threads", "2", "-progress", "pipe:1", "-t", finalDuration.toString(), outputPath);
 
         console.log("Spawning FFmpeg with args:", commandArgs.join(" "));
 
@@ -395,9 +321,6 @@ function processExportJob(jobId) {
         });
     } catch (err) { job.status = "failed"; job.error = err.message; }
 }
-
-// ... (Rest of server.js remains mostly same, just updating processExportJob above) ...
-// Included the rest of the file to ensure integrity in response
 
 app.post('/api/process/start/:action', (req, res) => {
     const { action } = req.params;
