@@ -216,7 +216,13 @@ function processExportJob(jobId) {
             const adj = clip.properties.adjustments;
             if (adj) {
                 const ffmpegBrightness = (adj.brightness || 1.0) - 1.0;
-                clipSpecificFilters.push(`eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}:hue=${(adj.hue || 0) * (Math.PI/180)}`);
+                // FIX: 'hue' option in eq filter is not supported in many ffmpeg versions. 
+                // Use eq for brightness/contrast/sat, and separate hue filter for hue.
+                clipSpecificFilters.push(`eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}`);
+                
+                if (adj.hue && adj.hue !== 0) {
+                    clipSpecificFilters.push(`hue=h=${adj.hue}`);
+                }
             }
             if (clip.properties.mirror) clipSpecificFilters.push('hflip');
             
