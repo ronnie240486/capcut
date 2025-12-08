@@ -70,7 +70,7 @@ const isImage = (filename) => {
     return ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff'].includes(ext);
 };
 
-// --- HELPER: Get Style Filter Chain (EXPANDED) ---
+// --- HELPER: Get Style Filter Chain (EXPANDED & FIXED) ---
 const getStyleFilter = (styleId) => {
     // Common building blocks
     const edge = "edgedetect=mode=colormix:high=0"; 
@@ -89,11 +89,12 @@ const getStyleFilter = (styleId) => {
         case 'bokeh_portrait': return "boxblur=2:1,unsharp=5:5:1.5";
 
         // --- DESENHO & SIMPLES ---
-        case 'stick_figure': return "edgedetect=mode=colormix:high=0,extractplanes=y,threshold=0,negate"; // White BG, Black Lines
-        case 'doodle_notebook': return "edgedetect=mode=colormix:high=0,extractplanes=y,negate,noise=alls=10:allf=t";
-        case 'blueprint': return "edgedetect=mode=colormix:high=0,extractplanes=y,negate,colorchannelmixer=0:0:0:0:0:0:0:0:1:1:1:0"; // White on Blue
-        case 'line_art': return "edgedetect=mode=colormix:high=0,extractplanes=y,negate"; 
-        case 'chalkboard': return "edgedetect=mode=colormix:high=0,extractplanes=y,colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3:0"; // White on Greenish
+        // FIX: Replaced extractplanes=y with format=gray to prevent stream count errors in simple filtergraphs
+        case 'stick_figure': return "edgedetect=mode=colormix:high=0,format=gray,threshold=0,negate"; 
+        case 'doodle_notebook': return "edgedetect=mode=colormix:high=0,format=gray,negate,noise=alls=10:allf=t";
+        case 'blueprint': return "edgedetect=mode=colormix:high=0,format=gray,negate,colorchannelmixer=0:0:0:0:0:0:0:0:1:1:1:0"; 
+        case 'line_art': return "edgedetect=mode=colormix:high=0,format=gray,negate"; 
+        case 'chalkboard': return "edgedetect=mode=colormix:high=0,format=gray,colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3:0"; 
         case 'minimal_flat': return "median=7,eq=saturation=1.5:contrast=1.2";
         case 'storyboard': return "format=gray,median=3,unsharp=5:5:1.0";
         case 'manga_bw': return "format=gray,eq=contrast=2,unsharp=5:5:1.5";
@@ -113,7 +114,7 @@ const getStyleFilter = (styleId) => {
         case 'night_vision': return "format=gray,colorchannelmixer=0:0:0:0:0:1:0:0:0:0:0:0,noise=alls=30:allf=t,eq=contrast=2:brightness=-0.1";
         case 'zombie_apocalypse': return "colorchannelmixer=.3:.4:.3:0:.2:.3:.2:0:.2:.3:.2:0,eq=contrast=1.3"; // Sick green
         case 'security_cam': return "format=gray,noise=alls=10:allf=t,eq=contrast=1.5";
-        case 'sin_city': return "colorhold=color=red:similarity=0.3:blend=0.0"; // Fallback to grayscale with red pass if colorhold fails: "format=gray"
+        case 'sin_city': return "colorhold=color=red:similarity=0.3:blend=0.0"; 
         case 'gothic_noir': return "format=gray,eq=contrast=1.8:brightness=-0.2,vignette";
         case 'broken_vhs': return "noise=alls=10:allf=t+u,eq=saturation=0.5,chromashift=cb=5:cr=-5";
         case 'xray': return "format=gray,negate,eq=contrast=1.5";
@@ -132,7 +133,7 @@ const getStyleFilter = (styleId) => {
         case 'oil_heavy': return "gblur=5,unsharp=5:5:3,eq=saturation=1.5";
         case 'oil_detail': return "avgblur=2,unsharp=5:5:1.5,eq=contrast=1.2";
         case 'watercolor': return "gblur=8,unsharp=5:5:1,eq=saturation=1.6:brightness=0.1";
-        case 'van_gogh': return "swirl,gblur=2,eq=saturation=1.5:contrast=1.2"; // Swirl gives a bit of that feel
+        case 'van_gogh': return "swirl,gblur=2,eq=saturation=1.5:contrast=1.2"; 
         case 'sketch_pencil': return "edgedetect=mode=colormix:high=0,format=gray,negate";
         case 'sketch_charcoal': return "edgedetect=mode=colormix:high=0,format=gray,eq=contrast=2";
         case 'ink_wash': return "gblur=2,edgedetect=mode=colormix,format=gray";
@@ -464,11 +465,6 @@ async function processSingleClipJob(jobId) {
     const MAX_WIDTH = 1280;
     const originalW = params.originalWidth || 1920;
     let args = [];
-
-    // CRITICAL FIX: IF OUTPUT IS IMAGE, USE -frames:v 1 to avoid sequence error
-    if (outputExtension === '.png' || outputExtension === '.jpg') {
-        // We will insert this at the end of arg construction
-    }
 
     switch (action) {
         case 'rotoscope-real': {
@@ -873,26 +869,6 @@ async function processSingleClipJob(jobId) {
                      // Proceed to ffmpeg copy below
                  }
              }
-           // --- FIX FOR SINGLE IMAGE OUTPUT ---
-    if (outputExtension === '.png' || outputExtension === '.jpg') {
-        // Fix for "does not contain an image sequence pattern" error.
-        // We must use -update 1 when writing to a static filename with image2 muxer if not already present.
-        if (!args.includes('-update')) {
-            // Insert before output path (last arg)
-            const out = args.pop();
-            args.push('-update', '1');
-            // Also ensure frames:v 1 is present
-            if (!args.includes('-frames:v')) {
-                args.push('-frames:v', '1');
-            }
-            args.push(out);
-        }
-    }
-
-    // SPAWN PROCESS
-    console.log(`[Job ${jobId}] Spawning: ffmpeg ${args.join(' ')}`);
-
-          
              // Fallback: Just copy/convert the recorded audio
              args.push('-i', videoFile.path);
              args.push('-vn', '-acodec', 'pcm_s16le');
