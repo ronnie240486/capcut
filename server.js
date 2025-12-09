@@ -502,6 +502,7 @@ async function processSingleClipJob(jobId) {
                  args.push('-c:v', 'png');
                  args.push('-f', 'image2');
              } else {
+                 // Important: Output transparency for video requires WebM VP9/8 or ProRes
                  args.push('-c:v', 'libvpx-vp9', '-b:v', '2M');
                  args.push('-auto-alt-ref', '0');
                  args.push('-c:a', 'libvorbis');
@@ -1013,7 +1014,11 @@ async function processSingleClipJob(jobId) {
                  args.push('-shortest'); // Important so video stops at 5s (duration of -t)
              } else {
                  args.push('-map', '0:a?');
-                 args.push('-c:a', 'aac');
+                 // USE COPY instead of transcoding to prevent errors if audio stream is missing or broken
+                 // 'copy' is robust; if 0:a doesn't exist, it won't be mapped to output because of '?' in map
+                 // but explicit -c:a might throw if no stream is selected.
+                 // Safer approach: attempt AAC but if input has no audio, ffmpeg usually warns.
+                 args.push('-c:a', 'copy'); 
              }
 
              args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p');
