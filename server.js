@@ -469,6 +469,11 @@ async function processSingleClipJob(jobId) {
     if (['rotoscope-real', 'remove-bg-real'].includes(action)) {
         outputExtension = inputIsImage ? '.png' : '.webm';
     }
+    
+    // FORCED OVERRIDE: Particles on image MUST produce video
+    if (['particles-real'].includes(action) && inputIsImage) {
+        outputExtension = '.mp4';
+    }
 
     const outputFilename = `${action}-${Date.now()}${outputExtension}`;
     const outputPath = path.join(uploadDir, outputFilename);
@@ -975,13 +980,14 @@ async function processSingleClipJob(jobId) {
              const pType = params.type || 'rain';
 
              if (inputIsImage) {
+                 // IMAGE INPUT: LOOP IT AND CREATE AUDIO
                  args.push('-loop', '1');
                  args.push('-i', videoFile.path);
-                 args.push('-t', '5');
-                 // Ensure an audio stream exists for the container if we map it later
-                 // The easiest way is to use lavfi for audio source
+                 args.push('-t', '5'); // Create 5s video
+                 // Generate silent audio
                  args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
              } else {
+                 // VIDEO INPUT
                  args.push('-i', videoFile.path);
              }
 
@@ -1026,6 +1032,8 @@ async function processSingleClipJob(jobId) {
                  args.push('-c:a', 'aac');
                  args.push('-shortest'); // Important so video stops at 5s (duration of -t)
              } else {
+                 // Try to map original audio, but if missing, standard AAC might just produce silent track or ignore
+                 // Better: use -map 0:a? to optionally map audio
                  args.push('-map', '0:a?');
                  // USE AAC instead of COPY to prevent container errors if source audio codec is incompatible with MP4
                  args.push('-c:a', 'aac'); 
