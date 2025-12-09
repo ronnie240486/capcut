@@ -1,4 +1,3 @@
-
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -350,9 +349,23 @@ app.post('/api/process/start/:action', (req, res) => {
         jobs[jobId] = { status: 'pending', files, params: req.body };
         res.status(202).json({ jobId });
 
-        if (action === 'script-to-video') processScriptToVideoJob(jobId);
-        else if (action === 'viral-cuts') processViralCutsJob(jobId);
-        else processSingleClipJob(jobId);
+        // IMPORTANT: Catch sync errors during job init to prevent server crash
+        try {
+            if (action === 'script-to-video') processScriptToVideoJob(jobId);
+            else if (action === 'viral-cuts') processViralCutsJob(jobId);
+            else {
+                // Ensure async rejection is caught
+                processSingleClipJob(jobId).catch(e => {
+                    console.error(`[Job ${jobId}] Async Error:`, e);
+                    jobs[jobId].status = 'failed';
+                    jobs[jobId].error = e.message || "Internal Process Error";
+                });
+            }
+        } catch (e) {
+            console.error(`[Job ${jobId}] Sync Error:`, e);
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = e.message;
+        }
     });
 });
 
@@ -1014,11 +1027,8 @@ async function processSingleClipJob(jobId) {
                  args.push('-shortest'); // Important so video stops at 5s (duration of -t)
              } else {
                  args.push('-map', '0:a?');
-                 // USE COPY instead of transcoding to prevent errors if audio stream is missing or broken
-                 // 'copy' is robust; if 0:a doesn't exist, it won't be mapped to output because of '?' in map
-                 // but explicit -c:a might throw if no stream is selected.
-                 // Safer approach: attempt AAC but if input has no audio, ffmpeg usually warns.
-                 args.push('-c:a', 'copy'); 
+                 // USE AAC instead of COPY to prevent container errors if source audio codec is incompatible with MP4
+                 args.push('-c:a', 'aac'); 
              }
 
              args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p');
