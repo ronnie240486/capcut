@@ -964,51 +964,56 @@ async function processSingleClipJob(jobId) {
                  args.push('-loop', '1');
                  args.push('-i', videoFile.path);
                  args.push('-t', '5');
-                 // Generate silent audio for image inputs to keep format consistent
+                 // Ensure an audio stream exists for the container if we map it later
+                 // The easiest way is to use lavfi for audio source
                  args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
              } else {
                  args.push('-i', videoFile.path);
              }
 
-             // Standardize resolution to avoid overlay size mismatch errors
-             const scaleFilter = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1";
+             // Fixed resolution for effects to ensure overlay compatibility
+             const w = 1280;
+             const h = 720;
+             // Scale input to fit box, keeping aspect ratio, pad with black
+             const scaleFilter = `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+             
              let fc = "";
 
              if (pType === 'rain') {
-                 // Create base video [base], create noise [noise], overlay noise on base
+                 // Alpha handling via colorchannelmixer is more compatible than overlay alpha=...
                  fc = `[0:v]${scaleFilter}[base];` +
-                      `nullsrc=s=1280x720[canvas];` +
-                      `[canvas]noise=alls=30:allf=t+u[noise];` + // Stronger noise for rain effect
-                      `[base][noise]overlay=shortest=1:format=auto:alpha=0.6[outv]`; // Simple semi-transparent overlay
+                      `nullsrc=s=${w}x${h}[canvas];` +
+                      `[canvas]noise=alls=30:allf=t+u,format=yuva420p,colorchannelmixer=aa=0.5[noise];` +
+                      `[base][noise]overlay=shortest=1:format=auto[outv]`;
              } else if (pType === 'snow') {
-                 // Pixelated noise for snow
                  fc = `[0:v]${scaleFilter}[base];` +
-                      `nullsrc=s=1280x720[canvas];` +
-                      `[canvas]noise=alls=100:allf=t+u,scale=iw*.1:ih*.1:flags=neighbor,scale=iw*10:ih*10:flags=neighbor[snow];` +
-                      `[base][snow]overlay=shortest=1:format=auto:alpha=0.5[outv]`;
+                      `nullsrc=s=${w}x${h}[canvas];` +
+                      `[canvas]noise=alls=100:allf=t+u,scale=iw*.1:ih*.1:flags=neighbor,scale=iw*10:ih*10:flags=neighbor,format=yuva420p,colorchannelmixer=aa=0.5[snow];` +
+                      `[base][snow]overlay=shortest=1:format=auto[outv]`;
              } else if (pType === 'old_film') {
-                 // B&W, Grain, Vignette
                  fc = `[0:v]${scaleFilter},eq=saturation=0:contrast=1.1[bw];` +
-                      `nullsrc=s=1280x720[canvas];` +
-                      `[canvas]noise=alls=20:allf=t+u[grain];` +
-                      `[bw][grain]overlay=shortest=1:format=auto:alpha=0.3[grained];` +
+                      `nullsrc=s=${w}x${h}[canvas];` +
+                      `[canvas]noise=alls=20:allf=t+u,format=yuva420p,colorchannelmixer=aa=0.3[grain];` +
+                      `[bw][grain]overlay=shortest=1:format=auto[grained];` +
                       `[grained]vignette=PI/4[outv]`;
              } else if (pType === 'nightclub') {
-                 // Color cycling
                  fc = `[0:v]${scaleFilter},hue=H=2*PI*t:s=sin(2*PI*t)+1[outv]`;
+             } else {
+                 // Fallback
+                 fc = `[0:v]${scaleFilter}[outv]`;
              }
 
              args.push('-filter_complex', fc);
              args.push('-map', '[outv]');
 
-             // Audio Mapping
              if (inputIsImage) {
-                 args.push('-map', '1:a');
+                 // Use the silent audio generated from input 1
+                 args.push('-map', '1:a'); 
                  args.push('-c:a', 'aac');
-                 args.push('-shortest');
+                 args.push('-shortest'); // Important so video stops at 5s (duration of -t)
              } else {
-                 args.push('-map', '0:a?'); // Use audio from input 0 if available
-                 args.push('-c:a', 'aac'); // Re-encode to ensure compatibility with filtered video
+                 args.push('-map', '0:a?');
+                 args.push('-c:a', 'aac');
              }
 
              args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p');
