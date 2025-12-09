@@ -1,3 +1,4 @@
+
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -74,7 +75,6 @@ const getStyleFilter = (styleId) => {
     // Common building blocks
     const edge = "edgedetect=mode=colormix:high=0"; 
     const cartoon = "median=3,unsharp=5:5:1.0:5:5:0.0"; 
-    const paint = "avgblur=3,unsharp=5:5:2"; 
     
     switch (styleId) {
         // --- REALISMO & HDR ---
@@ -453,7 +453,7 @@ async function processSingleClipJob(jobId) {
     if (['extract-audio-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real', 'voice-fx-real', 'voice-clone'].includes(action)) outputExtension = '.wav';
     
     // WebM for transparency support in video, PNG for image rotoscope
-    if (action === 'rotoscope-real') {
+    if (['rotoscope-real', 'remove-bg-real'].includes(action)) {
         outputExtension = inputIsImage ? '.png' : '.webm';
     }
 
@@ -482,6 +482,27 @@ async function processSingleClipJob(jobId) {
              } else {
                  // For video input, output WebM with alpha
                  args.push('-c:v', 'libvpx-vp9', '-b:v', '2M'); 
+                 args.push('-auto-alt-ref', '0');
+                 args.push('-c:a', 'libvorbis');
+             }
+             args.push(outputPath);
+             break;
+        }
+
+        case 'remove-bg-real': {
+             // Fallback to chroma keying for video "background removal" without AI model
+             const color = params.color ? params.color.replace('#', '0x') : '0x00FF00'; 
+             const similarity = params.similarity || 0.3;
+             const smoothness = params.smoothness || 0.1;
+             
+             args.push('-i', videoFile.path);
+             args.push('-vf', `chromakey=${color}:${similarity}:${smoothness}`);
+             
+             if (outputExtension === '.png') {
+                 args.push('-c:v', 'png');
+                 args.push('-f', 'image2');
+             } else {
+                 args.push('-c:v', 'libvpx-vp9', '-b:v', '2M');
                  args.push('-auto-alt-ref', '0');
                  args.push('-c:a', 'libvorbis');
              }
@@ -938,33 +959,59 @@ async function processSingleClipJob(jobId) {
 
         case 'particles-real':
              const pType = params.type || 'rain';
-             
+
              if (inputIsImage) {
                  args.push('-loop', '1');
-                 args.push('-t', '5');
                  args.push('-i', videoFile.path);
+                 args.push('-t', '5');
+                 // Generate silent audio for image inputs to keep format consistent
+                 args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
              } else {
                  args.push('-i', videoFile.path);
              }
 
-             let filterComplex = "";
+             // Standardize resolution to avoid overlay size mismatch errors
+             const scaleFilter = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1";
+             let fc = "";
+
              if (pType === 'rain') {
-                 filterComplex = `nullsrc=size=1280x720[glass];noise=alls=20:allf=t+u[noise];[glass][noise]overlay=format=auto,geq=r='if(gt(random(1),0.98),255,0)':g='if(gt(random(1),0.98),255,0)':b='if(gt(random(1),0.98),255,0)'[rain];[0:v]scale=1280:720[base];[base][rain]overlay`;
+                 // Create base video [base], create noise [noise], overlay noise on base
+                 fc = `[0:v]${scaleFilter}[base];` +
+                      `nullsrc=s=1280x720[canvas];` +
+                      `[canvas]noise=alls=30:allf=t+u[noise];` + // Stronger noise for rain effect
+                      `[base][noise]overlay=shortest=1:format=auto:alpha=0.6[outv]`; // Simple semi-transparent overlay
              } else if (pType === 'snow') {
-                 filterComplex = `nullsrc=size=1280x720[glass];noise=alls=100:allf=t+u[noise];[glass][noise]overlay,scale=iw*0.1:ih*0.1,scale=iw*10:ih*10:flags=neighbor[snow];[0:v]scale=1280:720[base];[base][snow]overlay=format=auto:shortest=1`;
+                 // Pixelated noise for snow
+                 fc = `[0:v]${scaleFilter}[base];` +
+                      `nullsrc=s=1280x720[canvas];` +
+                      `[canvas]noise=alls=100:allf=t+u,scale=iw*.1:ih*.1:flags=neighbor,scale=iw*10:ih*10:flags=neighbor[snow];` +
+                      `[base][snow]overlay=shortest=1:format=auto:alpha=0.5[outv]`;
              } else if (pType === 'old_film') {
-                 filterComplex = `[0:v]eq=saturation=0[bw];nullsrc=size=1280x720[glass];noise=alls=20:allf=t+u[noise];[bw][noise]overlay=shortest=1[grain];[grain]vignette=PI/4[outv]`;
+                 // B&W, Grain, Vignette
+                 fc = `[0:v]${scaleFilter},eq=saturation=0:contrast=1.1[bw];` +
+                      `nullsrc=s=1280x720[canvas];` +
+                      `[canvas]noise=alls=20:allf=t+u[grain];` +
+                      `[bw][grain]overlay=shortest=1:format=auto:alpha=0.3[grained];` +
+                      `[grained]vignette=PI/4[outv]`;
              } else if (pType === 'nightclub') {
-                 args.push('-vf', 'hue=H=2*PI*t:s=sin(2*PI*t)+1');
+                 // Color cycling
+                 fc = `[0:v]${scaleFilter},hue=H=2*PI*t:s=sin(2*PI*t)+1[outv]`;
              }
 
-             if (pType !== 'nightclub') {
-                 args.push('-filter_complex', filterComplex);
-                 if (pType === 'old_film') args.push('-map', '[outv]');
+             args.push('-filter_complex', fc);
+             args.push('-map', '[outv]');
+
+             // Audio Mapping
+             if (inputIsImage) {
+                 args.push('-map', '1:a');
+                 args.push('-c:a', 'aac');
+                 args.push('-shortest');
+             } else {
+                 args.push('-map', '0:a?'); // Use audio from input 0 if available
+                 args.push('-c:a', 'aac'); // Re-encode to ensure compatibility with filtered video
              }
-             
+
              args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p');
-             if (!inputIsImage) args.push('-c:a', 'copy');
              args.push(outputPath);
              break;
 
