@@ -1,12 +1,10 @@
-
+// Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const { spawn, exec } = require('child_process');
-
-const __dirname = path.resolve();
 
 // Inicializa a aplicação Express
 const app = express();
