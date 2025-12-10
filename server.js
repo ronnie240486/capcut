@@ -1,13 +1,12 @@
-import express from 'express';
-import cors from 'cors';
-import multer from 'multer';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { spawn, exec } from 'child_process';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const fs = require('fs');
+const path = require('path');
+const { spawn, exec } = require('child_process');
+
+const __dirname = path.resolve();
 
 // Inicializa a aplicação Express
 const app = express();
