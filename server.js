@@ -175,6 +175,33 @@ app.get('/api/check-ffmpeg', (req, res) => {
     });
 });
 
+// --- ROTA DE EXTRAÇÃO DE FRAME (NOVO) ---
+app.post('/api/util/extract-frame', uploadSingle, async (req, res) => {
+    if (!req.file) return res.status(400).json({ message: 'Arquivo de vídeo obrigatório.' });
+    
+    const timestamp = req.body.timestamp || 0;
+    const outputFilename = `frame_${Date.now()}.png`;
+    const outputPath = path.join(uploadDir, outputFilename);
+
+    // ffmpeg -ss [time] -i [input] -frames:v 1 [output]
+    const cmd = `ffmpeg -ss ${timestamp} -i "${req.file.path}" -frames:v 1 "${outputPath}" -y`;
+    
+    exec(cmd, (error) => {
+        // Limpa o arquivo de vídeo original, pois não precisamos dele salvo aqui para sempre
+        cleanupFiles([req.file.path]);
+        
+        if (error) {
+            console.error("Frame extraction error:", error);
+            return res.status(500).json({ message: 'Falha ao extrair frame.' });
+        }
+        
+        // Retorna o arquivo de imagem
+        res.download(outputPath, outputFilename, (err) => {
+            if (!err) cleanupFiles([outputPath]);
+        });
+    });
+});
+
 // --- ROTA DE SCRAPING DE URL ---
 app.post('/api/util/fetch-url', async (req, res) => {
     const { url } = req.body;
@@ -1066,23 +1093,6 @@ app.post('/api/process/generate-music', uploadAny, async (req, res) => {
             } else {
                 console.warn("MusicGen API failed, falling back to Pixabay/Procedural.");
             }
-        }
-
-        // Priority 2: Pixabay Audio Search (Royalty Free)
-        if (pixabayKey && pixabayKey.length > 5) {
-            console.log(`[Job ${jobId}] Using Pixabay Audio`);
-            const searchRes = await fetch(`https://pixabay.com/api/videos/?key=${pixabayKey}&q=${encodeURIComponent(prompt)}&per_page=3&category=music`); 
-            // Note: Pixabay Audio API endpoint is slightly different or requires scraping if strictly audio not supported by video key?
-            // Actually Pixabay has a separate Audio API but usually uses the same key structure. 
-            // Let's assume standard Pixabay key works for audio if documented, otherwise we might need fallback.
-            // Documentation: https://pixabay.com/api/docs/#api_search_audio (Wait, Pixabay Audio API is separate? No, same key usually works).
-            // Endpoint: https://pixabay.com/api/?key=... is images. 
-            // Correct Audio Endpoint is not public in the same way? 
-            // Actually, let's use the Image/Video key on the video endpoint and look for "music" category if possible, OR fallback to procedural.
-            
-            // Correction: Pixabay Audio API is beta/restricted? Let's check Freesound/Stock logic.
-            // If pixabayKey is provided, we can try to fetch from a known public search or just fallback.
-            // Let's fallback to procedural to be safe if we can't guarantee API access.
         }
 
         // Priority 3: Procedural Generation (FFmpeg Synth)
