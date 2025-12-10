@@ -1,10 +1,14 @@
-// Importa os módulos necessários
-const express = require('express');
-const cors = require('cors');
-const multer = require('multer');
-const fs = require('fs');
-const path = require('path');
-const { spawn, exec } = require('child_process');
+
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { spawn, exec } from 'child_process';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Inicializa a aplicação Express
 const app = express();
@@ -74,6 +78,7 @@ const getStyleFilter = (styleId) => {
     // Common building blocks
     const edge = "edgedetect=mode=colormix:high=0"; 
     const cartoon = "median=3,unsharp=5:5:1.0:5:5:0.0"; 
+    const paint = "avgblur=3,unsharp=5:5:2"; 
     
     switch (styleId) {
         // --- REALISMO & HDR ---
@@ -349,23 +354,9 @@ app.post('/api/process/start/:action', (req, res) => {
         jobs[jobId] = { status: 'pending', files, params: req.body };
         res.status(202).json({ jobId });
 
-        // IMPORTANT: Catch sync errors during job init to prevent server crash
-        try {
-            if (action === 'script-to-video') processScriptToVideoJob(jobId);
-            else if (action === 'viral-cuts') processViralCutsJob(jobId);
-            else {
-                // Ensure async rejection is caught
-                processSingleClipJob(jobId).catch(e => {
-                    console.error(`[Job ${jobId}] Async Error:`, e);
-                    jobs[jobId].status = 'failed';
-                    jobs[jobId].error = e.message || "Internal Process Error";
-                });
-            }
-        } catch (e) {
-            console.error(`[Job ${jobId}] Sync Error:`, e);
-            jobs[jobId].status = 'failed';
-            jobs[jobId].error = e.message;
-        }
+        if (action === 'script-to-video') processScriptToVideoJob(jobId);
+        else if (action === 'viral-cuts') processViralCutsJob(jobId);
+        else processSingleClipJob(jobId);
     });
 });
 
@@ -466,13 +457,8 @@ async function processSingleClipJob(jobId) {
     if (['extract-audio-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real', 'voice-fx-real', 'voice-clone'].includes(action)) outputExtension = '.wav';
     
     // WebM for transparency support in video, PNG for image rotoscope
-    if (['rotoscope-real', 'remove-bg-real'].includes(action)) {
+    if (action === 'rotoscope-real') {
         outputExtension = inputIsImage ? '.png' : '.webm';
-    }
-    
-    // FORCED OVERRIDE: Particles on image MUST produce video
-    if (['particles-real'].includes(action) && inputIsImage) {
-        outputExtension = '.mp4';
     }
 
     const outputFilename = `${action}-${Date.now()}${outputExtension}`;
@@ -500,28 +486,6 @@ async function processSingleClipJob(jobId) {
              } else {
                  // For video input, output WebM with alpha
                  args.push('-c:v', 'libvpx-vp9', '-b:v', '2M'); 
-                 args.push('-auto-alt-ref', '0');
-                 args.push('-c:a', 'libvorbis');
-             }
-             args.push(outputPath);
-             break;
-        }
-
-        case 'remove-bg-real': {
-             // Fallback to chroma keying for video "background removal" without AI model
-             const color = params.color ? params.color.replace('#', '0x') : '0x00FF00'; 
-             const similarity = params.similarity || 0.3;
-             const smoothness = params.smoothness || 0.1;
-             
-             args.push('-i', videoFile.path);
-             args.push('-vf', `chromakey=${color}:${similarity}:${smoothness}`);
-             
-             if (outputExtension === '.png') {
-                 args.push('-c:v', 'png');
-                 args.push('-f', 'image2');
-             } else {
-                 // Important: Output transparency for video requires WebM VP9/8 or ProRes
-                 args.push('-c:v', 'libvpx-vp9', '-b:v', '2M');
                  args.push('-auto-alt-ref', '0');
                  args.push('-c:a', 'libvorbis');
              }
@@ -978,68 +942,33 @@ async function processSingleClipJob(jobId) {
 
         case 'particles-real':
              const pType = params.type || 'rain';
-
-             if (inputIsImage) {
-                 // IMAGE INPUT: LOOP IT AND CREATE AUDIO
-                 args.push('-loop', '1');
-                 args.push('-i', videoFile.path);
-                 args.push('-t', '5'); // Create 5s video
-                 // Generate silent audio
-                 args.push('-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-             } else {
-                 // VIDEO INPUT
-                 args.push('-i', videoFile.path);
-             }
-
-             // Fixed resolution for effects to ensure overlay compatibility
-             const w = 1280;
-             const h = 720;
-             // Scale input to fit box, keeping aspect ratio, pad with black
-             const scaleFilter = `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
              
-             let fc = "";
-
-             if (pType === 'rain') {
-                 // Alpha handling via colorchannelmixer is more compatible than overlay alpha=...
-                 fc = `[0:v]${scaleFilter}[base];` +
-                      `nullsrc=s=${w}x${h}[canvas];` +
-                      `[canvas]noise=alls=30:allf=t+u,format=yuva420p,colorchannelmixer=aa=0.5[noise];` +
-                      `[base][noise]overlay=shortest=1:format=auto[outv]`;
-             } else if (pType === 'snow') {
-                 fc = `[0:v]${scaleFilter}[base];` +
-                      `nullsrc=s=${w}x${h}[canvas];` +
-                      `[canvas]noise=alls=100:allf=t+u,scale=iw*.1:ih*.1:flags=neighbor,scale=iw*10:ih*10:flags=neighbor,format=yuva420p,colorchannelmixer=aa=0.5[snow];` +
-                      `[base][snow]overlay=shortest=1:format=auto[outv]`;
-             } else if (pType === 'old_film') {
-                 fc = `[0:v]${scaleFilter},eq=saturation=0:contrast=1.1[bw];` +
-                      `nullsrc=s=${w}x${h}[canvas];` +
-                      `[canvas]noise=alls=20:allf=t+u,format=yuva420p,colorchannelmixer=aa=0.3[grain];` +
-                      `[bw][grain]overlay=shortest=1:format=auto[grained];` +
-                      `[grained]vignette=PI/4[outv]`;
-             } else if (pType === 'nightclub') {
-                 fc = `[0:v]${scaleFilter},hue=H=2*PI*t:s=sin(2*PI*t)+1[outv]`;
-             } else {
-                 // Fallback
-                 fc = `[0:v]${scaleFilter}[outv]`;
-             }
-
-             args.push('-filter_complex', fc);
-             args.push('-map', '[outv]');
-
              if (inputIsImage) {
-                 // Use the silent audio generated from input 1
-                 args.push('-map', '1:a'); 
-                 args.push('-c:a', 'aac');
-                 args.push('-shortest'); // Important so video stops at 5s (duration of -t)
+                 args.push('-loop', '1');
+                 args.push('-t', '5');
+                 args.push('-i', videoFile.path);
              } else {
-                 // Try to map original audio, but if missing, standard AAC might just produce silent track or ignore
-                 // Better: use -map 0:a? to optionally map audio
-                 args.push('-map', '0:a?');
-                 // USE AAC instead of COPY to prevent container errors if source audio codec is incompatible with MP4
-                 args.push('-c:a', 'aac'); 
+                 args.push('-i', videoFile.path);
              }
 
+             let filterComplex = "";
+             if (pType === 'rain') {
+                 filterComplex = `nullsrc=size=1280x720[glass];noise=alls=20:allf=t+u[noise];[glass][noise]overlay=format=auto,geq=r='if(gt(random(1),0.98),255,0)':g='if(gt(random(1),0.98),255,0)':b='if(gt(random(1),0.98),255,0)'[rain];[0:v]scale=1280:720[base];[base][rain]overlay`;
+             } else if (pType === 'snow') {
+                 filterComplex = `nullsrc=size=1280x720[glass];noise=alls=100:allf=t+u[noise];[glass][noise]overlay,scale=iw*0.1:ih*0.1,scale=iw*10:ih*10:flags=neighbor[snow];[0:v]scale=1280:720[base];[base][snow]overlay=format=auto:shortest=1`;
+             } else if (pType === 'old_film') {
+                 filterComplex = `[0:v]eq=saturation=0[bw];nullsrc=size=1280x720[glass];noise=alls=20:allf=t+u[noise];[bw][noise]overlay=shortest=1[grain];[grain]vignette=PI/4[outv]`;
+             } else if (pType === 'nightclub') {
+                 args.push('-vf', 'hue=H=2*PI*t:s=sin(2*PI*t)+1');
+             }
+
+             if (pType !== 'nightclub') {
+                 args.push('-filter_complex', filterComplex);
+                 if (pType === 'old_film') args.push('-map', '[outv]');
+             }
+             
              args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p');
+             if (!inputIsImage) args.push('-c:a', 'copy');
              args.push(outputPath);
              break;
 
