@@ -1,3 +1,4 @@
+
 // Importa os módulos necessários
 const express = require('express');
 const cors = require('cors');
@@ -283,13 +284,23 @@ function processExportJob(jobId) {
     job.status = "processing"; job.progress = 0;
     try {
         const { files, projectState } = job;
-        const { clips, totalDuration, media, projectAspectRatio } = projectState;
-        const aspectRatio = projectAspectRatio || '16:9';
-        let width = 1280, height = 720;
-        if (aspectRatio === '9:16') { width = 720; height = 1280; }
-        else if (aspectRatio === '1:1') { width = 1080; height = 1080; }
+        const { clips, totalDuration, media, projectAspectRatio, currentPlayheadTime, exportConfig } = projectState;
         
-        const commandArgs = []; const fileMap = {};
+        // --- 1. DETERMINE EXPORT SETTINGS ---
+        const config = exportConfig || { type: 'video', format: 'mp4', resolution: '1080p', fps: 30, filename: 'video' };
+        
+        // Resolution Logic
+        let width = 1920, height = 1080;
+        if (config.type === 'video') {
+            if (config.resolution === '4k') { width = 3840; height = 2160; }
+            else if (config.resolution === '720p') { width = 1280; height = 720; }
+            // If aspect ratio is vertical/square, flip or adjust
+            if (projectAspectRatio === '9:16') { const tmp = width; width = height; height = tmp; }
+            else if (projectAspectRatio === '1:1') { width = height; } // Keep height as ref
+        }
+
+        const commandArgs = []; 
+        const fileMap = {};
         files.forEach(file => {
             const mediaInfo = media[file.originalname];
             if (mediaInfo?.type === "image") commandArgs.push("-loop", "1");
@@ -297,11 +308,27 @@ function processExportJob(jobId) {
             fileMap[file.originalname] = commandArgs.filter(arg => arg === "-i").length - 1;
         });
 
+        const outputPath = path.join(uploadDir, `${config.filename || jobId}.${config.format}`);
+        job.outputPath = outputPath;
+
+        // --- 2. BUILD FILTER GRAPH ---
         let filterChains = [];
         const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
-        const videoAndLayerClips = clips.filter(c => c.track === 'video' || c.track === 'camada');
+        const videoAndLayerClips = clips.filter(c => c.track === 'video' || c.track === 'camada' || c.track === 'text' || c.track === 'subtitle');
         
+        // Image Export Logic (Single Frame)
+        if (config.type === 'image') {
+            // We need to render the frame at 'currentPlayheadTime'
+            // We can reuse the video rendering logic but restrict duration to 1 frame using -ss and -vframes
+            // However, filters must still be built
+        }
+
         videoAndLayerClips.forEach((clip, vIdx) => {
+            // NOTE: Text handling server-side is complex. Currently ignored in this simple implementation unless using drawtext (hard). 
+            // Assuming visual clips have file backing. Text clips usually skipped here or require complex drawtext filter gen.
+            // For this demo, we skip text rendering on backend unless we implemented drawtext generation.
+            if (clip.type === 'text' || clip.type === 'subtitle') return; 
+
             const inputIndex = fileMap[clip.fileName];
             if (inputIndex === undefined) return;
             let clipSpecificFilters = [];
@@ -319,12 +346,14 @@ function processExportJob(jobId) {
         });
 
         let videoChain = `color=s=${width}x${height}:c=black:d=${totalDuration}[base]`;
-        if (videoAndLayerClips.length > 0) {
+        let validVisuals = videoAndLayerClips.filter(c => c.type !== 'text' && c.type !== 'subtitle' && fileMap[c.fileName] !== undefined);
+        
+        if (validVisuals.length > 0) {
             let prevOverlay = "[base]";
-            videoAndLayerClips.forEach((clip, idx) => {
-                const isLast = idx === videoAndLayerClips.length - 1;
+            validVisuals.forEach((clip, idx) => {
+                const isLast = idx === validVisuals.length - 1;
                 const nextOverlay = isLast ? "[outv]" : `[ov${idx}]`;
-                const vIdx = videoAndLayerClips.indexOf(clip);
+                const vIdx = idx; // simplified mapping
                 videoChain += `;${prevOverlay}[v${vIdx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
                 prevOverlay = nextOverlay;
             });
@@ -345,20 +374,68 @@ function processExportJob(jobId) {
             filterChains.push(`${mixed.join("")}amix=inputs=${mixed.length}:dropout_transition=3[outa]`);
         }
 
-        const outputPath = path.join(uploadDir, `${jobId}.mp4`);
-        job.outputPath = outputPath;
-        if (audioClips.length === 0) commandArgs.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
-        commandArgs.push("-filter_complex", filterChains.join(";"), "-map", "[outv]");
-        if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
-        else { const silentIndex = files.length; commandArgs.push("-map", `${silentIndex}:a`); }
-        commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30", "-threads", "2", "-progress", "pipe:1", "-t", totalDuration, outputPath);
+        // --- 3. CONSTRUCT COMMAND ---
+        if (audioClips.length === 0 && config.type !== 'image') commandArgs.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
+        
+        commandArgs.push("-filter_complex", filterChains.join(";"));
+
+        // MAP STREAMS
+        if (config.type === 'audio') {
+             // Audio Only Export
+             if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
+             else { const silentIndex = files.length; commandArgs.push("-map", `${silentIndex}:a`); }
+        } else {
+             // Video/Image Export
+             commandArgs.push("-map", "[outv]");
+             if (config.type !== 'image') {
+                 if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
+                 else { const silentIndex = files.length; commandArgs.push("-map", `${silentIndex}:a`); }
+             }
+        }
+
+        // --- 4. FORMAT SPECIFIC FLAGS ---
+        if (config.type === 'image') {
+            // PNG Snapshot logic
+            commandArgs.push("-ss", `${currentPlayheadTime || 0}`);
+            commandArgs.push("-frames:v", "1");
+            commandArgs.push("-c:v", "png");
+        } else if (config.type === 'audio') {
+            if (config.format === 'mp3') {
+                commandArgs.push("-c:a", "libmp3lame", "-b:a", "192k");
+            } else if (config.format === 'wav') {
+                commandArgs.push("-c:a", "pcm_s16le");
+            } else if (config.format === 'm4a' || config.format === 'mp4') {
+                commandArgs.push("-c:a", "aac", "-b:a", "192k");
+            }
+            commandArgs.push("-vn"); // No video
+        } else {
+            // Video Export
+            commandArgs.push("-r", `${config.fps || 30}`);
+            
+            if (config.format === 'mp4' || config.format === 'mov') {
+                commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "veryfast", "-pix_fmt", "yuv420p");
+                if (config.format === 'mov') commandArgs.push("-f", "mov");
+            } else if (config.format === 'webm') {
+                commandArgs.push("-c:v", "libvpx-vp9", "-c:a", "libvorbis", "-b:v", "2M"); // Basic WebM settings
+            }
+            
+            // Limit duration
+            commandArgs.push("-t", totalDuration);
+        }
+
+        commandArgs.push("-y", outputPath);
 
         const ffmpegProcess = spawn("ffmpeg", commandArgs);
+        
+        ffmpegProcess.stderr.on('data', (data) => console.log(`FFmpeg: ${data}`));
+
         ffmpegProcess.on("close", code => {
             if (code !== 0) { job.status = "failed"; job.error = "Falha no FFmpeg."; }
             else { job.status = "completed"; job.progress = 100; job.downloadUrl = `/api/export/download/${jobId}`; }
         });
-    } catch (err) { job.status = "failed"; job.error = err.message; }
+    } catch (err) { 
+        job.status = "failed"; job.error = err.message; 
+    }
 }
 
 app.post('/api/process/start/:action', (req, res) => {
