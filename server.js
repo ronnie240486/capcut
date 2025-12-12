@@ -335,7 +335,11 @@ function processExportJob(jobId) {
             const adj = clip.properties.adjustments;
             if (adj) {
                 const ffmpegBrightness = (adj.brightness || 1.0) - 1.0;
-                clipSpecificFilters.push(`eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}:hue=${(adj.hue || 0) * (Math.PI/180)}`);
+                // FIX: 'eq' filter does not support 'hue'. Use separate 'hue' filter.
+                clipSpecificFilters.push(`eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}`);
+                if (adj.hue && adj.hue !== 0) {
+                    clipSpecificFilters.push(`hue=h=${adj.hue}`);
+                }
             }
             if (clip.properties.mirror) clipSpecificFilters.push('hflip');
             const speed = clip.properties.speed || 1;
