@@ -1,11 +1,13 @@
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
+import { spawn, exec } from 'child_process';
+import { fileURLToPath } from 'url';
 
-// Importa os módulos necessários
-const express = require('express');
-const cors = require('cors');
-const multer = require('multer');
-const fs = require('fs');
-const path = require('path');
-const { spawn, exec } = require('child_process');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Inicializa a aplicação Express
 const app = express();
@@ -27,15 +29,21 @@ app.use((req, res, next) => {
   res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
   next();
 });
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '500mb' }));
+app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 
 // --- Configuração do Multer ---
-const uploadDir = 'uploads';
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+// Serve static files from uploads
+app.use('/uploads', express.static(uploadDir));
+
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
-    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s/g, '_')}`)
+    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`)
 });
+
 // Middleware de upload para diferentes cenários
 const uploadSingle = multer({ storage: storage }).single('video');
 const uploadAudio = multer({ storage: storage }).single('audio'); 
@@ -44,12 +52,11 @@ const uploadFields = multer({ storage: storage }).fields([
     { name: 'style', maxCount: 1 },
     { name: 'audio', maxCount: 1 }
 ]);
-// INCREASE LIMITS FOR ANY UPLOAD TO SUPPORT LARGE PROJECT STATE
 const uploadAny = multer({ 
     storage: storage,
     limits: { 
-        fieldSize: 100 * 1024 * 1024, // 100MB for text fields (projectState)
-        fileSize: 5 * 1024 * 1024 * 1024 // 5GB for files
+        fieldSize: 500 * 1024 * 1024, // 500MB limit for text fields
+        fileSize: 10 * 1024 * 1024 * 1024 // 10GB limit for files
     } 
 }).any();
 
@@ -59,6 +66,7 @@ const jobs = {};
 
 // --- Funções Auxiliares ---
 const cleanupFiles = (files) => {
+    if (!files) return;
     files.forEach(file => {
         if (file && file.path && fs.existsSync(file.path)) fs.unlink(file.path, () => {});
         else if (typeof file === 'string' && fs.existsSync(file)) fs.unlink(file, () => {});
@@ -70,12 +78,11 @@ const isImage = (filename) => {
     return ['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff'].includes(ext);
 };
 
-// --- HELPER: Get Style Filter Chain (EXPANDED & FIXED) ---
+// --- HELPER: Get Style Filter Chain ---
 const getStyleFilter = (styleId) => {
     // Common building blocks
     const edge = "edgedetect=mode=colormix:high=0"; 
     const cartoon = "median=3,unsharp=5:5:1.0:5:5:0.0"; 
-    const paint = "avgblur=3,unsharp=5:5:2"; 
     
     switch (styleId) {
         // --- REALISMO & HDR ---
@@ -176,7 +183,7 @@ app.get('/api/check-ffmpeg', (req, res) => {
     });
 });
 
-// --- ROTA DE EXTRAÇÃO DE FRAME (NOVO) ---
+// --- ROTA DE EXTRAÇÃO DE FRAME ---
 app.post('/api/util/extract-frame', uploadSingle, async (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'Arquivo de vídeo obrigatório.' });
     
@@ -184,11 +191,9 @@ app.post('/api/util/extract-frame', uploadSingle, async (req, res) => {
     const outputFilename = `frame_${Date.now()}.png`;
     const outputPath = path.join(uploadDir, outputFilename);
 
-    // ffmpeg -ss [time] -i [input] -frames:v 1 [output]
     const cmd = `ffmpeg -ss ${timestamp} -i "${req.file.path}" -frames:v 1 "${outputPath}" -y`;
     
     exec(cmd, (error) => {
-        // Limpa o arquivo de vídeo original, pois não precisamos dele salvo aqui para sempre
         cleanupFiles([req.file.path]);
         
         if (error) {
@@ -196,7 +201,6 @@ app.post('/api/util/extract-frame', uploadSingle, async (req, res) => {
             return res.status(500).json({ message: 'Falha ao extrair frame.' });
         }
         
-        // Retorna o arquivo de imagem
         res.download(outputPath, outputFilename, (err) => {
             if (!err) cleanupFiles([outputPath]);
         });
@@ -221,7 +225,7 @@ app.post('/api/util/fetch-url', async (req, res) => {
                     title = data.title;
                     author = data.author_name;
                 }
-                const pageRes = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' } });
+                const pageRes = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
                 const html = await pageRes.text();
                 let description = "";
                 const descMatch = html.match(/<meta name="description" content="([^"]*)"/i);
@@ -232,9 +236,7 @@ app.post('/api/util/fetch-url', async (req, res) => {
                 console.warn("YouTube Fetch partial failure, falling back to generic.", ytErr);
             }
         }
-        const response = await fetch(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
-        });
+        const response = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
         if (!response.ok) throw new Error(`Falha ao acessar URL: ${response.status}`);
         const html = await response.text();
         let text = html.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gim, "").replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gim, "");
@@ -316,17 +318,7 @@ function processExportJob(jobId) {
         const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
         const videoAndLayerClips = clips.filter(c => c.track === 'video' || c.track === 'camada' || c.track === 'text' || c.track === 'subtitle');
         
-        // Image Export Logic (Single Frame)
-        if (config.type === 'image') {
-            // We need to render the frame at 'currentPlayheadTime'
-            // We can reuse the video rendering logic but restrict duration to 1 frame using -ss and -vframes
-            // However, filters must still be built
-        }
-
         videoAndLayerClips.forEach((clip, vIdx) => {
-            // NOTE: Text handling server-side is complex. Currently ignored in this simple implementation unless using drawtext (hard). 
-            // Assuming visual clips have file backing. Text clips usually skipped here or require complex drawtext filter gen.
-            // For this demo, we skip text rendering on backend unless we implemented drawtext generation.
             if (clip.type === 'text' || clip.type === 'subtitle') return; 
 
             const inputIndex = fileMap[clip.fileName];
@@ -335,7 +327,6 @@ function processExportJob(jobId) {
             const adj = clip.properties.adjustments;
             if (adj) {
                 const ffmpegBrightness = (adj.brightness || 1.0) - 1.0;
-                // FIX: 'eq' filter does not support 'hue'. Use separate 'hue' filter.
                 clipSpecificFilters.push(`eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}`);
                 if (adj.hue && adj.hue !== 0) {
                     clipSpecificFilters.push(`hue=h=${adj.hue}`);
@@ -383,13 +374,10 @@ function processExportJob(jobId) {
         
         commandArgs.push("-filter_complex", filterChains.join(";"));
 
-        // MAP STREAMS
         if (config.type === 'audio') {
-             // Audio Only Export
              if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
              else { const silentIndex = files.length; commandArgs.push("-map", `${silentIndex}:a`); }
         } else {
-             // Video/Image Export
              commandArgs.push("-map", "[outv]");
              if (config.type !== 'image') {
                  if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
@@ -399,7 +387,6 @@ function processExportJob(jobId) {
 
         // --- 4. FORMAT SPECIFIC FLAGS ---
         if (config.type === 'image') {
-            // PNG Snapshot logic
             commandArgs.push("-ss", `${currentPlayheadTime || 0}`);
             commandArgs.push("-frames:v", "1");
             commandArgs.push("-c:v", "png");
@@ -411,28 +398,24 @@ function processExportJob(jobId) {
             } else if (config.format === 'm4a' || config.format === 'mp4') {
                 commandArgs.push("-c:a", "aac", "-b:a", "192k");
             }
-            commandArgs.push("-vn"); // No video
+            commandArgs.push("-vn");
         } else {
-            // Video Export
             commandArgs.push("-r", `${config.fps || 30}`);
             
             if (config.format === 'mp4' || config.format === 'mov') {
                 commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "veryfast", "-pix_fmt", "yuv420p");
                 if (config.format === 'mov') commandArgs.push("-f", "mov");
             } else if (config.format === 'webm') {
-                commandArgs.push("-c:v", "libvpx-vp9", "-c:a", "libvorbis", "-b:v", "2M"); // Basic WebM settings
+                commandArgs.push("-c:v", "libvpx-vp9", "-c:a", "libvorbis", "-b:v", "2M");
             }
             
-            // Limit duration
             commandArgs.push("-t", totalDuration);
         }
 
         commandArgs.push("-y", outputPath);
 
         const ffmpegProcess = spawn("ffmpeg", commandArgs);
-        
         ffmpegProcess.stderr.on('data', (data) => console.log(`FFmpeg: ${data}`));
-
         ffmpegProcess.on("close", code => {
             if (code !== 0) { job.status = "failed"; job.error = "Falha no FFmpeg."; }
             else { job.status = "completed"; job.progress = 100; job.downloadUrl = `/api/export/download/${jobId}`; }
@@ -546,7 +529,7 @@ async function processSingleClipJob(jobId) {
 
     const action = jobId.split('_')[0];
     const videoFile = job.files.video ? job.files.video[0] : (job.files.audio ? job.files.audio[0] : null);
-    if (!videoFile && action !== 'voice-clone') { // voice-clone might pass file differently or we handle it inside
+    if (!videoFile && action !== 'voice-clone') { 
          job.status = 'failed'; job.error = "No media file provided."; return;
     }
 
@@ -584,11 +567,9 @@ async function processSingleClipJob(jobId) {
              args.push('-vf', `chromakey=${color}:${similarity}:${smoothness}`);
              
              if (outputExtension === '.png') {
-                 // For image input, output PNG with alpha
                  args.push('-c:v', 'png');
                  args.push('-f', 'image2');
              } else {
-                 // For video input, output WebM with alpha
                  args.push('-c:v', 'libvpx-vp9', '-b:v', '2M'); 
                  args.push('-auto-alt-ref', '0');
                  args.push('-c:a', 'libvorbis');
@@ -598,18 +579,14 @@ async function processSingleClipJob(jobId) {
         }
 
         case 'lip-sync-real': {
-             // Lip Sync (Dubbing)
-             // Replaces video audio with new voice file
              const voiceFile = job.files.audio ? job.files.audio[0] : null;
              if (!voiceFile) { job.status = 'failed'; job.error = "Audio file required for Lip Sync."; return; }
              
-             // Map video stream from input 0, audio stream from input 1
-             // -shortest cuts video to match audio length if audio is shorter (common in dubbing)
              args.push('-i', videoFile.path);
              args.push('-i', voiceFile.path);
              args.push('-map', '0:v:0');
              args.push('-map', '1:a:0');
-             args.push('-c:v', 'copy'); // Copy video stream (fast) or re-encode if needed for precision
+             args.push('-c:v', 'copy');
              args.push('-c:a', 'aac');
              args.push('-shortest');
              args.push(outputPath);
@@ -617,7 +594,6 @@ async function processSingleClipJob(jobId) {
         }
 
         case 'ai-dubbing': {
-            // AI Dubbing Pipeline: Extract -> Translate (Gemini) -> Clone+TTS (ElevenLabs) -> Merge
             const targetLang = params.targetLanguage || 'English';
             const apiKeyEleven = job.params.apiKey;
             const geminiKey = process.env.API_KEY;
@@ -634,7 +610,6 @@ async function processSingleClipJob(jobId) {
 
                 // 2. Transcribe & Translate (Gemini)
                 console.log(`[Job ${jobId}] Transcribing & Translating...`);
-                // Read audio as base64 for Gemini
                 const audioBuffer = fs.readFileSync(extractedAudioPath);
                 const audioBase64 = audioBuffer.toString('base64');
                 
@@ -657,12 +632,10 @@ async function processSingleClipJob(jobId) {
                 const geminiData = await geminiRes.json();
                 const translatedText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
                 if (!translatedText) throw new Error("No translation returned.");
-                console.log(`[Job ${jobId}] Translated: ${translatedText.substring(0, 50)}...`);
 
                 // 3. Instant Voice Clone & TTS (ElevenLabs)
                 console.log(`[Job ${jobId}] Cloning Voice & Generating Speech...`);
                 
-                // Add Voice
                 const addVoiceForm = new FormData();
                 addVoiceForm.append('name', `Dubbing_Temp_${jobId}`);
                 addVoiceForm.append('files', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'sample.mp3');
@@ -676,7 +649,6 @@ async function processSingleClipJob(jobId) {
                 const voiceData = await addVoiceRes.json();
                 const voiceId = voiceData.voice_id;
 
-                // Generate TTS
                 const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
                     method: 'POST',
                     headers: { 'xi-api-key': apiKeyEleven, 'Content-Type': 'application/json' },
@@ -688,7 +660,6 @@ async function processSingleClipJob(jobId) {
                 const dubbedAudioPath = path.join(uploadDir, `dubbed_audio_${jobId}.mp3`);
                 fs.writeFileSync(dubbedAudioPath, Buffer.from(ttsBuffer));
 
-                // Cleanup Voice
                 await fetch(`https://api.elevenlabs.io/v1/voices/${voiceId}`, {
                     method: 'DELETE',
                     headers: { 'xi-api-key': apiKeyEleven }
@@ -701,8 +672,7 @@ async function processSingleClipJob(jobId) {
                 args.push('-map', '1:a');
                 args.push('-c:v', 'copy');
                 args.push('-c:a', 'aac');
-                args.push('-shortest'); // Ensure video doesn't run longer than audio (or vice versa logic needed?) Usually we want full video but audio might differ.
-                // Standard dubbing keeps video length. If audio is shorter, silent end. If longer, cut.
+                args.push('-shortest');
                 args.push(outputPath);
 
             } catch (e) {
@@ -735,7 +705,6 @@ async function processSingleClipJob(jobId) {
              let filters = [];
              
              if (inputIsImage && originalW > MAX_WIDTH) filters.push(`scale=${MAX_WIDTH}:-2`);
-             
              filters.push(styleFilter);
              
              if (outputExtension === '.mp4') filters.push("scale=trunc(iw/2)*2:trunc(ih/2)*2", "format=yuv420p");
@@ -820,45 +789,37 @@ async function processSingleClipJob(jobId) {
              const isAudioOnly = !videoFile.mimetype || videoFile.mimetype.startsWith('audio');
 
              if (isAudioOnly) {
-                 // Simple audio filter
                  args.push('-i', videoFile.path);
                  args.push('-af', `silenceremove=start_periods=1:start_duration=${sDur}:start_threshold=${sThresh}dB:stop_periods=-1:stop_duration=${sDur}:stop_threshold=${sThresh}dB`);
                  args.push('-vn', '-acodec', 'pcm_s16le');
                  args.push(outputPath);
              } else {
-                 // Smart Video Jump Cuts (Complex)
-                 // 1. Detect silence
                  const detectCmd = `ffmpeg -i "${videoFile.path}" -af silencedetect=noise=${sThresh}dB:d=${sDur} -f null -`;
                  console.log(`[Job ${jobId}] Detecting silence: ${detectCmd}`);
                  
                  let stderrLog = "";
                  try {
                      stderrLog = await new Promise((resolve, reject) => {
-                         exec(detectCmd, (error, stdout, stderr) => {
-                             // silencedetect writes to stderr
-                             resolve(stderr);
-                         });
+                         exec(detectCmd, (error, stdout, stderr) => { resolve(stderr); });
                      });
                  } catch (e) {
                      job.status = 'failed'; job.error = "Silence detection failed."; return;
                  }
 
-                 // 2. Parse silence logs
                  const silenceSegments = [];
                  const regex = /silence_start: (\d+(\.\d+)?)|silence_end: (\d+(\.\d+)?)/g;
                  let match;
                  let currentStart = null;
                  
                  while ((match = regex.exec(stderrLog)) !== null) {
-                     if (match[1]) { // start
+                     if (match[1]) {
                          currentStart = parseFloat(match[1]);
-                     } else if (match[3] && currentStart !== null) { // end
+                     } else if (match[3] && currentStart !== null) {
                          silenceSegments.push({ start: currentStart, end: parseFloat(match[3]) });
                          currentStart = null;
                      }
                  }
 
-                 // Get total duration
                  let duration = 0;
                  const durMatch = stderrLog.match(/Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})/);
                  if (durMatch) {
@@ -866,12 +827,10 @@ async function processSingleClipJob(jobId) {
                  }
 
                  if (silenceSegments.length === 0) {
-                     // No silence found, copy
                      args.push('-i', videoFile.path);
                      args.push('-c', 'copy');
                      args.push(outputPath);
                  } else {
-                     // 3. Construct Keep Segments (Invert silence)
                      const keepSegments = [];
                      let lastEnd = 0;
                      silenceSegments.forEach(seg => {
@@ -884,7 +843,6 @@ async function processSingleClipJob(jobId) {
                          keepSegments.push({ start: lastEnd, end: duration });
                      }
 
-                     // 4. Construct Filter Complex
                      let filterComplex = "";
                      keepSegments.forEach((seg, i) => {
                          filterComplex += `[0:v]trim=start=${seg.start}:end=${seg.end},setpts=PTS-STARTPTS[v${i}];`;
@@ -906,20 +864,18 @@ async function processSingleClipJob(jobId) {
              break;
 
         case 'auto-ducking-real':
-             const voiceFile = job.files.audio ? job.files.audio[0] : null;
-             if (!voiceFile) { job.status = 'failed'; job.error = 'Arquivo de voz não encontrado.'; return; }
+             const duckVoiceFile = job.files.audio ? job.files.audio[0] : null;
+             if (!duckVoiceFile) { job.status = 'failed'; job.error = 'Arquivo de voz não encontrado.'; return; }
              const dThresh = params.threshold || 0.125;
              const dRatio = params.ratio || 2;
              args.push('-i', videoFile.path); // Main audio
-             args.push('-i', voiceFile.path); // Control audio
+             args.push('-i', duckVoiceFile.path); // Control audio
              args.push('-filter_complex', `[0][1]sidechaincompress=threshold=${dThresh}:ratio=${dRatio}:attack=20:release=300[out]`);
              args.push('-map', '[out]', '-vn', '-acodec', 'pcm_s16le');
              args.push(outputPath);
              break;
 
         case 'voice-clone': {
-             // If apiKey provided, use ElevenLabs Instant Cloning logic
-             // Otherwise, fallback to "save recording"
              const apiKey = job.params.apiKey;
              
              if (apiKey && apiKey.length > 5) {
@@ -927,12 +883,10 @@ async function processSingleClipJob(jobId) {
                      console.log(`[Job ${jobId}] Starting ElevenLabs Instant Clone...`);
                      const textToSpeak = params.text || "Hello, this is my cloned voice.";
                      
-                     // 1. Add Voice
                      const addVoiceFormData = new FormData();
                      addVoiceFormData.append('name', `Clone ${Date.now()}`);
-                     // We must read the file to append to FormData
                      const fileBuffer = fs.readFileSync(videoFile.path);
-                     const blob = new Blob([fileBuffer], { type: 'audio/mpeg' }); // Use Blob polyfill or native if available in Node 18+
+                     const blob = new Blob([fileBuffer], { type: 'audio/mpeg' });
                      addVoiceFormData.append('files', blob, 'sample.mp3');
                      addVoiceFormData.append('description', 'Instant Clone from ProEdit');
 
@@ -948,9 +902,7 @@ async function processSingleClipJob(jobId) {
                      }
                      const addData = await addRes.json();
                      const voiceId = addData.voice_id;
-                     console.log(`[Job ${jobId}] Voice created: ${voiceId}`);
 
-                     // 2. Generate Audio (TTS)
                      const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
                          method: 'POST',
                          headers: { 
@@ -964,14 +916,11 @@ async function processSingleClipJob(jobId) {
                          })
                      });
 
-                     if (!ttsRes.ok) {
-                         throw new Error(`ElevenLabs TTS failed: ${await ttsRes.text()}`);
-                     }
+                     if (!ttsRes.ok) throw new Error(`ElevenLabs TTS failed: ${await ttsRes.text()}`);
 
                      const arrayBuffer = await ttsRes.arrayBuffer();
                      fs.writeFileSync(outputPath, Buffer.from(arrayBuffer));
                      
-                     // Skip ffmpeg, done
                      job.status = 'completed';
                      job.progress = 100;
                      job.downloadUrl = `/api/process/download/${jobId}`;
@@ -979,12 +928,9 @@ async function processSingleClipJob(jobId) {
 
                  } catch (e) {
                      console.error(`[Job ${jobId}] Clone Error:`, e);
-                     // Fallback to simple copy if API fails
                      job.error = "Cloning API failed, saving original recording.";
-                     // Proceed to ffmpeg copy below
                  }
              }
-             // Fallback: Just copy/convert the recorded audio
              args.push('-i', videoFile.path);
              args.push('-vn', '-acodec', 'pcm_s16le');
              args.push(outputPath);
@@ -1087,12 +1033,8 @@ async function processSingleClipJob(jobId) {
              job.status = 'failed'; job.error = "Action not supported."; return;
     }
 
-    // --- FIX FOR SINGLE IMAGE OUTPUT ---
     if (outputExtension === '.png' || outputExtension === '.jpg') {
-        // If args don't already have -frames:v or -update, add one to prevent infinite loop or sequence error
-        // The most compatible way for single image out is -frames:v 1
         if (!args.includes('-frames:v') && !args.includes('-update')) {
-            // Insert before output path (last arg)
             const out = args.pop();
             args.push('-frames:v', '1');
             args.push(out);
@@ -1136,7 +1078,7 @@ async function processSingleClipJob(jobId) {
 app.post('/api/process/generate-music', uploadAny, async (req, res) => {
     const { prompt, duration, hfToken, pixabayKey } = req.body;
     const jobId = `music_gen_${Date.now()}`;
-    const outputFilename = `ai_music_${Date.now()}.wav`; // Using .wav for safety
+    const outputFilename = `ai_music_${Date.now()}.wav`; 
     const outputPath = path.join(uploadDir, outputFilename);
     const dur = parseFloat(duration) || 10;
     
@@ -1144,7 +1086,6 @@ app.post('/api/process/generate-music', uploadAny, async (req, res) => {
     res.status(202).json({ jobId });
 
     try {
-        // Priority 1: Hugging Face MusicGen
         if (hfToken && hfToken.length > 5) {
             console.log(`[Job ${jobId}] Using MusicGen (HF)`);
             const hfRes = await fetch("https://api-inference.huggingface.co/models/facebook/musicgen-small", {
@@ -1158,12 +1099,9 @@ app.post('/api/process/generate-music', uploadAny, async (req, res) => {
 
             if (hfRes.ok) {
                 const arrayBuffer = await hfRes.arrayBuffer();
-                // MusicGen API returns raw bytes, usually FLAC or WAV
                 const tempPath = path.join(uploadDir, `temp_musicgen_${Date.now()}.flac`);
                 fs.writeFileSync(tempPath, Buffer.from(arrayBuffer));
 
-                // Loop/Trim to desired duration using FFmpeg
-                // -stream_loop -1 with -t works for looping input
                 const cmd = `ffmpeg -stream_loop -1 -i "${tempPath}" -t ${dur} -acodec pcm_s16le -ar 44100 -ac 2 "${outputPath}"`;
                 exec(cmd, (err) => {
                     if(fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
@@ -1176,21 +1114,15 @@ app.post('/api/process/generate-music', uploadAny, async (req, res) => {
             }
         }
 
-        // Priority 3: Procedural Generation (FFmpeg Synth)
-        // Advanced Drone/Ambient Generator based on prompt keywords
         console.log(`[Job ${jobId}] Using Procedural Generation`);
-        let filter = "anoisesrc=a=0.1:c=pink:d=" + dur + ",lowpass=f=200"; // Default Drone
+        let filter = "anoisesrc=a=0.1:c=pink:d=" + dur + ",lowpass=f=200"; 
         
         const lowerPrompt = (prompt || "").toLowerCase();
         if (lowerPrompt.includes("techno") || lowerPrompt.includes("beat")) {
-             // Simple beat: noise + gate or similar. Hard in pure lavfi without complex graph.
-             // We'll stick to an abstract glitched beat.
              filter = `aevalsrc='0.1*sin(2*PI*t*120/60)*tan(2*PI*t*60)':d=${dur},lowpass=f=400`; 
         } else if (lowerPrompt.includes("piano") || lowerPrompt.includes("sad")) {
-             // Sine tones (organ-like)
              filter = `sine=f=440:d=${dur},tremolo=f=5:d=0.5`;
         } else if (lowerPrompt.includes("sci-fi") || lowerPrompt.includes("space")) {
-             // Space drone
              filter = `anoisesrc=d=${dur}:c=brown,lowpass=f=100,flanger`;
         }
 
@@ -1206,4 +1138,4 @@ app.post('/api/process/generate-music', uploadAny, async (req, res) => {
     }
 });
 
-app.listen(PORT, () => { console.log(`Servidor a escutar na porta ${PORT}`); });
+app.listen(PORT, () => { console.log(`Server running on port ${PORT}`); });
