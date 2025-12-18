@@ -32,8 +32,6 @@ const storage = multer.diskStorage({
     filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s/g, '_')}`)
 });
 
-const uploadSingle = multer({ storage: storage }).single('video');
-const uploadAudio = multer({ storage: storage }).single('audio'); 
 const uploadFields = multer({ storage: storage }).fields([
     { name: 'video', maxCount: 1 },
     { name: 'style', maxCount: 1 },
@@ -127,7 +125,7 @@ async function processExportJob(jobId) {
         const { clips, media, projectAspectRatio, currentPlayheadTime, exportConfig } = projectState;
         
         let totalDuration = 30;
-        if (projectState.totalDuration !== undefined && projectState.totalDuration !== null) {
+        if (projectState.totalDuration !== undefined && projectState.totalDuration !== null && projectState.totalDuration !== "null") {
             const parsed = parseFloat(projectState.totalDuration);
             if (!isNaN(parsed) && isFinite(parsed) && parsed > 0) {
                 totalDuration = parsed;
