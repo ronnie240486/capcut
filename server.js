@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -31,12 +32,6 @@ const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s/g, '_')}`)
 });
-
-const uploadFields = multer({ storage: storage }).fields([
-    { name: 'video', maxCount: 1 },
-    { name: 'style', maxCount: 1 },
-    { name: 'audio', maxCount: 1 }
-]);
 
 const uploadAny = multer({ 
     storage: storage,
@@ -81,13 +76,6 @@ const getStyleFilter = (styleId) => {
 
 app.get('/', (req, res) => res.status(200).json({ message: 'ProEdit Backend Online' }));
 
-app.get('/api/check-ffmpeg', (req, res) => {
-    exec('ffmpeg -version', (error) => {
-        if (error) return res.status(500).json({ status: 'offline', error: 'FFmpeg not found' });
-        res.json({ status: 'online' });
-    });
-});
-
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
     if (!req.body.projectState) return res.status(400).json({ message: 'Dados do projeto em falta.' });
@@ -122,32 +110,18 @@ async function processExportJob(jobId) {
     job.status = "processing"; job.progress = 0;
     try {
         const { files, projectState } = job;
-        const { clips, media, projectAspectRatio, currentPlayheadTime, exportConfig } = projectState;
+        const { clips, media, projectAspectRatio, exportConfig } = projectState;
         
-        let totalDuration = 30;
-        if (projectState.totalDuration !== undefined && projectState.totalDuration !== null && projectState.totalDuration !== "null") {
-            const parsed = parseFloat(projectState.totalDuration);
-            if (!isNaN(parsed) && isFinite(parsed) && parsed > 0) {
-                totalDuration = parsed;
-            }
-        }
-        
-        if (totalDuration <= 0) {
-            if (clips && clips.length > 0) {
-                totalDuration = Math.max(...clips.map(c => (Number(c.start) || 0) + (Number(c.duration) || 0)));
-            }
-            if (isNaN(totalDuration) || totalDuration <= 0) totalDuration = 30;
-        }
-        
+        let totalDuration = projectState.totalDuration || 5;
+        if (isNaN(totalDuration) || totalDuration <= 0) totalDuration = 5;
+
         const config = exportConfig || { type: 'video', format: 'mp4', resolution: '1080p', fps: 30, filename: 'video' };
-        
         let width = 1920, height = 1080;
-        if (config.type === 'video' || config.type === 'image') {
-            if (config.resolution === '4k') { width = 3840; height = 2160; }
-            else if (config.resolution === '720p') { width = 1280; height = 720; }
-            if (projectAspectRatio === '9:16') { [width, height] = [height, width]; }
-            else if (projectAspectRatio === '1:1') { width = height; }
-        }
+        if (config.resolution === '4k') { width = 3840; height = 2160; }
+        else if (config.resolution === '720p') { width = 1280; height = 720; }
+        
+        if (projectAspectRatio === '9:16') { [width, height] = [height, width]; }
+        else if (projectAspectRatio === '1:1') { width = height; }
         width = Math.floor(width / 2) * 2;
         height = Math.floor(height / 2) * 2;
 
@@ -160,94 +134,123 @@ async function processExportJob(jobId) {
             fileMap[file.originalname] = idx;
         });
 
-        const outputPath = path.join(uploadDir, `${config.filename || jobId}.${config.format}`);
+        const outputPath = path.join(uploadDir, `${config.filename || jobId}.${config.format || 'mp4'}`);
         job.outputPath = outputPath;
 
         let filterChains = [];
-        const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
-        const videoAndLayerClips = clips.filter(c => ['video', 'camada', 'text', 'subtitle'].includes(c.track));
         
-        videoAndLayerClips.forEach((clip, vIdx) => {
-            if (clip.type === 'text' || clip.type === 'subtitle') return; 
+        // 1. Coletar e processar clipes VISUAIS
+        const validVisuals = clips.filter(c => 
+            (c.type === 'video' || c.type === 'image') && 
+            fileMap[c.fileName] !== undefined &&
+            ['video', 'camada'].includes(c.track)
+        );
+
+        validVisuals.forEach((clip, idx) => {
             const inputIndex = fileMap[clip.fileName];
-            if (inputIndex === undefined) return;
-            let clipSpecificFilters = [];
-            const adj = clip.properties.adjustments;
-            if (adj) {
-                clipSpecificFilters.push(`eq=brightness=${(adj.brightness || 1)-1}:contrast=${adj.contrast || 1}:saturation=${adj.saturate || 1}`);
-                if (adj.hue) clipSpecificFilters.push(`hue=h=${adj.hue}`);
-            }
-            if (clip.properties.mirror) clipSpecificFilters.push('hflip');
-            const speed = clip.properties.speed || 1;
-            const pts = `setpts=PTS/${speed}`;
-            const scaling = `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease,pad=w=${width}:h=${height}:x=(ow-iw)/2:y=(oh-ih)/2:color=black,setsar=1`;
-            filterChains.push(`[${inputIndex}:v]${clipSpecificFilters.length > 0 ? clipSpecificFilters.join(',')+',' : ''}${scaling},${pts}[v${vIdx}]`);
+            let clipFilters = [];
+            const speed = clip.properties?.speed || 1;
+            clipFilters.push(`setpts=PTS/${speed}`);
+            clipFilters.push(`scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease,pad=w=${width}:h=${height}:x=(ow-iw)/2:y=(oh-ih)/2:color=black@0,setsar=1`);
+            filterChains.push(`[${inputIndex}:v]${clipFilters.join(',')}[v${idx}]`);
         });
 
-        let videoChain = `color=s=${width}x${height}:c=black:d=${totalDuration.toFixed(3)}[base]`;
-        let validVisuals = videoAndLayerClips.filter(c => c.type !== 'text' && c.type !== 'subtitle' && fileMap[c.fileName] !== undefined);
+        let videoLayer = `color=s=${width}x${height}:c=black:d=${totalDuration}[base]`;
         if (validVisuals.length > 0) {
-            let prevOverlay = "[base]";
+            let lastOutput = "[base]";
             validVisuals.forEach((clip, idx) => {
-                const isLast = idx === validVisuals.length - 1;
-                const nextOverlay = isLast ? "[outv]" : `[ov${idx}]`;
-                videoChain += `;${prevOverlay}[v${idx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
-                prevOverlay = nextOverlay;
+                const currentOutput = idx === validVisuals.length - 1 ? "[outv]" : `[ov${idx}]`;
+                videoLayer += `;${lastOutput}[v${idx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})':x=0:y=0${currentOutput}`;
+                lastOutput = currentOutput;
             });
-        } else { videoChain += ";[base]null[outv]"; }
-        filterChains.push(videoChain);
-
-        if (audioClips.length > 0) {
-            const mixed = [];
-            audioClips.forEach((clip, idx) => {
-                const inputIndex = fileMap[clip.fileName];
-                const volume = clip.properties.volume ?? 1;
-                filterChains.push(`[${inputIndex}:a]volume=${volume},asetpts=PTS-STARTPTS,aresample=44100,adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}[a${idx}]`);
-                mixed.push(`[a${idx}]`);
-            });
-            filterChains.push(`${mixed.join("")}amix=inputs=${mixed.length}:dropout_transition=0[outa]`);
+        } else {
+            videoLayer += ";[base]null[outv]";
         }
+        filterChains.push(videoLayer);
 
-        if (audioClips.length === 0 && config.type !== 'image') {
-            commandArgs.push("-f", "lavfi", "-i", `anullsrc=channel_layout=stereo:sample_rate=44100:d=${totalDuration.toFixed(3)}`);
-        }
-        
+        // 2. Coletar e processar clipes de ÁUDIO (Incluindo som dos vídeos)
+        const validAudioClips = clips.filter(c => 
+            fileMap[c.fileName] !== undefined && 
+            (
+                ['audio', 'narration', 'music', 'sfx'].includes(c.track) ||
+                (c.track === 'video' && media[c.fileName]?.type === 'video')
+            )
+        );
+
+        const audioMixInputs = [];
+        // Adicionar um canal de silêncio base para garantir que amix funcione e o áudio tenha a duração certa
+        filterChains.push(`anullsrc=r=44100:cl=stereo:d=${totalDuration}[asilence]`);
+        audioMixInputs.push("[asilence]");
+
+        validAudioClips.forEach((clip, idx) => {
+            const inputIndex = fileMap[clip.fileName];
+            const volume = clip.properties?.volume ?? 1;
+            const delay = Math.round(clip.start * 1000);
+            const speed = clip.properties?.speed || 1;
+            
+            // Filtros de áudio: velocidade (atempo), volume e atraso (adelay)
+            let afilters = [`volume=${volume}`];
+            if (speed !== 1) afilters.push(`atempo=${speed}`);
+            afilters.push("aresample=44100");
+            afilters.push(`adelay=${delay}|${delay}`);
+            
+            // Usamos o stream de áudio do arquivo (inputIndex:a)
+            filterChains.push(`[${inputIndex}:a]${afilters.join(',')}[a${idx}]`);
+            audioMixInputs.push(`[a${idx}]`);
+        });
+
+        // Mixar todas as fontes de áudio
+        filterChains.push(`${audioMixInputs.join("")}amix=inputs=${audioMixInputs.length}:duration=longest:dropout_transition=0[outa]`);
+
         commandArgs.push("-filter_complex", filterChains.join(";"));
-        if (config.type === 'audio') {
-             if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
-             else commandArgs.push("-map", `${files.length}:a`);
-        } else {
-             commandArgs.push("-map", "[outv]");
-             if (config.type !== 'image') {
-                 if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
-                 else commandArgs.push("-map", `${files.length}:a`);
-             }
-        }
-
-        if (config.type === 'image') {
-            commandArgs.push("-ss", `${currentPlayheadTime || 0}`, "-frames:v", "1", "-c:v", "png");
-        } else if (config.type === 'audio') {
-            if (config.format === 'mp3') commandArgs.push("-c:a", "libmp3lame", "-b:a", "192k");
-            else commandArgs.push("-c:a", "pcm_s16le");
-            commandArgs.push("-vn");
-        } else {
-            commandArgs.push("-r", `${config.fps || 30}`, "-c:v", "libx264", "-c:a", "aac", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-shortest", "-t", totalDuration.toFixed(3));
-        }
-        commandArgs.push("-y", outputPath);
+        commandArgs.push("-map", "[outv]", "-map", "[outa]");
+        
+        commandArgs.push(
+            "-c:v", "libx264", 
+            "-preset", "ultrafast", 
+            "-pix_fmt", "yuv420p", 
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-r", `${config.fps || 30}`,
+            "-t", totalDuration.toFixed(3),
+            "-y", outputPath
+        );
 
         const ffmpeg = spawn("ffmpeg", commandArgs);
-        ffmpeg.stderr.on('data', (d) => console.log(`Export: ${d}`));
-        ffmpeg.on("close", code => {
-            if (code !== 0) { job.status = "failed"; job.error = "FFmpeg Error"; }
-            else { job.status = "completed"; job.progress = 100; job.downloadUrl = `/api/export/download/${jobId}`; }
+        ffmpeg.stderr.on('data', (d) => {
+            const line = d.toString();
+            console.log(`Export FFmpeg: ${line}`);
         });
-    } catch (err) { job.status = "failed"; job.error = err.message; }
+        
+        ffmpeg.on("close", code => {
+            if (code !== 0) { 
+                job.status = "failed"; 
+                job.error = "Erro na renderização do FFmpeg."; 
+            } else { 
+                job.status = "completed"; 
+                job.progress = 100; 
+                job.downloadUrl = `/api/export/download/${jobId}`; 
+            }
+        });
+    } catch (err) { 
+        console.error("Erro processExportJob:", err);
+        job.status = "failed"; job.error = err.message; 
+    }
 }
 
-app.post('/api/process/start/:action', uploadFields, (req, res) => {
+app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
-    jobs[jobId] = { status: 'pending', files: req.files, params: req.body };
+    // Reutilizando lógica de upload múltiplo ou único
+    const files = {};
+    if (req.files) {
+        req.files.forEach(f => {
+            const key = f.fieldname || 'video';
+            if (!files[key]) files[key] = [];
+            files[key].push(f);
+        });
+    }
+    jobs[jobId] = { status: 'pending', files: files, params: req.body };
     res.status(202).json({ jobId });
     processSingleClipJob(jobId);
 });
@@ -283,34 +286,13 @@ async function processSingleClipJob(jobId) {
     const outputPath = path.join(uploadDir, `${action}-${Date.now()}${outputExtension}`);
     job.outputPath = outputPath;
 
-    const probeAudio = `ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "${videoFile.path}"`;
-    const hasAudio = await new Promise(r => exec(probeAudio, (e, stdout) => r(stdout.trim() !== "")));
-
     let args = ['-i', videoFile.path];
     switch(action) {
         case 'reverse-real':
-            args.push('-vf', 'reverse');
-            if (hasAudio) args.push('-af', 'areverse');
-            args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p');
-            break;
-        case 'interpolate-real':
-            const speed = parseFloat(job.params.speed) || 0.5;
-            const factor = 1/speed;
-            if (hasAudio) {
-                args.push('-filter_complex', `[0:v]minterpolate=mi_mode=blend,setpts=${factor}*PTS[v];[0:a]atempo=${speed}[a]`, '-map', '[v]', '-map', '[a]');
-            } else {
-                args.push('-vf', `minterpolate=mi_mode=blend,setpts=${factor}*PTS`);
-            }
-            args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p');
+            args.push('-vf', 'reverse', '-af', 'areverse');
             break;
         case 'upscale-real':
-            args.push('-vf', "scale=3840:2160:flags=lanczos,unsharp=5:5:1.0:5:5:0.0,scale=trunc(iw/2)*2:trunc(ih/2)*2");
-            args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p');
-            break;
-        case 'video-to-cartoon-real':
-            const filter = getStyleFilter(job.params.style);
-            args.push('-vf', `${filter},scale=trunc(iw/2)*2:trunc(ih/2)*2`);
-            args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p');
+            args.push('-vf', "scale=3840:2160:flags=lanczos");
             break;
         default:
             args.push('-c', 'copy');
@@ -319,7 +301,7 @@ async function processSingleClipJob(jobId) {
 
     const ffmpeg = spawn('ffmpeg', args);
     ffmpeg.on('close', code => {
-        if (code === 0) { job.status = 'completed'; job.progress = 100; job.downloadUrl = `/api/export/download/${jobId}`; }
+        if (code === 0) { job.status = 'completed'; job.downloadUrl = `/api/process/download/${jobId}`; }
         else { job.status = 'failed'; job.error = "FFmpeg failed"; }
     });
 }
