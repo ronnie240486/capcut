@@ -76,6 +76,17 @@ const getStyleFilter = (styleId) => {
 
 app.get('/', (req, res) => res.status(200).json({ message: 'ProEdit Backend Online' }));
 
+// RESTORED ENDPOINT: Check if FFmpeg is installed and accessible
+app.get('/api/check-ffmpeg', (req, res) => {
+    exec('ffmpeg -version', (error, stdout, stderr) => {
+        if (error) {
+            console.error('FFmpeg check failed:', error);
+            return res.status(500).json({ status: 'offline', error: 'FFmpeg not found on system path' });
+        }
+        res.json({ status: 'online' });
+    });
+});
+
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
     if (!req.body.projectState) return res.status(400).json({ message: 'Dados do projeto em falta.' });
@@ -238,21 +249,10 @@ async function processExportJob(jobId) {
     }
 }
 
-app.post('/api/process/start/:action', uploadAny, (req, res) => {
-    const action = req.params.action;
-    const jobId = `${action}_${Date.now()}`;
-    // Reutilizando lógica de upload múltiplo ou único
-    const files = {};
-    if (req.files) {
-        req.files.forEach(f => {
-            const key = f.fieldname || 'video';
-            if (!files[key]) files[key] = [];
-            files[key].push(f);
-        });
-    }
-    jobs[jobId] = { status: 'pending', files: files, params: req.body };
-    res.status(202).json({ jobId });
-    processSingleClipJob(jobId);
+app.post('/api/process/status/:jobId', (req, res) => {
+    const job = jobs[req.params.jobId];
+    if (!job) return res.status(404).json({ message: 'Not found' });
+    res.json({ status: job.status, progress: job.progress, downloadUrl: job.downloadUrl, error: job.error });
 });
 
 app.get('/api/process/status/:jobId', (req, res) => {
@@ -278,7 +278,14 @@ async function processSingleClipJob(jobId) {
     const job = jobs[jobId];
     job.status = 'processing';
     const action = jobId.split('_')[0];
-    const videoFile = job.files.video?.[0] || job.files.audio?.[0];
+    // This is for single clip actions, need to handle both possible structures
+    let videoFile;
+    if (Array.isArray(job.files)) {
+        videoFile = job.files[0];
+    } else {
+        videoFile = job.files.video?.[0] || job.files.audio?.[0];
+    }
+    
     if (!videoFile) { job.status = 'failed'; job.error = "Missing file"; return; }
 
     const inputIsImage = isImage(videoFile.originalname);
@@ -301,9 +308,21 @@ async function processSingleClipJob(jobId) {
 
     const ffmpeg = spawn('ffmpeg', args);
     ffmpeg.on('close', code => {
-        if (code === 0) { job.status = 'completed'; job.downloadUrl = `/api/process/download/${jobId}`; }
+        if (code === 0) { 
+            job.status = 'completed'; 
+            job.progress = 100;
+            job.downloadUrl = `/api/process/download/${jobId}`; 
+        }
         else { job.status = 'failed'; job.error = "FFmpeg failed"; }
     });
 }
+
+app.post('/api/process/start/:action', uploadAny, (req, res) => {
+    const action = req.params.action;
+    const jobId = `${action}_${Date.now()}`;
+    jobs[jobId] = { status: 'pending', files: req.files, params: req.body };
+    res.status(202).json({ jobId });
+    processSingleClipJob(jobId);
+});
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
