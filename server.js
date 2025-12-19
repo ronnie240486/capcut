@@ -1063,21 +1063,25 @@ async function processSingleClipJob(jobId) {
     
     let totalDuration = 0;
     const probeCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoFile.path}"`;
-    exec(probeCmd, (err, stdout) => {
+       exec(probeCmd, (err, stdout) => {
         if(!err) totalDuration = parseFloat(stdout);
         args.unshift("-progress", "pipe:1");
+
         const ffmpeg = spawn('ffmpeg', args);
-        
+
         ffmpeg.stdout.on('data', (data) => {
             const str = data.toString();
             const timeMatch = str.match(/out_time_ms=(\d+)/);
             if (timeMatch && totalDuration > 0) {
-                const progress = Math.min(99, (parseInt(timeMatch[1]) / 1000000 / totalDuration) * 100);
+                const progress = Math.min(
+                    99,
+                    (parseInt(timeMatch[1]) / 1000000 / totalDuration) * 100
+                );
                 job.progress = progress;
             }
         });
 
-        ffmpeg.stderr.on('data', (data) => console.log(`[FFmpeg Error] ${data}`));
+        ffmpeg.stderr.on('data', d => console.log(d.toString()));
 
         ffmpeg.on('close', (code) => {
             if (code === 0) {
@@ -1086,10 +1090,16 @@ async function processSingleClipJob(jobId) {
                 job.downloadUrl = `/api/process/download/${jobId}`;
             } else {
                 job.status = 'failed';
-                job.error = "FFmpeg process failed.";
+                job.error = 'FFmpeg failed';
             }
         });
     });
+
+    } catch (err) {
+        console.error(err);
+        job.status = 'failed';
+        job.error = err.message || 'Erro interno';
+    }
 }
 
 app.post('/api/process/generate-music', uploadAny, async (req, res) => {
