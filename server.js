@@ -139,18 +139,18 @@ async function processExportJob(jobId) {
         const { clips, totalDuration, exportConfig, backgroundColor } = projectState;
         const duration = parseFloat(totalDuration) || 5;
         const config = exportConfig || { format: 'mp4', filename: 'video' };
-        const bgColor = backgroundColor || 'black';
         
+        // FIX: Strip '#' from hex color as FFmpeg interprets it as a comment start in filter complex
+        let bgColor = (backgroundColor || 'black').replace('#', '');
+        if (bgColor.length === 6) bgColor = '0x' + bgColor; // FFmpeg hex format
+
         const fileMap = {};
         const inputArgs = [];
         
-        // Track the count of unique files to map indices correctly
         let currentIdx = 0;
         files.forEach((file) => {
-            if (fileMap[file.originalname] !== undefined) return; // Skip duplicates
-            
+            if (fileMap[file.originalname] !== undefined) return;
             if (isImage(file.originalname)) {
-                // Ensure looping images don't exceed project duration
                 inputArgs.push("-loop", "1", "-t", duration.toString());
             }
             inputArgs.push("-i", file.path);
@@ -173,45 +173,36 @@ async function processExportJob(jobId) {
             let clipChain = [];
             const procLabel = `v_proc${i}`;
 
-            // A. Preparar o Clip (Texto vs Mídia)
             if (clip.type === 'text' || clip.track === 'text' || clip.track === 'subtitle') {
-                const text = clip.properties.text || ' ';
+                const text = (clip.properties.text || ' ').replace(/'/g, "\\'");
                 const fontSize = clip.track === 'subtitle' ? 60 : 100;
                 clipChain.push(`color=s=1920x1080:c=black@0:d=${clip.duration},drawtext=text='${text}':fontcolor=white:fontsize=${fontSize}:x=(w-text_w)/2:y=(h-text_h)/2`);
             } else {
                 clipChain.push(`[${inputIdx}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1`);
             }
 
-            // B. Aplicar Movimento (Zoompan / Shake)
             const mov = getMovementFilter(clip);
             if (mov) clipChain.push(mov);
 
-            // C. Aplicar Filtros de Ajuste (Brilho, Contraste, etc)
             const adj = clip.properties.adjustments || {};
             const brightness = (adj.brightness || 1) - 1;
             clipChain.push(`eq=brightness=${brightness}:contrast=${adj.contrast || 1}:saturation=${adj.saturate || 1}`);
 
-            // D. Aplicar Filtro Artístico (Teal-Orange, Noir, etc)
             const art = getFFmpegArtisticFilter(clip.effect);
             if (art) clipChain.push(art);
 
-            // E. Aplicar Transição (Fade In / Zoom In)
             const trans = getTransitionFilter(clip);
             if (trans) clipChain.push(trans);
 
-            // F. Aplicar Opacidade
             if (clip.properties.opacity !== undefined && clip.properties.opacity < 1) {
                 clipChain.push(`format=rgba,colorchannelmixer=aa=${clip.properties.opacity}`);
             }
 
-            // Unir a cadeia do clip
             filterComplex += `;${clipChain.join(',')}[${procLabel}]`;
 
-            // G. Overlay no Stage Principal
             const x = clip.properties.transform?.x || 0;
             const y = clip.properties.transform?.y || 0;
             
-            // Lógica de Slide (Empurrar) via overlay dinâmico
             let finalX = `${x}`;
             const tid = clip.transition?.id;
             if (tid === 'slide-left' || tid === 'push-left') {
@@ -224,7 +215,6 @@ async function processExportJob(jobId) {
             lastVideo = `[v_stage${i}]`;
         });
 
-        // 2. Processar Áudio (Mixagem completa)
         const audioClips = clips.filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track));
         const audioInputs = [];
         audioClips.forEach((clip, i) => {
@@ -257,6 +247,11 @@ async function processExportJob(jobId) {
         console.log(`Iniciando FFmpeg com argumentos: ${args.join(' ')}`);
         const ffmpeg = spawn("ffmpeg", args);
 
+        let ffmpegStderr = "";
+        ffmpeg.stderr.on("data", (data) => {
+            ffmpegStderr += data.toString();
+        });
+
         ffmpeg.on("close", (code) => {
             if (code === 0) {
                 job.status = "completed";
@@ -264,8 +259,8 @@ async function processExportJob(jobId) {
                 console.log(`Renderização concluída: ${jobId}`);
             } else {
                 job.status = "failed";
-                job.error = `FFmpeg falhou com código ${code}`;
-                console.error(`FFmpeg Error: Code ${code}`);
+                job.error = `FFmpeg falhou com código ${code}. Log: ${ffmpegStderr.slice(-200)}`;
+                console.error(`FFmpeg Error Log: ${ffmpegStderr}`);
             }
         });
     } catch (err) { 
