@@ -1159,16 +1159,15 @@ async function processSingleClipJob(jobId) {
             } else {
                 job.status = 'failed';
                 job.error = 'FFmpeg failed';
-            }
+      
         });
     
-
     } catch (err) {
         console.error(err);
         job.status = 'failed';
         job.error = err.message || 'Erro interno';
     }
-}
+ });
 
 app.post('/api/process/generate-music', uploadAny, async (req, res) => {
     const { prompt, duration, hfToken, pixabayKey } = req.body;
