@@ -298,108 +298,176 @@ app.get('/api/export/download/:jobId', (req, res) => {
 
 function processExportJob(jobId) {
     const job = jobs[jobId];
-    job.status = "processing"; job.progress = 0;
+    job.status = "processing";
+    job.progress = 0;
+
     try {
         const { files, projectState } = job;
-        const { clips, totalDuration, media, projectAspectRatio } = projectState;
-        const aspectRatio = projectAspectRatio || '16:9';
+        const { clips, media, projectAspectRatio, totalDuration } = projectState;
+
+        // =========================
+        // RESOLUÇÃO
+        // =========================
         let width = 1280, height = 720;
-        if (aspectRatio === '9:16') { width = 720; height = 1280; }
-        else if (aspectRatio === '1:1') { width = 1080; height = 1080; }
-        
-        const commandArgs = []; const fileMap = {};
-        files.forEach(file => {
-            const mediaInfo = media[file.originalname];
-            if (mediaInfo?.type === "image") commandArgs.push("-loop", "1");
-            commandArgs.push("-i", file.path);
-            fileMap[file.originalname] = commandArgs.filter(arg => arg === "-i").length - 1;
-        });
+        if (projectAspectRatio === '9:16') { width = 720; height = 1280; }
+        else if (projectAspectRatio === '1:1') { width = 1080; height = 1080; }
 
-        let filterChains = [];
-        const audioClips = clips.filter(c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0);
-        const videoAndLayerClips = clips.filter(c => c.track === 'video' || c.track === 'camada');
-        
-        videoAndLayerClips.forEach((clip, vIdx) => {
-    const inputIndex = fileMap[clip.fileName];
-    if (inputIndex === undefined) return;
+        // =========================
+        // INPUTS
+        // =========================
+        const commandArgs = [];
+        const fileMap = {};
 
-    let clipSpecificFilters = [];
-
- 
-
-    // 🎥 NOVO: MOVIMENTO
-    if (clip.motion && CLIP_MOTIONS[clip.motion]) {
-        clipSpecificFilters.push(CLIP_MOTIONS[clip.motion]);
-    }
-
-    const speed = clip.properties.speed || 1;
-    const speedFilter = `setpts=PTS/${speed}`;
-
-    const preFilter =
-        `[${inputIndex}:v]` +
-        (clipSpecificFilters.length ? clipSpecificFilters.join(',') + ',' : '') +
-        `scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
-        `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
-
-    filterChains.push(`${preFilter}[vpre${vIdx}]`);
-    filterChains.push(`[vpre${vIdx}]${speedFilter}[v${vIdx}]`);
-});
-
-            const adj = clip.properties.adjustments;
-            if (adj) {
-                const ffmpegBrightness = (adj.brightness || 1.0) - 1.0;
-                clipSpecificFilters.push(`eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}:hue=${(adj.hue || 0) * (Math.PI/180)}`);
+        files.forEach((file, idx) => {
+            const info = media[file.originalname];
+            if (info?.type === "image") {
+                commandArgs.push("-loop", "1");
             }
-            if (clip.properties.mirror) clipSpecificFilters.push('hflip');
-            const speed = clip.properties.speed || 1;
-            let speedFilter = `setpts=PTS/${speed}`;
-            const preFilter = `[${inputIndex}:v]${clipSpecificFilters.length > 0 ? clipSpecificFilters.join(',')+',' : ''}scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
-            filterChains.push(`${preFilter}[vpre${vIdx}]`);
-            filterChains.push(`[vpre${vIdx}]${speedFilter}[v${vIdx}]`);
+            commandArgs.push("-i", file.path);
+            fileMap[file.originalname] = idx;
         });
 
+        // =========================
+        // FILTER COMPLEX
+        // =========================
+        const filterChains = [];
+
+        const videoClips = clips.filter(
+            c => c.track === "video" || c.track === "camada"
+        );
+
+        const audioClips = clips.filter(
+            c => media[c.fileName]?.hasAudio && (c.properties.volume ?? 1) > 0
+        );
+
+        // ---------- VÍDEO ----------
+        videoClips.forEach((clip, vIdx) => {
+            const inputIndex = fileMap[clip.fileName];
+            if (inputIndex === undefined) return;
+
+            const filters = [];
+
+            // 🎥 MOVIMENTO
+            if (clip.motion && CLIP_MOTIONS[clip.motion]) {
+                filters.push(CLIP_MOTIONS[clip.motion]);
+            }
+
+            // 🎨 AJUSTES
+            const adj = clip.properties?.adjustments;
+            if (adj) {
+                const b = (adj.brightness ?? 1) - 1;
+                const c = adj.contrast ?? 1;
+                const s = adj.saturate ?? 1;
+                const h = (adj.hue ?? 0) * Math.PI / 180;
+                filters.push(`eq=brightness=${b}:contrast=${c}:saturation=${s}:hue=${h}`);
+            }
+
+            if (clip.properties?.mirror) filters.push("hflip");
+
+            const speed = clip.properties?.speed || 1;
+
+            const chain =
+                `[${inputIndex}:v]` +
+                (filters.length ? filters.join(",") + "," : "") +
+                `scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
+                `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+
+            filterChains.push(`${chain}[vpre${vIdx}]`);
+            filterChains.push(`[vpre${vIdx}]setpts=PTS/${speed}[v${vIdx}]`);
+        });
+
+        // ---------- BASE + OVERLAY ----------
         let videoChain = `color=s=${width}x${height}:c=black:d=${totalDuration}[base]`;
-        if (videoAndLayerClips.length > 0) {
-            let prevOverlay = "[base]";
-            videoAndLayerClips.forEach((clip, idx) => {
-                const isLast = idx === videoAndLayerClips.length - 1;
-                const nextOverlay = isLast ? "[outv]" : `[ov${idx}]`;
-                const vIdx = videoAndLayerClips.indexOf(clip);
-                videoChain += `;${prevOverlay}[v${vIdx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${nextOverlay}`;
-                prevOverlay = nextOverlay;
-            });
-        } else { videoChain += ";[base]null[outv]"; }
+        let last = "[base]";
+
+        videoClips.forEach((clip, idx) => {
+            const out = idx === videoClips.length - 1 ? "[outv]" : `[ov${idx}]`;
+            videoChain += `;${last}[v${idx}]overlay=enable='between(t,${clip.start},${clip.start + clip.duration})'${out}`;
+            last = out;
+        });
+
+        if (videoClips.length === 0) {
+            videoChain += ";[base]null[outv]";
+        }
+
         filterChains.push(videoChain);
 
+        // ---------- ÁUDIO ----------
         if (audioClips.length > 0) {
-            const delayed = []; const mixed = [];
+            const delayed = [];
+            const mixed = [];
+
             audioClips.forEach((clip, idx) => {
                 const inputIndex = fileMap[clip.fileName];
                 if (inputIndex === undefined) return;
+
                 const volume = clip.properties.volume ?? 1;
-                const volFilter = volume !== 1 ? `volume=${volume}` : "anull";
-                delayed.push(`[${inputIndex}:a]${volFilter},asetpts=PTS-STARTPTS,aresample=44100[a${idx}_pre]`, `[a${idx}_pre]adelay=${clip.start * 1000}|${clip.start * 1000}[a${idx}]`);
+                delayed.push(
+                    `[${inputIndex}:a]volume=${volume},` +
+                    `asetpts=PTS-STARTPTS,` +
+                    `adelay=${clip.start * 1000}|${clip.start * 1000}[a${idx}]`
+                );
                 mixed.push(`[a${idx}]`);
             });
+
             filterChains.push(...delayed);
-            filterChains.push(`${mixed.join("")}amix=inputs=${mixed.length}:dropout_transition=3[outa]`);
+            filterChains.push(`${mixed.join("")}amix=inputs=${mixed.length}[outa]`);
         }
 
-        const outputPath = path.join(uploadDir, `${jobId}.mp4`);
+        // =========================
+        // OUTPUT
+        // =========================
+        const outputPath = path.join(uploadDir, `export_${jobId}.mp4`);
         job.outputPath = outputPath;
-        if (audioClips.length === 0) commandArgs.push("-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
-        commandArgs.push("-filter_complex", filterChains.join(";"), "-map", "[outv]");
-        if (audioClips.length > 0) commandArgs.push("-map", "[outa]");
-        else { const silentIndex = files.length; commandArgs.push("-map", `${silentIndex}:a`); }
-        commandArgs.push("-c:v", "libx264", "-c:a", "aac", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30", "-threads", "2", "-progress", "pipe:1", "-t", totalDuration, outputPath);
 
-        const ffmpegProcess = spawn("ffmpeg", commandArgs);
-        ffmpegProcess.on("close", code => {
-            if (code !== 0) { job.status = "failed"; job.error = "Falha no FFmpeg."; }
-            else { job.status = "completed"; job.progress = 100; job.downloadUrl = `/api/export/download/${jobId}`; }
+        commandArgs.push(
+            "-filter_complex", filterChains.join(";"),
+            "-map", "[outv]"
+        );
+
+        if (audioClips.length > 0) {
+            commandArgs.push("-map", "[outa]");
+        } else {
+            commandArgs.push("-f", "lavfi", "-i", "anullsrc", "-map", "1:a");
+        }
+
+        commandArgs.push(
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-pix_fmt", "yuv420p",
+            "-preset", "veryfast",
+            "-r", "30",
+            "-t", totalDuration,
+            outputPath
+        );
+
+        // =========================
+        // EXECUÇÃO
+        // =========================
+        const ffmpeg = spawn("ffmpeg", commandArgs);
+
+        ffmpeg.stderr.on("data", d => {
+            console.log(`[FFmpeg] ${d.toString()}`);
         });
-    } catch (err) { job.status = "failed"; job.error = err.message; }
+
+        ffmpeg.on("close", code => {
+            if (code === 0) {
+                job.status = "completed";
+                job.progress = 100;
+                job.downloadUrl = `/api/export/download/${jobId}`;
+            } else {
+                job.status = "failed";
+                job.error = "Erro no FFmpeg";
+            }
+        });
+
+    } catch (err) {
+        console.error("ERRO EXPORT:", err);
+        job.status = "failed";
+        job.error = err.message;
+    }
 }
+
 
 app.post('/api/process/start/:action', (req, res) => {
     const { action } = req.params;
