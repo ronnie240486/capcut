@@ -1180,6 +1180,6 @@ app.post('/api/process/generate-music', uploadAny, async (req, res) => {
         jobs[jobId].status = 'failed'; 
         jobs[jobId].error = e.message;
     }
-});
+
 
 app.listen(PORT, () => console.log(`Engine de Renderização Pro (50+ efeitos) ativa na porta: ${PORT}`));
