@@ -325,25 +325,7 @@ function processExportJob(jobId) {
 
     let clipSpecificFilters = [];
 
-    // 🎨 AJUSTES EXISTENTES
-    const adj = clip.properties.adjustments;
-    if (adj) {
-        const ffmpegBrightness = (adj.brightness || 1.0) - 1.0;
-        clipSpecificFilters.push(
-            `eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}:hue=${(adj.hue || 0) * (Math.PI/180)}`
-        );
-    }
-
-    if (clip.properties.mirror) clipSpecificFilters.push('hflip');
-
-    // ✨ NOVO: EFEITOS DO CLIP
-    if (clip.effects && Array.isArray(clip.effects)) {
-        clip.effects.forEach(effectId => {
-            if (CLIP_EFFECTS[effectId]) {
-                clipSpecificFilters.push(CLIP_EFFECTS[effectId]);
-            }
-        });
-    }
+ 
 
     // 🎥 NOVO: MOVIMENTO
     if (clip.motion && CLIP_MOTIONS[clip.motion]) {
