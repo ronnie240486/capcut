@@ -1149,26 +1149,26 @@ async function processSingleClipJob(jobId) {
             }
         });
 
-        ffmpeg.stderr.on('data', d => console.log(d.toString()));
+        ffmpeg.stderr.on('data', d => {
+        console.log(d.toString());
+    });
 
-        ffmpeg.on('close', (code) => {
-            if (code === 0) {
-                job.status = 'completed';
-                job.progress = 100;
-                job.downloadUrl = `/api/process/download/${jobId}`;
-            } else {
-                job.status = 'failed';
-                job.error = 'FFmpeg failed';
-      
-        });
-    
-    } catch (err) {
-        console.error(err);
-        job.status = 'failed';
-        job.error = err.message || 'Erro interno';
-    }
- });
+    ffmpeg.on('close', (code) => {
+        if (code === 0) {
+            job.status = 'completed';
+            job.progress = 100;
+            job.downloadUrl = `/api/process/download/${jobId}`;
+        } else {
+            job.status = 'failed';
+            job.error = 'FFmpeg failed';
+        }
+    });
 
+} catch (err) {
+    console.error(err);
+    job.status = 'failed';
+    job.error = err.message || 'Erro interno';
+}
 app.post('/api/process/generate-music', uploadAny, async (req, res) => {
     const { prompt, duration, hfToken, pixabayKey } = req.body;
     const jobId = `music_gen_${Date.now()}`;
