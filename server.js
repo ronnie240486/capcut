@@ -1161,7 +1161,7 @@ async function processSingleClipJob(jobId) {
                 job.error = 'FFmpeg failed';
             }
         });
-    });
+    
 
     } catch (err) {
         console.error(err);
