@@ -217,7 +217,7 @@ app.post('/api/util/extract-frame', uploadSingle, async (req, res) => {
             if (!err) cleanupFiles([outputPath]);
         });
     });
-});
+
 
 // --- ROTA DE SCRAPING DE URL ---
 app.post('/api/util/fetch-url', async (req, res) => {
