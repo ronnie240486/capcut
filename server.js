@@ -164,6 +164,23 @@ const getStyleFilter = (styleId) => {
         default: return cartoon;
     }
 };
+// --- EFFECTS & MOTIONS (EXPORT EDITOR) ---
+const CLIP_EFFECTS = {
+    vivid: "eq=contrast=1.2:saturation=1.4",
+    bw: "format=gray",
+    cinematic: "eq=contrast=1.1:saturation=0.9,curves=strong_contrast",
+    blur_soft: "boxblur=5:1",
+    sharpen: "unsharp=5:5:1.0",
+    vintage: "curves=vintage,noise=alls=10:allf=t"
+};
+
+const CLIP_MOTIONS = {
+    zoom_in: "zoompan=z='min(zoom+0.0015,1.4)':d=1",
+    zoom_out: "zoompan=z='max(zoom-0.0015,1.0)':d=1",
+    pan_right: "zoompan=z=1.2:x='x+2':d=1",
+    pan_left: "zoompan=z=1.2:x='x-2':d=1"
+};
+
 
 // --- Rotas ---
 app.get('/', (req, res) => res.status(200).json({ message: 'Bem-vindo ao backend do ProEdit! O servidor está a funcionar.' }));
@@ -302,9 +319,49 @@ function processExportJob(jobId) {
         const videoAndLayerClips = clips.filter(c => c.track === 'video' || c.track === 'camada');
         
         videoAndLayerClips.forEach((clip, vIdx) => {
-            const inputIndex = fileMap[clip.fileName];
-            if (inputIndex === undefined) return;
-            let clipSpecificFilters = [];
+    const inputIndex = fileMap[clip.fileName];
+    if (inputIndex === undefined) return;
+
+    let clipSpecificFilters = [];
+
+    // 🎨 AJUSTES EXISTENTES
+    const adj = clip.properties.adjustments;
+    if (adj) {
+        const ffmpegBrightness = (adj.brightness || 1.0) - 1.0;
+        clipSpecificFilters.push(
+            `eq=brightness=${ffmpegBrightness}:contrast=${adj.contrast || 1.0}:saturation=${adj.saturate || 1.0}:hue=${(adj.hue || 0) * (Math.PI/180)}`
+        );
+    }
+
+    if (clip.properties.mirror) clipSpecificFilters.push('hflip');
+
+    // ✨ NOVO: EFEITOS DO CLIP
+    if (clip.effects && Array.isArray(clip.effects)) {
+        clip.effects.forEach(effectId => {
+            if (CLIP_EFFECTS[effectId]) {
+                clipSpecificFilters.push(CLIP_EFFECTS[effectId]);
+            }
+        });
+    }
+
+    // 🎥 NOVO: MOVIMENTO
+    if (clip.motion && CLIP_MOTIONS[clip.motion]) {
+        clipSpecificFilters.push(CLIP_MOTIONS[clip.motion]);
+    }
+
+    const speed = clip.properties.speed || 1;
+    const speedFilter = `setpts=PTS/${speed}`;
+
+    const preFilter =
+        `[${inputIndex}:v]` +
+        (clipSpecificFilters.length ? clipSpecificFilters.join(',') + ',' : '') +
+        `scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
+        `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+
+    filterChains.push(`${preFilter}[vpre${vIdx}]`);
+    filterChains.push(`[vpre${vIdx}]${speedFilter}[v${vIdx}]`);
+});
+
             const adj = clip.properties.adjustments;
             if (adj) {
                 const ffmpegBrightness = (adj.brightness || 1.0) - 1.0;
