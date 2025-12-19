@@ -1125,4 +1125,4 @@ app.post('/api/process/generate-music', uploadAny, async (req, res) => {
     }
 });
 
-app.listen(PORT, () => { console.log(`Servidor a e
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
