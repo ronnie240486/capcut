@@ -175,15 +175,31 @@ async function processExport(jobId) {
 
   const ff = spawn('ffmpeg', args);
 
-  ff.stderr.on('data', () =>
-    job.progress = Math.min(99, job.progress + 1)
-  );
+  // Mantém em 99% enquanto o FFmpeg está rodando
+job.progress = 1;
 
-  ff.on('close', code => {
-    job.status = code === 0 ? 'completed' : 'failed';
+ff.stderr.on('data', data => {
+  const msg = data.toString();
+
+  // se quiser logar
+  // console.log(msg);
+
+  // nunca passa de 99 aqui
+  job.progress = 99;
+});
+
+
+ ff.on('close', code => {
+  if (code === 0) {
+    job.status = 'completed';
     job.progress = 100;
-  });
-}
+    job.downloadUrl = `/api/process/download/${jobId}`;
+  } else {
+    job.status = 'failed';
+    job.error = `FFmpeg exited with code ${code}`;
+  }
+});
+
 
 /* =========================
    START
