@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -94,7 +95,7 @@ async function processExportJob(jobId) {
     
     try {
         const { files, projectState } = job;
-        const { clips, totalDuration, exportConfig, backgroundColor, media } = projectState;
+        const { clips, totalDuration, exportConfig, backgroundColor, mediaLibrary } = projectState;
         const duration = parseFloat(totalDuration) || 5;
         const config = exportConfig || { format: 'mp4', filename: 'video' };
         
@@ -114,7 +115,7 @@ async function processExportJob(jobId) {
 
         let filterComplex = "";
         const visualClips = clips.filter(c => ['video', 'camada', 'text', 'image'].includes(c.type));
-        const audioClips = clips.filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track) || (media && media[c.fileName]?.hasAudio && c.track === 'video'));
+        const audioClips = clips.filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track) || (mediaLibrary && mediaLibrary[c.fileName]?.hasAudio && c.track === 'video'));
         
         // 1. Pre-process all visual clips individually
         const processedStreams = {}; // map clip.id to stream name
