@@ -42,24 +42,37 @@ const FFMPEG_TRANSITIONS = {
     'push-left': 'pushleft', 'push-right': 'pushright', 'push-up': 'pushup', 'push-down': 'pushdown',
 };
 
-// EXPANDED EFFECTS MAP
+// NEW: COMPREHENSIVE FFMPEG EFFECTS MAP
 const FFMPEG_EFFECTS = {
-    'teal-orange': 'eq=contrast=1.2:saturation=1.3,hue=h=-10,format=rgb24,sepia=0.2',
-    'matrix': 'eq=contrast=1.2:brightness=0.9:saturation=1.5,hue=h=90',
-    'noir': 'format=gray,eq=contrast=1.5:brightness=0.9',
-    'vintage-warm': 'format=rgb24,sepia=0.5,eq=contrast=0.9:brightness=1.1:saturation=1.2',
-    'cool-morning': 'format=rgb24,sepia=0.2,eq=brightness=1.1,hue=h=180',
-    'cyberpunk': 'eq=contrast=1.4:saturation=2,hue=h=20',
-    'dreamy-blur': 'gblur=sigma=1,eq=brightness=1.2:saturation=0.8',
-    'horror': 'format=gray,eq=contrast=1.5:brightness=0.7,format=rgb24,sepia=0.3',
-    'underwater': 'eq=contrast=1.2:brightness=0.8,hue=h=190',
-    'sunset': 'format=rgb24,sepia=0.6,eq=saturation=1.5,hue=h=-20',
-    'vibrant': 'eq=saturation=2.5:contrast=1.1',
+    // Cinematic Pro
+    'teal-orange': "curves=r='0/0.1 1/0.9':g='0/0.5 1/0.5':b='0.1/0 0.9/1'",
+    'matrix': "eq=contrast=1.3:brightness=-0.1:saturation=2,hue=h=120,vignette",
+    'noir': "format=gray,eq=contrast=1.6:brightness=-0.15,vignette",
+    'vintage-warm': "eq=contrast=1.1:saturation=0.7:brightness=0.05,vignette,gblur=sigma=0.3,curves=r='0/0.1 1/0.9':b='0/0.2 1/0.8'",
+    'cool-morning': "eq=brightness=0.05:saturation=0.8,curves=b='0/0.1 1/0.9'",
+    'cyberpunk': "eq=contrast=1.4:saturation=1.8,hue=h=210,vignette=angle=PI/3",
+    'dreamy-blur': "gblur=sigma=1.5,eq=brightness=0.1:saturation=0.8",
+    'horror': "eq=contrast=1.6:brightness=-0.3:saturation=0.3,vignette,curves=b='0/0.1 1/0.9'",
+    'underwater': "eq=contrast=1.1:brightness=-0.1,hue=h=190,gblur=sigma=0.5",
+    'sunset': "eq=saturation=1.4,vignette,curves=r='0/0.1 1/0.95':g='0/0.05 1/0.98':b='0/0.2 1/0.8'",
+    'vibrant': 'eq=saturation=1.8:contrast=1.1',
+    'muted': 'eq=saturation=0.6:contrast=0.95',
+    'golden-hour': "curves=r='0/0.1 1/1':g='0/0.05 1/1':b='0/0.2 1/0.8',eq=saturation=1.2",
+    'cold-blue': "curves=b='0/0.15 1/1',eq=saturation=0.9",
+    'night-vision': "format=gray,curves=strong_contrast,lutrgb=r='gammaval(0.8)':g='gammaval(1.2)':b='gammaval(0.8)'",
+    'scifi': "eq=contrast=1.2,hue=h=180",
+    'pastel': "eq=brightness=0.1:saturation=0.7:contrast=0.9",
+    'posterize': "curves=r='0/0.2 0.4/0.2 0.4/0.8 1/0.8':g='0/0.2 0.4/0.2 0.4/0.8 1/0.8':b='0/0.2 0.4/0.2 0.4/0.8 1/0.8'",
+
+    // Artistic
+    'pop-art': 'eq=saturation=3:contrast=1.5',
     'invert': 'negate',
-    'sepia-max': 'format=rgb24,sepia=1',
-    'high-contrast': 'eq=contrast=2.0',
-    'low-light': 'eq=brightness=-0.5:contrast=1.5',
-    'mono': 'format=gray',
+    'sepia-max': 'format=rgb24,sepia',
+    'high-contrast': 'eq=contrast=1.8',
+    'low-light': 'eq=brightness=-0.4:contrast=1.3',
+    'overexposed': 'eq=brightness=0.4:contrast=0.9',
+    'radioactive': 'eq=saturation=3,hue=h=90',
+    'mono': 'format=gray'
 };
 
 
@@ -119,7 +132,7 @@ async function processExportJob(jobId) {
         const outputPath = path.join(uploadDir, `${Date.now()}_${config.filename}.${config.format}`);
         job.outputPath = outputPath;
 
-        let filterComplex = "";
+        const filterComplexParts = [];
         
         const processedStreams = {};
         const allVisualClips = clips.filter(c => ['video', 'camada', 'text', 'image', 'subtitle'].includes(c.track) || ['video', 'camada', 'text', 'image', 'subtitle'].includes(c.type));
@@ -131,8 +144,8 @@ async function processExportJob(jobId) {
                 const p = clip.properties;
                 const td = p.textDesign || {};
                 const textColor = td.color || 'white';
-                const boxColor = td.backgroundColor || 'black@0.0'; // Transparent if not specified
-                filterComplex += `color=s=1920x1080:c=${boxColor}:d=${clip.duration},format=rgba,drawtext=text='${(p.text || '').replace(/'/g, `''`)}':fontcolor=${textColor}:fontsize=96:x=(w-text_w)/2:y=(h-text_h)/2[${clipIdentifier}];`;
+                const boxColor = td.backgroundColor || 'black@0.0';
+                filterComplexParts.push(`color=s=1920x1080:c=${boxColor}:d=${clip.duration},format=rgba,drawtext=text='${(p.text || '').replace(/'/g, `''`)}':fontcolor=${textColor}:fontsize=96:x=(w-text_w)/2:y=(h-text_h)/2[${clipIdentifier}]`);
                 return;
             }
             const inputIdx = fileMap[clip.fileName];
@@ -150,90 +163,91 @@ async function processExportJob(jobId) {
                 'setsar=1'
             ];
             
+            // --- Movement Filters ---
             if (p.kenBurns?.enabled) {
-                filters.push(`zoompan=z='min(zoom+0.0015, 1.5)':d=${Math.round(25 * clip.duration)}:s=1920x1080:fps=25`);
+                filters.push(`zoompan=z='min(zoom+0.0015,1.5)':d=${Math.round(25 * clip.duration)}:s=1920x1080:fps=25`);
+            } else if (p.movement) {
+                const moveType = p.movement.type;
+                const d = clip.duration;
+                let preFilter = null;
+                let postFilter = null;
+                switch(moveType) {
+                    case 'earthquake': postFilter = `crop=in_w:in_h:x='min(iw/50, 8)*sin(n*PI*4)':y='min(ih/50, 8)*cos(n*PI*5)'`; break;
+                    case 'shake-hard': postFilter = `crop=in_w:in_h:x='4*sin(n*PI*8)':y='4*cos(n*PI*10)'`; break;
+                    case 'jitter': postFilter = `crop=in_w:in_h:x='2*sin(n*PI*20)':y='2*cos(n*PI*24)'`; break;
+                    case 'handheld-1': postFilter = `crop=in_w:in_h:x='2*sin(n*PI/5)':y='1*cos(n*PI/4)'`; break;
+                    case 'handheld-2': postFilter = `crop=in_w:in_h:x='4*sin(n*PI/2)':y='2*cos(n*PI/1.5)'`; break;
+                    case 'mov-pan-slow-l': preFilter = 'scale=1.2*iw:-2'; postFilter = `crop=iw/1.2:ih/1.2:x='(iw-iw/1.2)*(1-(t/${d}))':y='(oh-ih)/2'`; break;
+                    case 'mov-pan-slow-r': preFilter = 'scale=1.2*iw:-2'; postFilter = `crop=iw/1.2:ih/1.2:x='(iw-iw/1.2)*(t/${d})':y='(oh-ih)/2'`; break;
+                    case 'mov-pan-slow-u': preFilter = 'scale=1.2*iw:-2'; postFilter = `crop=iw/1.2:ih/1.2:x='(ow-iw)/2':y='(ih-ih/1.2)*(1-(t/${d}))'`; break;
+                    case 'mov-pan-slow-d': preFilter = 'scale=1.2*iw:-2'; postFilter = `crop=iw/1.2:ih/1.2:x='(ow-iw)/2':y='(ih-ih/1.2)*(t/${d})'`; break;
+                    case 'mov-zoom-crash-in': postFilter = `zoompan=z='min(zoom+0.03,5)':d=1:s=1920x1080:fps=25`; break;
+                    case 'mov-zoom-crash-out': postFilter = `zoompan=z='if(lte(zoom,1.0),5,max(1.0,zoom-0.03))':d=1:s=1920x1080:fps=25`; break;
+                    case 'zoom-slow-in': postFilter = `zoompan=z='min(zoom+0.001, 1.5)':d=${Math.round(25 * d)}:s=1920x1080:fps=25`; break;
+                    case 'zoom-slow-out': postFilter = `zoompan=z='if(lte(zoom,1.0),1.5,max(1.0,zoom-0.001))':d=${Math.round(25 * d)}:s=1920x1080:fps=25`; break;
+                }
+                if (preFilter) filters.push(preFilter);
+                if (postFilter) filters.push(postFilter);
             }
 
             if (p.adjustments) {
-                // FFMPEG brightness range is -1 to 1, with 0 being no-change. Frontend sends 1 for no-change.
-                const brightness = (p.adjustments.brightness ?? 1.0) - 1.0; 
+                const brightness = (p.adjustments.brightness ?? 1.0) - 1.0;
                 filters.push(`eq=brightness=${brightness}:contrast=${p.adjustments.contrast ?? 1}:saturation=${p.adjustments.saturate ?? 1}`);
-                if (p.adjustments.hue) {
-                    filters.push(`hue=h=${p.adjustments.hue}`);
-                }
+                if (p.adjustments.hue) filters.push(`hue=h=${p.adjustments.hue}`);
             }
             
             const effectFilter = FFMPEG_EFFECTS[clip.effect];
-            if (effectFilter) {
-                filters.push(effectFilter);
-            }
+            if (effectFilter) filters.push(effectFilter);
             
-            if (p.opacity !== undefined && p.opacity < 1) {
-                filters.push(`format=rgba,colorchannelmixer=aa=${p.opacity}`);
-            }
+            if (p.opacity !== undefined && p.opacity < 1) filters.push(`format=rgba,colorchannelmixer=aa=${p.opacity}`);
 
-            filterComplex += `[${inputIdx}:v] ${filters.join(',')} [${clipIdentifier}];`;
+            filterComplexParts.push(`[${inputIdx}:v] ${filters.join(',')} [${clipIdentifier}]`);
         });
 
-        // --- Video Composition (Transitions) ---
+        // --- Video Composition ---
         let lastVideoStream = '';
-        const mainTrackClips = clips
-            .filter(c => c.track === 'video' && media && media[c.fileName] && processedStreams[c.id])
-            .sort((a,b) => a.start - b.start);
+        const mainTrackClips = clips.filter(c => c.track === 'video' && media && media[c.fileName] && processedStreams[c.id]).sort((a,b) => a.start - b.start);
 
         if (mainTrackClips.length > 0) {
             lastVideoStream = processedStreams[mainTrackClips[0].id];
-            
             for(let i=1; i < mainTrackClips.length; i++) {
-                const clip = mainTrackClips[i];
                 const prevClip = mainTrackClips[i-1];
-                const currentVideoStream = processedStreams[clip.id];
-                
-                const transition = prevClip.transition; // Transition is on the outgoing clip
+                const transition = prevClip.transition;
                 const transitionDuration = transition?.duration || 0.5;
-                const offset = prevClip.start + prevClip.duration; // Use END time of previous clip for offset
+                const offset = prevClip.start + prevClip.duration;
                 const transType = FFMPEG_TRANSITIONS[transition?.id] || 'fade';
-                
-                const nextVideoStream = `[vout${i}]`;
-                filterComplex += `${lastVideoStream}${currentVideoStream}xfade=transition=${transType}:duration=${transitionDuration}:offset=${offset}${nextVideoStream};`;
-                lastVideoStream = nextVideoStream;
+                const nextStreamId = `[vout${i}]`;
+                filterComplexParts.push(`${lastVideoStream}${processedStreams[mainTrackClips[i].id]}xfade=transition=${transType}:duration=${transitionDuration}:offset=${offset}${nextStreamId}`);
+                lastVideoStream = nextStreamId;
             }
         }
 
-        filterComplex += `color=s=1920x1080:c=${backgroundColor || 'black'}:d=${totalDuration}[base];`;
+        filterComplexParts.push(`color=s=1920x1080:c=${backgroundColor || 'black'}:d=${totalDuration}[base]`);
         let lastStage = '[base]';
 
         if (lastVideoStream) {
-            filterComplex += `${lastStage}${lastVideoStream}overlay=0:0:shortest=1[main_video_track];`;
+            filterComplexParts.push(`${lastStage}${lastVideoStream}overlay=0:0:shortest=1[main_video_track]`);
             lastStage = '[main_video_track]';
         }
 
         // --- Overlays ---
         const overlayTracks = ['camada', 'text', 'subtitle', 'image'];
-        clips
-            .filter(c => overlayTracks.includes(c.track) && processedStreams[c.id])
-            .sort((a,b) => a.start - b.start)
+        clips.filter(c => overlayTracks.includes(c.track) && processedStreams[c.id]).sort((a,b) => a.start - b.start)
             .forEach((clip, i) => {
-                const stream = processedStreams[clip.id];
                 const p = clip.properties;
-                const x = p.transform?.x || 0;
-                const y = p.transform?.y || 0;
-                const scale = p.transform?.scale || 1;
-                // Note: rotation and other complex transforms are not handled yet for simplicity
                 const nextStage = `[ovr_stage_${i}]`;
-                filterComplex += `${stream}scale=iw*${scale}:-1[scaled_ovr_${i}];`;
-                filterComplex += `${lastStage}[scaled_ovr_${i}]overlay=x=(W-w)/2+${x}:y=(H-h)/2+${y}:enable='between(t,${clip.start},${clip.start+clip.duration})'${nextStage};`;
+                const scaleFilter = `scale=iw*${p.transform?.scale || 1}:-1`;
+                filterComplexParts.push(`${processedStreams[clip.id]}${scaleFilter}[scaled_ovr_${i}]`);
+                filterComplexParts.push(`${lastStage}[scaled_ovr_${i}]overlay=x=(W-w)/2+${p.transform?.x || 0}:y=(H-h)/2+${p.transform?.y || 0}:enable='between(t,${clip.start},${clip.start+clip.duration})'${nextStage}`);
                 lastStage = nextStage;
             });
         
-        // --- NEW ROBUST AUDIO PIPELINE ---
+        // --- Audio Pipeline ---
         const audioSetupFilters = [];
         const audioInputsForMix = [];
         clips.forEach((clip, i) => {
-            const mediaItem = media[clip.fileName];
-            const hasAudio = mediaItem?.hasAudio || ['audio', 'narration', 'music', 'sfx'].includes(clip.track);
+            const hasAudio = media?.[clip.fileName]?.hasAudio || ['audio', 'narration', 'music', 'sfx'].includes(clip.track);
             const inputIdx = fileMap[clip.fileName];
-
             if (hasAudio && inputIdx !== undefined) {
                 const p = clip.properties;
                 const mediaStart = clip.mediaStartOffset || 0;
@@ -247,27 +261,22 @@ async function processExportJob(jobId) {
             }
         });
         
-        // --- Combine filter chains carefully ---
-        let finalFilterComplex = filterComplex;
+        if (audioSetupFilters.length > 0) filterComplexParts.push(...audioSetupFilters);
 
-        if (audioSetupFilters.length > 0) {
-            finalFilterComplex += audioSetupFilters.join(';');
+        if (audioInputsForMix.length > 0) {
+            filterComplexParts.push(`${audioInputsForMix.join('')}amix=inputs=${audioInputsForMix.length}:duration=longest[outa]`);
+        } else {
+            filterComplexParts.push(`anullsrc=r=44100:d=${duration}[outa]`);
         }
         
-        if (audioInputsForMix.length > 0) {
-            finalFilterComplex += `${audioInputsForMix.join('')}amix=inputs=${audioInputsForMix.length}:duration=longest[outa]`;
-        } else {
-            finalFilterComplex += `anullsrc=r=44100:d=${duration}[outa]`;
-        }
-
+        const finalFilterComplex = filterComplexParts.join(';');
 
         const args = [
             ...inputArgs,
             '-filter_complex', finalFilterComplex,
             '-map', lastStage,
             '-map', '[outa]',
-            '-c:v', 'libx264', '-c:a', 'aac',
-            '-pix_fmt', 'yuv420p',
+            '-c:v', 'libx264', '-c:a', 'aac', '-pix_fmt', 'yuv420p',
             '-preset', 'veryfast', '-crf', '23',
             '-progress', '-', '-nostats',
             '-t', duration.toString(),
