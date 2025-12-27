@@ -139,32 +139,40 @@ async function processExportJob(jobId) {
             if (inputIdx === undefined) return;
 
             processedStreams[clip.id] = `[${clipIdentifier}]`;
-            let chain = `[${inputIdx}:v]`;
-            const mediaStart = clip.mediaStartOffset || 0;
-            chain += `trim=start=${mediaStart}:duration=${clip.duration},setpts=PTS-STARTPTS,`;
             
-            chain += `scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:-1:-1:color=black,setsar=1`;
             const p = clip.properties;
+            const mediaStart = clip.mediaStartOffset || 0;
             
-            // --- Ken Burns (Movement) ---
+            const filters = [
+                `trim=start=${mediaStart}:duration=${clip.duration}`,
+                'setpts=PTS-STARTPTS',
+                'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black',
+                'setsar=1'
+            ];
+            
             if (p.kenBurns?.enabled) {
-                // Simple zoom-in for now
-                chain += `,zoompan=z='min(zoom+0.001, 1.5)':d=${25 * clip.duration}:s=1920x1080`;
+                filters.push(`zoompan=z='min(zoom+0.0015, 1.5)':d=${Math.round(25 * clip.duration)}:s=1920x1080:fps=25`);
             }
 
-            // --- Effects & Adjustments ---
-            let filters = [];
             if (p.adjustments) {
-                filters.push(`eq=brightness=${p.adjustments.brightness ?? 1}:contrast=${p.adjustments.contrast ?? 1}:saturation=${p.adjustments.saturate ?? 1}`);
-                if (p.adjustments.hue) filters.push(`hue=h=${p.adjustments.hue}`);
+                // FFMPEG brightness range is -1 to 1, with 0 being no-change. Frontend sends 1 for no-change.
+                const brightness = (p.adjustments.brightness ?? 1.0) - 1.0; 
+                filters.push(`eq=brightness=${brightness}:contrast=${p.adjustments.contrast ?? 1}:saturation=${p.adjustments.saturate ?? 1}`);
+                if (p.adjustments.hue) {
+                    filters.push(`hue=h=${p.adjustments.hue}`);
+                }
             }
-            const effectFilter = FFMPEG_EFFECTS[clip.effect];
-            if (effectFilter) filters.push(effectFilter);
-            if (p.opacity < 1) filters.push(`format=rgba,colorchannelmixer=aa=${p.opacity}`);
             
-            if(filters.length > 0) chain += `,${filters.join(',')}`;
+            const effectFilter = FFMPEG_EFFECTS[clip.effect];
+            if (effectFilter) {
+                filters.push(effectFilter);
+            }
+            
+            if (p.opacity !== undefined && p.opacity < 1) {
+                filters.push(`format=rgba,colorchannelmixer=aa=${p.opacity}`);
+            }
 
-            filterComplex += `${chain}[${clipIdentifier}];`;
+            filterComplex += `[${inputIdx}:v] ${filters.join(',')} [${clipIdentifier}];`;
         });
 
         // --- Video Composition (Transitions) ---
@@ -238,17 +246,24 @@ async function processExportJob(jobId) {
                 audioInputsForMix.push(clipAudioStream);
             }
         });
-        if(audioSetupFilters.length > 0) filterComplex += ';' + audioSetupFilters.join(';');
+        
+        // --- Combine filter chains carefully ---
+        let finalFilterComplex = filterComplex;
+
+        if (audioSetupFilters.length > 0) {
+            finalFilterComplex += audioSetupFilters.join(';');
+        }
+        
         if (audioInputsForMix.length > 0) {
-            filterComplex += `;${audioInputsForMix.join('')}amix=inputs=${audioInputsForMix.length}:duration=longest[outa]`;
+            finalFilterComplex += `${audioInputsForMix.join('')}amix=inputs=${audioInputsForMix.length}:duration=longest[outa]`;
         } else {
-            filterComplex += `;anullsrc=r=44100:d=${duration}[outa]`;
+            finalFilterComplex += `anullsrc=r=44100:d=${duration}[outa]`;
         }
 
 
         const args = [
             ...inputArgs,
-            '-filter_complex', filterComplex,
+            '-filter_complex', finalFilterComplex,
             '-map', lastStage,
             '-map', '[outa]',
             '-c:v', 'libx264', '-c:a', 'aac',
@@ -260,7 +275,7 @@ async function processExportJob(jobId) {
         ];
         
         console.log("Spawning FFmpeg...");
-        // console.log("FFMPEG ARGS:", args.join(' '));
+        // console.log("FFMPEG ARGS:", ["ffmpeg", ...args].join(' '));
         
         const ffmpeg = spawn("ffmpeg", args);
         let ffmpeg_err = '';
