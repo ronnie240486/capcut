@@ -95,7 +95,7 @@ async function processExportJob(jobId) {
     
     try {
         const { files, projectState } = job;
-        const { clips, totalDuration, exportConfig, backgroundColor, mediaLibrary } = projectState;
+        const { clips, totalDuration, exportConfig, backgroundColor, media } = projectState;
         const duration = parseFloat(totalDuration) || 5;
         const config = exportConfig || { format: 'mp4', filename: 'video' };
         
@@ -115,21 +115,26 @@ async function processExportJob(jobId) {
 
         let filterComplex = "";
         const visualClips = clips.filter(c => ['video', 'camada', 'text', 'image'].includes(c.type));
-        const audioClips = clips.filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track) || (mediaLibrary && mediaLibrary[c.fileName]?.hasAudio && c.track === 'video'));
+        const audioClips = clips.filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track) || (media && media[c.fileName]?.hasAudio && c.track === 'video'));
         
         // 1. Pre-process all visual clips individually
         const processedStreams = {}; // map clip.id to stream name
         visualClips.forEach((clip, i) => {
             const clipIdentifier = `clip_${i}`;
-            processedStreams[clip.id] = `[${clipIdentifier}]`;
             
             if (clip.type === 'text') {
+                processedStreams[clip.id] = `[${clipIdentifier}]`;
                 filterComplex += `color=s=1920x1080:c=black@0.0:d=${clip.duration},drawtext=text='${clip.properties.text.replace(/'/g, "''")}':fontcolor=${clip.properties.textDesign?.color || 'white'}:fontsize=96:x=(w-text_w)/2:y=(h-text_h)/2,format=rgba[${clipIdentifier}];`;
                 return;
             }
 
             const inputIdx = fileMap[clip.fileName];
-            if (inputIdx === undefined) return;
+            if (inputIdx === undefined) {
+                console.log(`[Export Job ${jobId}] File not found for clip ${clip.id} ('${clip.fileName}'), skipping processing for this clip.`);
+                return;
+            }
+
+            processedStreams[clip.id] = `[${clipIdentifier}]`;
             
             let chain = `[${inputIdx}:v]`;
             
@@ -168,7 +173,11 @@ async function processExportJob(jobId) {
         });
         
         // 2. Stitch the main 'video' track with transitions
-        const mainTrackClips = clips.filter(c => c.track === 'video').sort((a,b) => a.start - b.start);
+        const mainTrackClips = clips
+            .filter(c => c.track === 'video')
+            .filter(c => processedStreams[c.id]) // Ensure stream was processed
+            .sort((a,b) => a.start - b.start);
+            
         let mainTrackStream = `color=s=1920x1080:c=${backgroundColor || 'black'}:d=${totalDuration}[base];`;
         let lastStage = '[base]';
         
@@ -212,7 +221,10 @@ async function processExportJob(jobId) {
         
         // 3. Overlay other tracks ('camada', 'text')
         const overlayTracks = ['camada', 'text', 'subtitle'];
-        const overlayClips = clips.filter(c => overlayTracks.includes(c.track)).sort((a,b)=>a.start-b.start);
+        const overlayClips = clips
+            .filter(c => overlayTracks.includes(c.track))
+            .filter(c => processedStreams[c.id] || c.type === 'text') // Ensure stream exists (or it's a text clip)
+            .sort((a,b)=>a.start-b.start);
 
         overlayClips.forEach((clip, i) => {
             const stream = processedStreams[clip.id];
@@ -258,6 +270,7 @@ async function processExportJob(jobId) {
         ];
         
         console.log("Spawning FFmpeg...");
+        console.log("FFMPEG ARGS:", args.join(' ')); // For debugging
         
         const ffmpeg = spawn("ffmpeg", args);
 
