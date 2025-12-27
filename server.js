@@ -206,7 +206,9 @@ async function processExportJob(jobId) {
 
         // --- Video Composition ---
         let lastVideoStream = '';
-        const mainTrackClips = clips.filter(c => c.track === 'video' && media && media[c.fileName] && processedStreams[c.id]).sort((a,b) => a.start - b.start);
+        // FIX: Combine 'video' and 'camada' tracks into a single stream for transitions.
+        // NOTE: This assumes clips on these tracks do not overlap in time, as they are flattened into one sequence.
+        const mainTrackClips = clips.filter(c => (c.track === 'video' || c.track === 'camada') && media && media[c.fileName] && processedStreams[c.id]).sort((a,b) => a.start - b.start);
 
         if (mainTrackClips.length > 0) {
             lastVideoStream = processedStreams[mainTrackClips[0].id];
@@ -231,7 +233,7 @@ async function processExportJob(jobId) {
         }
 
         // --- Overlays ---
-        const overlayTracks = ['camada', 'text', 'subtitle', 'image'];
+        const overlayTracks = ['text', 'subtitle', 'image']; // 'camada' is now part of main track
         clips.filter(c => overlayTracks.includes(c.track) && processedStreams[c.id]).sort((a,b) => a.start - b.start)
             .forEach((clip, i) => {
                 const p = clip.properties;
@@ -252,7 +254,8 @@ async function processExportJob(jobId) {
                 const p = clip.properties;
                 const mediaStart = clip.mediaStartOffset || 0;
                 const clipAudioStream = `[a_clip_${i}]`;
-                let filter = `[${inputIdx}:a]atrim=start=${mediaStart}:duration=${clip.duration},asetpts=PTS-STARTPTS`;
+                // FIX: Add aformat filter to normalize all audio streams before mixing to prevent errors.
+                let filter = `[${inputIdx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,atrim=start=${mediaStart}:duration=${clip.duration},asetpts=PTS-STARTPTS`;
                 if (p.speed && p.speed !== 1) filter += `,atempo=${p.speed}`;
                 if (p.volume !== undefined && p.volume !== 1) filter += `,volume=${p.volume}`;
                 filter += `,adelay=${clip.start * 1000}|${clip.start * 1000}${clipAudioStream}`;
