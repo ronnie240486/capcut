@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -102,7 +101,6 @@ async function processExportJob(jobId) {
         const fileMap = {};
         const inputArgs = [];
         files.forEach((file, idx) => {
-             // For image inputs that need to be looped
             if (/\.(jpe?g|png|webp)$/i.test(file.originalname)) {
                 inputArgs.push('-loop', '1');
             }
@@ -114,140 +112,135 @@ async function processExportJob(jobId) {
         job.outputPath = outputPath;
 
         let filterComplex = "";
-        const visualClips = clips.filter(c => ['video', 'camada', 'text', 'image'].includes(c.type));
-        const audioClips = clips.filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track) || (media && media[c.fileName]?.hasAudio && c.track === 'video'));
         
-        // 1. Pre-process all visual clips individually
-        const processedStreams = {}; // map clip.id to stream name
-        visualClips.forEach((clip, i) => {
+        const processedStreams = {};
+        const allVisualClips = clips.filter(c => ['video', 'camada', 'text', 'image'].includes(c.type));
+
+        allVisualClips.forEach((clip, i) => {
             const clipIdentifier = `clip_${i}`;
-            
             if (clip.type === 'text') {
                 processedStreams[clip.id] = `[${clipIdentifier}]`;
                 filterComplex += `color=s=1920x1080:c=black@0.0:d=${clip.duration},drawtext=text='${clip.properties.text.replace(/'/g, "''")}':fontcolor=${clip.properties.textDesign?.color || 'white'}:fontsize=96:x=(w-text_w)/2:y=(h-text_h)/2,format=rgba[${clipIdentifier}];`;
                 return;
             }
-
             const inputIdx = fileMap[clip.fileName];
             if (inputIdx === undefined) {
-                console.log(`[Export Job ${jobId}] File not found for clip ${clip.id} ('${clip.fileName}'), skipping processing for this clip.`);
+                console.warn(`[Export Job ${jobId}] File not found for clip ${clip.id} ('${clip.fileName}'), skipping.`);
                 return;
             }
-
             processedStreams[clip.id] = `[${clipIdentifier}]`;
-            
             let chain = `[${inputIdx}:v]`;
-            
-            // Trim if it's a video
             if (clip.type === 'video') {
                 const mediaStart = clip.mediaStartOffset || 0;
                 chain += `trim=start=${mediaStart}:duration=${clip.duration},setpts=PTS-STARTPTS,`;
             }
-            
-            // Scale and Pad
             chain += `scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:-1:-1:color=black,setsar=1`;
-
-            // Adjustments
             const p = clip.properties;
             if (p.adjustments) {
                 chain += `,eq=brightness=${p.adjustments.brightness ?? 1}:contrast=${p.adjustments.contrast ?? 1}:saturation=${p.adjustments.saturate ?? 1}`;
                 if (p.adjustments.hue) chain += `,hue=h=${p.adjustments.hue}`;
             }
-
-            // Effects
             const effectFilter = getEffectFilter(clip.effect);
             if (effectFilter) chain += `,${effectFilter}`;
-
-            // Transform: Scale & Rotate
-            if (p.transform) {
-                 if (p.transform.scale && p.transform.scale !== 1) chain += `,scale=iw*${p.transform.scale}:ih*${p.transform.scale}`;
-                 if (p.transform.rotation && p.transform.rotation !== 0) chain += `,rotate=${p.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`;
-            }
-
-            // Opacity
             if (p.opacity < 1) {
                 chain += `,format=rgba,colorchannelmixer=aa=${p.opacity}`;
             }
-
             filterComplex += `${chain}[${clipIdentifier}];`;
         });
+
+        let videoChain = '';
+        let audioChain = '';
+        let lastVideoStream = '';
+        let lastAudioStream = '';
+        let lastStage = '';
         
-        // 2. Stitch the main 'video' track with transitions
         const mainTrackClips = clips
-            .filter(c => c.track === 'video')
-            .filter(c => processedStreams[c.id]) // Ensure stream was processed
+            .filter(c => c.track === 'video' && media && media[c.fileName] && processedStreams[c.id])
             .sort((a,b) => a.start - b.start);
+
+        if (mainTrackClips.length > 0) {
+            const firstClip = mainTrackClips[0];
+            lastVideoStream = processedStreams[firstClip.id];
             
-        let mainTrackStream = `color=s=1920x1080:c=${backgroundColor || 'black'}:d=${totalDuration}[base];`;
-        let lastStage = '[base]';
-        
-        if(mainTrackClips.length > 0) {
-            // Create silent placeholders for xfade
-            mainTrackClips.forEach((clip, i) => {
-                mainTrackStream += `aevalsrc=0:d=${clip.duration}[asilent${i}];`;
-            });
-            
-            // Chain main track clips with xfade
-            let lastV = processedStreams[mainTrackClips[0].id];
-            let lastA = `[asilent0]`;
-            let accumulatedDuration = mainTrackClips[0].duration;
+            if (media[firstClip.fileName]?.hasAudio) {
+                lastAudioStream = `[${fileMap[firstClip.fileName]}:a]`;
+            } else {
+                audioChain += `anullsrc=r=44100:d=${firstClip.duration}[a_silent_0];`;
+                lastAudioStream = '[a_silent_0]';
+            }
 
             for(let i=1; i < mainTrackClips.length; i++) {
                 const clip = mainTrackClips[i];
                 const prevClip = mainTrackClips[i-1];
-                const stream = processedStreams[clip.id];
-                const audioStream = `[asilent${i}]`;
+                const currentVideoStream = processedStreams[clip.id];
+                let currentAudioStream;
+
+                if (media[clip.fileName]?.hasAudio) {
+                    currentAudioStream = `[${fileMap[clip.fileName]}:a]`;
+                } else {
+                    audioChain += `anullsrc=r=44100:d=${clip.duration}[a_silent_${i}];`;
+                    currentAudioStream = `[a_silent_${i}]`;
+                }
+                
                 const transition = clip.transition;
                 const transitionDuration = transition?.duration || 0.5;
                 const offset = prevClip.start + prevClip.duration - transitionDuration;
-                
                 const transType = FFMPEG_TRANSITIONS[transition?.id] || 'fade';
                 
-                mainTrackStream += `${lastV}${stream}xfade=transition=${transType}:duration=${transitionDuration}:offset=${offset}[vout${i}];`;
-                mainTrackStream += `${lastA}${audioStream}acrossfade=d=${transitionDuration}[aout${i}];`;
+                const nextVideoStream = `[vout${i}]`;
+                const nextAudioStream = `[aout${i}]`;
+                
+                videoChain += `${lastVideoStream}${currentVideoStream}xfade=transition=${transType}:duration=${transitionDuration}:offset=${offset}${nextVideoStream};`;
+                audioChain += `${lastAudioStream}${currentAudioStream}acrossfade=d=${transitionDuration}${nextAudioStream};`;
 
-                lastV = `[vout${i}]`;
-                lastA = `[aout${i}]`;
-                accumulatedDuration += clip.duration - transitionDuration;
+                lastVideoStream = nextVideoStream;
+                lastAudioStream = nextAudioStream;
             }
             
-            mainTrackStream += `[base]${lastV}overlay=0:0:shortest=1[main_video];`;
-            lastStage = '[main_video]';
+            filterComplex += videoChain;
+            filterComplex += audioChain;
+            filterComplex += `color=s=1920x1080:c=${backgroundColor || 'black'}:d=${totalDuration}[base];`;
+            filterComplex += `[base]${lastVideoStream}overlay=0:0:shortest=1[main_video_track];`;
+            lastStage = '[main_video_track]';
         } else {
-             filterComplex += `color=s=1920x1080:c=${backgroundColor || 'black'}:d=${totalDuration}[main_video];`;
-             lastStage = '[main_video]';
+             filterComplex += `color=s=1920x1080:c=${backgroundColor || 'black'}:d=${totalDuration}[main_video_track];`;
+             lastStage = '[main_video_track]';
         }
-        filterComplex += mainTrackStream;
-        
-        // 3. Overlay other tracks ('camada', 'text')
-        const overlayTracks = ['camada', 'text', 'subtitle'];
-        const overlayClips = clips
-            .filter(c => overlayTracks.includes(c.track))
-            .filter(c => processedStreams[c.id] || c.type === 'text') // Ensure stream exists (or it's a text clip)
-            .sort((a,b)=>a.start-b.start);
 
-        overlayClips.forEach((clip, i) => {
-            const stream = processedStreams[clip.id];
-            if (!stream) return;
-            const x = clip.properties.transform?.x || 0;
-            const y = clip.properties.transform?.y || 0;
-            const nextStage = `[ovr_stage_${i}]`;
-            filterComplex += `${lastStage}${stream}overlay=x=(W-w)/2+${x}:y=(H-h)/2+${y}:enable='between(t,${clip.start},${clip.start+clip.duration})'${nextStage};`;
-            lastStage = nextStage;
+        const overlayTracks = ['camada', 'text', 'subtitle'];
+        clips
+            .filter(c => overlayTracks.includes(c.track) && (processedStreams[c.id] || c.type === 'text'))
+            .sort((a,b) => a.start - b.start)
+            .forEach((clip, i) => {
+                const stream = processedStreams[clip.id];
+                if (!stream) return;
+                const x = clip.properties.transform?.x || 0;
+                const y = clip.properties.transform?.y || 0;
+                const nextStage = `[ovr_stage_${i}]`;
+                filterComplex += `${lastStage}${stream}overlay=x=(W-w)/2+${x}:y=(H-h)/2+${y}:enable='between(t,${clip.start},${clip.start+clip.duration})'${nextStage};`;
+                lastStage = nextStage;
+            });
+
+        const audioInputs = [];
+        if (lastAudioStream) {
+            audioInputs.push(lastAudioStream);
+        }
+
+        const otherAudioClips = clips.filter(c => {
+             const isMainVideoAudio = c.track === 'video' && media[c.fileName]?.hasAudio;
+             const isOtherAudio = ['audio', 'narration', 'music', 'sfx'].includes(c.track);
+             return fileMap[c.fileName] !== undefined && !isMainVideoAudio && isOtherAudio;
         });
 
-        // 4. Audio mixing
-        const audioInputs = [];
-        audioClips.forEach((clip, i) => {
+        otherAudioClips.forEach((clip, i) => {
             const idx = fileMap[clip.fileName];
-            if (idx === undefined) return;
             const vol = clip.properties.volume ?? 1;
             const speed = clip.properties.speed ?? 1;
-            let audioChain = `[${idx}:a]volume=${vol}`;
-            if(speed !== 1) audioChain += `,atempo=${speed}`;
-            audioChain += `,adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}[a${i}]`;
-            filterComplex += `${audioChain};`;
-            audioInputs.push(`[a${i}]`);
+            let singleAudioChain = `[${idx}:a]volume=${vol}`;
+            if(speed !== 1) singleAudioChain += `,atempo=${speed}`;
+            singleAudioChain += `,adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}[a_overlay_${i}]`;
+            filterComplex += `${singleAudioChain};`;
+            audioInputs.push(`[a_overlay_${i}]`);
         });
 
         if (audioInputs.length > 0) {
@@ -264,21 +257,18 @@ async function processExportJob(jobId) {
             '-c:v', 'libx264', '-c:a', 'aac',
             '-pix_fmt', 'yuv420p',
             '-preset', 'veryfast', '-crf', '23',
-            '-progress', '-', '-nostats', // Enable progress reporting
+            '-progress', '-', '-nostats',
             '-t', duration.toString(),
             '-y', outputPath
         ];
         
         console.log("Spawning FFmpeg...");
-        console.log("FFMPEG ARGS:", args.join(' ')); // For debugging
+        console.log("FFMPEG ARGS:", args.join(' '));
         
         const ffmpeg = spawn("ffmpeg", args);
 
         ffmpeg.stderr.on('data', (data) => {
             const log = data.toString();
-            // console.log(`ffmpeg: ${log}`); // Verbose logging
-
-            // Regex to find time=HH:MM:SS.ms
             const timeMatch = log.match(/time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
             if (timeMatch) {
                 const hours = parseInt(timeMatch[1], 10);
@@ -286,10 +276,9 @@ async function processExportJob(jobId) {
                 const seconds = parseInt(timeMatch[3], 10);
                 const milliseconds = parseInt(timeMatch[4], 10);
                 const currentTimeInSeconds = hours * 3600 + minutes * 60 + seconds + milliseconds / 100;
-
                 if (duration > 0) {
                     let progress = Math.round((currentTimeInSeconds / duration) * 100);
-                    progress = Math.min(100, progress); // Cap at 100
+                    progress = Math.min(100, progress);
                     if (jobs[jobId]) {
                         jobs[jobId].progress = progress;
                     }
@@ -308,6 +297,7 @@ async function processExportJob(jobId) {
                  if (jobs[jobId]) {
                     jobs[jobId].status = "failed";
                     jobs[jobId].error = "FFmpeg process failed with code " + code;
+                    console.error("FFMPEG PROCESSED FALIED ERRO CODE " + code);
                 }
             }
         });
@@ -321,10 +311,7 @@ async function processExportJob(jobId) {
     }
 }
 
-
-// Simple check endpoint
 app.get('/api/check-ffmpeg', (req, res) => {
-    // Simple check if ffmpeg is available
     const ffmpeg = spawn('ffmpeg', ['-version']);
     ffmpeg.on('error', () => res.status(500).send('FFmpeg not found'));
     ffmpeg.on('close', (code) => {
@@ -332,6 +319,5 @@ app.get('/api/check-ffmpeg', (req, res) => {
         else res.status(500).send('FFmpeg exited with error');
     });
 });
-
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
