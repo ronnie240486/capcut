@@ -274,13 +274,24 @@ async function processExportJob(jobId) {
         
         const finalFilterComplex = filterComplexParts.join(';');
 
+        let videoCodecArgs = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p'];
+        let audioCodecArgs = ['-c:a', 'aac'];
+        let videoPresetArgs = ['-preset', 'veryfast', '-crf', '23'];
+
+        if (config.format === 'webm') {
+            videoCodecArgs = ['-c:v', 'libvpx-vp9'];
+            audioCodecArgs = ['-c:a', 'libopus'];
+            videoPresetArgs = ['-crf', '30', '-b:v', '0'];
+        }
+
         const args = [
             ...inputArgs,
             '-filter_complex', finalFilterComplex,
             '-map', lastStage,
             '-map', '[outa]',
-            '-c:v', 'libx264', '-c:a', 'aac', '-pix_fmt', 'yuv420p',
-            '-preset', 'veryfast', '-crf', '23',
+            ...videoCodecArgs,
+            ...audioCodecArgs,
+            ...videoPresetArgs,
             '-progress', '-', '-nostats',
             '-t', duration.toString(),
             '-y', outputPath
