@@ -207,7 +207,7 @@ async function processExportJob(jobId) {
         // --- Video Composition ---
         let lastVideoStream = '';
         // FIX: Combine 'video' and 'camada' tracks into a single stream for transitions.
-        // NOTE: This assumes clips on these tracks do not overlap in time, as they are flattened into one sequence.
+        // This enables transitions on the 'camada' track.
         const mainTrackClips = clips.filter(c => (c.track === 'video' || c.track === 'camada') && media && media[c.fileName] && processedStreams[c.id]).sort((a,b) => a.start - b.start);
 
         if (mainTrackClips.length > 0) {
@@ -233,7 +233,7 @@ async function processExportJob(jobId) {
         }
 
         // --- Overlays ---
-        const overlayTracks = ['text', 'subtitle', 'image']; // 'camada' is now part of main track
+        const overlayTracks = ['text', 'subtitle', 'image'];
         clips.filter(c => overlayTracks.includes(c.track) && processedStreams[c.id]).sort((a,b) => a.start - b.start)
             .forEach((clip, i) => {
                 const p = clip.properties;
