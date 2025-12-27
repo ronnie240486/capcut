@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -60,7 +59,7 @@ app.post('/api/export/start', uploadAny, (req, res) => {
     if (!req.body.projectState) return res.status(400).json({ message: 'Dados do projeto em falta.' });
     try {
         const projectState = JSON.parse(req.body.projectState);
-        jobs[jobId] = { status: 'pending', files: req.files, projectState };
+        jobs[jobId] = { status: 'pending', files: req.files, projectState, progress: 0 };
         res.status(202).json({ jobId });
         processExportJob(jobId);
     } catch (e) { 
@@ -95,7 +94,7 @@ async function processExportJob(jobId) {
     
     try {
         const { files, projectState } = job;
-        const { clips, totalDuration, exportConfig, backgroundColor } = projectState;
+        const { clips, totalDuration, exportConfig, backgroundColor, mediaLibrary } = projectState;
         const duration = parseFloat(totalDuration) || 5;
         const config = exportConfig || { format: 'mp4', filename: 'video' };
         
@@ -246,36 +245,64 @@ async function processExportJob(jobId) {
 
         const args = [
             ...inputArgs,
-            "-filter_complex", filterComplex,
-            "-map", lastStage,
-            "-map", "[outa]",
-            "-c:v", "libx264", "-c:a", "aac",
-            "-pix_fmt", "yuv420p",
-            "-preset", "veryfast", "-crf", "23",
-            "-t", duration.toString(),
-            "-y", outputPath
+            '-filter_complex', filterComplex,
+            '-map', lastStage,
+            '-map', '[outa]',
+            '-c:v', 'libx264', '-c:a', 'aac',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'veryfast', '-crf', '23',
+            '-progress', '-', '-nostats', // Enable progress reporting
+            '-t', duration.toString(),
+            '-y', outputPath
         ];
         
         console.log("Spawning FFmpeg...");
-        console.log("ffmpeg " + args.join(" "));
         
         const ffmpeg = spawn("ffmpeg", args);
 
-        ffmpeg.stderr.on('data', (data) => console.log(`ffmpeg: ${data}`));
+        ffmpeg.stderr.on('data', (data) => {
+            const log = data.toString();
+            // console.log(`ffmpeg: ${log}`); // Verbose logging
+
+            // Regex to find time=HH:MM:SS.ms
+            const timeMatch = log.match(/time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
+            if (timeMatch) {
+                const hours = parseInt(timeMatch[1], 10);
+                const minutes = parseInt(timeMatch[2], 10);
+                const seconds = parseInt(timeMatch[3], 10);
+                const milliseconds = parseInt(timeMatch[4], 10);
+                const currentTimeInSeconds = hours * 3600 + minutes * 60 + seconds + milliseconds / 100;
+
+                if (duration > 0) {
+                    let progress = Math.round((currentTimeInSeconds / duration) * 100);
+                    progress = Math.min(100, progress); // Cap at 100
+                    if (jobs[jobId]) {
+                        jobs[jobId].progress = progress;
+                    }
+                }
+            }
+        });
 
         ffmpeg.on("close", (code) => {
             if (code === 0) {
-                job.status = "completed";
-                job.downloadUrl = `/api/process/download/${jobId}`;
+                if (jobs[jobId]) {
+                    jobs[jobId].status = "completed";
+                    jobs[jobId].progress = 100;
+                    jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                }
             } else {
-                job.status = "failed";
-                job.error = "FFmpeg process failed with code " + code;
+                 if (jobs[jobId]) {
+                    jobs[jobId].status = "failed";
+                    jobs[jobId].error = "FFmpeg process failed with code " + code;
+                }
             }
         });
 
     } catch (err) { 
-        job.status = "failed"; 
-        job.error = err.message; 
+        if (jobs[jobId]) {
+            jobs[jobId].status = "failed"; 
+            jobs[jobId].error = err.message; 
+        }
         console.error("Error processing export:", err);
     }
 }
