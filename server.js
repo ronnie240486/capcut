@@ -24,7 +24,6 @@ const storage = multer.diskStorage({
 const uploadAny = multer({ storage }).any();
 const jobs = {};
 
-// Helper para checar stream de áudio
 function checkAudioStream(filePath) {
     return new Promise((resolve) => {
         const ffmpeg = spawn('ffmpeg', ['-i', filePath]);
@@ -34,7 +33,6 @@ function checkAudioStream(filePath) {
     });
 }
 
-// Gerenciador de Jobs FFmpeg
 function createFFmpegJob(jobId, args, res) {
     jobs[jobId] = { status: 'processing', progress: 0 };
     res.status(202).json({ jobId });
@@ -43,10 +41,9 @@ function createFFmpegJob(jobId, args, res) {
     let stderr = '';
     ffmpeg.stderr.on('data', d => {
         stderr += d.toString();
-        // Tentar capturar progresso básico do FFmpeg
         const timeMatch = d.toString().match(/time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
         if (timeMatch && jobs[jobId]) {
-            jobs[jobId].progress = 50; // Progresso simplificado para processos rápidos
+            jobs[jobId].progress = 50; 
         }
     });
 
@@ -63,85 +60,39 @@ function createFFmpegJob(jobId, args, res) {
     });
 }
 
-// --- ENDPOINTS DE PROCESSAMENTO ---
-
-// 1. Remover Silêncio (Jump Cuts)
-app.post('/api/process/start/remove-silence-real', uploadAny, (req, res) => {
-    const jobId = `silence_${Date.now()}`;
-    const file = req.files[0];
-    const threshold = req.body.threshold || -30;
-    const duration = req.body.duration || 0.5;
-    const outputPath = path.join(uploadDir, `silence_${Date.now()}.mp4`);
-    jobs[jobId] = { outputPath, files: req.files };
-
-    const args = [
-        '-i', file.path,
-        '-af', `silenceremove=stop_periods=-1:stop_duration=${duration}:stop_threshold=${threshold}dB`,
-        '-vcodec', 'libx264', '-preset', 'fast', '-crf', '23', '-y', outputPath
-    ];
-    createFFmpegJob(jobId, args, res);
-});
-
-// 2. Isolar Voz / Ruído / Realçar
-app.post('/api/process/start/:type(isolate-voice-real|reduce-noise-real|enhance-voice-real)', uploadAny, (req, res) => {
+// --- ENDPOINTS DE ÁUDIO MELHORADOS ---
+app.post('/api/process/start/:type(isolate-voice-real|reduce-noise-real|enhance-voice-real)', uploadAny, async (req, res) => {
     const type = req.params.type;
     const jobId = `audio_${type}_${Date.now()}`;
     const file = req.files[0];
+    const isVideo = file.mimetype.startsWith('video/');
     const intensity = (req.body.intensity || 50) / 100;
-    const outputPath = path.join(uploadDir, `${type}_${Date.now()}.wav`);
+    const ext = isVideo ? 'mp4' : 'wav';
+    const outputPath = path.join(uploadDir, `${type}_${Date.now()}.${ext}`);
+    
     jobs[jobId] = { outputPath, files: req.files };
 
-    let filter = '';
+    let audioFilter = '';
     if (type === 'reduce-noise-real') {
-        filter = `afftdn=nr=${intensity * 50}:nf=-40`;
+        audioFilter = `afftdn=nr=${intensity * 30 + 10}:nf=-35`;
     } else if (type === 'isolate-voice-real') {
-        filter = `highpass=f=200,lowpass=f=3000,afftdn=nr=25`;
+        audioFilter = `highpass=f=150,lowpass=f=3500,afftdn=nr=20`;
     } else { // enhance
-        filter = `compand=attacks=0:points=-80/-80|-40/-15|-20/-10|0/-7,equalizer=f=3000:width_type=h:width=200:g=3`;
+        audioFilter = `compand=attacks=0:points=-80/-80|-40/-15|-20/-10|0/-7,equalizer=f=3000:width_type=h:width=200:g=3`;
     }
 
-    const args = ['-i', file.path, '-af', filter, '-vn', '-acodec', 'pcm_s16le', '-y', outputPath];
+    let args = [];
+    if (isVideo) {
+        // Se for vídeo, mantemos o vídeo e processamos o áudio
+        args = ['-i', file.path, '-af', audioFilter, '-c:v', 'copy', '-c:a', 'aac', '-y', outputPath];
+    } else {
+        args = ['-i', file.path, '-af', audioFilter, '-vn', '-acodec', 'pcm_s16le', '-y', outputPath];
+    }
+
     createFFmpegJob(jobId, args, res);
 });
 
-// 3. Auto Ducking
-app.post('/api/process/start/auto-ducking-real', uploadAny, (req, res) => {
-    const jobId = `ducking_${Date.now()}`;
-    if (req.files.length < 2) return res.status(400).send("Necessário música e voz.");
-    
-    const music = req.files[0].path;
-    const voice = req.files[1].path;
-    const threshold = req.body.threshold || 0.1;
-    const outputPath = path.join(uploadDir, `ducking_${Date.now()}.mp3`);
-    jobs[jobId] = { outputPath, files: req.files };
-
-    const args = [
-        '-i', music, '-i', voice,
-        '-filter_complex', `[1:a]asplit[v1][v2];[0:a][v1]sidechaincompress=threshold=${threshold}:ratio=4[bg];[bg][v2]amix=inputs=2:duration=first[outa]`,
-        '-map', '[outa]', '-y', outputPath
-    ];
-    createFFmpegJob(jobId, args, res);
-});
-
-// 4. AI Slow Motion (Interpolação)
-app.post('/api/process/start/interpolate-real', uploadAny, (req, res) => {
-    const jobId = `slowmo_${Date.now()}`;
-    const file = req.files[0];
-    const speedFactor = req.body.speed || 0.5;
-    const mode = req.body.mode || 'optical';
-    const outputPath = path.join(uploadDir, `slowmo_${Date.now()}.mp4`);
-    jobs[jobId] = { outputPath, files: req.files };
-
-    let miFilter = mode === 'optical' ? 'mi_mode=mci:mc_mode=aobmc:vsfm=1' : 'mi_mode=blend';
-    const args = [
-        '-i', file.path,
-        '-filter_complex', `[0:v]minterpolate=fps=60:${miFilter},setpts=${1/speedFactor}*PTS[v];[0:a]atempo=${speedFactor}[a]`,
-        '-map', '[v]', '-map', '[a]', '-vcodec', 'libx264', '-preset', 'fast', '-y', outputPath
-    ];
-    createFFmpegJob(jobId, args, res);
-});
-
-// --- MOTOR DE EXPORTAÇÃO ---
+// --- MOTOR DE EXPORTAÇÃO COM SUPORTE A VELOCIDADE ---
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
     const projectState = JSON.parse(req.body.projectState);
@@ -199,13 +150,16 @@ async function processExportJob(jobId) {
                 'setsar=1'
             ];
 
-            // Curva de Velocidade / Velocidade Linear
+            // APLICAÇÃO DE VELOCIDADE (SPEED)
+            let speedFactor = 1.0;
             if (p.speedCurve) {
-                // Implementação simplificada: usa a média da curva para o PTS
-                const avgSpeed = p.speedCurve.points.reduce((acc, p) => acc + p.speed, 0) / p.speedCurve.points.length;
-                filters.push(`setpts=${1/avgSpeed}*PTS`);
-            } else if (p.speed && p.speed !== 1) {
-                filters.push(`setpts=${1/p.speed}*PTS`);
+                speedFactor = p.speedCurve.points.reduce((acc, pt) => acc + pt.speed, 0) / p.speedCurve.points.length;
+            } else if (p.speed) {
+                speedFactor = p.speed;
+            }
+
+            if (speedFactor !== 1.0) {
+                filters.push(`setpts=${1/speedFactor}*PTS`);
             }
 
             filterComplexParts.push(`[${inputIdx}:v]${filters.join(',')} [${clipIdV}]`);
@@ -221,14 +175,26 @@ async function processExportJob(jobId) {
             lastV = nextV;
         });
 
-        // Áudio Mix
         const audioInputs = [];
         clips.forEach((clip, i) => {
             const inputIdx = fileMap[clip.fileName];
             if (inputIdx !== undefined && fileAudioMap[inputIdx]) {
                 const aStream = `[a_clip_${i}]`;
+                let speedFactor = clip.properties.speed || 1.0;
+                if (clip.properties.speedCurve) {
+                    speedFactor = clip.properties.speedCurve.points.reduce((acc, pt) => acc + pt.speed, 0) / clip.properties.speedCurve.points.length;
+                }
+
                 let aFilter = `[${inputIdx}:a]atrim=start=${clip.mediaStartOffset || 0}:duration=${clip.duration},asetpts=PTS-STARTPTS`;
-                if (clip.properties.speed && clip.properties.speed !== 1) aFilter += `,atempo=${clip.properties.speed}`;
+                
+                // Aplicar atempo (limite do ffmpeg é 0.5 a 2.0 por filtro)
+                if (speedFactor !== 1.0) {
+                    let s = speedFactor;
+                    while (s > 2.0) { aFilter += `,atempo=2.0`; s /= 2.0; }
+                    while (s < 0.5) { aFilter += `,atempo=0.5`; s /= 0.5; }
+                    aFilter += `,atempo=${s}`;
+                }
+
                 aFilter += `,adelay=${clip.start * 1000}|${clip.start * 1000}${aStream}`;
                 filterComplexParts.push(aFilter);
                 audioInputs.push(aStream);
@@ -265,4 +231,4 @@ app.get('/api/process/download/:jobId', (req, res) => {
 });
 app.get('/api/check-ffmpeg', (req, res) => res.send("FFmpeg is ready"));
 
-app.listen(PORT, () => console.log(`Server on ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
