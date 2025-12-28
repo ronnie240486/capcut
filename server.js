@@ -27,10 +27,18 @@ const jobs = {};
 // --- HELPERS ---
 function getMediaInfo(filePath) {
     return new Promise((resolve) => {
-        exec(`ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "${filePath}"`, (err, stdout) => {
-            if (err) return resolve({ duration: 0 });
-            const duration = parseFloat(stdout.trim()) || 0;
-            resolve({ duration });
+        // Busca tipo de stream (vídeo/áudio) e duração
+        exec(`ffprobe -v error -show_entries stream=codec_type,duration -of csv=p=0 "${filePath}"`, (err, stdout) => {
+            if (err) return resolve({ duration: 0, hasAudio: false });
+            const lines = stdout.trim().split('\n');
+            let duration = 0;
+            let hasAudio = false;
+            lines.forEach(line => {
+                const parts = line.split(',');
+                if (parts[0] === 'video') duration = parseFloat(parts[1]) || duration;
+                if (parts[0] === 'audio') hasAudio = true;
+            });
+            resolve({ duration, hasAudio });
         });
     });
 }
@@ -45,7 +53,6 @@ function timeToSeconds(timeStr) {
     return (hours * 3600) + (minutes * 60) + seconds;
 }
 
-// Gera a string do filtro de áudio atempo lidando com o limite [0.5, 2.0]
 function getAtempoFilter(speed) {
     let s = speed;
     const filters = [];
@@ -98,12 +105,10 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
         } else {
             console.error(`[FFmpeg] Job ${jobId} falhou. Code: ${code}`, stderr);
             jobs[jobId].status = 'failed';
-            // Extrai a última linha de erro para o usuário se for curta
-            const lines = stderr.split('\n').filter(l => l.trim().length > 0);
-            const lastError = lines[lines.length - 1] || "";
-            jobs[jobId].error = lastError.includes('Out of memory') 
-                ? "O vídeo é muito pesado para o servidor. Tente um clipe mais curto."
-                : "Erro no processamento. Verifique se o arquivo não está corrompido.";
+            const isMem = stderr.includes('Out of memory') || stderr.includes('Killed');
+            jobs[jobId].error = isMem 
+                ? "O vídeo é muito pesado para o servidor. Tente diminuir a resolução ou usar um clipe menor."
+                : "Erro no processamento. Tente novamente com outro arquivo.";
         }
     });
 }
@@ -116,7 +121,7 @@ async function processSingleClipJob(jobId) {
     const videoFile = job.files[0];
     if (!videoFile) { job.status = 'failed'; job.error = "Nenhum arquivo enviado."; return; }
 
-    const { duration: originalDuration } = await getMediaInfo(videoFile.path);
+    const { duration: originalDuration, hasAudio } = await getMediaInfo(videoFile.path);
     let params = job.params || {};
     const isAudioOnly = videoFile.mimetype.startsWith('audio/');
     let outputExt = isAudioOnly ? '.wav' : '.mp4';
@@ -134,26 +139,32 @@ async function processSingleClipJob(jobId) {
             const speed = parseFloat(params.speed) || 0.5;
             const factor = 1 / speed;
             expectedDuration = originalDuration * factor;
-            const audioFilter = getAtempoFilter(speed);
             
-            // Otimização: mi_mode=mci (IA), mas limitando fps para 30 se for super slow para economizar RAM
-            // me_mode=bilin e mc_mode=obmc são os mais estáveis
+            // Construção dinâmica do filtro complexo (Lida com vídeos sem áudio)
+            let filterComplex = `[0:v]scale=if(gte(iw\\,ih)\\,min(1280\\,iw)\\,-2):if(lt(iw\\,ih)\\,min(720\\,ih)\\,-2),setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc:me_mode=bilin[v]`;
+            let mapping = ['-map', '[v]'];
+
+            if (hasAudio) {
+                filterComplex += `;[0:a]${getAtempoFilter(speed)}[a]`;
+                mapping.push('-map', '[a]');
+            }
+
             args = [
                 '-i', videoFile.path,
-                '-filter_complex', `[0:v]setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc:me_mode=bilin:scd=fdiff[v];[0:a]${audioFilter}[a]`,
-                '-map', '[v]', '-map', '[a]',
-                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', 
-                '-tune', 'zerolatency', '-max_muxing_queue_size', '4096',
+                '-filter_complex', filterComplex,
+                ...mapping,
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26', 
+                '-pix_fmt', 'yuv420p',
                 '-y', outputPath
             ];
             break;
 
         case 'upscale-real':
-            args = ['-i', videoFile.path, '-vf', "scale=1920:1080:flags=lanczos", '-c:v', 'libx264', '-preset', 'ultrafast', '-y', outputPath];
+            args = ['-i', videoFile.path, '-vf', "scale=1920:1080:flags=lanczos", '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-y', outputPath];
             break;
 
         case 'reverse-real':
-            args = ['-i', videoFile.path, '-vf', 'reverse', '-af', 'areverse', '-c:v', 'libx264', '-preset', 'ultrafast', '-y', outputPath];
+            args = ['-i', videoFile.path, '-vf', 'reverse', '-af', 'areverse', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-y', outputPath];
             break;
 
         case 'reduce-noise-real':
@@ -176,8 +187,7 @@ async function processSingleClipJob(jobId) {
             break;
 
         default:
-            const filter = 'unsharp=5:5:1.0:5:5:0.0,eq=saturation=1.3';
-            args = ['-i', videoFile.path, '-vf', filter, '-c:v', 'libx264', '-preset', 'ultrafast', '-y', outputPath];
+            args = ['-i', videoFile.path, '-vf', 'unsharp=5:5:1.0:5:5:0.0,eq=saturation=1.2', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-y', outputPath];
     }
 
     createFFmpegJob(jobId, args, expectedDuration);
