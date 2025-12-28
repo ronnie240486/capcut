@@ -978,6 +978,7 @@ app.post('/api/process/generate-music', uploadAny, async (req, res) => {
         job.status = 'failed';
         job.error = err.message;
     }
+    });
 
 app.get('/api/process/status/:jobId', (req, res) => res.json(jobs[req.params.jobId] || { status: 'not_found' }));
 app.get('/api/process/download/:jobId', (req, res) => {
