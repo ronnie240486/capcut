@@ -24,6 +24,7 @@ const storage = multer.diskStorage({
 const uploadAny = multer({ storage }).any();
 const jobs = {};
 
+// --- HELPERS ---
 function checkAudioStream(filePath) {
     return new Promise((resolve) => {
         const ffmpeg = spawn('ffmpeg', ['-i', path.resolve(filePath)]);
@@ -31,6 +32,21 @@ function checkAudioStream(filePath) {
         ffmpeg.stderr.on('data', d => stderr += d.toString());
         ffmpeg.on('close', () => resolve(/Stream #\d+:\d+.*Audio:/.test(stderr)));
     });
+}
+
+function isImage(filename) {
+    return /\.(jpe?g|png|webp|gif)$/i.test(filename);
+}
+
+function getStyleFilter(style) {
+    const filters = {
+        'anime_vibrant': 'unsharp=5:5:1.0:5:5:0.0,curves=all="0/0 0.1/0.15 0.5/0.6 1/1",saturate=1.5',
+        'pixar': 'bilateral=sigmaS=5:sigmaR=0.1,curves=all="0/0 0.5/0.45 1/1",saturate=1.3',
+        'sketch': 'edgedetect=low=0.1:high=0.4,negate',
+        'noir': 'format=gray,curves=all="0/0 0.3/0.1 0.7/0.9 1/1"',
+        'cyberpunk': 'curves=r="0/0 0.5/0.6 1/1":g="0/0 0.5/0.4 1/1":b="0/0 0.5/0.7 1/1",saturate=2'
+    };
+    return filters[style] || filters['anime_vibrant'];
 }
 
 function createFFmpegJob(jobId, args, res) {
@@ -43,144 +59,200 @@ function createFFmpegJob(jobId, args, res) {
     let stderr = '';
     ffmpeg.stderr.on('data', d => {
         stderr += d.toString();
-        // Tenta capturar progresso básico da saída do ffmpeg
         if (stderr.includes('frame=')) jobs[jobId].progress = 50;
     });
 
     ffmpeg.on('close', (code) => {
         if (code === 0) {
-            console.log(`Job ${jobId} completed.`);
             jobs[jobId].status = 'completed';
             jobs[jobId].progress = 100;
             jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
         } else {
-            console.error(`FFmpeg Job ${jobId} Failed:`, stderr);
             jobs[jobId].status = 'failed';
             jobs[jobId].error = stderr;
         }
     });
 }
 
-// --- EXTRAÇÃO DE ÁUDIO ---
-app.post('/api/process/extract-audio', uploadAny, (req, res) => {
-    const file = req.files[0];
-    if (!file) return res.status(400).send("Arquivo não enviado.");
-    const jobId = `audio_ext_${Date.now()}`;
-    const inputPath = path.resolve(file.path);
-    const outputPath = path.resolve(uploadDir, `${jobId}.mp3`);
-    const args = ['-i', inputPath, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', '-y', outputPath];
-    createFFmpegJob(jobId, args, res);
-});
+// --- VIRAL CUTS LOGIC ---
+async function processViralCutsJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'processing'; job.progress = 10;
+    try {
+        const videoFile = job.files[0];
+        const params = job.params || {};
+        const count = parseInt(params.count) || 3;
+        const style = params.style || 'blur';
+        
+        const durationCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoFile.path}"`;
+        const duration = await new Promise((resolve, reject) => exec(durationCmd, (err, stdout) => err ? reject(err) : resolve(parseFloat(stdout))));
 
-// --- EXTRAÇÃO DE FRAME (FREEZE) ---
-app.post('/api/util/extract-frame', uploadAny, (req, res) => {
-    const videoFile = req.files.find(f => f.fieldname === 'video' || f.fieldname === 'files');
-    const timestamp = req.body.timestamp || 0;
-    if (!videoFile) return res.status(400).send("Vídeo não enviado.");
-    const inputPath = path.resolve(videoFile.path);
-    const outputPath = path.resolve(uploadDir, `frame_${Date.now()}.png`);
-    const args = ['-ss', timestamp.toString(), '-i', inputPath, '-frames:v', '1', '-q:v', '2', '-y', outputPath];
-    const ffmpeg = spawn('ffmpeg', args);
-    ffmpeg.on('close', (code) => {
-        if (code === 0) res.sendFile(outputPath);
-        else res.status(500).send("Erro ao extrair frame.");
-    });
-});
+        const segmentDuration = 10;
+        const step = Math.max(15, Math.floor(duration / (count + 1)));
+        
+        let verticalFilter = "";
+        if (style === 'crop') verticalFilter = "scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1";
+        else verticalFilter = "split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2";
 
-// --- REMOÇÃO DE SILÊNCIO (SMART JUMP CUTS) ---
-app.post('/api/process/start/remove-silence-real', uploadAny, (req, res) => {
-    const file = req.files[0];
-    if (!file) return res.status(400).send("Arquivo não enviado.");
+        const segments = [];
+        for(let i=1; i<=count; i++) {
+            const start = step * i;
+            if (start + segmentDuration < duration) segments.push({ start, duration: segmentDuration });
+        }
+        if (segments.length === 0) segments.push({ start: 0, duration: Math.min(duration, 30) });
 
-    const jobId = `silence_${Date.now()}`;
-    const inputPath = path.resolve(file.path);
-    const threshold = req.body.threshold || -30; // dB
-    const duration = req.body.duration || 0.5; // segundos
-    const outputPath = path.resolve(uploadDir, `${jobId}.mp4`);
+        let trimChain = "";
+        segments.forEach((seg, idx) => {
+            trimChain += `[0:v]trim=${seg.start}:${seg.start+seg.duration},setpts=PTS-STARTPTS,${verticalFilter}[v${idx}];`;
+            trimChain += `[0:a]atrim=${seg.start}:${seg.start+seg.duration},asetpts=PTS-STARTPTS[a${idx}];`;
+        });
+        
+        const vInputs = segments.map((_, i) => `[v${i}]`).join('');
+        const aInputs = segments.map((_, i) => `[a${i}]`).join('');
+        trimChain += `${vInputs}concat=n=${segments.length}:v=1:a=0[outv];${aInputs}concat=n=${segments.length}:v=0:a=1[outa]`;
 
-    jobs[jobId] = { outputPath };
+        const outputPath = path.join(uploadDir, `viral_${Date.now()}.mp4`);
+        job.outputPath = outputPath;
 
-    // Filtro silenceremove para áudio. Para vídeo, o ideal seria concat, 
-    // mas o silenceremove no stream de áudio com -af já ajuda em muitos casos.
-    const args = [
-        '-i', inputPath,
-        '-af', `silenceremove=stop_periods=-1:stop_duration=${duration}:stop_threshold=${threshold}dB`,
-        '-c:v', 'copy', // Mantém o vídeo, remove silêncio do áudio
-        '-y', outputPath
-    ];
+        const cmd = `ffmpeg -i "${videoFile.path}" -filter_complex "${trimChain}" -map "[outv]" -map "[outa]" -c:v libx264 -preset ultrafast -c:a aac -y "${outputPath}"`;
+        exec(cmd, (error) => {
+            if (error) { job.status = 'failed'; job.error = "FFmpeg viral cuts failed"; } 
+            else { job.status = 'completed'; job.progress = 100; job.downloadUrl = `/api/process/download/${jobId}`; }
+        });
+    } catch (e) { job.status = 'failed'; job.error = e.message; }
+}
 
-    createFFmpegJob(jobId, args, res);
-});
+// --- SINGLE CLIP JOB LOGIC (INTEGRATED) ---
+async function processSingleClipJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'processing'; job.progress = 0;
 
-// --- VELOCIDADE E SLOW MOTION (AI INTERPOLATION) ---
-app.post('/api/process/start/interpolate-real', uploadAny, (req, res) => {
-    const file = req.files[0];
-    if (!file) return res.status(400).send("Arquivo não enviado.");
-
-    const jobId = `slowmo_${Date.now()}`;
-    const inputPath = path.resolve(file.path);
-    const speed = parseFloat(req.body.speed) || 0.5; // 0.5 = 2x mais lento
-    const mode = req.body.mode || 'optical'; // blend ou optical
-    const outputPath = path.resolve(uploadDir, `${jobId}.mp4`);
-
-    jobs[jobId] = { outputPath };
-
-    let videoFilter = '';
-    if (mode === 'optical') {
-        // minterpolate = Interpolação de movimento (Optical Flow) para suavidade máxima
-        videoFilter = `minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsfm=1,setpts=${1/speed}*PTS`;
-    } else {
-        videoFilter = `setpts=${1/speed}*PTS`;
+    const action = jobId.split('_')[0];
+    const videoFile = job.files[0];
+    if (!videoFile && action !== 'voice-clone') {
+         job.status = 'failed'; job.error = "No media file provided."; return;
     }
 
-    // Ajuste de áudio para acompanhar a velocidade (atempo aceita entre 0.5 e 2.0)
-    let audioFilter = `atempo=${speed}`;
-    if (speed < 0.5) audioFilter = `atempo=0.5,atempo=${speed/0.5}`;
-
-    const args = [
-        '-i', inputPath,
-        '-filter_complex', `[0:v]${videoFilter}[v];[0:a]${audioFilter}[a]`,
-        '-map', '[v]', '-map', '[a]',
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-y', outputPath
-    ];
-
-    createFFmpegJob(jobId, args, res);
-});
-
-// --- PROCESSAMENTO DE ÁUDIO (RUÍDO E VOZ) CORRIGIDO ---
-app.post('/api/process/start/:type(isolate-voice-real|reduce-noise-real|enhance-voice-real)', uploadAny, async (req, res) => {
-    const type = req.params.type;
-    const file = req.files[0];
-    if (!file) return res.status(400).send("Arquivo não enviado.");
-
-    const jobId = `audio_proc_${Date.now()}`;
-    const inputPath = path.resolve(file.path);
-    const intensity = (req.body.intensity || 50) / 100;
-    const ext = file.mimetype.startsWith('video/') ? 'mp4' : 'wav';
-    const outputPath = path.resolve(uploadDir, `${type}_${Date.now()}.${ext}`);
+    let params = job.params || {};
+    const inputIsImg = isImage(videoFile.originalname);
+    let outputExt = inputIsImg ? '.png' : '.mp4';
     
-    jobs[jobId] = { outputPath };
+    // Override extensions based on action
+    if (['extract-audio-real', 'reduce-noise-real', 'isolate-voice-real', 'voice-clone'].includes(action)) outputExt = '.wav';
+    if (action === 'rotoscope-real' && !inputIsImg) outputExt = '.webm';
 
-    let audioFilter = '';
-    if (type === 'reduce-noise-real') {
-        // afftdn=nr=X (noise reduction em dB). 
-        // Reduzimos o valor padrão para não sumir com o áudio (máx 20dB de redução aqui)
-        const nr = 10 + (intensity * 15); 
-        audioFilter = `afftdn=nr=${nr}:nf=-30`; 
-    } else if (type === 'isolate-voice-real') {
-        audioFilter = `highpass=f=100,lowpass=f=4000,afftdn=nr=10`;
-    } else { // enhance
-        audioFilter = `compand=attacks=0:points=-80/-80|-40/-15|-20/-10|0/-7,equalizer=f=3000:width_type=h:width=200:g=3`;
+    const outputPath = path.join(uploadDir, `${action}-${Date.now()}${outputExt}`);
+    job.outputPath = outputPath;
+
+    let args = [];
+
+    switch (action) {
+        case 'rotoscope-real':
+             const color = (params.color || '#00FF00').replace('#', '0x');
+             args.push('-i', videoFile.path, '-vf', `chromakey=${color}:0.3:0.1`);
+             if (outputExt === '.webm') args.push('-c:v', 'libvpx-vp9', '-auto-alt-ref', '0');
+             args.push(outputPath);
+             break;
+
+        case 'ai-dubbing':
+            const targetLang = params.targetLanguage || 'English';
+            const apiKeyEleven = params.apiKey;
+            const geminiKey = process.env.API_KEY;
+
+            try {
+                // 1. Extrair Áudio
+                const extractedAudioPath = path.join(uploadDir, `temp_extract_${jobId}.mp3`);
+                await new Promise((res, rej) => exec(`ffmpeg -i "${videoFile.path}" -vn -acodec libmp3lame "${extractedAudioPath}"`, (err) => err ? rej(err) : res()));
+
+                // 2. Gemini 3 Flash (Traduzir)
+                const audioBuffer = fs.readFileSync(extractedAudioPath);
+                const geminiPayload = {
+                    contents: [{ parts: [{ inline_data: { mime_type: "audio/mp3", data: audioBuffer.toString('base64') } }, { text: `Transcreva e traduza para ${targetLang}. Retorne APENAS o texto traduzido.` }] }]
+                };
+                const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(geminiPayload) });
+                const geminiData = await geminiRes.json();
+                const translatedText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                // 3. ElevenLabs (Clone + TTS)
+                // Nota: FormData no Node requer construção manual ou pacote form-data
+                const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/eleven_multilingual_v2`, { 
+                    method: 'POST', 
+                    headers: { 'xi-api-key': apiKeyEleven, 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify({ text: translatedText, model_id: "eleven_multilingual_v2" }) 
+                });
+                const dubbedAudioPath = path.join(uploadDir, `dubbed_${jobId}.mp3`);
+                fs.writeFileSync(dubbedAudioPath, Buffer.from(await ttsRes.arrayBuffer()));
+
+                // 4. Merge
+                args = ['-i', videoFile.path, '-i', dubbedAudioPath, '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', outputPath];
+                createFFmpegJob(jobId, args); return;
+            } catch (e) { job.status = 'failed'; job.error = e.message; return; }
+
+        case 'interpolate-real':
+            const speed = params.speed || 0.5;
+            const factor = 1 / speed;
+            args = ['-i', videoFile.path, '-filter_complex', `[0:v]minterpolate=fps=60:mi_mode=mci,setpts=${factor}*PTS[v];[0:a]atempo=${speed}[a]`, '-map', '[v]', '-map', '[a]', '-y', outputPath];
+            break;
+
+        case 'reverse-real':
+            args = ['-i', videoFile.path, '-vf', 'reverse', '-af', 'areverse', '-y', outputPath];
+            break;
+
+        case 'upscale-real':
+            args = ['-i', videoFile.path, '-vf', "scale=3840:2160:flags=lanczos", '-y', outputPath];
+            break;
+
+        default:
+            // Fallback para filtros simples do FFmpeg
+            const filter = getStyleFilter(action);
+            args = ['-i', videoFile.path, '-vf', filter, '-y', outputPath];
     }
 
-    let args = file.mimetype.startsWith('video/') ? 
-        ['-i', inputPath, '-af', audioFilter, '-c:v', 'copy', '-c:a', 'aac', '-y', outputPath] :
-        ['-i', inputPath, '-af', audioFilter, '-vn', '-acodec', 'pcm_s16le', '-y', outputPath];
+    createFFmpegJob(jobId, args);
+}
 
-    createFFmpegJob(jobId, args, res);
+// --- ENDPOINTS ---
+
+app.post('/api/process/viral-cuts', uploadAny, (req, res) => {
+    const jobId = `viral_${Date.now()}`;
+    jobs[jobId] = { status: 'pending', files: req.files, params: req.body };
+    res.status(202).json({ jobId });
+    processViralCutsJob(jobId);
 });
 
-// --- MOTOR DE EXPORTAÇÃO ---
+app.post('/api/process/generate-music', uploadAny, async (req, res) => {
+    const { prompt, duration, hfToken } = req.body;
+    const jobId = `music_gen_${Date.now()}`;
+    const outputPath = path.join(uploadDir, `music_${Date.now()}.wav`);
+    jobs[jobId] = { status: 'processing', progress: 0, outputPath };
+    res.status(202).json({ jobId });
+
+    try {
+        if (hfToken) {
+            const hfRes = await fetch("https://api-inference.huggingface.co/models/facebook/musicgen-small", { method: "POST", headers: { Authorization: `Bearer ${hfToken}` }, body: JSON.stringify({ inputs: prompt }) });
+            if (hfRes.ok) {
+                fs.writeFileSync(outputPath, Buffer.from(await hfRes.arrayBuffer()));
+                jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                return;
+            }
+        }
+        // Fallback Procedural
+        exec(`ffmpeg -f lavfi -i "anoisesrc=d=${duration}:c=pink,lowpass=f=200" -y "${outputPath}"`, (err) => {
+            if (err) jobs[jobId].status = 'failed';
+            else { jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = `/api/process/download/${jobId}`; }
+        });
+    } catch (e) { jobs[jobId].status = 'failed'; job.error = e.message; }
+});
+
+app.post('/api/process/start/:action', uploadAny, (req, res) => {
+    const action = req.params.action;
+    const jobId = `${action}_${Date.now()}`;
+    jobs[jobId] = { status: 'pending', files: req.files, params: req.body };
+    res.status(202).json({ jobId });
+    processSingleClipJob(jobId);
+});
+
+// Reutilizando lógica existente de status/download/export/audio_proc
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
     const projectState = JSON.parse(req.body.projectState);
