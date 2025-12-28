@@ -22,17 +22,18 @@ const storage = multer.diskStorage({
 });
 
 const uploadAny = multer({ storage }).any();
+
+// Simulação de persistência básica (em produção usaria Redis/DB)
 const jobs = {};
 
 // --- HELPERS ---
 function getMediaInfo(filePath) {
     return new Promise((resolve) => {
-        exec(`ffprobe -v error -select_streams v:0 -show_entries stream=duration,nb_read_packets -of csv=p=0 "${filePath}"`, (err, stdout) => {
-            if (err) return resolve({ frames: 0, duration: 0 });
-            const parts = stdout.split(',');
-            const duration = parseFloat(parts[0]) || 0;
-            const frames = parseInt(parts[1]) || 0;
-            resolve({ frames, duration });
+        // Obtém duração e frames de forma robusta
+        exec(`ffprobe -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "${filePath}"`, (err, stdout) => {
+            if (err) return resolve({ duration: 0 });
+            const duration = parseFloat(stdout.trim()) || 0;
+            resolve({ duration });
         });
     });
 }
@@ -48,44 +49,60 @@ function timeToSeconds(timeStr) {
 }
 
 function createFFmpegJob(jobId, args, expectedDuration, res) {
-    jobs[jobId] = { status: 'processing', progress: 0 };
+    if (!jobs[jobId]) jobs[jobId] = {};
+    jobs[jobId].status = 'processing';
+    jobs[jobId].progress = 0;
+    
     if (res) res.status(202).json({ jobId });
 
-    console.log(`Starting FFmpeg job ${jobId}. Target duration: ${expectedDuration}s`);
+    console.log(`[FFmpeg] Job ${jobId} started. Expected Duration: ${expectedDuration}s`);
 
-    const ffmpeg = spawn('ffmpeg', args);
+    // Adiciona flags de estabilidade globais
+    const finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', ...args];
+    const ffmpeg = spawn('ffmpeg', finalArgs);
+    
     let stderr = '';
 
     ffmpeg.stderr.on('data', d => {
         const line = d.toString();
         stderr += line;
         
-        // Match progress by time
+        // Monitoramento por tempo de saída (out_time)
         const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
         if (timeMatch && expectedDuration > 0) {
             const currentTime = timeToSeconds(timeMatch[1]);
             let progress = Math.round((currentTime / expectedDuration) * 100);
             
-            // Limit to 99 until finish
-            if (progress > 99) progress = 99;
+            // Cap progress em 99% para evitar confusão visual se a duração for imprecisa
+            if (progress >= 100) progress = 99;
             if (progress < 0) progress = 0;
             
-            if (jobs[jobId].progress !== progress) {
+            if (jobs[jobId]) {
                 jobs[jobId].progress = progress;
             }
         }
     });
 
     ffmpeg.on('close', (code) => {
+        if (!jobs[jobId]) return;
+
         if (code === 0) {
-            console.log(`Job ${jobId} finished successfully`);
+            console.log(`[FFmpeg] Job ${jobId} completed successfully.`);
             jobs[jobId].status = 'completed';
             jobs[jobId].progress = 100;
             jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
         } else {
-            console.error(`FFmpeg error for ${jobId}:`, stderr);
+            console.error(`[FFmpeg] Job ${jobId} failed. Code: ${code}`, stderr);
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = "Erro no processamento. Tente um vídeo mais curto ou mude as configurações.";
+            jobs[jobId].error = "Falha no processamento. O arquivo pode ser muito grande ou incompatível.";
+        }
+    });
+
+    // Proteção contra processos órfãos
+    ffmpeg.on('error', (err) => {
+        if (jobs[jobId]) {
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = err.message;
         }
     });
 }
@@ -104,6 +121,8 @@ function getStyleFilter(style) {
 // --- SINGLE CLIP JOB LOGIC ---
 async function processSingleClipJob(jobId) {
     const job = jobs[jobId];
+    if (!job) return;
+
     const action = jobId.split('_')[0];
     const videoFile = job.files[0];
     
@@ -117,6 +136,7 @@ async function processSingleClipJob(jobId) {
     const isAudioOnly = videoFile.mimetype.startsWith('audio/');
     let outputExt = isAudioOnly ? '.wav' : '.mp4';
     
+    // Forçar WAV para ações de áudio puro
     if (action.includes('audio') || action.includes('voice') || action.includes('silence')) {
         outputExt = '.wav';
     }
@@ -124,8 +144,7 @@ async function processSingleClipJob(jobId) {
     const outputPath = path.join(uploadDir, `${action}-${Date.now()}${outputExt}`);
     job.outputPath = outputPath;
 
-    // Default stats frequency
-    let args = ['-hide_banner', '-stats_period', '0.5'];
+    let args = [];
     let expectedDuration = originalDuration;
 
     switch (action) {
@@ -134,42 +153,48 @@ async function processSingleClipJob(jobId) {
             const factor = 1 / speed;
             expectedDuration = originalDuration * factor;
             
-            // OTIMIZADO: mi_mode=mci para IA real, mas me_mode=bilin e mc_mode=obmc para ser mais leve que aobmc
-            // Isso evita que o processo seja morto por falta de memória ou CPU
-            args.push(
+            // MCI OTIMIZADO: mi_mode=mci mas com configurações que não matam a CPU
+            // Adicionado setpts antes para garantir que o ffmpeg entenda a nova duração no progresso
+            args = [
                 '-i', videoFile.path,
-                '-filter_complex', `[0:v]minterpolate=fps=60:mi_mode=mci:mc_mode=obmc:me_mode=bilin:scd=fdiff,setpts=${factor}*PTS[v];[0:a]atempo=${speed}[a]`,
+                '-filter_complex', `[0:v]setpts=${factor}*PTS,minterpolate=fps=60:mi_mode=mci:mc_mode=obmc:me_mode=bilin:scd=fdiff[v];[0:a]atempo=${speed}[a]`,
                 '-map', '[v]', '-map', '[a]',
-                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-max_muxing_queue_size', '1024',
                 '-y', outputPath
-            );
+            ];
             break;
 
         case 'upscale-real':
-            args.push('-i', videoFile.path, '-vf', "scale=3840:2160:flags=lanczos", '-c:v', 'libx264', '-preset', 'ultrafast', '-y', outputPath);
+            args = ['-i', videoFile.path, '-vf', "scale=3840:2160:flags=lanczos", '-c:v', 'libx264', '-preset', 'ultrafast', '-y', outputPath];
             break;
 
         case 'reverse-real':
-            args.push('-i', videoFile.path, '-vf', 'reverse', '-af', 'areverse', '-c:v', 'libx264', '-preset', 'ultrafast', '-y', outputPath);
+            args = ['-i', videoFile.path, '-vf', 'reverse', '-af', 'areverse', '-c:v', 'libx264', '-preset', 'ultrafast', '-y', outputPath];
             break;
 
         case 'reduce-noise-real':
-            args.push('-i', videoFile.path, '-af', 'afftdn', '-y', outputPath);
+            // Garante que o vídeo seja removido se o output for .wav
+            args = ['-i', videoFile.path, '-vn', '-af', 'afftdn', '-y', outputPath];
             break;
 
         case 'remove-silence-real':
             const silence_dur = params.duration || 0.5;
             const silence_thresh = params.threshold || -30;
-            args.push('-i', videoFile.path, '-af', `silenceremove=stop_periods=-1:stop_duration=${silence_dur}:stop_threshold=${silence_thresh}dB`, '-y', outputPath);
+            args = ['-i', videoFile.path, '-vn', '-af', `silenceremove=stop_periods=-1:stop_duration=${silence_dur}:stop_threshold=${silence_thresh}dB`, '-y', outputPath];
             break;
 
         case 'isolate-voice-real':
-            args.push('-i', videoFile.path, '-af', 'highpass=f=200,lowpass=f=3000', '-y', outputPath);
+            args = ['-i', videoFile.path, '-vn', '-af', 'highpass=f=200,lowpass=f=3000', '-y', outputPath];
+            break;
+
+        case 'extract-audio':
+            args = ['-i', videoFile.path, '-vn', '-acodec', 'libmp3lame', '-y', outputPath.replace('.wav', '.mp3')];
+            job.outputPath = outputPath.replace('.wav', '.mp3');
             break;
 
         default:
             const filter = getStyleFilter(action);
-            args.push('-i', videoFile.path, '-vf', filter, '-c:v', 'libx264', '-preset', 'ultrafast', '-y', outputPath);
+            args = ['-i', videoFile.path, '-vf', filter, '-c:v', 'libx264', '-preset', 'ultrafast', '-y', outputPath];
     }
 
     createFFmpegJob(jobId, args, expectedDuration);
@@ -180,22 +205,46 @@ async function processSingleClipJob(jobId) {
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
-    jobs[jobId] = { status: 'pending', files: req.files, params: req.body, outputPath: null };
-    res.status(202).json({ jobId });
+    // Armazena info básica do job
+    jobs[jobId] = { 
+        status: 'pending', 
+        files: req.files, 
+        params: req.body, 
+        outputPath: null,
+        startTime: Date.now()
+    };
     processSingleClipJob(jobId);
+    res.status(202).json({ jobId });
 });
 
-app.get('/api/process/status/:jobId', (req, res) => res.json(jobs[req.params.jobId] || { status: 'not_found' }));
+app.get('/api/process/status/:jobId', (req, res) => {
+    const job = jobs[req.params.jobId];
+    if (!job) return res.status(404).json({ status: 'not_found' });
+    res.json(job);
+});
 
 app.get('/api/process/download/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
-    if (!job) return res.status(404).send("Trabalho não encontrado.");
-    if (job.status !== 'completed') return res.status(400).send("Arquivo ainda não está pronto para download.");
-    if (!job.outputPath || !fs.existsSync(job.outputPath)) return res.status(404).send("Arquivo físico não encontrado no servidor.");
+    if (!job) return res.status(404).send("Trabalho não encontrado. O servidor pode ter reiniciado.");
+    if (job.status !== 'completed') return res.status(400).send("Arquivo ainda não está pronto.");
+    if (!job.outputPath || !fs.existsSync(job.outputPath)) return res.status(404).send("Arquivo físico não encontrado.");
     
     res.download(job.outputPath);
 });
 
 app.get('/api/check-ffmpeg', (req, res) => res.send("FFmpeg is ready"));
+
+// Cleanup periódico (arquivos com mais de 1 hora)
+setInterval(() => {
+    const now = Date.now();
+    Object.keys(jobs).forEach(id => {
+        if (now - jobs[id].startTime > 3600000) {
+            if (jobs[id].outputPath && fs.existsSync(jobs[id].outputPath)) {
+                fs.unlinkSync(jobs[id].outputPath);
+            }
+            delete jobs[id];
+        }
+    });
+}, 600000);
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
