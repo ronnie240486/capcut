@@ -95,6 +95,43 @@ function checkAudioStream(filePath) {
     });
 }
 
+// Audio Extraction Endpoint
+app.post('/api/process/extract-audio', uploadAny, (req, res) => {
+    const jobId = `extract_${Date.now()}`;
+    if (!req.files || req.files.length === 0) return res.status(400).json({ message: 'No file uploaded.' });
+    
+    jobs[jobId] = { status: 'pending', files: req.files, progress: 0 };
+    res.status(202).json({ jobId });
+    
+    const file = req.files[0];
+    const outputPath = path.join(uploadDir, `${Date.now()}_extracted.mp3`);
+    jobs[jobId].outputPath = outputPath;
+    jobs[jobId].status = 'processing';
+
+    const ffmpeg = spawn('ffmpeg', [
+        '-i', file.path,
+        '-vn', // No video
+        '-acodec', 'libmp3lame',
+        '-q:a', '2',
+        '-y', outputPath
+    ]);
+
+    let ffmpeg_err = '';
+    ffmpeg.stderr.on('data', d => ffmpeg_err += d.toString());
+
+    ffmpeg.on('close', (code) => {
+        if (code === 0) {
+            jobs[jobId].status = 'completed';
+            jobs[jobId].progress = 100;
+            jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+        } else {
+            console.error("FFmpeg extract error:", ffmpeg_err);
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = 'FFmpeg extraction failed';
+        }
+    });
+});
+
 
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
@@ -383,4 +420,4 @@ app.get('/api/check-ffmpeg', (req, res) => {
     });
 });
 
-app.listen(PORT, () => console.log(`Se
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
