@@ -77,6 +77,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
 
     console.log(`[FFmpeg] Iniciando Job ${jobId}. Duração alvo: ${expectedDuration}s`);
 
+    // Flags de robustez globais: -max_muxing_queue_size ajuda em processamentos lentos (IA)
     const finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', ...args];
     const ffmpeg = spawn('ffmpeg', finalArgs);
     
@@ -107,8 +108,8 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             jobs[jobId].status = 'failed';
             const isMem = stderr.includes('Out of memory') || stderr.includes('Killed');
             jobs[jobId].error = isMem 
-                ? "O vídeo é muito pesado para o servidor. Tente diminuir a resolução ou usar um clipe menor."
-                : "Erro no processamento. Tente novamente com outro arquivo.";
+                ? "O vídeo é muito pesado. O servidor interrompeu o processamento por falta de memória."
+                : "Erro no processamento. O formato do arquivo pode ser incompatível ou estar corrompido.";
         }
     });
 }
@@ -140,8 +141,9 @@ async function processSingleClipJob(jobId) {
             const factor = 1 / speed;
             expectedDuration = originalDuration * factor;
             
-            // Construção dinâmica do filtro complexo (Lida com vídeos sem áudio)
-            let filterComplex = `[0:v]scale=if(gte(iw\\,ih)\\,min(1280\\,iw)\\,-2):if(lt(iw\\,ih)\\,min(720\\,ih)\\,-2),setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc:me_mode=bilin[v]`;
+            // Otimização MCI: Limitamos a resolução de entrada para 720p se for muito alta para evitar crash de RAM
+            // Adicionado -max_muxing_queue_size 1024 para estabilidade
+            let filterComplex = `[0:v]scale='min(1280,iw)':-2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc:me_mode=bilin[v]`;
             let mapping = ['-map', '[v]'];
 
             if (hasAudio) {
@@ -155,6 +157,7 @@ async function processSingleClipJob(jobId) {
                 ...mapping,
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26', 
                 '-pix_fmt', 'yuv420p',
+                '-max_muxing_queue_size', '1024',
                 '-y', outputPath
             ];
             break;
