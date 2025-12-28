@@ -13,8 +13,9 @@ app.use(cors());
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
-const uploadDir = 'uploads';
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+// Garantir diretório de uploads absoluto
+const uploadDir = path.resolve(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
@@ -26,7 +27,7 @@ const jobs = {};
 
 function checkAudioStream(filePath) {
     return new Promise((resolve) => {
-        const ffmpeg = spawn('ffmpeg', ['-i', filePath]);
+        const ffmpeg = spawn('ffmpeg', ['-i', path.resolve(filePath)]);
         let stderr = '';
         ffmpeg.stderr.on('data', d => stderr += d.toString());
         ffmpeg.on('close', () => resolve(/Stream #\d+:\d+.*Audio:/.test(stderr)));
@@ -37,68 +38,98 @@ function createFFmpegJob(jobId, args, res) {
     jobs[jobId] = { status: 'processing', progress: 0 };
     if (res) res.status(202).json({ jobId });
 
+    // Log para debug no console do servidor
+    console.log(`Starting FFmpeg job ${jobId} with args:`, args.join(' '));
+
     const ffmpeg = spawn('ffmpeg', args);
     let stderr = '';
     ffmpeg.stderr.on('data', d => {
         stderr += d.toString();
-        // Progresso simplificado
         if (jobs[jobId]) jobs[jobId].progress = 50;
     });
 
     ffmpeg.on('close', (code) => {
         if (code === 0) {
+            console.log(`Job ${jobId} completed successfully.`);
             jobs[jobId].status = 'completed';
             jobs[jobId].progress = 100;
             jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
         } else {
-            console.error("FFmpeg Error:", stderr);
+            console.error(`FFmpeg Job ${jobId} Failed (Code ${code}):`, stderr);
             jobs[jobId].status = 'failed';
             jobs[jobId].error = stderr;
         }
     });
 }
 
-// --- NOVO: ENDPOINT PARA EXTRAÇÃO DE ÁUDIO ---
+// --- ENDPOINT PARA EXTRAÇÃO DE ÁUDIO CORRIGIDO ---
 app.post('/api/process/extract-audio', uploadAny, (req, res) => {
-    const jobId = `audio_ext_${Date.now()}`;
     const file = req.files[0];
     if (!file) return res.status(400).send("Arquivo não enviado.");
 
-    const outputPath = path.join(uploadDir, `${jobId}.mp3`);
+    const jobId = `audio_ext_${Date.now()}`;
+    const inputPath = path.resolve(file.path);
+    const outputPath = path.resolve(uploadDir, `${jobId}.mp3`);
+    
+    // Verificar se o arquivo realmente existe no disco
+    if (!fs.existsSync(inputPath)) {
+        return res.status(500).send("Erro interno: Arquivo de entrada não encontrado no servidor.");
+    }
+
     jobs[jobId] = { outputPath };
 
-    // Comando: -i entrada -vn (sem video) -acodec mp3 saida.mp3
-    const args = ['-i', file.path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', '-y', outputPath];
+    // Caminhos absolutos resolvem o erro "Invalid argument"
+    const args = [
+        '-i', inputPath,
+        '-vn', 
+        '-acodec', 'libmp3lame', 
+        '-q:a', '2', 
+        '-y', outputPath
+    ];
+    
     createFFmpegJob(jobId, args, res);
 });
 
-// --- NOVO: ENDPOINT PARA EXTRAÇÃO DE FRAME (FREEZE) ---
+// --- ENDPOINT PARA EXTRAÇÃO DE FRAME (FREEZE) CORRIGIDO ---
 app.post('/api/util/extract-frame', uploadAny, (req, res) => {
     const videoFile = req.files.find(f => f.fieldname === 'video' || f.fieldname === 'files');
     const timestamp = req.body.timestamp || 0;
     if (!videoFile) return res.status(400).send("Vídeo não enviado.");
 
-    const outputPath = path.join(uploadDir, `frame_${Date.now()}.png`);
+    const inputPath = path.resolve(videoFile.path);
+    const outputPath = path.resolve(uploadDir, `frame_${Date.now()}.png`);
     
-    // Comando: -ss tempo -i video -frames:v 1 saida.png
-    const args = ['-ss', timestamp.toString(), '-i', videoFile.path, '-frames:v', '1', '-q:v', '2', '-y', outputPath];
+    if (!fs.existsSync(inputPath)) {
+        return res.status(500).send("Arquivo de vídeo não encontrado.");
+    }
+
+    const args = [
+        '-ss', timestamp.toString(), 
+        '-i', inputPath, 
+        '-frames:v', '1', 
+        '-q:v', '2', 
+        '-y', outputPath
+    ];
     
     const ffmpeg = spawn('ffmpeg', args);
     ffmpeg.on('close', (code) => {
-        if (code === 0) res.sendFile(path.resolve(outputPath));
+        if (code === 0) res.sendFile(outputPath);
         else res.status(500).send("Erro ao extrair frame.");
     });
 });
 
-// --- ENDPOINTS DE ÁUDIO (ISOLAMENTO, RUÍDO, REALCE) ---
+// --- ENDPOINTS DE ÁUDIO INTELIGENTE ---
 app.post('/api/process/start/:type(isolate-voice-real|reduce-noise-real|enhance-voice-real)', uploadAny, async (req, res) => {
     const type = req.params.type;
-    const jobId = `audio_proc_${Date.now()}`;
     const file = req.files[0];
+    if (!file) return res.status(400).send("Arquivo não enviado.");
+
+    const jobId = `audio_proc_${Date.now()}`;
+    const inputPath = path.resolve(file.path);
     const isVideo = file.mimetype.startsWith('video/');
     const intensity = (req.body.intensity || 50) / 100;
     const ext = isVideo ? 'mp4' : 'wav';
-    const outputPath = path.join(uploadDir, `${type}_${Date.now()}.${ext}`);
+    const outputPath = path.resolve(uploadDir, `${type}_${Date.now()}.${ext}`);
     
     jobs[jobId] = { outputPath, files: req.files };
 
@@ -112,25 +143,8 @@ app.post('/api/process/start/:type(isolate-voice-real|reduce-noise-real|enhance-
     }
 
     let args = isVideo ? 
-        ['-i', file.path, '-af', audioFilter, '-c:v', 'copy', '-c:a', 'aac', '-y', outputPath] :
-        ['-i', file.path, '-af', audioFilter, '-vn', '-acodec', 'pcm_s16le', '-y', outputPath];
-
-    createFFmpegJob(jobId, args, res);
-});
-
-// --- ENDPOINT GENÉRICO DE START (Caso existam outros) ---
-app.post('/api/process/start/:action', uploadAny, (req, res) => {
-    const action = req.params.action;
-    const jobId = `${action}_${Date.now()}`;
-    const file = req.files[0];
-    if (!file) return res.status(400).send("Arquivo não enviado.");
-
-    const outputPath = path.join(uploadDir, `${jobId}.mp4`);
-    jobs[jobId] = { outputPath };
-
-    let args = ['-i', file.path];
-    // Adicionar lógica de filtros conforme a 'action' se necessário
-    args.push('-c:v', 'libx264', '-preset', 'fast', '-y', outputPath);
+        ['-i', inputPath, '-af', audioFilter, '-c:v', 'copy', '-c:a', 'aac', '-y', outputPath] :
+        ['-i', inputPath, '-af', audioFilter, '-vn', '-acodec', 'pcm_s16le', '-y', outputPath];
 
     createFFmpegJob(jobId, args, res);
 });
@@ -160,13 +174,14 @@ async function processExportJob(jobId) {
         
         for (let idx = 0; idx < files.length; idx++) {
             const file = files[idx];
+            const absPath = path.resolve(file.path);
             if (/\.(jpe?g|png|webp)$/i.test(file.originalname)) inputArgs.push('-loop', '1');
-            inputArgs.push("-i", file.path);
+            inputArgs.push("-i", absPath);
             fileMap[file.originalname] = idx;
-            fileAudioMap[idx] = await checkAudioStream(file.path);
+            fileAudioMap[idx] = await checkAudioStream(absPath);
         }
 
-        const outputPath = path.join(uploadDir, `${Date.now()}_export.${config.format}`);
+        const outputPath = path.resolve(uploadDir, `${Date.now()}_export.${config.format}`);
         job.outputPath = outputPath;
 
         const filterComplexParts = [];
@@ -231,7 +246,6 @@ async function processExportJob(jobId) {
         filterComplexParts.push(amix);
 
         const args = [
-            ...inputArgs,
             '-filter_complex', filterComplexParts.join(';'),
             '-map', lastV, '-map', '[outa]',
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '-t', duration.toString(), '-y', outputPath
