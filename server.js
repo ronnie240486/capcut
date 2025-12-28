@@ -257,7 +257,235 @@ async function processExportJob(jobId) {
             job.progress = 100;
             job.downloadUrl = `/api/process/download/${jobId}`;
         });
-   case 'magic-erase-real': {
+        
+  // Viral Cuts Logic
+async function processViralCutsJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'processing'; job.progress = 10;
+    try {
+        const videoFile = job.files.video[0];
+        const params = job.params || {};
+        const count = parseInt(params.count) || 3;
+        const style = params.style || 'blur';
+        
+        const durationCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoFile.path}"`;
+        const duration = await new Promise((resolve, reject) => exec(durationCmd, (err, stdout) => err ? reject(err) : resolve(parseFloat(stdout))));
+
+        const segmentDuration = 10;
+        const step = Math.max(15, Math.floor(duration / (count + 1)));
+        
+        let verticalFilter = "";
+        if (style === 'crop') verticalFilter = "scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1";
+        else verticalFilter = "split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2";
+
+        const segments = [];
+        for(let i=1; i<=count; i++) {
+            const start = step * i;
+            if (start + segmentDuration < duration) segments.push({ start, duration: segmentDuration });
+        }
+        if (segments.length === 0) segments.push({ start: 0, duration: Math.min(duration, 30) });
+
+        let trimChain = "";
+        segments.forEach((seg, idx) => {
+            trimChain += `[0:v]trim=${seg.start}:${seg.start+seg.duration},setpts=PTS-STARTPTS,${verticalFilter}[v${idx}];`;
+            trimChain += `[0:a]atrim=${seg.start}:${seg.start+seg.duration},asetpts=PTS-STARTPTS[a${idx}];`;
+        });
+        
+        const vInputs = segments.map((_, i) => `[v${i}]`).join('');
+        const aInputs = segments.map((_, i) => `[a${i}]`).join('');
+        
+        trimChain += `${vInputs}concat=n=${segments.length}:v=1:a=0[outv];${aInputs}concat=n=${segments.length}:v=0:a=1[outa]`;
+
+        const outputPath = path.join(uploadDir, `viral_${Date.now()}.mp4`);
+        job.outputPath = outputPath;
+
+        const cmd = `ffmpeg -i "${videoFile.path}" -filter_complex "${trimChain}" -map "[outv]" -map "[outa]" -c:v libx264 -preset ultrafast -c:a aac "${outputPath}"`;
+        exec(cmd, (error, stdout, stderr) => {
+            if (error) { job.status = 'failed'; job.error = "FFmpeg failed processing viral cuts"; } 
+            else { job.status = 'completed'; job.progress = 100; job.downloadUrl = `/api/process/download/${jobId}`; }
+        });
+    } catch (e) { job.status = 'failed'; job.error = e.message; }
+}
+
+function processScriptToVideoJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'failed';
+    job.error = "Script to video processing not fully implemented on server-side. Use client-side generation.";
+}
+
+// --- LÓGICA DE PROCESSAMENTO DE TAREFAS DE CLIPE ÚNICO ---
+async function processSingleClipJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'processing'; job.progress = 0;
+
+    const action = jobId.split('_')[0];
+    const videoFile = job.files.video ? job.files.video[0] : (job.files.audio ? job.files.audio[0] : null);
+    if (!videoFile && action !== 'voice-clone') { // voice-clone might pass file differently or we handle it inside
+         job.status = 'failed'; job.error = "No media file provided."; return;
+    }
+
+    let params = {};
+    if (job.params && job.params.params) {
+        try { params = typeof job.params.params === 'string' ? JSON.parse(job.params.params) : job.params.params; } catch(e) {}
+    } else if (job.params) params = job.params;
+
+    const inputIsImage = videoFile ? isImage(videoFile.originalname) : false;
+    let outputExtension = '.mp4';
+    if (inputIsImage && ['magic-erase-real', 'video-to-cartoon-real', 'style-transfer-real', 'stickerize-real', 'retouch-real', 'colorize-real', 'reframe-real', 'remove-bg-real', 'upscale-real'].includes(action)) outputExtension = '.png';
+    if (['extract-audio-real', 'reduce-noise-real', 'isolate-voice-real', 'enhance-voice-real', 'auto-ducking-real', 'voice-fx-real', 'voice-clone'].includes(action)) outputExtension = '.wav';
+    
+    // WebM for transparency support in video, PNG for image rotoscope
+    if (action === 'rotoscope-real') {
+        outputExtension = inputIsImage ? '.png' : '.webm';
+    }
+
+    const outputFilename = `${action}-${Date.now()}${outputExtension}`;
+    const outputPath = path.join(uploadDir, outputFilename);
+    job.outputPath = outputPath;
+
+    const MAX_WIDTH = 1280;
+    const originalW = params.originalWidth || 1920;
+    let args = [];
+
+    switch (action) {
+        case 'rotoscope-real': {
+             // Auto Rotoscope (Smart Cutout)
+             const color = (params.color || '#00FF00').replace('#', '0x');
+             const similarity = params.similarity || 0.3;
+             const smoothness = params.smoothness || 0.1;
+             
+             args.push('-i', videoFile.path);
+             args.push('-vf', `chromakey=${color}:${similarity}:${smoothness}`);
+             
+             if (outputExtension === '.png') {
+                 // For image input, output PNG with alpha
+                 args.push('-c:v', 'png');
+                 args.push('-f', 'image2');
+             } else {
+                 // For video input, output WebM with alpha
+                 args.push('-c:v', 'libvpx-vp9', '-b:v', '2M'); 
+                 args.push('-auto-alt-ref', '0');
+                 args.push('-c:a', 'libvorbis');
+             }
+             args.push(outputPath);
+             break;
+        }
+
+        case 'lip-sync-real': {
+             // Lip Sync (Dubbing)
+             // Replaces video audio with new voice file
+             const voiceFile = job.files.audio ? job.files.audio[0] : null;
+             if (!voiceFile) { job.status = 'failed'; job.error = "Audio file required for Lip Sync."; return; }
+             
+             // Map video stream from input 0, audio stream from input 1
+             // -shortest cuts video to match audio length if audio is shorter (common in dubbing)
+             args.push('-i', videoFile.path);
+             args.push('-i', voiceFile.path);
+             args.push('-map', '0:v:0');
+             args.push('-map', '1:a:0');
+             args.push('-c:v', 'copy'); // Copy video stream (fast) or re-encode if needed for precision
+             args.push('-c:a', 'aac');
+             args.push('-shortest');
+             args.push(outputPath);
+             break;
+        }
+
+        case 'ai-dubbing': {
+            // AI Dubbing Pipeline: Extract -> Translate (Gemini) -> Clone+TTS (ElevenLabs) -> Merge
+            const targetLang = params.targetLanguage || 'English';
+            const apiKeyEleven = job.params.apiKey;
+            const geminiKey = process.env.API_KEY;
+
+            if (!apiKeyEleven) { job.status = 'failed'; job.error = "ElevenLabs API Key required."; return; }
+            if (!geminiKey) { job.status = 'failed'; job.error = "Gemini API Key missing."; return; }
+
+            try {
+                // 1. Extract Audio
+                const extractedAudioPath = path.join(uploadDir, `temp_extract_${jobId}.mp3`);
+                await new Promise((resolve, reject) => {
+                    exec(`ffmpeg -i "${videoFile.path}" -vn -acodec libmp3lame "${extractedAudioPath}"`, (err) => err ? reject(err) : resolve());
+                });
+
+                // 2. Transcribe & Translate (Gemini)
+                console.log(`[Job ${jobId}] Transcribing & Translating...`);
+                // Read audio as base64 for Gemini
+                const audioBuffer = fs.readFileSync(extractedAudioPath);
+                const audioBase64 = audioBuffer.toString('base64');
+                
+                const geminiPayload = {
+                    contents: [{
+                        parts: [
+                            { inline_data: { mime_type: "audio/mp3", data: audioBase64 } },
+                            { text: `Transcribe the spoken audio and translate it to ${targetLang}. Return ONLY the translated text.` }
+                        ]
+                    }]
+                };
+
+                const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(geminiPayload)
+                });
+                
+                if (!geminiRes.ok) throw new Error(`Gemini Translation Failed: ${geminiRes.status}`);
+                const geminiData = await geminiRes.json();
+                const translatedText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (!translatedText) throw new Error("No translation returned.");
+                console.log(`[Job ${jobId}] Translated: ${translatedText.substring(0, 50)}...`);
+
+                // 3. Instant Voice Clone & TTS (ElevenLabs)
+                console.log(`[Job ${jobId}] Cloning Voice & Generating Speech...`);
+                
+                // Add Voice
+                const addVoiceForm = new FormData();
+                addVoiceForm.append('name', `Dubbing_Temp_${jobId}`);
+                addVoiceForm.append('files', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'sample.mp3');
+                
+                const addVoiceRes = await fetch('https://api.elevenlabs.io/v1/voices/add', {
+                    method: 'POST',
+                    headers: { 'xi-api-key': apiKeyEleven },
+                    body: addVoiceForm
+                });
+                if (!addVoiceRes.ok) throw new Error(`Voice Clone Failed: ${await addVoiceRes.text()}`);
+                const voiceData = await addVoiceRes.json();
+                const voiceId = voiceData.voice_id;
+
+                // Generate TTS
+                const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+                    method: 'POST',
+                    headers: { 'xi-api-key': apiKeyEleven, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: translatedText, model_id: "eleven_multilingual_v2" })
+                });
+                if (!ttsRes.ok) throw new Error(`TTS Generation Failed`);
+                
+                const ttsBuffer = await ttsRes.arrayBuffer();
+                const dubbedAudioPath = path.join(uploadDir, `dubbed_audio_${jobId}.mp3`);
+                fs.writeFileSync(dubbedAudioPath, Buffer.from(ttsBuffer));
+
+                // Cleanup Voice
+                await fetch(`https://api.elevenlabs.io/v1/voices/${voiceId}`, {
+                    method: 'DELETE',
+                    headers: { 'xi-api-key': apiKeyEleven }
+                });
+
+                // 4. Merge
+                args.push('-i', videoFile.path);
+                args.push('-i', dubbedAudioPath);
+                args.push('-map', '0:v');
+                args.push('-map', '1:a');
+                args.push('-c:v', 'copy');
+                args.push('-c:a', 'aac');
+                args.push('-shortest'); // Ensure video doesn't run longer than audio (or vice versa logic needed?) Usually we want full video but audio might differ.
+                // Standard dubbing keeps video length. If audio is shorter, silent end. If longer, cut.
+                args.push(outputPath);
+
+            } catch (e) {
+                job.status = 'failed'; job.error = e.message; return;
+            }
+            break;
+        }
+
+        case 'magic-erase-real': {
              let { x, y, w, h } = params;
              let processScale = originalW > MAX_WIDTH ? `scale=${MAX_WIDTH}:-2,` : "";
              let scaleFactor = originalW > MAX_WIDTH ? MAX_WIDTH / originalW : 1;
