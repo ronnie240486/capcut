@@ -194,7 +194,5 @@ app.get('/api/process/download/:jobId', (req, res) => {
 app.get('/api/check-ffmpeg', (req, res) => res.send("FFmpeg is ready"));
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-});
-app.get('/api/check-ffmpeg', (req, res) => res.send("FFmpeg is ready"));
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
