@@ -974,12 +974,11 @@ app.post('/api/process/generate-music', uploadAny, async (req, res) => {
             else { jobs[jobId].status = 'completed'; jobs[jobId].progress = 100; jobs[jobId].downloadUrl = `/api/process/download/${jobId}`; }
         });
 
-    } catch (e) {
-        jobs[jobId].status = 'failed'; 
-        jobs[jobId].error = e.message;
+       } catch (err) {
+        job.status = 'failed';
+        job.error = err.message;
     }
-});
-
+}
 
 app.get('/api/process/status/:jobId', (req, res) => res.json(jobs[req.params.jobId] || { status: 'not_found' }));
 app.get('/api/process/download/:jobId', (req, res) => {
