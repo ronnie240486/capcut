@@ -35,16 +35,14 @@ function checkAudioStream(filePath) {
 
 function createFFmpegJob(jobId, args, res) {
     jobs[jobId] = { status: 'processing', progress: 0 };
-    res.status(202).json({ jobId });
+    if (res) res.status(202).json({ jobId });
 
     const ffmpeg = spawn('ffmpeg', args);
     let stderr = '';
     ffmpeg.stderr.on('data', d => {
         stderr += d.toString();
-        const timeMatch = d.toString().match(/time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})/);
-        if (timeMatch && jobs[jobId]) {
-            jobs[jobId].progress = 50; 
-        }
+        // Progresso simplificado
+        if (jobs[jobId]) jobs[jobId].progress = 50;
     });
 
     ffmpeg.on('close', (code) => {
@@ -60,10 +58,42 @@ function createFFmpegJob(jobId, args, res) {
     });
 }
 
-// --- ENDPOINTS DE ÁUDIO MELHORADOS ---
+// --- NOVO: ENDPOINT PARA EXTRAÇÃO DE ÁUDIO ---
+app.post('/api/process/extract-audio', uploadAny, (req, res) => {
+    const jobId = `audio_ext_${Date.now()}`;
+    const file = req.files[0];
+    if (!file) return res.status(400).send("Arquivo não enviado.");
+
+    const outputPath = path.join(uploadDir, `${jobId}.mp3`);
+    jobs[jobId] = { outputPath };
+
+    // Comando: -i entrada -vn (sem video) -acodec mp3 saida.mp3
+    const args = ['-i', file.path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', '-y', outputPath];
+    createFFmpegJob(jobId, args, res);
+});
+
+// --- NOVO: ENDPOINT PARA EXTRAÇÃO DE FRAME (FREEZE) ---
+app.post('/api/util/extract-frame', uploadAny, (req, res) => {
+    const videoFile = req.files.find(f => f.fieldname === 'video' || f.fieldname === 'files');
+    const timestamp = req.body.timestamp || 0;
+    if (!videoFile) return res.status(400).send("Vídeo não enviado.");
+
+    const outputPath = path.join(uploadDir, `frame_${Date.now()}.png`);
+    
+    // Comando: -ss tempo -i video -frames:v 1 saida.png
+    const args = ['-ss', timestamp.toString(), '-i', videoFile.path, '-frames:v', '1', '-q:v', '2', '-y', outputPath];
+    
+    const ffmpeg = spawn('ffmpeg', args);
+    ffmpeg.on('close', (code) => {
+        if (code === 0) res.sendFile(path.resolve(outputPath));
+        else res.status(500).send("Erro ao extrair frame.");
+    });
+});
+
+// --- ENDPOINTS DE ÁUDIO (ISOLAMENTO, RUÍDO, REALCE) ---
 app.post('/api/process/start/:type(isolate-voice-real|reduce-noise-real|enhance-voice-real)', uploadAny, async (req, res) => {
     const type = req.params.type;
-    const jobId = `audio_${type}_${Date.now()}`;
+    const jobId = `audio_proc_${Date.now()}`;
     const file = req.files[0];
     const isVideo = file.mimetype.startsWith('video/');
     const intensity = (req.body.intensity || 50) / 100;
@@ -81,18 +111,31 @@ app.post('/api/process/start/:type(isolate-voice-real|reduce-noise-real|enhance-
         audioFilter = `compand=attacks=0:points=-80/-80|-40/-15|-20/-10|0/-7,equalizer=f=3000:width_type=h:width=200:g=3`;
     }
 
-    let args = [];
-    if (isVideo) {
-        // Se for vídeo, mantemos o vídeo e processamos o áudio
-        args = ['-i', file.path, '-af', audioFilter, '-c:v', 'copy', '-c:a', 'aac', '-y', outputPath];
-    } else {
-        args = ['-i', file.path, '-af', audioFilter, '-vn', '-acodec', 'pcm_s16le', '-y', outputPath];
-    }
+    let args = isVideo ? 
+        ['-i', file.path, '-af', audioFilter, '-c:v', 'copy', '-c:a', 'aac', '-y', outputPath] :
+        ['-i', file.path, '-af', audioFilter, '-vn', '-acodec', 'pcm_s16le', '-y', outputPath];
 
     createFFmpegJob(jobId, args, res);
 });
 
-// --- MOTOR DE EXPORTAÇÃO COM SUPORTE A VELOCIDADE ---
+// --- ENDPOINT GENÉRICO DE START (Caso existam outros) ---
+app.post('/api/process/start/:action', uploadAny, (req, res) => {
+    const action = req.params.action;
+    const jobId = `${action}_${Date.now()}`;
+    const file = req.files[0];
+    if (!file) return res.status(400).send("Arquivo não enviado.");
+
+    const outputPath = path.join(uploadDir, `${jobId}.mp4`);
+    jobs[jobId] = { outputPath };
+
+    let args = ['-i', file.path];
+    // Adicionar lógica de filtros conforme a 'action' se necessário
+    args.push('-c:v', 'libx264', '-preset', 'fast', '-y', outputPath);
+
+    createFFmpegJob(jobId, args, res);
+});
+
+// --- MOTOR DE EXPORTAÇÃO ---
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
     const projectState = JSON.parse(req.body.projectState);
@@ -142,7 +185,6 @@ async function processExportJob(jobId) {
             const inputIdx = fileMap[clip.fileName];
             if (inputIdx === undefined) return;
 
-            const p = clip.properties;
             const filters = [
                 `trim=start=${clip.mediaStartOffset || 0}:duration=${clip.duration}`,
                 'setpts=PTS-STARTPTS',
@@ -150,17 +192,8 @@ async function processExportJob(jobId) {
                 'setsar=1'
             ];
 
-            // APLICAÇÃO DE VELOCIDADE (SPEED)
-            let speedFactor = 1.0;
-            if (p.speedCurve) {
-                speedFactor = p.speedCurve.points.reduce((acc, pt) => acc + pt.speed, 0) / p.speedCurve.points.length;
-            } else if (p.speed) {
-                speedFactor = p.speed;
-            }
-
-            if (speedFactor !== 1.0) {
-                filters.push(`setpts=${1/speedFactor}*PTS`);
-            }
+            let speedFactor = clip.properties.speed || 1.0;
+            if (speedFactor !== 1.0) filters.push(`setpts=${1/speedFactor}*PTS`);
 
             filterComplexParts.push(`[${inputIdx}:v]${filters.join(',')} [${clipIdV}]`);
             processedStreams[clip.id] = `[${clipIdV}]`;
@@ -181,20 +214,13 @@ async function processExportJob(jobId) {
             if (inputIdx !== undefined && fileAudioMap[inputIdx]) {
                 const aStream = `[a_clip_${i}]`;
                 let speedFactor = clip.properties.speed || 1.0;
-                if (clip.properties.speedCurve) {
-                    speedFactor = clip.properties.speedCurve.points.reduce((acc, pt) => acc + pt.speed, 0) / clip.properties.speedCurve.points.length;
-                }
-
                 let aFilter = `[${inputIdx}:a]atrim=start=${clip.mediaStartOffset || 0}:duration=${clip.duration},asetpts=PTS-STARTPTS`;
-                
-                // Aplicar atempo (limite do ffmpeg é 0.5 a 2.0 por filtro)
                 if (speedFactor !== 1.0) {
                     let s = speedFactor;
                     while (s > 2.0) { aFilter += `,atempo=2.0`; s /= 2.0; }
                     while (s < 0.5) { aFilter += `,atempo=0.5`; s /= 0.5; }
                     aFilter += `,atempo=${s}`;
                 }
-
                 aFilter += `,adelay=${clip.start * 1000}|${clip.start * 1000}${aStream}`;
                 filterComplexParts.push(aFilter);
                 audioInputs.push(aStream);
