@@ -54,7 +54,7 @@ const FFMPEG_EFFECTS = {
     'dreamy-blur': "gblur=sigma=1.5,eq=brightness=0.1:saturation=0.8",
     'horror': "eq=contrast=1.6:brightness=-0.3:saturation=0.3,vignette,curves=b='0/0.1 1/0.9'",
     'underwater': "eq=contrast=1.1:brightness=-0.1,hue=h=190,gblur=sigma=0.5",
-    'sunset': "eq=saturation=1.4,vignette,curves=r='0/0.1 1/0.95':g='0/0.05 1/0.98':b='0/0.2 1/0.8'",
+    'sunset': "eq=saturation=1.4,vignette,curves=r='0/0.1 1/0.95':g='0/0.05 1/1':b='0/0.2 1/0.8'",
     'vibrant': 'eq=saturation=1.8:contrast=1.1',
     'muted': 'eq=saturation=0.6:contrast=0.95',
     'golden-hour': "curves=r='0/0.1 1/1':g='0/0.05 1/1':b='0/0.2 1/0.8',eq=saturation=1.2",
@@ -74,6 +74,26 @@ const FFMPEG_EFFECTS = {
     'radioactive': 'eq=saturation=3,hue=h=90',
     'mono': 'format=gray'
 };
+
+// Helper to check for audio stream in a file
+function checkAudioStream(filePath) {
+    return new Promise((resolve) => {
+        const ffmpeg = spawn('ffmpeg', ['-i', filePath]);
+        let stderr = '';
+        ffmpeg.stderr.on('data', d => stderr += d.toString());
+        ffmpeg.on('close', () => {
+            // Check for Audio stream info in stderr output
+            // Example: Stream #0:1(und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, stereo, fltp, 128 kb/s (default)
+            resolve(/Stream #\d+:\d+.*Audio:/.test(stderr));
+        });
+        ffmpeg.on('error', () => {
+            // If checking fails, default to false to prevent crashing map, 
+            // but log it.
+            console.error("Failed to check audio stream for", filePath);
+            resolve(false); 
+        });
+    });
+}
 
 
 app.post('/api/export/start', uploadAny, (req, res) => {
@@ -121,13 +141,21 @@ async function processExportJob(jobId) {
         
         const fileMap = {};
         const inputArgs = [];
-        files.forEach((file, idx) => {
+        
+        // 1. Verify Audio Streams in Inputs
+        const fileAudioMap = {}; // idx -> hasAudio (bool)
+        
+        for (let idx = 0; idx < files.length; idx++) {
+            const file = files[idx];
             if (/\.(jpe?g|png|webp)$/i.test(file.originalname)) {
                 inputArgs.push('-loop', '1');
             }
             inputArgs.push("-i", file.path);
             fileMap[file.originalname] = idx;
-        });
+            
+            // Check if this file actually has audio
+            fileAudioMap[idx] = await checkAudioStream(file.path);
+        }
 
         const outputPath = path.join(uploadDir, `${Date.now()}_${config.filename}.${config.format}`);
         job.outputPath = outputPath;
@@ -206,8 +234,6 @@ async function processExportJob(jobId) {
 
         // --- Video Composition ---
         let lastVideoStream = '';
-        // FIX: Combine 'video' and 'camada' tracks into a single stream for transitions.
-        // This enables transitions on the 'camada' track.
         const mainTrackClips = clips.filter(c => (c.track === 'video' || c.track === 'camada') && media && media[c.fileName] && processedStreams[c.id]).sort((a,b) => a.start - b.start);
 
         if (mainTrackClips.length > 0) {
@@ -247,14 +273,19 @@ async function processExportJob(jobId) {
         // --- Audio Pipeline ---
         const audioSetupFilters = [];
         const audioInputsForMix = [];
+        
         clips.forEach((clip, i) => {
-            const hasAudio = media?.[clip.fileName]?.hasAudio || ['audio', 'narration', 'music', 'sfx'].includes(clip.track);
             const inputIdx = fileMap[clip.fileName];
-            if (hasAudio && inputIdx !== undefined) {
+            
+            // KEY FIX: Only include audio if the INPUT file actually has an audio stream.
+            // This prevents "Stream map matches no streams" errors for silent video files.
+            const hasAudioStream = inputIdx !== undefined && fileAudioMap[inputIdx];
+            
+            if (hasAudioStream) {
                 const p = clip.properties;
                 const mediaStart = clip.mediaStartOffset || 0;
                 const clipAudioStream = `[a_clip_${i}]`;
-                // FIX: Add aformat filter to normalize all audio streams before mixing to prevent errors.
+                
                 let filter = `[${inputIdx}:a]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,atrim=start=${mediaStart}:duration=${clip.duration},asetpts=PTS-STARTPTS`;
                 if (p.speed && p.speed !== 1) filter += `,atempo=${p.speed}`;
                 if (p.volume !== undefined && p.volume !== 1) filter += `,volume=${p.volume}`;
@@ -352,4 +383,4 @@ app.get('/api/check-ffmpeg', (req, res) => {
     });
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Se
