@@ -27,7 +27,6 @@ const jobs = {};
 // --- HELPERS ---
 function getMediaInfo(filePath) {
     return new Promise((resolve) => {
-        // Busca tipo de stream (vídeo/áudio) e duração
         exec(`ffprobe -v error -show_entries stream=codec_type,duration -of csv=p=0 "${filePath}"`, (err, stdout) => {
             if (err) return resolve({ duration: 0, hasAudio: false });
             const lines = stdout.trim().split('\n');
@@ -75,9 +74,6 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     
     if (res) res.status(202).json({ jobId });
 
-    console.log(`[FFmpeg] Iniciando Job ${jobId}. Duração alvo: ${expectedDuration}s`);
-
-    // Flags de robustez globais: -max_muxing_queue_size ajuda em processamentos lentos (IA)
     const finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', ...args];
     const ffmpeg = spawn('ffmpeg', finalArgs);
     
@@ -109,7 +105,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             const isMem = stderr.includes('Out of memory') || stderr.includes('Killed');
             jobs[jobId].error = isMem 
                 ? "O vídeo é muito pesado. O servidor interrompeu o processamento por falta de memória."
-                : "Erro no processamento. O formato do arquivo pode ser incompatível ou estar corrompido.";
+                : "Erro no processamento. Verifique se o formato do arquivo é suportado.";
         }
     });
 }
@@ -141,9 +137,8 @@ async function processSingleClipJob(jobId) {
             const factor = 1 / speed;
             expectedDuration = originalDuration * factor;
             
-            // Otimização MCI: Limitamos a resolução de entrada para 720p se for muito alta para evitar crash de RAM
-            // Adicionado -max_muxing_queue_size 1024 para estabilidade
-            let filterComplex = `[0:v]scale='min(1280,iw)':-2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc:me_mode=bilin[v]`;
+            // CORREÇÃO: Removido me_mode=bilin que causava erro de constante e simplificado para maior compatibilidade
+            let filterComplex = `[0:v]scale='min(1280,iw)':-2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
             let mapping = ['-map', '[v]'];
 
             if (hasAudio) {
@@ -185,8 +180,10 @@ async function processSingleClipJob(jobId) {
             break;
 
         case 'extract-audio':
-            args = ['-i', videoFile.path, '-vn', '-acodec', 'libmp3lame', '-y', outputPath.replace('.wav', '.mp3')];
-            job.outputPath = outputPath.replace('.wav', '.mp3');
+            // Garante extração limpa para MP3
+            const finalAudioPath = outputPath.replace('.wav', '.mp3');
+            args = ['-i', videoFile.path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', '-y', finalAudioPath];
+            job.outputPath = finalAudioPath;
             break;
 
         default:
@@ -209,43 +206,6 @@ app.get('/api/process/status/:jobId', (req, res) => {
     if (!job) return res.status(404).json({ status: 'not_found' });
     res.json(job);
 });
-// Audio Extraction Endpoint
-app.post('/api/process/extract-audio', uploadAny, (req, res) => {
-    const jobId = `extract_${Date.now()}`;
-    if (!req.files || req.files.length === 0) return res.status(400).json({ message: 'No file uploaded.' });
-    
-    jobs[jobId] = { status: 'pending', files: req.files, progress: 0 };
-    res.status(202).json({ jobId });
-    
-    const file = req.files[0];
-    const outputPath = path.join(uploadDir, `${Date.now()}_extracted.mp3`);
-    jobs[jobId].outputPath = outputPath;
-    jobs[jobId].status = 'processing';
-
-    const ffmpeg = spawn('ffmpeg', [
-        '-i', file.path,
-        '-vn', // No video
-        '-acodec', 'libmp3lame',
-        '-q:a', '2',
-        '-y', outputPath
-    ]);
-
-    let ffmpeg_err = '';
-    ffmpeg.stderr.on('data', d => ffmpeg_err += d.toString());
-
-    ffmpeg.on('close', (code) => {
-        if (code === 0) {
-            jobs[jobId].status = 'completed';
-            jobs[jobId].progress = 100;
-            jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
-        } else {
-            console.error("FFmpeg extract error:", ffmpeg_err);
-            jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'FFmpeg extraction failed';
-        }
-    });
-});
-
 
 app.get('/api/process/download/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
