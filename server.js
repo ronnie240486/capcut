@@ -278,14 +278,6 @@ async function processViralCutsJob(jobId) {
     } catch (e) { job.status = 'failed'; job.error = e.message; }
 }
 
-function processScriptToVideoJob(jobId) {
-    const job = jobs[jobId];
-    job.status = 'failed';
-    job.error = "Script to video processing not fully implemented on server-side. Use client-side generation.";
-}
-
-
-
         case 'lip-sync-real': {
              // Lip Sync (Dubbing)
              // Replaces video audio with new voice file
