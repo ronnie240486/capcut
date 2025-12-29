@@ -229,28 +229,62 @@ app.post('/api/process/extract-audio', uploadAny, (req, res) => {
     });
 });
 
-        case 'rotoscope-real': {
-             // Auto Rotoscope (Smart Cutout)
-             const color = (params.color || '#00FF00').replace('#', '0x');
-             const similarity = params.similarity || 0.3;
-             const smoothness = params.smoothness || 0.1;
-             
-             args.push('-i', videoFile.path);
-             args.push('-vf', `chromakey=${color}:${similarity}:${smoothness}`);
-             
-             if (outputExtension === '.png') {
-                 // For image input, output PNG with alpha
-                 args.push('-c:v', 'png');
-                 args.push('-f', 'image2');
-             } else {
-                 // For video input, output WebM with alpha
-                 args.push('-c:v', 'libvpx-vp9', '-b:v', '2M'); 
-                 args.push('-auto-alt-ref', '0');
-                 args.push('-c:a', 'libvorbis');
-             }
-             args.push(outputPath);
-             break;
+        // Viral Cuts Logic
+async function processViralCutsJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'processing'; job.progress = 10;
+    try {
+        const videoFile = job.files.video[0];
+        const params = job.params || {};
+        const count = parseInt(params.count) || 3;
+        const style = params.style || 'blur';
+        
+        const durationCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoFile.path}"`;
+        const duration = await new Promise((resolve, reject) => exec(durationCmd, (err, stdout) => err ? reject(err) : resolve(parseFloat(stdout))));
+
+        const segmentDuration = 10;
+        const step = Math.max(15, Math.floor(duration / (count + 1)));
+        
+        let verticalFilter = "";
+        if (style === 'crop') verticalFilter = "scale=-2:1280,crop=720:1280:(iw-720)/2:0,setsar=1";
+        else verticalFilter = "split[original][blur];[blur]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280:(iw-720)/2:(ih-1280)/2,boxblur=20:10[bg];[original]scale=720:1280:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2";
+
+        const segments = [];
+        for(let i=1; i<=count; i++) {
+            const start = step * i;
+            if (start + segmentDuration < duration) segments.push({ start, duration: segmentDuration });
         }
+        if (segments.length === 0) segments.push({ start: 0, duration: Math.min(duration, 30) });
+
+        let trimChain = "";
+        segments.forEach((seg, idx) => {
+            trimChain += `[0:v]trim=${seg.start}:${seg.start+seg.duration},setpts=PTS-STARTPTS,${verticalFilter}[v${idx}];`;
+            trimChain += `[0:a]atrim=${seg.start}:${seg.start+seg.duration},asetpts=PTS-STARTPTS[a${idx}];`;
+        });
+        
+        const vInputs = segments.map((_, i) => `[v${i}]`).join('');
+        const aInputs = segments.map((_, i) => `[a${i}]`).join('');
+        
+        trimChain += `${vInputs}concat=n=${segments.length}:v=1:a=0[outv];${aInputs}concat=n=${segments.length}:v=0:a=1[outa]`;
+
+        const outputPath = path.join(uploadDir, `viral_${Date.now()}.mp4`);
+        job.outputPath = outputPath;
+
+        const cmd = `ffmpeg -i "${videoFile.path}" -filter_complex "${trimChain}" -map "[outv]" -map "[outa]" -c:v libx264 -preset ultrafast -c:a aac "${outputPath}"`;
+        exec(cmd, (error, stdout, stderr) => {
+            if (error) { job.status = 'failed'; job.error = "FFmpeg failed processing viral cuts"; } 
+            else { job.status = 'completed'; job.progress = 100; job.downloadUrl = `/api/process/download/${jobId}`; }
+        });
+    } catch (e) { job.status = 'failed'; job.error = e.message; }
+}
+
+function processScriptToVideoJob(jobId) {
+    const job = jobs[jobId];
+    job.status = 'failed';
+    job.error = "Script to video processing not fully implemented on server-side. Use client-side generation.";
+}
+
+
 
         case 'lip-sync-real': {
              // Lip Sync (Dubbing)
@@ -645,6 +679,12 @@ app.post('/api/process/extract-audio', uploadAny, (req, res) => {
              args.push(outputPath);
              break;
         }
+
+        case 'extract-audio-real':
+             args.push('-i', videoFile.path);
+             args.push('-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2');
+             args.push(outputPath);
+             break;
 
         case 'reduce-noise-real':
              args.push('-i', videoFile.path);
