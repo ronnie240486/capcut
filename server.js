@@ -264,4 +264,4 @@ setInterval(() => {
     });
 }, 600000);
 
-app.listen(PORT, () => console.log(`Server r
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
