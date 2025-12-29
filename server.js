@@ -735,12 +735,6 @@ async function processSingleClipJob(jobId) {
              break;
         }
 
-        case 'extract-audio-real':
-             args.push('-i', videoFile.path);
-             args.push('-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2');
-             args.push(outputPath);
-             break;
-
         case 'reduce-noise-real':
              args.push('-i', videoFile.path);
              args.push('-af', 'afftdn', '-vn', '-acodec', 'pcm_s16le');
