@@ -1,4 +1,3 @@
-
 module.exports = {
     getVideoArgs: () => [
         '-c:v', 'libx264',
