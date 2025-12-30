@@ -24,9 +24,10 @@ const storage = multer.diskStorage({
 const uploadAny = multer({ storage }).any();
 const jobs = {};
 
-// --- INLINED MODULES (To fix MODULE_NOT_FOUND) ---
+// ==========================================
+// MÓDULOS INTEGRADOS (PRESETS & BUILDERS)
+// ==========================================
 
-// 1. Preset Generator
 const presetGenerator = {
     getVideoArgs: () => [
         '-c:v', 'libx264',
@@ -47,15 +48,15 @@ const presetGenerator = {
     getSafeScaleFilter: () => 'scale=trunc(iw/2)*2:trunc(ih/2)*2'
 };
 
-// 2. Transition Builder
 const transitionBuilder = {
     buildConcatFilter: (inputs) => {
         let filterComplex = '';
         let mapStr = '';
         
         inputs.forEach((_, i) => {
-            // Scale every input to 1280x720 (with black bars if needed)
-            filterComplex += `[${i}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1[v${i}];`;
+            // Scale to 1280x720 fitting within box, then pad to fill.
+            // Using -1:-1 for pad automatically centers the image and handles odd dimensions better than manual calc.
+            filterComplex += `[${i}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:-1:-1:color=black,setsar=1[v${i}];`;
             mapStr += `[v${i}]`;
         });
         
@@ -68,22 +69,6 @@ const transitionBuilder = {
     }
 };
 
-// 3. Filter Builder
-function getAtempoFilter(speed) {
-    let s = speed;
-    const filters = [];
-    while (s < 0.5) {
-        filters.push('atempo=0.5');
-        s /= 0.5;
-    }
-    while (s > 2.0) {
-        filters.push('atempo=2.0');
-        s /= 2.0;
-    }
-    filters.push(`atempo=${s.toFixed(2)}`);
-    return filters.join(',');
-}
-
 const filterBuilder = {
     build: (action, params, videoPath) => {
         let filterComplex = '';
@@ -94,6 +79,7 @@ const filterBuilder = {
             case 'interpolate-real':
                 const speed = parseFloat(params.speed) || 0.5;
                 const factor = 1 / speed;
+                // Mininterpolate logic
                 filterComplex = `[0:v]scale='min(1280,iw)':-2,pad=ceil(iw/2)*2:ceil(ih/2)*2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
                 mapArgs = ['-map', '[v]'];
                 break;
@@ -152,44 +138,9 @@ const filterBuilder = {
     }
 };
 
-// 4. Export Handler
-async function handleExport(job, uploadDir, createFFmpegJob) {
-    const inputs = job.files;
-    
-    if (!inputs || inputs.length === 0) {
-        job.status = 'failed';
-        job.error = "No files to export";
-        return;
-    }
-
-    const outputPath = path.join(uploadDir, `export-${Date.now()}.mp4`);
-    job.outputPath = outputPath;
-
-    const args = [];
-    
-    inputs.forEach(f => {
-        if (f.mimetype.startsWith('image/')) {
-            args.push('-loop', '1', '-t', '5'); 
-        }
-        args.push('-i', f.path);
-    });
-
-    const { filterComplex, outputMap } = transitionBuilder.buildConcatFilter(inputs);
-
-    const finalArgs = [
-        ...args,
-        '-filter_complex', filterComplex,
-        '-map', outputMap,
-        ...presetGenerator.getVideoArgs(),
-        '-y', outputPath
-    ];
-
-    const expectedDuration = inputs.length * 5; 
-
-    createFFmpegJob(job.id, finalArgs, expectedDuration);
-}
-
-// --- SERVER LOGIC ---
+// ==========================================
+// SERVER LOGIC
+// ==========================================
 
 function getMediaInfo(filePath) {
     return new Promise((resolve) => {
@@ -227,6 +178,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
 
     const finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', ...args];
     console.log(`Job ${jobId} starting with args:`, finalArgs.join(' '));
+    
     const ffmpeg = spawn('ffmpeg', finalArgs);
     
     let stderr = '';
@@ -257,9 +209,46 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             const isMem = stderr.includes('Out of memory') || stderr.includes('Killed');
             jobs[jobId].error = isMem 
                 ? "O vídeo é muito pesado. O servidor interrompeu o processamento por falta de memória."
-                : `Erro no processamento (Code ${code}).`;
+                : `Erro no processamento (Code ${code}). Verifique logs do servidor.`;
         }
     });
+}
+
+async function handleExport(job, createFFmpegJob) {
+    const inputs = job.files;
+    
+    if (!inputs || inputs.length === 0) {
+        job.status = 'failed';
+        job.error = "No files to export";
+        return;
+    }
+
+    const outputPath = path.join(uploadDir, `export-${Date.now()}.mp4`);
+    job.outputPath = outputPath;
+
+    const args = [];
+    
+    inputs.forEach(f => {
+        if (f.mimetype.startsWith('image/')) {
+            // Loop images for 5 seconds by default
+            args.push('-loop', '1', '-t', '5'); 
+        }
+        args.push('-i', f.path);
+    });
+
+    const { filterComplex, outputMap } = transitionBuilder.buildConcatFilter(inputs);
+
+    const finalArgs = [
+        ...args,
+        '-filter_complex', filterComplex,
+        '-map', outputMap,
+        ...presetGenerator.getVideoArgs(),
+        '-y', outputPath
+    ];
+
+    const expectedDuration = inputs.length * 5; 
+
+    createFFmpegJob(job.id, finalArgs, expectedDuration);
 }
 
 async function processSingleClipJob(jobId) {
@@ -269,7 +258,7 @@ async function processSingleClipJob(jobId) {
     const action = jobId.split('_')[0];
     
     if (action === 'export') {
-        return handleExport(job, uploadDir, createFFmpegJob);
+        return handleExport(job, createFFmpegJob);
     }
 
     const videoFile = job.files[0];
