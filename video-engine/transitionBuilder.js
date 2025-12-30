@@ -25,82 +25,83 @@ export default {
             const currentInputIndex = inputIndexCounter;
             inputIndexCounter++;
 
-            // Labels temporários
-            let lastLabel = `[${currentInputIndex}:v]`;
-            let nextLabel = `tmp${i}_a`; 
+            // Labels sequenciais para este clipe
+            let currentStream = `[${currentInputIndex}:v]`;
+            
+            // Helper para adicionar filtro
+            const addFilter = (filterText) => {
+                const nextLabel = `tmp${i}_${Math.random().toString(36).substr(2, 5)}`;
+                filterChain += `${currentStream}${filterText}[${nextLabel}];`;
+                currentStream = `[${nextLabel}]`;
+            };
 
-            // --- 1. Normalização Inicial (Scale / Pad / Format / FPS) ---
-            filterChain += `${lastLabel}scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[${nextLabel}];`;
-            lastLabel = `[${nextLabel}]`;
-            nextLabel = `tmp${i}_b`;
+            // --- 1. Normalização Inicial ---
+            // Scale to 1280x720, pad if needed, enforce 30fps, SAR 1:1, format yuv420p
+            addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
 
             // --- 2. Duração e Movimento ---
-            const durationFrames = Math.ceil(clip.duration * 30); // 30fps fixo
+            const durationFrames = Math.ceil(clip.duration * 30); 
             
             if (clip.type === 'image') {
-                // Imagens: ZoomPan cria o vídeo com a duração correta
-                let zoomFilter = `zoompan=z=1:d=${durationFrames}:s=1280x720:fps=30`; // Estático por padrão
+                // Imagens: Gerar vídeo com zoompan
+                let zoomFilter = `zoompan=z=1:d=${durationFrames}:s=1280x720:fps=30`; // Default static
 
                 if (clip.properties && clip.properties.movement) {
-                    zoomFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, durationFrames, true);
-                } else {
-                    // Fallback
-                    zoomFilter = `zoompan=z=1:d=${durationFrames}:s=1280x720:fps=30`;
+                    const dynamicZoom = presetGenerator.getMovementFilter(clip.properties.movement.type, durationFrames, true);
+                    if (dynamicZoom) zoomFilter = dynamicZoom;
                 }
                 
-                filterChain += `${lastLabel}${zoomFilter}[${nextLabel}];`;
-                lastLabel = `[${nextLabel}]`;
-                nextLabel = `tmp${i}_c`;
+                addFilter(zoomFilter);
             } else {
-                // Vídeo: Trim (Corte) Primeiro
+                // Vídeo: Trim
                 const start = clip.mediaStartOffset || 0;
-                filterChain += `${lastLabel}trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS[${nextLabel}];`;
-                lastLabel = `[${nextLabel}]`;
-                nextLabel = `tmp${i}_d`;
+                // Important: setpts must reset timestamps so movements starting at 'on=0' work correctly
+                addFilter(`trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS`);
 
-                // Vídeo: Aplica Movimento se existir (ZoomPan com d=1)
+                // Vídeo: Movimento
                 if (clip.properties && clip.properties.movement) {
                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, durationFrames, false);
                     if (moveFilter) {
-                        filterChain += `${lastLabel}${moveFilter}[${nextLabel}];`;
-                        lastLabel = `[${nextLabel}]`;
-                        nextLabel = `tmp${i}_d_mov`;
+                        addFilter(moveFilter);
                     }
                 }
             }
 
-            // --- 3. Efeitos Visuais (Cor / Brilho) ---
-            const effectFilters = [];
+            // --- 3. Efeitos Visuais (Cor / Filtros) ---
+            let filtersToApply = [];
             
             if (clip.effect) {
-                const fxFilter = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                if (fxFilter) effectFilters.push(fxFilter);
+                const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
+                if (fx) filtersToApply.push(fx);
             }
 
             if (clip.properties && clip.properties.adjustments) {
                 const adj = clip.properties.adjustments;
-                const eqParts = [];
-                if (adj.brightness !== undefined && adj.brightness !== 1) eqParts.push(`brightness=${(adj.brightness - 1).toFixed(2)}`);
-                if (adj.contrast !== undefined && adj.contrast !== 1) eqParts.push(`contrast=${adj.contrast.toFixed(2)}`);
-                if (adj.saturate !== undefined && adj.saturate !== 1) eqParts.push(`saturation=${adj.saturate.toFixed(2)}`);
+                // Build eq filter parts
+                let eqParts = [];
+                if (adj.brightness !== 1) eqParts.push(`brightness=${(adj.brightness - 1).toFixed(2)}`);
+                if (adj.contrast !== 1) eqParts.push(`contrast=${adj.contrast.toFixed(2)}`);
+                if (adj.saturate !== 1) eqParts.push(`saturation=${adj.saturate.toFixed(2)}`);
+                // Note: gamma is not directly exposed but can be used if needed.
                 
-                if (eqParts.length > 0) effectFilters.push(`eq=${eqParts.join(':')}`);
-                if (adj.hue !== undefined && adj.hue !== 0) effectFilters.push(`hue=h=${adj.hue}`);
+                if (eqParts.length > 0) filtersToApply.push(`eq=${eqParts.join(':')}`);
+                
+                // Hue
+                if (adj.hue !== 0) filtersToApply.push(`hue=h=${adj.hue}`);
             }
 
             if (clip.properties && clip.properties.opacity !== undefined && clip.properties.opacity < 1) {
-                effectFilters.push(`colorchannelmixer=aa=${clip.properties.opacity}`);
+                filtersToApply.push(`colorchannelmixer=aa=${clip.properties.opacity}`);
             }
 
-            if (effectFilters.length > 0) {
-                filterChain += `${lastLabel}${effectFilters.join(',')}[${nextLabel}];`;
-                lastLabel = `[${nextLabel}]`;
-                nextLabel = `tmp${i}_e`;
+            if (filtersToApply.length > 0) {
+                addFilter(filtersToApply.join(','));
             }
 
-            // --- 4. Finalização (Reset PTS) ---
+            // --- 4. Finalização do Clipe ---
+            // Re-assert PTS to be safe for concat
             const finalLabel = `v${i}`;
-            filterChain += `${lastLabel}setpts=PTS-STARTPTS[${finalLabel}];`;
+            filterChain += `${currentStream}setpts=PTS-STARTPTS[${finalLabel}];`;
             streamLabels.push(`[${finalLabel}]`);
         });
 
