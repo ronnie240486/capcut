@@ -1,4 +1,3 @@
-
 const presetGenerator = require('./presetGenerator.js');
 
 module.exports = {
