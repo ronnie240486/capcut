@@ -42,7 +42,7 @@ export default {
             'dreamy': 'boxblur=2:1,eq=brightness=0.1',
             'b-and-w-low': 'hue=s=0,eq=contrast=0.8',
             'night-vision': 'hue=s=0,eq=g=1.5:r=0.1:b=0.1',
-            // Matrix Effect: Green Tint + Contrast + slight Saturation
+            // Matrix Effect: Green Tint + Contrast + Saturation
             'matrix': 'colorbalance=gs=0.3:rs=-0.1:bs=-0.1,eq=contrast=1.2:saturation=1.2',
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.2'
         };
@@ -57,43 +57,54 @@ export default {
     },
 
     /**
-     * Gera o filtro de movimento zoompan.
-     * @param {string} moveId - ID do movimento
-     * @param {number} d - Duração em frames
-     * @param {boolean} isImage - Se é imagem (true) ou vídeo (false)
+     * Generates a zoompan filter.
+     * Uses deterministic math based on 'on' (frame number) for video stability.
+     * 'd' is the total duration frames.
      */
     getMovementFilter: (moveId, d, isImage = true) => {
-        // Se for imagem, d=duração total para gerar os frames.
-        // Se for vídeo, d=1 para aplicar o zoom frame-a-frame sem multiplicar a duração.
+        // If image, we extend duration 'd'. If video, zoompan usually processes stream 1:1, so d=1 per input frame essentially
+        // but we use 'on' (output frame number) to drive animation.
         const durationParam = isImage ? `:d=${d}` : ':d=1';
-        const common = `${durationParam}:s=1280x720:fps=30`;
-        const center = ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
+        const fpsParam = ':fps=30';
+        const sizeParam = ':s=1280x720';
+        const common = `${durationParam}${sizeParam}${fpsParam}`;
         
+        // For video zoom, we use a formula: start + (total_change * current_frame / total_frames)
+        // 'on' is current frame index. 'd' is passed as total frames of clip.
+        // We use a safe fallback of 100 frames if d is 0 to avoid division by zero.
+        const totalFrames = d || 100;
+
         switch (moveId) {
             case 'zoom-in':
             case 'kenBurns':
             case 'zoom-slow-in':
-                // Zoom suave de 1.0 a 1.5
-                return `zoompan=z='min(zoom+0.0015,1.5)'${common}${center}`;
+                // Zoom from 1.0 to 1.5
+                return `zoompan=z='1+(0.5*on/${totalFrames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${common}`;
             
             case 'zoom-fast-in':
-                return `zoompan=z='min(zoom+0.005,2.0)'${common}${center}`;
+                // Zoom from 1.0 to 2.0
+                return `zoompan=z='1+(1.0*on/${totalFrames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${common}`;
 
             case 'zoom-out':
             case 'zoom-slow-out':
-                // Começa em 1.5 e diminui até 1.0
-                return `zoompan=z='if(eq(on,1),1.5,max(zoom-0.0015,1.0))'${common}${center}`;
+                // Zoom from 1.5 down to 1.0
+                return `zoompan=z='1.5-(0.5*on/${totalFrames})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${common}`;
             
             case 'zoom-bounce':
-                return `zoompan=z='1+0.1*sin(on/30)'${common}${center}`;
+                // Sine wave zoom
+                return `zoompan=z='1+0.1*sin(on/30)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${common}`;
 
             case 'pan-left':
             case 'slide-left':
-                return `zoompan=z=1.2:x='if(eq(on,1),x,x+1)':y='ih/2-(ih/zoom/2)'${common}`;
+                // Move X from right to left. z=1.2 to allow panning without black bars.
+                // x goes from 0 to (iw-iw/zoom)
+                return `zoompan=z=1.2:x='(iw-iw/zoom)*(on/${totalFrames})':y='ih/2-(ih/zoom/2)'${common}`;
             
             case 'pan-right':
             case 'slide-right':
-                return `zoompan=z=1.2:x='if(eq(on,1),x,x-1)':y='ih/2-(ih/zoom/2)'${common}`;
+                // Move X from left to right.
+                // x goes from (iw-iw/zoom) down to 0
+                return `zoompan=z=1.2:x='(iw-iw/zoom)*(1-on/${totalFrames})':y='ih/2-(ih/zoom/2)'${common}`;
 
             case 'shake':
             case 'shake-hard':
@@ -101,7 +112,6 @@ export default {
                 return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+random(1)*20-10':y='ih/2-(ih/zoom/2)+random(1)*20-10'${common}`;
 
             default:
-                // Se nenhum movimento, e for imagem, precisa do zoompan estático para gerar vídeo
                 if (isImage) return `zoompan=z=1${common}`;
                 return null;
         }
