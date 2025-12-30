@@ -1,10 +1,10 @@
 
-import path from 'path';
-import fs from 'fs';
-import transitionBuilder from './video-engine/transitionBuilder.js';
-import presetGenerator from './video-engine/presetGenerator.js';
+const path = require('path');
+const fs = require('fs');
+const transitionBuilder = require('./video-engine/transitionBuilder.js');
+const presetGenerator = require('./video-engine/presetGenerator.js');
 
-export default async function handleExport(job, uploadDir, createFFmpegJob) {
+module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
     console.log("Iniciando exportação para Job:", job.id);
 
     // 1. Validar Project State
