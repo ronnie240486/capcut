@@ -1,7 +1,7 @@
 
-const presetGenerator = require('./presetGenerator');
+import presetGenerator from './presetGenerator.js';
 
-module.exports = {
+export default {
     /**
      * Constrói a timeline baseada em clipes.
      */
@@ -30,7 +30,6 @@ module.exports = {
             let nextLabel = `tmp${i}_a`; 
 
             // --- 1. Normalização Inicial (Scale / Pad / Format / FPS) ---
-            // Forçamos fps=30 aqui para garantir que todos os inputs tenham o mesmo frame rate antes do concat
             filterChain += `${lastLabel}scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[${nextLabel}];`;
             lastLabel = `[${nextLabel}]`;
             nextLabel = `tmp${i}_b`;
@@ -45,7 +44,7 @@ module.exports = {
                 if (clip.properties && clip.properties.movement) {
                     zoomFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, durationFrames);
                 } else {
-                    // Fallback para estático se não houver movimento definido
+                    // Fallback
                     zoomFilter = `zoompan=z=1:d=${durationFrames}:s=1280x720:fps=30`;
                 }
                 
@@ -90,7 +89,6 @@ module.exports = {
             }
 
             // --- 4. Finalização (Reset PTS) ---
-            // Garante que o timestamp comece do zero para cada segmento antes da concatenação
             const finalLabel = `v${i}`;
             filterChain += `${lastLabel}setpts=PTS-STARTPTS[${finalLabel}];`;
             streamLabels.push(`[${finalLabel}]`);
@@ -98,7 +96,6 @@ module.exports = {
 
         // --- 5. Concatenação ---
         if (streamLabels.length > 0) {
-            // unsafe=1 ajuda a evitar falhas se houver pequenos gaps de precisão
             filterChain += `${streamLabels.join('')}concat=n=${streamLabels.length}:v=1:a=0:unsafe=1[outv]`;
         } else {
             return { inputs: [], filterComplex: null, outputMap: null };
