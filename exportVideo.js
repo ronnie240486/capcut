@@ -78,9 +78,9 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
         audioStreamsToMix.push(outputMapAudio);
     }
 
-    let nextInputIndex = inputs.length / 2; // Correção heurística se inputs forem pares (video+audio). Melhor confiar no contador interno se exposto, mas aqui assumimos segurança pelo count.
-    // Na verdade, inputs.length é exato. transitionBuilder não retorna indices, então continuamos do length atual.
-    nextInputIndex = inputs.length;
+    // A lista 'inputs' vem do builder com formato ['-i', path, '-i', path].
+    // O número de inputs já usados é inputs.length / 2.
+    let nextInputIndex = inputs.length / 2;
 
     audioClips.forEach((clip, i) => {
         const filePath = fileMap[clip.fileName];
