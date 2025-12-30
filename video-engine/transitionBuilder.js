@@ -1,7 +1,7 @@
 
-import presetGenerator from './presetGenerator.js';
+const presetGenerator = require('./presetGenerator.js');
 
-export default {
+module.exports = {
     buildTimeline: (clips, fileMap) => {
         let inputs = [];
         let filterChain = '';
