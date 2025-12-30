@@ -209,6 +209,7 @@ async function processSingleClipJob(jobId) {
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
     jobs[jobId] = { 
+        id: jobId,
         status: 'pending', 
         files: req.files, 
         params: req.body, 
