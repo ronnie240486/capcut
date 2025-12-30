@@ -39,9 +39,14 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
         });
     }
 
-    // 3. Filtrar e Ordenar Clipes Visuais (Video, Imagem, Camadas)
+    // 3. Separar Clipes Visuais (Main Track) e Clipes de Áudio (Overlay/Music)
     const visualClips = clips
         .filter(c => ['video', 'image', 'camada'].includes(c.track) || c.type === 'video' || c.type === 'image')
+        .sort((a, b) => a.start - b.start);
+
+    // Clipes de áudio puro (music, narration, sfx) ou qualquer clipe na trilha de áudio
+    const audioClips = clips
+        .filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track) || (c.type === 'audio' && !visualClips.includes(c)))
         .sort((a, b) => a.start - b.start);
 
     if (visualClips.length === 0) {
@@ -53,30 +58,89 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
     const outputPath = path.join(uploadDir, `export-${Date.now()}.mp4`);
     job.outputPath = outputPath;
 
-    // 4. Construir Timeline FFmpeg (Passando mediaLibrary para verificação de áudio)
+    // 4. Construir Timeline Visual (Concatenação sequencial)
     const mediaLibrary = projectState.media || {};
-    const { inputs, filterComplex, outputMapVideo, outputMapAudio } = transitionBuilder.buildTimeline(visualClips, fileMap, mediaLibrary);
-
-    if (!filterComplex) {
+    const visualResult = transitionBuilder.buildTimeline(visualClips, fileMap, mediaLibrary);
+    
+    if (!visualResult.filterComplex) {
         job.status = 'failed';
         job.error = "Erro ao gerar filtros de renderização.";
         return;
     }
 
-    // 5. Montar Argumentos
+    let { inputs, filterComplex, outputMapVideo, outputMapAudio } = visualResult;
+    
+    // 5. Processar Áudio Tracks (Mixing)
+    // Inicializa lista de streams para mixar (começa com o áudio do vídeo principal)
+    let audioStreamsToMix = [];
+    if (outputMapAudio) {
+        audioStreamsToMix.push(outputMapAudio);
+    }
+
+    // O índice de inputs continua de onde o builder parou
+    let nextInputIndex = inputs.length / 2;
+
+    audioClips.forEach((clip, i) => {
+        const filePath = fileMap[clip.fileName];
+        if (!filePath) {
+            console.warn(`Arquivo de áudio faltando: ${clip.fileName}`);
+            return;
+        }
+
+        inputs.push('-i', filePath);
+        const currentIndex = nextInputIndex++;
+        const label = `audmix${i}`;
+        
+        // Cálculos de tempo
+        const delayMs = Math.round(clip.start * 1000);
+        const mediaStart = clip.mediaStartOffset || 0;
+        const dur = clip.duration;
+
+        // Construir filtro de áudio
+        // 1. Select Stream
+        // 2. Trim (Corte do arquivo original)
+        // 3. Volume
+        // 4. Delay (Posição na timeline)
+        
+        let af = `[${currentIndex}:a]atrim=start=${mediaStart}:duration=${mediaStart + dur},asetpts=PTS-STARTPTS`;
+        
+        if (clip.properties && clip.properties.volume !== undefined) {
+            af += `,volume=${clip.properties.volume}`;
+        }
+        
+        if (delayMs > 0) {
+            af += `,adelay=${delayMs}|${delayMs}`;
+        }
+        
+        af += `[${label}];`;
+        filterComplex += af;
+        audioStreamsToMix.push(`[${label}]`);
+    });
+
+    // 6. Mix Final
+    let finalAudioMap = outputMapAudio; // Se não houver extras, usa o original
+    
+    if (audioStreamsToMix.length > 1) {
+        const mixLabel = 'amixed_final';
+        // amix: inputs=N, duration=first (duração igual ao vídeo principal), dropout_transition=2 (suave)
+        // duration=first garante que a música não estenda o vídeo além do visual
+        filterComplex += `${audioStreamsToMix.join('')}amix=inputs=${audioStreamsToMix.length}:duration=first:dropout_transition=2[${mixLabel}]`;
+        finalAudioMap = `[${mixLabel}]`;
+    }
+
+    // 7. Montar Comando Final
     const finalArgs = [
         ...inputs,
         '-filter_complex', filterComplex,
         '-map', outputMapVideo,
-        '-map', outputMapAudio,
+        '-map', finalAudioMap, // Usa o mapa mixado
         ...presetGenerator.getVideoArgs(),
         ...presetGenerator.getAudioArgs(),
         '-y', outputPath
     ];
 
-    console.log("FFmpeg Filter Chain:", filterComplex);
+    console.log("FFmpeg Filter Chain Size:", filterComplex.length);
 
-    // Calcular duração estimada
     const totalDuration = visualClips.reduce((acc, c) => acc + (c.duration || 5), 0);
 
     createFFmpegJob(job.id, finalArgs, totalDuration);
