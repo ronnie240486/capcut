@@ -34,12 +34,11 @@ export default {
 
             const safeDuration = parseFloat(clip.duration) || 5;
 
-            // --- 1. PREPARAÇÃO & DURAÇÃO ---
+            // --- 1. PREPARAÇÃO & DURAÇÃO (CORREÇÃO CRÍTICA) ---
             let prepFilters = [];
             
-            // CORREÇÃO CRÍTICA PARA IMAGENS:
-            // Transformamos a imagem estática em um loop infinito de vídeo imediatamente.
-            // Isso garante que os filtros subsequentes (trim, zoompan) tenham frames suficientes para trabalhar.
+            // Transforma imagem estática em vídeo infinito IMEDIATAMENTE
+            // Isso garante que o FFmpeg tenha "frames" suficientes para aplicar efeitos de tempo e movimento
             if (clip.type === 'image') {
                 prepFilters.push('loop=loop=-1:size=1:start=0');
             }
@@ -49,12 +48,13 @@ export default {
             
             addFilter(prepFilters.join(','));
 
-            // Definir a duração exata
+            // Definir a duração exata usando TRIM
             if (clip.type === 'image') {
-                // Cortamos o loop infinito na duração desejada
+                // Corta o loop infinito na duração exata definida na timeline
+                // setpts=PTS-STARTPTS reinicia o relógio do clipe para 0
                 addFilter(`trim=duration=${safeDuration},setpts=PTS-STARTPTS`);
             } else {
-                // Para vídeos, cortamos o segmento desejado
+                // Para vídeos, corta o segmento desejado
                 const start = parseFloat(clip.mediaStartOffset) || 0;
                 addFilter(`trim=start=${start}:duration=${start + safeDuration},setpts=PTS-STARTPTS`);
             }
@@ -87,8 +87,9 @@ export default {
             }
 
             // --- 3. MOVIMENTO (Zoom / Pan) ---
-            // Como agora convertemos imagens em streams de vídeo (loop), tratamos tudo como 'isImage=false'
-            // para que o zoompan processe frame-a-frame (d=1) em vez de tentar gerar frames.
+            // Como agora já convertemos imagens em vídeo (via loop+trim),
+            // tratamos tudo como vídeo (isImage=false) para o presetGenerator.
+            // Isso fará o zoompan calcular frame a frame (d=1) de forma suave.
             if (clip.properties && clip.properties.movement) {
                 const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, safeDuration, false);
                 if (moveFilter) addFilter(moveFilter);
