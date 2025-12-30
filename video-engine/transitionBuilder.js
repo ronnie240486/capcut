@@ -32,35 +32,44 @@ export default {
                 currentStream = `[${nextLabel}]`;
             };
 
-            // --- 1. PADRONIZAÇÃO INICIAL ---
-            // Escala para 720p, 30fps, formato de pixel compatível
-            addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
-
-            // Garantir que duração seja número
             const safeDuration = parseFloat(clip.duration) || 5;
 
-            // --- 2. TRIM (Corte de Tempo) ---
-            if (clip.type !== 'image') {
+            // --- 1. PREPARAÇÃO & DURAÇÃO ---
+            let prepFilters = [];
+            
+            // CORREÇÃO CRÍTICA PARA IMAGENS:
+            // Transformamos a imagem estática em um loop infinito de vídeo imediatamente.
+            // Isso garante que os filtros subsequentes (trim, zoompan) tenham frames suficientes para trabalhar.
+            if (clip.type === 'image') {
+                prepFilters.push('loop=loop=-1:size=1:start=0');
+            }
+            
+            // Padronização de escala, fps e formato
+            prepFilters.push(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
+            
+            addFilter(prepFilters.join(','));
+
+            // Definir a duração exata
+            if (clip.type === 'image') {
+                // Cortamos o loop infinito na duração desejada
+                addFilter(`trim=duration=${safeDuration},setpts=PTS-STARTPTS`);
+            } else {
+                // Para vídeos, cortamos o segmento desejado
                 const start = parseFloat(clip.mediaStartOffset) || 0;
-                // setpts=PTS-STARTPTS reinicia o relógio do vídeo para 0
                 addFilter(`trim=start=${start}:duration=${start + safeDuration},setpts=PTS-STARTPTS`);
             }
 
-            // --- 3. EFEITOS DE COR (Color Grading) ---
-            // Aplicamos antes do zoom para garantir que a cor pegue na imagem toda
+            // --- 2. EFEITOS DE COR ---
             let colorFilters = [];
             
-            // Filtro Predefinido (Ex: Matrix)
             if (clip.effect) {
                 const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                 if (fx) colorFilters.push(fx);
             }
             
-            // Ajustes Manuais (Brilho, Contraste)
             if (clip.properties && clip.properties.adjustments) {
                 const adj = clip.properties.adjustments;
                 let eqParts = [];
-                // EQ filter syntax: brightness=-1.0 to 1.0, contrast=-2.0 to 2.0, saturation=0.0 to 3.0
                 if (adj.brightness !== 1) eqParts.push(`brightness=${(adj.brightness - 1).toFixed(2)}`);
                 if (adj.contrast !== 1) eqParts.push(`contrast=${adj.contrast.toFixed(2)}`);
                 if (adj.saturate !== 1) eqParts.push(`saturation=${adj.saturate.toFixed(2)}`);
@@ -69,7 +78,6 @@ export default {
                 if (adj.hue !== 0) colorFilters.push(`hue=h=${adj.hue}`);
             }
 
-            // Opacidade
             if (clip.properties && clip.properties.opacity !== undefined && clip.properties.opacity < 1) {
                 colorFilters.push(`colorchannelmixer=aa=${clip.properties.opacity}`);
             }
@@ -78,36 +86,23 @@ export default {
                 addFilter(colorFilters.join(','));
             }
 
-            // --- 4. MOVIMENTO (Zoom / Pan) ---
-            // Se for imagem, isso GERA o vídeo. Se for vídeo, aplica o zoom dinâmico.
-            if (clip.type === 'image') {
-                let zoomFilter = presetGenerator.getMovementFilter(null, safeDuration, true); // Static default
-                
-                if (clip.properties && clip.properties.movement) {
-                    zoomFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, safeDuration, true);
-                }
-                addFilter(zoomFilter);
-            } else {
-                // Vídeo
-                if (clip.properties && clip.properties.movement) {
-                    const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, safeDuration, false);
-                    if (moveFilter) addFilter(moveFilter);
-                }
+            // --- 3. MOVIMENTO (Zoom / Pan) ---
+            // Como agora convertemos imagens em streams de vídeo (loop), tratamos tudo como 'isImage=false'
+            // para que o zoompan processe frame-a-frame (d=1) em vez de tentar gerar frames.
+            if (clip.properties && clip.properties.movement) {
+                const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, safeDuration, false);
+                if (moveFilter) addFilter(moveFilter);
             }
 
-            // --- 5. PADRONIZAÇÃO FINAL (A CORREÇÃO MÁGICA) ---
-            // Adicionamos 'setpts=PTS-STARTPTS' aqui.
-            // Isso garante que, independentemente do que o zoompan ou trim fizeram, 
-            // este clipe começará no tempo 0 relativo a si mesmo antes de entrar no concat.
-            // Sem isso, o concat pode descartar clipes que acha que estão sobrepostos.
+            // --- 4. FINALIZAÇÃO ---
             const finalLabel = `v${i}`;
+            // Garantimos que o stream esteja limpo para concatenação
             filterChain += `${currentStream}scale=1280:720,setsar=1,setpts=PTS-STARTPTS[${finalLabel}];`;
             streamLabels.push(`[${finalLabel}]`);
         });
 
-        // --- 6. CONCATENAÇÃO ---
+        // --- 5. CONCATENAÇÃO ---
         if (streamLabels.length > 0) {
-            // unsafe=1 permite concatenar segmentos que podem ter pequenas variações
             filterChain += `${streamLabels.join('')}concat=n=${streamLabels.length}:v=1:a=0:unsafe=1[outv]`;
         } else {
             return { inputs: [], filterComplex: null, outputMap: null };
