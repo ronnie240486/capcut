@@ -39,6 +39,7 @@ module.exports = {
             if (clip.type === 'image') {
                 prepFilters.push('loop=loop=-1:size=1:start=0');
             }
+            // Importante: setsar=1 garante pixel aspect ratio quadrado
             prepFilters.push(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
             
             addVideoFilter(prepFilters.join(','));
@@ -88,8 +89,6 @@ module.exports = {
 
             // --- PROCESSAMENTO DE ÁUDIO ---
             const mediaInfo = mediaLibrary && mediaLibrary[clip.fileName];
-            // Assume que vídeo tem áudio se info disser ou se não tiver info (melhor falhar silencioso do que crashar, mas ffmpeg crasha se map não existe. 
-            // O ideal é confiar no mediaInfo. Se não tiver, assumimos false para imagem e true para video/audio).
             const hasAudio = mediaInfo ? mediaInfo.hasAudio : (clip.type === 'video' || clip.type === 'audio');
             
             const finalAudioLabel = `a${i}`;
@@ -102,10 +101,12 @@ module.exports = {
                     audioFilters.push(`volume=${clip.properties.volume}`);
                 }
                 
-                // Mapeia o áudio do arquivo de entrada correspondente
+                // CRUCIAL: Padronizar formato de áudio para evitar falhas no concat
+                audioFilters.push('aformat=sample_rates=44100:channel_layouts=stereo');
+                
                 filterChain += `[${currentInputIndex}:a]${audioFilters.join(',')}[${finalAudioLabel}];`;
             } else {
-                // Gera silêncio para manter a sincronia no concat
+                // Gera silêncio compatível
                 filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${safeDuration}[${finalAudioLabel}];`;
             }
             audioStreamLabels.push(`[${finalAudioLabel}]`);
@@ -117,6 +118,7 @@ module.exports = {
             for(let k=0; k < videoStreamLabels.length; k++) {
                 concatInputs += `${videoStreamLabels[k]}${audioStreamLabels[k]}`;
             }
+            // unsafe=1 ajuda com timestamps imperfeitos
             filterChain += `${concatInputs}concat=n=${videoStreamLabels.length}:v=1:a=1:unsafe=1[outv][outa]`;
         } else {
             return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
