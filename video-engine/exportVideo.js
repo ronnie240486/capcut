@@ -1,10 +1,10 @@
 
-const path = require('path');
-const fs = require('fs');
-const transitionBuilder = require('./transitionBuilder');
-const presetGenerator = require('./presetGenerator');
+import path from 'path';
+import fs from 'fs';
+import transitionBuilder from './transitionBuilder.js';
+import presetGenerator from './presetGenerator.js';
 
-module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
+export default async function handleExport(job, uploadDir, createFFmpegJob) {
     console.log("Iniciando exportação para Job:", job.id);
 
     // 1. Validar Project State
