@@ -5,7 +5,7 @@ module.exports = {
         '-preset', 'ultrafast',
         '-pix_fmt', 'yuv420p',
         '-movflags', '+faststart',
-        '-r', '30' // Forçar 30fps na saída
+        '-r', '30'
     ],
 
     getAudioArgs: () => [
@@ -22,11 +22,7 @@ module.exports = {
 
     getSafeScaleFilter: () => 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
 
-    /**
-     * Mapeia IDs de efeitos do frontend para filtros FFmpeg
-     */
     getFFmpegFilterFromEffect: (effectId) => {
-        // IDs exatos do constants.ts
         const effects = {
             'bw': 'hue=s=0',
             'mono': 'hue=s=0',
@@ -50,7 +46,6 @@ module.exports = {
 
         if (effects[effectId]) return effects[effectId];
         
-        // Fallbacks parciais
         if (effectId.includes('bw') || effectId.includes('noir')) return 'hue=s=0';
         if (effectId.includes('contrast')) return 'eq=contrast=1.3';
         if (effectId.includes('sepia')) return 'colorbalance=rs=.3:gs=.2:bs=-.2';
@@ -58,12 +53,7 @@ module.exports = {
         return null;
     },
 
-    /**
-     * Mapeia IDs de movimentos para filtros zoompan.
-     * Importante: Adicionado :fps=30 para garantir que a duração (d) seja interpretada corretamente em segundos.
-     */
     getMovementFilter: (moveId, d) => {
-        // Zoompan: z=zoom, x/y=pan coordinates, d=duration, s=output size, fps=framerate
         const common = `:d=${d}:s=1280x720:fps=30`;
         const center = ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
         
@@ -71,7 +61,6 @@ module.exports = {
             case 'zoom-in':
             case 'kenBurns':
             case 'zoom-slow-in':
-                // Zoom suave de 1.0 a 1.5
                 return `zoompan=z='min(zoom+0.0015,1.5)'${common}${center}`;
             
             case 'zoom-fast-in':
@@ -79,18 +68,13 @@ module.exports = {
 
             case 'zoom-out':
             case 'zoom-slow-out':
-                // Começa em 1.5 e diminui. Nota: zoompan re-usa o buffer, lógica inversa é chata.
-                // Usando lógica de tempo: se on=0 (frame 1), z=1.5. Depois decrementa.
-                // z='if(eq(on,1),1.5,max(zoom-0.0015,1.0))'
                 return `zoompan=z='if(eq(on,1),1.5,max(zoom-0.0015,1.0))'${common}${center}`;
             
             case 'zoom-bounce':
-                // Zoom in e out oscilando
                 return `zoompan=z='1+0.1*sin(on/30)'${common}${center}`;
 
             case 'pan-left':
             case 'slide-left':
-                // Move x do centro para a direita (visualmente imagem vai pra esquerda)
                 return `zoompan=z=1.2:x='if(eq(on,1),x,x+1)':y='ih/2-(ih/zoom/2)'${common}`;
             
             case 'pan-right':
@@ -103,7 +87,6 @@ module.exports = {
                 return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+random(1)*20-10':y='ih/2-(ih/zoom/2)+random(1)*20-10'${common}`;
 
             default:
-                // Estático (Zoom 1)
                 return `zoompan=z=1${common}`;
         }
     }
