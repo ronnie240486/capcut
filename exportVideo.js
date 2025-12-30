@@ -53,8 +53,9 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
     const outputPath = path.join(uploadDir, `export-${Date.now()}.mp4`);
     job.outputPath = outputPath;
 
-    // 4. Construir Timeline FFmpeg
-    const { inputs, filterComplex, outputMap } = transitionBuilder.buildTimeline(visualClips, fileMap);
+    // 4. Construir Timeline FFmpeg (Passando mediaLibrary para verificação de áudio)
+    const mediaLibrary = projectState.media || {};
+    const { inputs, filterComplex, outputMapVideo, outputMapAudio } = transitionBuilder.buildTimeline(visualClips, fileMap, mediaLibrary);
 
     if (!filterComplex) {
         job.status = 'failed';
@@ -66,8 +67,10 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
     const finalArgs = [
         ...inputs,
         '-filter_complex', filterComplex,
-        '-map', outputMap,
+        '-map', outputMapVideo,
+        '-map', outputMapAudio,
         ...presetGenerator.getVideoArgs(),
+        ...presetGenerator.getAudioArgs(),
         '-y', outputPath
     ];
 
