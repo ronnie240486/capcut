@@ -1,5 +1,5 @@
 
-module.exports = {
+export default {
     getVideoArgs: () => [
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
@@ -41,7 +41,10 @@ module.exports = {
             'posterize': 'curves=posterize',
             'dreamy': 'boxblur=2:1,eq=brightness=0.1',
             'b-and-w-low': 'hue=s=0,eq=contrast=0.8',
-            'night-vision': 'hue=s=0,eq=g=1.5:r=0.1:b=0.1'
+            'night-vision': 'hue=s=0,eq=g=1.5:r=0.1:b=0.1',
+            // Matrix Effect: Green Tint + Contrast + slight Saturation
+            'matrix': 'colorbalance=gs=0.3:rs=-0.1:bs=-0.1,eq=contrast=1.2:saturation=1.2',
+            'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.2'
         };
 
         if (effects[effectId]) return effects[effectId];
@@ -53,14 +56,24 @@ module.exports = {
         return null;
     },
 
-    getMovementFilter: (moveId, d) => {
-        const common = `:d=${d}:s=1280x720:fps=30`;
+    /**
+     * Gera o filtro de movimento zoompan.
+     * @param {string} moveId - ID do movimento
+     * @param {number} d - Duração em frames
+     * @param {boolean} isImage - Se é imagem (true) ou vídeo (false)
+     */
+    getMovementFilter: (moveId, d, isImage = true) => {
+        // Se for imagem, d=duração total para gerar os frames.
+        // Se for vídeo, d=1 para aplicar o zoom frame-a-frame sem multiplicar a duração.
+        const durationParam = isImage ? `:d=${d}` : ':d=1';
+        const common = `${durationParam}:s=1280x720:fps=30`;
         const center = ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
         
         switch (moveId) {
             case 'zoom-in':
             case 'kenBurns':
             case 'zoom-slow-in':
+                // Zoom suave de 1.0 a 1.5
                 return `zoompan=z='min(zoom+0.0015,1.5)'${common}${center}`;
             
             case 'zoom-fast-in':
@@ -68,6 +81,7 @@ module.exports = {
 
             case 'zoom-out':
             case 'zoom-slow-out':
+                // Começa em 1.5 e diminui até 1.0
                 return `zoompan=z='if(eq(on,1),1.5,max(zoom-0.0015,1.0))'${common}${center}`;
             
             case 'zoom-bounce':
@@ -87,7 +101,9 @@ module.exports = {
                 return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+random(1)*20-10':y='ih/2-(ih/zoom/2)+random(1)*20-10'${common}`;
 
             default:
-                return `zoompan=z=1${common}`;
+                // Se nenhum movimento, e for imagem, precisa do zoompan estático para gerar vídeo
+                if (isImage) return `zoompan=z=1${common}`;
+                return null;
         }
     }
 };
