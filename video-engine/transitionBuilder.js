@@ -4,7 +4,6 @@ const presetGenerator = require('./presetGenerator');
 module.exports = {
     /**
      * Constrói a timeline baseada em clipes.
-     * Corrige problemas de duração de imagens e aplicação de efeitos.
      */
     buildTimeline: (clips, fileMap) => {
         let inputs = [];
@@ -26,28 +25,27 @@ module.exports = {
             const currentInputIndex = inputIndexCounter;
             inputIndexCounter++;
 
-            // Labels temporários para construir a cadeia
+            // Labels temporários
             let lastLabel = `[${currentInputIndex}:v]`;
             let nextLabel = `tmp${i}_a`; 
 
-            // --- 1. Normalização Inicial (Scale / Pad / Format) ---
-            // Padroniza tudo para 1280x720 antes de qualquer coisa para evitar erro no Concat
-            filterChain += `${lastLabel}scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[${nextLabel}];`;
+            // --- 1. Normalização Inicial (Scale / Pad / Format / FPS) ---
+            // Forçamos fps=30 aqui para garantir que todos os inputs tenham o mesmo frame rate antes do concat
+            filterChain += `${lastLabel}scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[${nextLabel}];`;
             lastLabel = `[${nextLabel}]`;
             nextLabel = `tmp${i}_b`;
 
-            // --- 2. Duração e Movimento (ZoomPan) ---
+            // --- 2. Duração e Movimento ---
             const durationFrames = Math.ceil(clip.duration * 30); // 30fps fixo
             
             if (clip.type === 'image') {
-                // Imagens PRECISAM do zoompan (ou loop) para criar duração
+                // Imagens: ZoomPan cria o vídeo com a duração correta
                 let zoomFilter = `zoompan=z=1:d=${durationFrames}:s=1280x720:fps=30`; // Estático por padrão
 
                 if (clip.properties && clip.properties.movement) {
                     zoomFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, durationFrames);
                 } else {
-                    // Se não tem movimento explícito, mantém estático
-                    // Importante: movementId 'none' ou undefined cai aqui
+                    // Fallback para estático se não houver movimento definido
                     zoomFilter = `zoompan=z=1:d=${durationFrames}:s=1280x720:fps=30`;
                 }
                 
@@ -55,33 +53,24 @@ module.exports = {
                 lastLabel = `[${nextLabel}]`;
                 nextLabel = `tmp${i}_c`;
             } else {
-                // Vídeo: Aplica Trim
+                // Vídeo: Trim (Corte)
                 const start = clip.mediaStartOffset || 0;
-                // Para vídeos, o zoompan é opcional e complexo (pode quebrar frame rate), 
-                // então aplicamos apenas se houver movimento explícito tipo Ken Burns, 
-                // caso contrário apenas Trim.
                 filterChain += `${lastLabel}trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS[${nextLabel}];`;
                 lastLabel = `[${nextLabel}]`;
                 nextLabel = `tmp${i}_d`;
-                
-                // TODO: Adicionar suporte a ZoomPan em vídeo se necessário, 
-                // mas requer cuidado para não alterar a duração do vídeo original.
             }
 
-            // --- 3. Efeitos Visuais (Cor / Brilho / Filtros) ---
+            // --- 3. Efeitos Visuais (Cor / Brilho) ---
             const effectFilters = [];
             
-            // Filtro de Preset (ex: sepia, bw)
             if (clip.effect) {
                 const fxFilter = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                 if (fxFilter) effectFilters.push(fxFilter);
             }
 
-            // Ajustes Manuais
             if (clip.properties && clip.properties.adjustments) {
                 const adj = clip.properties.adjustments;
                 const eqParts = [];
-                // FFmpeg brightness: -1.0 a 1.0 (0 é neutro). Frontend envia 0 a 2 (1 é neutro).
                 if (adj.brightness !== undefined && adj.brightness !== 1) eqParts.push(`brightness=${(adj.brightness - 1).toFixed(2)}`);
                 if (adj.contrast !== undefined && adj.contrast !== 1) eqParts.push(`contrast=${adj.contrast.toFixed(2)}`);
                 if (adj.saturate !== undefined && adj.saturate !== 1) eqParts.push(`saturation=${adj.saturate.toFixed(2)}`);
@@ -90,7 +79,6 @@ module.exports = {
                 if (adj.hue !== undefined && adj.hue !== 0) effectFilters.push(`hue=h=${adj.hue}`);
             }
 
-            // Opacidade
             if (clip.properties && clip.properties.opacity !== undefined && clip.properties.opacity < 1) {
                 effectFilters.push(`colorchannelmixer=aa=${clip.properties.opacity}`);
             }
@@ -101,8 +89,8 @@ module.exports = {
                 nextLabel = `tmp${i}_e`;
             }
 
-            // --- 4. Finalização do Clipe (Reset PTS) ---
-            // Essencial para o Concat funcionar corretamente
+            // --- 4. Finalização (Reset PTS) ---
+            // Garante que o timestamp comece do zero para cada segmento antes da concatenação
             const finalLabel = `v${i}`;
             filterChain += `${lastLabel}setpts=PTS-STARTPTS[${finalLabel}];`;
             streamLabels.push(`[${finalLabel}]`);
@@ -110,7 +98,7 @@ module.exports = {
 
         // --- 5. Concatenação ---
         if (streamLabels.length > 0) {
-            // unsafe=1 permite concatenar segmentos que podem ter pequenas variações, mas nossa normalização deve prevenir isso
+            // unsafe=1 ajuda a evitar falhas se houver pequenos gaps de precisão
             filterChain += `${streamLabels.join('')}concat=n=${streamLabels.length}:v=1:a=0:unsafe=1[outv]`;
         } else {
             return { inputs: [], filterComplex: null, outputMap: null };
