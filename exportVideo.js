@@ -1,134 +1,147 @@
 
-const presetGenerator = require('./presetGenerator.js');
+const path = require('path');
+const fs = require('fs');
+const transitionBuilder = require('./video-engine/transitionBuilder.js');
+const presetGenerator = require('./video-engine/presetGenerator.js');
 
-module.exports = {
-    buildTimeline: (clips, fileMap, mediaLibrary) => {
-        let inputs = [];
-        let filterChain = '';
-        let videoStreamLabels = [];
-        let audioStreamLabels = [];
-        
-        let inputIndexCounter = 0;
+module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
+    console.log("Iniciando exportação para Job:", job.id);
 
-        clips.forEach((clip, i) => {
-            const filePath = fileMap[clip.fileName];
-            
-            if (!filePath) {
-                console.warn(`[Builder] Arquivo faltando: ${clip.fileName}`);
-                return;
-            }
+    // 1. Validar Project State
+    const projectStateStr = job.params.projectState;
+    if (!projectStateStr) {
+        job.status = 'failed';
+        job.error = "Dados do projeto não encontrados (projectState missing).";
+        return;
+    }
 
-            inputs.push('-i', filePath);
-            const currentInputIndex = inputIndexCounter;
-            inputIndexCounter++;
+    let projectState;
+    try {
+        projectState = JSON.parse(projectStateStr);
+    } catch (e) {
+        job.status = 'failed';
+        job.error = "Dados do projeto corrompidos.";
+        return;
+    }
 
-            // --- PROCESSAMENTO DE VÍDEO ---
-            let currentVideoStream = `[${currentInputIndex}:v]`;
-            
-            const addVideoFilter = (filterText) => {
-                if (!filterText) return;
-                const nextLabel = `vtmp${i}_${Math.random().toString(36).substr(2, 5)}`;
-                filterChain += `${currentVideoStream}${filterText}[${nextLabel}];`;
-                currentVideoStream = `[${nextLabel}]`;
-            };
+    const clips = projectState.clips || [];
+    if (clips.length === 0) {
+        job.status = 'failed';
+        job.error = "Timeline vazia.";
+        return;
+    }
 
-            const safeDuration = parseFloat(clip.duration) || 5;
-
-            // 1. Preparação (Loop Imagem + Padronização)
-            let prepFilters = [];
-            if (clip.type === 'image') {
-                prepFilters.push('loop=loop=-1:size=1:start=0');
-            }
-            // Importante: setsar=1 garante pixel aspect ratio quadrado
-            prepFilters.push(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
-            
-            addVideoFilter(prepFilters.join(','));
-
-            // 2. Trim (Corte no tempo)
-            if (clip.type === 'image') {
-                addVideoFilter(`trim=duration=${safeDuration},setpts=PTS-STARTPTS`);
-            } else {
-                const start = parseFloat(clip.mediaStartOffset) || 0;
-                addVideoFilter(`trim=start=${start}:duration=${start + safeDuration},setpts=PTS-STARTPTS`);
-            }
-
-            // 3. Efeitos Visuais
-            let colorFilters = [];
-            if (clip.effect) {
-                const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                if (fx) colorFilters.push(fx);
-            }
-            if (clip.properties && clip.properties.adjustments) {
-                const adj = clip.properties.adjustments;
-                let eqParts = [];
-                if (adj.brightness !== 1) eqParts.push(`brightness=${(adj.brightness - 1).toFixed(2)}`);
-                if (adj.contrast !== 1) eqParts.push(`contrast=${adj.contrast.toFixed(2)}`);
-                if (adj.saturate !== 1) eqParts.push(`saturation=${adj.saturate.toFixed(2)}`);
-                
-                if (eqParts.length > 0) colorFilters.push(`eq=${eqParts.join(':')}`);
-                if (adj.hue !== 0) colorFilters.push(`hue=h=${adj.hue}`);
-            }
-            if (clip.properties && clip.properties.opacity !== undefined && clip.properties.opacity < 1) {
-                colorFilters.push(`colorchannelmixer=aa=${clip.properties.opacity}`);
-            }
-            if (colorFilters.length > 0) {
-                addVideoFilter(colorFilters.join(','));
-            }
-
-            // 4. Movimento
-            if (clip.properties && clip.properties.movement) {
-                const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, safeDuration, false);
-                if (moveFilter) addVideoFilter(moveFilter);
-            }
-
-            // Finaliza stream de vídeo para este clipe
-            const finalVideoLabel = `v${i}`;
-            filterChain += `${currentVideoStream}scale=1280:720,setsar=1,setpts=PTS-STARTPTS[${finalVideoLabel}];`;
-            videoStreamLabels.push(`[${finalVideoLabel}]`);
-
-
-            // --- PROCESSAMENTO DE ÁUDIO ---
-            const mediaInfo = mediaLibrary && mediaLibrary[clip.fileName];
-            const hasAudio = mediaInfo ? mediaInfo.hasAudio : (clip.type === 'video' || clip.type === 'audio');
-            
-            const finalAudioLabel = `a${i}`;
-
-            if (clip.type === 'video' && hasAudio) {
-                const start = parseFloat(clip.mediaStartOffset) || 0;
-                let audioFilters = [`atrim=start=${start}:duration=${start + safeDuration}`, `asetpts=PTS-STARTPTS`];
-                
-                if (clip.properties && clip.properties.volume !== undefined && clip.properties.volume !== 1) {
-                    audioFilters.push(`volume=${clip.properties.volume}`);
-                }
-                
-                // CRUCIAL: Padronizar formato de áudio para evitar falhas no concat
-                audioFilters.push('aformat=sample_rates=44100:channel_layouts=stereo');
-                
-                filterChain += `[${currentInputIndex}:a]${audioFilters.join(',')}[${finalAudioLabel}];`;
-            } else {
-                // Gera silêncio compatível
-                filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${safeDuration}[${finalAudioLabel}];`;
-            }
-            audioStreamLabels.push(`[${finalAudioLabel}]`);
+    // 2. Mapear Arquivos Físicos
+    const fileMap = {};
+    if (job.files && job.files.length > 0) {
+        job.files.forEach(f => {
+            fileMap[f.originalname] = f.path;
         });
+    }
 
-        // --- CONCATENAÇÃO ---
-        if (videoStreamLabels.length > 0) {
-            let concatInputs = '';
-            for(let k=0; k < videoStreamLabels.length; k++) {
-                concatInputs += `${videoStreamLabels[k]}${audioStreamLabels[k]}`;
-            }
-            // unsafe=1 ajuda com timestamps imperfeitos
-            filterChain += `${concatInputs}concat=n=${videoStreamLabels.length}:v=1:a=1:unsafe=1[outv][outa]`;
-        } else {
-            return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
+    // 3. Separar Clipes Visuais e de Áudio
+    const visualClips = clips
+        .filter(c => ['video', 'image', 'camada'].includes(c.track) || c.type === 'video' || c.type === 'image')
+        .sort((a, b) => a.start - b.start);
+
+    const audioClips = clips
+        .filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track) || (c.type === 'audio' && !visualClips.includes(c)))
+        .sort((a, b) => a.start - b.start);
+
+    if (visualClips.length === 0) {
+        job.status = 'failed';
+        job.error = "Nenhum clipe visual para exportar.";
+        return;
+    }
+
+    const outputExt = job.params.format === 'mp3' || job.params.type === 'audio' ? '.mp3' : '.mp4';
+    const outputPath = path.join(uploadDir, `export-${Date.now()}${outputExt}`);
+    job.outputPath = outputPath;
+
+    // 4. Construir Timeline Visual
+    const mediaLibrary = projectState.media || {};
+    const visualResult = transitionBuilder.buildTimeline(visualClips, fileMap, mediaLibrary);
+    
+    if (!visualResult.filterComplex) {
+        job.status = 'failed';
+        job.error = "Erro ao gerar filtros de renderização.";
+        return;
+    }
+
+    let { inputs, filterComplex, outputMapVideo, outputMapAudio } = visualResult;
+    
+    // 5. Processar Áudio Tracks (Mixing)
+    let audioStreamsToMix = [];
+    
+    // Adiciona o áudio do vídeo principal se existir
+    if (outputMapAudio) {
+        audioStreamsToMix.push(outputMapAudio);
+    }
+
+    let nextInputIndex = inputs.length / 2; // Correção heurística se inputs forem pares (video+audio). Melhor confiar no contador interno se exposto, mas aqui assumimos segurança pelo count.
+    // Na verdade, inputs.length é exato. transitionBuilder não retorna indices, então continuamos do length atual.
+    nextInputIndex = inputs.length;
+
+    audioClips.forEach((clip, i) => {
+        const filePath = fileMap[clip.fileName];
+        if (!filePath) {
+            console.warn(`Arquivo de áudio faltando: ${clip.fileName}`);
+            return;
         }
 
-        return {
-            inputs,
-            filterComplex: filterChain,
-            outputMapVideo: '[outv]',
-            outputMapAudio: '[outa]'
-        };
+        inputs.push('-i', filePath);
+        const currentIndex = nextInputIndex++;
+        const label = `audmix${i}`;
+        
+        const delayMs = Math.round(clip.start * 1000);
+        const mediaStart = clip.mediaStartOffset || 0;
+        const dur = clip.duration;
+
+        // Padroniza formato do áudio extra também
+        let af = `[${currentIndex}:a]atrim=start=${mediaStart}:duration=${mediaStart + dur},asetpts=PTS-STARTPTS`;
+        
+        if (clip.properties && clip.properties.volume !== undefined) {
+            af += `,volume=${clip.properties.volume}`;
+        }
+        
+        if (delayMs > 0) {
+            af += `,adelay=${delayMs}|${delayMs}`;
+        }
+        
+        // Garante formato compatível
+        af += `,aformat=sample_rates=44100:channel_layouts=stereo[${label}];`;
+        filterComplex += af;
+        audioStreamsToMix.push(`[${label}]`);
+    });
+
+    // 6. Mix Final
+    let finalAudioMap = outputMapAudio;
+    
+    if (audioStreamsToMix.length > 1) {
+        const mixLabel = 'amixed_final';
+        // duration=first: termina quando o vídeo termina
+        // dropout_transition=0: evita fade repentino
+        // normalize=0: não normaliza volume (controlamos manualmente)
+        filterComplex += `${audioStreamsToMix.join('')}amix=inputs=${audioStreamsToMix.length}:duration=first:dropout_transition=0[${mixLabel}]`;
+        finalAudioMap = `[${mixLabel}]`;
+    } else if (audioStreamsToMix.length === 1) {
+        finalAudioMap = audioStreamsToMix[0];
     }
+
+    // 7. Montar Comando Final
+    const finalArgs = [
+        ...inputs,
+        '-filter_complex', filterComplex,
+        '-map', outputMapVideo,
+        '-map', finalAudioMap || '0:a?', // Fallback seguro
+        ...presetGenerator.getVideoArgs(),
+        ...presetGenerator.getAudioArgs(),
+        '-y', outputPath
+    ];
+
+    console.log("FFmpeg Filter Chain Size:", filterComplex.length);
+
+    const totalDuration = visualClips.reduce((acc, c) => acc + (c.duration || 5), 0);
+
+    createFFmpegJob(job.id, finalArgs, totalDuration);
 };
