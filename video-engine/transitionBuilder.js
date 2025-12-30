@@ -42,7 +42,7 @@ export default {
                 let zoomFilter = `zoompan=z=1:d=${durationFrames}:s=1280x720:fps=30`; // Estático por padrão
 
                 if (clip.properties && clip.properties.movement) {
-                    zoomFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, durationFrames);
+                    zoomFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, durationFrames, true);
                 } else {
                     // Fallback
                     zoomFilter = `zoompan=z=1:d=${durationFrames}:s=1280x720:fps=30`;
@@ -52,11 +52,21 @@ export default {
                 lastLabel = `[${nextLabel}]`;
                 nextLabel = `tmp${i}_c`;
             } else {
-                // Vídeo: Trim (Corte)
+                // Vídeo: Trim (Corte) Primeiro
                 const start = clip.mediaStartOffset || 0;
                 filterChain += `${lastLabel}trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS[${nextLabel}];`;
                 lastLabel = `[${nextLabel}]`;
                 nextLabel = `tmp${i}_d`;
+
+                // Vídeo: Aplica Movimento se existir (ZoomPan com d=1)
+                if (clip.properties && clip.properties.movement) {
+                    const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, durationFrames, false);
+                    if (moveFilter) {
+                        filterChain += `${lastLabel}${moveFilter}[${nextLabel}];`;
+                        lastLabel = `[${nextLabel}]`;
+                        nextLabel = `tmp${i}_d_mov`;
+                    }
+                }
             }
 
             // --- 3. Efeitos Visuais (Cor / Brilho) ---
