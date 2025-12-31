@@ -94,7 +94,9 @@ module.exports = {
             } else if (mediaInfo && typeof mediaInfo.hasAudio === 'boolean') {
                 hasAudio = mediaInfo.hasAudio;
             } else {
-                hasAudio = (clip.type === 'video' || clip.type === 'audio');
+                // Safer default: Assume NO audio unless verified. 
+                // Previous default (video || audio) caused crashes if video file had no audio stream.
+                hasAudio = false; 
             }
             
             const finalAudioLabel = `a${i}`;
@@ -131,6 +133,4 @@ module.exports = {
             filterComplex: filterChain,
             outputMapVideo: '[outv]',
             outputMapAudio: '[outa]'
-        };
-    }
-};
+  
