@@ -52,7 +52,7 @@ module.exports = {
                 addVideoFilter(`trim=start=${start}:duration=${start + safeDuration},setpts=PTS-STARTPTS`);
             }
 
-            // 3. Efeitos Visuais
+            // 3. Efeitos de Cor
             let colorFilters = [];
             if (clip.effect) {
                 const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
@@ -77,23 +77,35 @@ module.exports = {
 
             // 4. Movimento
             if (clip.properties && clip.properties.movement) {
-                const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, safeDuration, false);
+                const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, safeDuration, clip.type === 'image');
                 if (moveFilter) addVideoFilter(moveFilter);
             }
 
             // Finaliza stream de vídeo para este clipe
             const finalVideoLabel = `v${i}`;
-            filterChain += `${currentVideoStream}scale=1280:720,setsar=1,setpts=PTS-STARTPTS[${finalVideoLabel}];`;
+            // Se o movimento for Scale+Crop, a dimensão já é 1280x720. Se for Zoompan, também.
+            // Executamos setsar=1 novamente por segurança.
+            filterChain += `${currentVideoStream}setsar=1,setpts=PTS-STARTPTS[${finalVideoLabel}];`;
             videoStreamLabels.push(`[${finalVideoLabel}]`);
 
 
             // --- PROCESSAMENTO DE ÁUDIO ---
             const mediaInfo = mediaLibrary && mediaLibrary[clip.fileName];
-            const hasAudio = mediaInfo ? mediaInfo.hasAudio : (clip.type === 'video' || clip.type === 'audio');
+            // FIX: Check explicit false, otherwise default to true for video/audio types
+            let hasAudio = false;
+            if (clip.type === 'audio') {
+                hasAudio = true;
+            } else if (clip.type === 'video') {
+                if (mediaInfo && mediaInfo.hasAudio !== undefined) {
+                    hasAudio = mediaInfo.hasAudio;
+                } else {
+                    hasAudio = true; // Assume true if unknown
+                }
+            }
             
             const finalAudioLabel = `a${i}`;
 
-            if (clip.type === 'video' && hasAudio) {
+            if (hasAudio) {
                 const start = parseFloat(clip.mediaStartOffset) || 0;
                 let audioFilters = [`atrim=start=${start}:duration=${start + safeDuration}`, `asetpts=PTS-STARTPTS`];
                 
