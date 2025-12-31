@@ -1,8 +1,19 @@
 
 const path = require('path');
 const fs = require('fs');
+const { exec } = require('child_process');
 const transitionBuilder = require('./video-engine/transitionBuilder.js');
 const presetGenerator = require('./video-engine/presetGenerator.js');
+
+function checkAudioStream(filePath) {
+    return new Promise((resolve) => {
+        // Check if audio stream exists using ffprobe
+        exec(`ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
+            if (err) return resolve(false);
+            resolve(stdout.trim().length > 0);
+        });
+    });
+}
 
 module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
     console.log("Iniciando exportação para Job:", job.id);
@@ -58,9 +69,20 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
     const outputPath = path.join(uploadDir, `export-${Date.now()}${outputExt}`);
     job.outputPath = outputPath;
 
-    // 4. Construir Timeline Visual
+    // 4. Verificar Presença de Áudio Real (FFprobe)
+    const audioPresenceMap = {};
+    for (const clip of visualClips) {
+        if (clip.type === 'video') {
+            const filePath = fileMap[clip.fileName];
+            if (filePath && audioPresenceMap[clip.fileName] === undefined) {
+                audioPresenceMap[clip.fileName] = await checkAudioStream(filePath);
+            }
+        }
+    }
+
+    // 5. Construir Timeline Visual
     const mediaLibrary = projectState.media || {};
-    const visualResult = transitionBuilder.buildTimeline(visualClips, fileMap, mediaLibrary);
+    const visualResult = transitionBuilder.buildTimeline(visualClips, fileMap, mediaLibrary, audioPresenceMap);
     
     if (!visualResult.filterComplex) {
         job.status = 'failed';
@@ -70,7 +92,7 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
 
     let { inputs, filterComplex, outputMapVideo, outputMapAudio } = visualResult;
     
-    // 5. Processar Áudio Tracks (Mixing)
+    // 6. Processar Áudio Tracks (Mixing)
     let audioStreamsToMix = [];
     
     // Adiciona o áudio do vídeo principal se existir
@@ -82,34 +104,30 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
     // O número de inputs já usados é inputs.length / 2.
     let nextInputIndex = inputs.length / 2;
 
-    audioClips.forEach((clip, i) => {
+    for (const clip of audioClips) {
         const filePath = fileMap[clip.fileName];
         if (!filePath) {
             console.warn(`Arquivo de áudio faltando: ${clip.fileName}`);
-            return;
+            continue;
         }
 
-        const mediaItem = mediaLibrary[clip.fileName];
-        
-        // Verifica se o arquivo realmente tem áudio antes de tentar processar
+        // Check if this audio file actually has an audio stream (cached or probe)
         let hasStream = true;
-        if (mediaItem) {
-            if (mediaItem.type === 'image') hasStream = false;
-            // Se for vídeo e explicitamente disser que não tem áudio
-            if (mediaItem.type === 'video' && mediaItem.hasAudio === false) hasStream = false;
+        if (audioPresenceMap[clip.fileName] !== undefined) {
+            hasStream = audioPresenceMap[clip.fileName];
         } else {
-            // Fallback se não tiver metadados: imagem nunca tem áudio
-            if (clip.type === 'image') hasStream = false;
+            hasStream = await checkAudioStream(filePath);
+            audioPresenceMap[clip.fileName] = hasStream;
         }
 
         if (!hasStream) {
-            console.log(`Skipping audio clip ${clip.id} (no audio stream)`);
-            return;
+            console.log(`Skipping audio clip ${clip.id} (no audio stream detected)`);
+            continue;
         }
 
         inputs.push('-i', filePath);
         const currentIndex = nextInputIndex++;
-        const label = `audmix${i}`;
+        const label = `audmix${clip.id.replace(/[^a-zA-Z0-9]/g, '')}`;
         
         const delayMs = Math.round(clip.start * 1000);
         const mediaStart = clip.mediaStartOffset || 0;
@@ -130,9 +148,9 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
         af += `,aformat=sample_rates=44100:channel_layouts=stereo[${label}];`;
         filterComplex += af;
         audioStreamsToMix.push(`[${label}]`);
-    });
+    }
 
-    // 6. Mix Final
+    // 7. Mix Final
     let finalAudioMap = outputMapAudio;
     
     if (audioStreamsToMix.length > 1) {
@@ -146,7 +164,7 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
         finalAudioMap = audioStreamsToMix[0];
     }
 
-    // 7. Montar Comando Final
+    // 8. Montar Comando Final
     const finalArgs = [
         ...inputs,
         '-filter_complex', filterComplex,
