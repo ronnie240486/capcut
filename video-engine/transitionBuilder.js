@@ -22,7 +22,7 @@ module.exports = {
             const currentInputIndex = inputIndexCounter;
             inputIndexCounter++;
 
-            // --- PROCESSAMENTO DE VÍDEO ---
+            // --- VÍDEO ---
             let currentVideoStream = `[${currentInputIndex}:v]`;
             
             const addVideoFilter = (filterText) => {
@@ -34,17 +34,15 @@ module.exports = {
 
             const safeDuration = parseFloat(clip.duration) || 5;
 
-            // 1. Preparação (Loop Imagem + Padronização)
+            // 1. Prep
             let prepFilters = [];
             if (clip.type === 'image') {
                 prepFilters.push('loop=loop=-1:size=1:start=0');
             }
-            // Importante: setsar=1 garante pixel aspect ratio quadrado
             prepFilters.push(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
-            
             addVideoFilter(prepFilters.join(','));
 
-            // 2. Trim (Corte no tempo)
+            // 2. Trim
             if (clip.type === 'image') {
                 addVideoFilter(`trim=duration=${safeDuration},setpts=PTS-STARTPTS`);
             } else {
@@ -52,7 +50,7 @@ module.exports = {
                 addVideoFilter(`trim=start=${start}:duration=${start + safeDuration},setpts=PTS-STARTPTS`);
             }
 
-            // 3. Efeitos Visuais
+            // 3. Effects
             let colorFilters = [];
             if (clip.effect) {
                 const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
@@ -64,7 +62,6 @@ module.exports = {
                 if (adj.brightness !== 1) eqParts.push(`brightness=${(adj.brightness - 1).toFixed(2)}`);
                 if (adj.contrast !== 1) eqParts.push(`contrast=${adj.contrast.toFixed(2)}`);
                 if (adj.saturate !== 1) eqParts.push(`saturation=${adj.saturate.toFixed(2)}`);
-                
                 if (eqParts.length > 0) colorFilters.push(`eq=${eqParts.join(':')}`);
                 if (adj.hue !== 0) colorFilters.push(`hue=h=${adj.hue}`);
             }
@@ -75,26 +72,19 @@ module.exports = {
                 addVideoFilter(colorFilters.join(','));
             }
 
-            // 4. Movimento
+            // 4. Movement
             if (clip.properties && clip.properties.movement) {
                 const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, safeDuration, false);
                 if (moveFilter) addVideoFilter(moveFilter);
             }
 
-            // Finaliza stream de vídeo para este clipe
             const finalVideoLabel = `v${i}`;
             filterChain += `${currentVideoStream}scale=1280:720,setsar=1,setpts=PTS-STARTPTS[${finalVideoLabel}];`;
             videoStreamLabels.push(`[${finalVideoLabel}]`);
 
 
-            // --- PROCESSAMENTO DE ÁUDIO ---
+            // --- ÁUDIO ---
             const mediaInfo = mediaLibrary && mediaLibrary[clip.fileName];
-            
-            // Determine audio presence with hierarchy:
-            // 1. Strict 'image' type check (Images NEVER have audio)
-            // 2. Physical probe result (Truth)
-            // 3. Metadata from frontend (Fallback)
-            // 4. Type based assumption (Last resort)
             let hasAudio = false;
             
             if (clip.type === 'image') {
@@ -112,29 +102,25 @@ module.exports = {
             if (hasAudio) {
                 const start = parseFloat(clip.mediaStartOffset) || 0;
                 let audioFilters = [`atrim=start=${start}:duration=${start + safeDuration}`, `asetpts=PTS-STARTPTS`];
-                
                 if (clip.properties && clip.properties.volume !== undefined && clip.properties.volume !== 1) {
                     audioFilters.push(`volume=${clip.properties.volume}`);
                 }
-                
-                // CRUCIAL: Padronizar formato de áudio para evitar falhas no concat
                 audioFilters.push('aformat=sample_rates=44100:channel_layouts=stereo');
                 
-                filterChain += `[${currentInputIndex}:a]${audioFilters.join(',')}[${finalAudioLabel}];`;
+                // Use explicit stream index 0 to avoid ambiguity
+                filterChain += `[${currentInputIndex}:a:0]${audioFilters.join(',')}[${finalAudioLabel}];`;
             } else {
-                // Gera silêncio compatível
                 filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${safeDuration}[${finalAudioLabel}];`;
             }
             audioStreamLabels.push(`[${finalAudioLabel}]`);
         });
 
-        // --- CONCATENAÇÃO ---
+        // --- CONCAT ---
         if (videoStreamLabels.length > 0) {
             let concatInputs = '';
             for(let k=0; k < videoStreamLabels.length; k++) {
                 concatInputs += `${videoStreamLabels[k]}${audioStreamLabels[k]}`;
             }
-            // unsafe=1 ajuda com timestamps imperfeitos
             filterChain += `${concatInputs}concat=n=${videoStreamLabels.length}:v=1:a=1:unsafe=1[outv][outa]`;
         } else {
             return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
