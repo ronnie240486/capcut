@@ -153,15 +153,21 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
         finalAudioMap = audioStreamsToMix[0];
     }
 
-    const finalArgs = [
-        ...inputs,
-        '-filter_complex', filterComplex,
-        '-map', outputMapVideo,
-        '-map', finalAudioMap || '0:a?', 
-        ...presetGenerator.getVideoArgs(),
-        ...presetGenerator.getAudioArgs(),
-        '-y', outputPath
-    ];
+  const finalArgs = [
+    ...inputs,
+    '-filter_complex', filterComplex,
+    '-map', outputMapVideo,
+
+    ...(finalAudioMap
+        ? ['-map', finalAudioMap]
+        : ['-an']
+    ),
+
+    ...presetGenerator.getVideoArgs(),
+    ...presetGenerator.getAudioArgs(),
+    '-y', outputPath
+];
+
 
     const totalDuration = visualClips.reduce((acc, c) => acc + (c.duration || 5), 0);
 
