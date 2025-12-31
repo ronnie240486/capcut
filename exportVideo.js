@@ -157,8 +157,7 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
         ...inputs,
         '-filter_complex', filterComplex,
         '-map', outputMapVideo,
-        '-map', finalAudioMap...(finalAudioMap ? ['-map', finalAudioMap] : ['-an']),
- || '0:a?', 
+        '-map', finalAudioMap || '0:a?', 
         ...presetGenerator.getVideoArgs(),
         ...presetGenerator.getAudioArgs(),
         '-y', outputPath
