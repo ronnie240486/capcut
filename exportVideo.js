@@ -7,9 +7,11 @@ const presetGenerator = require('./video-engine/presetGenerator.js');
 
 function checkAudioStream(filePath) {
     return new Promise((resolve) => {
+        // -select_streams a verifies if any audio stream exists
         exec(`ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
             if (err) return resolve(false);
-            resolve(stdout.trim().length > 0);
+            // Strict check: output must contain 'audio'
+            resolve(stdout.toLowerCase().includes('audio'));
         });
     });
 }
