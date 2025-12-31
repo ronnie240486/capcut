@@ -49,10 +49,10 @@ module.exports = {
 
         if (effects[effectId]) return effects[effectId];
         
-        if (effectId.includes('bw') || effectId.includes('noir')) return 'hue=s=0';
-        if (effectId.includes('matrix')) return 'colorbalance=gs=0.3';
-        if (effectId.includes('contrast')) return 'eq=contrast=1.3';
-        if (effectId.includes('sepia')) return 'colorbalance=rs=.3:gs=.2:bs=-.2';
+        if (effectId && effectId.includes('bw') || effectId && effectId.includes('noir')) return 'hue=s=0';
+        if (effectId && effectId.includes('matrix')) return 'colorbalance=gs=0.3';
+        if (effectId && effectId.includes('contrast')) return 'eq=contrast=1.3';
+        if (effectId && effectId.includes('sepia')) return 'colorbalance=rs=.3:gs=.2:bs=-.2';
         
         return null;
     },
@@ -105,7 +105,6 @@ module.exports = {
                 return `zoompan=z='1.0+0.05*sin(time*10)'${center}${common}`;
 
             // --- PANS DIRECIONAIS (MOV-*) ---
-            // Nota: Para dar pan para a ESQUERDA, a câmera (viewport) deve mover para a DIREITA
             case 'pan-left':
             case 'slide-left':
             case 'mov-pan-slow-l':
@@ -116,32 +115,27 @@ module.exports = {
             case 'mov-pan-slow-r':
                 return `zoompan=z=1.2:x='(iw-iw/zoom)*(1-(time/${totalDuration}))':y='ih/2-(ih/zoom/2)'${common}`;
 
-            case 'mov-pan-slow-u': // Pan Up (Câmera sobe, imagem desce) -> Viewport sobe (y diminui)
+            case 'mov-pan-slow-u': 
                 return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(1-(time/${totalDuration}))'${common}`;
 
-            case 'mov-pan-slow-d': // Pan Down (Câmera desce, imagem sobe) -> Viewport desce (y aumenta)
+            case 'mov-pan-slow-d': 
                 return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(time/${totalDuration})'${common}`;
 
             // --- SHAKES & TERREMOTOS ---
             case 'shake':
             case 'handheld-1':
             case 'jitter':
-                // Tremor leve
                 return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+random(1)*10-5':y='ih/2-(ih/zoom/2)+random(1)*10-5'${common}`;
 
             case 'earthquake':
             case 'mov-shake-violent':
             case 'shake-hard':
-                // Tremor forte (precisa de mais zoom (1.2) para não mostrar bordas pretas)
                 return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+random(1)*40-20':y='ih/2-(ih/zoom/2)+random(1)*40-20'${common}`;
 
             case 'handheld-2':
-                // Tremor médio
                 return `zoompan=z=1.15:x='iw/2-(iw/zoom/2)+random(1)*20-10':y='ih/2-(ih/zoom/2)+random(1)*20-10'${common}`;
 
-            // --- PADRÃO ---
             default:
-                // Se for imagem e não tiver movimento, aplica um zoom imperceptível para manter o formato de vídeo
                 if (isImage) return `zoompan=z=1${common}`;
                 return null;
         }
