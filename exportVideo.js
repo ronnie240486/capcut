@@ -99,6 +99,11 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
     // Since transitionBuilder adds '-i' and 'path', length is 2x number of inputs
     let nextInputIndex = inputs.length / 2;
 
+    // CRITICAL FIX: Ensure there is a separator between the visual/concat filters and the new audio filters
+    if (filterComplex && !filterComplex.trim().endsWith(';')) {
+        filterComplex += ';';
+    }
+
     for (const clip of audioClips) {
         const filePath = fileMap[clip.fileName];
         if (!filePath) {
@@ -148,6 +153,10 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
     
     if (audioStreamsToMix.length > 1) {
         const mixLabel = 'amixed_final';
+        // Ensure separator before amix if needed
+        if (!filterComplex.trim().endsWith(';')) {
+            filterComplex += ';';
+        }
         filterComplex += `${audioStreamsToMix.join('')}amix=inputs=${audioStreamsToMix.length}:duration=first:dropout_transition=0[${mixLabel}]`;
         finalAudioMap = `[${mixLabel}]`;
     } else if (audioStreamsToMix.length === 1) {
