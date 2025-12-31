@@ -95,7 +95,6 @@ module.exports = {
                 hasAudio = mediaInfo.hasAudio;
             } else {
                 // Safer default: Assume NO audio unless verified. 
-                // Previous default (video || audio) caused crashes if video file had no audio stream.
                 hasAudio = false; 
             }
             
@@ -112,6 +111,7 @@ module.exports = {
                 // Use explicit stream index 0 to avoid ambiguity
                 filterChain += `[${currentInputIndex}:a:0]${audioFilters.join(',')}[${finalAudioLabel}];`;
             } else {
+                // Generate silence if no audio stream exists
                 filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${safeDuration}[${finalAudioLabel}];`;
             }
             audioStreamLabels.push(`[${finalAudioLabel}]`);
@@ -133,4 +133,6 @@ module.exports = {
             filterComplex: filterChain,
             outputMapVideo: '[outv]',
             outputMapAudio: '[outa]'
-  
+        };
+    }
+};
