@@ -89,6 +89,24 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
             return;
         }
 
+        const mediaItem = mediaLibrary[clip.fileName];
+        
+        // Verifica se o arquivo realmente tem áudio antes de tentar processar
+        let hasStream = true;
+        if (mediaItem) {
+            if (mediaItem.type === 'image') hasStream = false;
+            // Se for vídeo e explicitamente disser que não tem áudio
+            if (mediaItem.type === 'video' && mediaItem.hasAudio === false) hasStream = false;
+        } else {
+            // Fallback se não tiver metadados: imagem nunca tem áudio
+            if (clip.type === 'image') hasStream = false;
+        }
+
+        if (!hasStream) {
+            console.log(`Skipping audio clip ${clip.id} (no audio stream)`);
+            return;
+        }
+
         inputs.push('-i', filePath);
         const currentIndex = nextInputIndex++;
         const label = `audmix${i}`;
