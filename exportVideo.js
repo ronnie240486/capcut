@@ -8,10 +8,11 @@ const presetGenerator = require('./video-engine/presetGenerator.js');
 function checkAudioStream(filePath) {
     return new Promise((resolve) => {
         // -select_streams a verifies if any audio stream exists
+        // -show_entries stream=codec_type will output 'audio' if found
         exec(`ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
             if (err) return resolve(false);
-            // Strict check: output must contain 'audio'
-            resolve(stdout.toLowerCase().includes('audio'));
+            // Strict check: output must contain 'audio' (case insensitive)
+            resolve(stdout && stdout.toLowerCase().includes('audio'));
         });
     });
 }
@@ -105,7 +106,7 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
             continue;
         }
 
-        // Always verify stream presence to prevent 'No output pad' errors
+        // Always verify stream presence to prevent 'No output pad' errors for audio tracks too
         let hasStream = true;
         if (audioPresenceMap[clip.fileName] !== undefined) {
             hasStream = audioPresenceMap[clip.fileName];
@@ -153,21 +154,15 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
         finalAudioMap = audioStreamsToMix[0];
     }
 
-  const finalArgs = [
-    ...inputs,
-    '-filter_complex', filterComplex,
-    '-map', outputMapVideo,
-
-    ...(finalAudioMap
-        ? ['-map', finalAudioMap]
-        : ['-an']
-    ),
-
-    ...presetGenerator.getVideoArgs(),
-    ...presetGenerator.getAudioArgs(),
-    '-y', outputPath
-];
-
+    const finalArgs = [
+        ...inputs,
+        '-filter_complex', filterComplex,
+        '-map', outputMapVideo,
+        '-map', finalAudioMap || '0:a?', 
+        ...presetGenerator.getVideoArgs(),
+        ...presetGenerator.getAudioArgs(),
+        '-y', outputPath
+    ];
 
     const totalDuration = visualClips.reduce((acc, c) => acc + (c.duration || 5), 0);
 
