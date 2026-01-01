@@ -11,6 +11,7 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 app.use(cors());
+// Increased limits for large project saves
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
@@ -22,7 +23,15 @@ const storage = multer.diskStorage({
     filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s/g, '_')}`)
 });
 
-const uploadAny = multer({ storage }).any();
+// Configure Multer with increased field size limits
+const uploadAny = multer({ 
+    storage,
+    limits: {
+        fieldSize: 100 * 1024 * 1024, // 100MB limit for text fields (JSON)
+        fileSize: 500 * 1024 * 1024   // 500MB limit for files
+    }
+}).any();
+
 const jobs = {};
 
 // --- HELPERS ---
