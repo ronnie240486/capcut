@@ -99,11 +99,6 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
     // Since transitionBuilder adds '-i' and 'path', length is 2x number of inputs
     let nextInputIndex = inputs.length / 2;
 
-    // CRITICAL FIX: Ensure there is a separator between the visual/concat filters and the new audio filters
-    if (filterComplex && !filterComplex.trim().endsWith(';')) {
-        filterComplex += ';';
-    }
-
     for (const clip of audioClips) {
         const filePath = fileMap[clip.fileName];
         if (!filePath) {
@@ -125,6 +120,11 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
             continue;
         }
 
+        // Only add separator if needed and if we are actually going to add a filter
+        if (filterComplex && !filterComplex.trim().endsWith(';')) {
+            filterComplex += ';';
+        }
+
         inputs.push('-i', filePath);
         const currentIndex = nextInputIndex++;
         const label = `audmix${clip.id.replace(/[^a-zA-Z0-9]/g, '')}`;
@@ -144,7 +144,7 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
             af += `,adelay=${delayMs}|${delayMs}`;
         }
         
-        af += `,aformat=sample_rates=44100:channel_layouts=stereo[${label}];`;
+        af += `,aformat=sample_rates=44100:channel_layouts=stereo[${label}]`;
         filterComplex += af;
         audioStreamsToMix.push(`[${label}]`);
     }
@@ -154,13 +154,18 @@ module.exports = async function handleExport(job, uploadDir, createFFmpegJob) {
     if (audioStreamsToMix.length > 1) {
         const mixLabel = 'amixed_final';
         // Ensure separator before amix if needed
-        if (!filterComplex.trim().endsWith(';')) {
+        if (filterComplex && !filterComplex.trim().endsWith(';')) {
             filterComplex += ';';
         }
         filterComplex += `${audioStreamsToMix.join('')}amix=inputs=${audioStreamsToMix.length}:duration=first:dropout_transition=0[${mixLabel}]`;
         finalAudioMap = `[${mixLabel}]`;
     } else if (audioStreamsToMix.length === 1) {
         finalAudioMap = audioStreamsToMix[0];
+    }
+
+    // FINAL CLEANUP: Ensure no trailing semicolon
+    if (filterComplex.trim().endsWith(';')) {
+        filterComplex = filterComplex.trim().slice(0, -1);
     }
 
     const finalArgs = [
