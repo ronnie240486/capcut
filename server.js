@@ -11,7 +11,6 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 
 app.use(cors());
-// Increased limits for large project saves
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
@@ -23,15 +22,7 @@ const storage = multer.diskStorage({
     filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s/g, '_')}`)
 });
 
-// Configure Multer with increased field size limits
-const uploadAny = multer({ 
-    storage,
-    limits: {
-        fieldSize: 100 * 1024 * 1024, // 100MB limit for text fields (JSON)
-        fileSize: 500 * 1024 * 1024   // 500MB limit for files
-    }
-}).any();
-
+const uploadAny = multer({ storage }).any();
 const jobs = {};
 
 // --- HELPERS ---
@@ -255,6 +246,37 @@ app.get('/api/process/download/:jobId', (req, res) => {
         return res.status(404).send("Arquivo não encontrado.");
     }
     res.download(job.outputPath);
+});
+
+// PROXY ROUTES
+app.get('/api/proxy/epidemic/search', async (req, res) => {
+    const { term } = req.query;
+    const token = req.headers['x-epidemic-token'];
+    
+    if (!term || !token) {
+        return res.status(400).json({ error: "Missing term or token" });
+    }
+
+    try {
+        const response = await fetch(`https://api.epidemicsound.com/v1/tracks/search?term=${encodeURIComponent(term)}&limit=10`, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (!response.ok) {
+            const text = await response.text();
+            console.error("Epidemic Upstream Error:", response.status, text);
+            return res.status(response.status).send(text);
+        }
+
+        const data = await response.json();
+        res.json(data);
+    } catch (e) {
+        console.error("Epidemic Proxy Error:", e);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 app.get('/api/check-ffmpeg', (req, res) => res.send("FFmpeg is ready"));
