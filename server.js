@@ -1,4 +1,5 @@
 
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -188,6 +189,42 @@ app.get('/api/proxy/freesound', (req, res) => {
     request.on('error', (e) => {
         console.error("Freesound Request Error:", e.message);
         res.json({ results: REAL_SFX_FALLBACKS });
+    });
+});
+
+// --- FRAME EXTRACTION UTILITY ---
+app.post('/api/util/extract-frame', uploadAny, (req, res) => {
+    const videoFile = req.files[0];
+    const timestamp = parseFloat(req.body.timestamp) || 0;
+    
+    if (!videoFile) return res.status(400).send("No video file uploaded");
+
+    const outputPath = path.join(uploadDir, `frame_${Date.now()}.png`);
+
+    // Using -ss before -i for fast seek to approximate location
+    const args = [
+        '-ss', String(timestamp),
+        '-i', videoFile.path,
+        '-frames:v', '1',
+        '-q:v', '2', 
+        '-y',
+        outputPath
+    ];
+
+    const ffmpeg = spawn('ffmpeg', args);
+
+    ffmpeg.on('close', (code) => {
+        if (code === 0 && fs.existsSync(outputPath)) {
+            res.sendFile(outputPath);
+        } else {
+            console.error("FFmpeg frame extraction failed");
+            res.status(500).send("Failed to extract frame");
+        }
+    });
+    
+    ffmpeg.on('error', (err) => {
+         console.error("FFmpeg spawn error:", err);
+         res.status(500).send("Server error");
     });
 });
 
