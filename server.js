@@ -138,10 +138,6 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
 
 // Proxy para Pixabay Audio (With Fallback)
 app.get('/api/proxy/pixabay', (req, res) => {
-    // Return curated fallback list immediately to ensure "Real Results" for all users
-    // regardless of API Key status (since Pixabay Audio API access is restricted).
-    // Filters locally based on query.
-    
     const { q, category } = req.query;
     const isSFX = (category || '').includes('sfx') || (q || '').toLowerCase().includes('effect');
     const sourceList = isSFX ? REAL_SFX_FALLBACKS : REAL_MUSIC_FALLBACKS;
@@ -201,7 +197,6 @@ app.post('/api/util/extract-frame', uploadAny, (req, res) => {
 
     const outputPath = path.join(uploadDir, `frame_${Date.now()}.png`);
 
-    // Using -ss before -i for fast seek to approximate location
     const args = [
         '-ss', String(timestamp),
         '-i', videoFile.path,
@@ -224,6 +219,46 @@ app.post('/api/util/extract-frame', uploadAny, (req, res) => {
     
     ffmpeg.on('error', (err) => {
          console.error("FFmpeg spawn error:", err);
+         res.status(500).send("Server error");
+    });
+});
+
+// --- SCENE DETECTION UTILITY ---
+app.post('/api/analyze/scenes', uploadAny, (req, res) => {
+    const videoFile = req.files[0];
+    if (!videoFile) return res.status(400).send("No video file uploaded");
+
+    // FFmpeg command to detect scenes with > 30% difference
+    const args = [
+        '-i', videoFile.path,
+        '-filter:v', "select='gt(scene,0.3)',showinfo",
+        '-f', 'null',
+        '-'
+    ];
+
+    const ffmpeg = spawn('ffmpeg', args);
+    let stderr = '';
+
+    ffmpeg.stderr.on('data', (data) => {
+        stderr += data.toString();
+    });
+
+    ffmpeg.on('close', (code) => {
+        // Look for timestamps in stderr
+        const scenes = [];
+        const regex = /pts_time:([0-9.]+)/g;
+        let match;
+        while ((match = regex.exec(stderr)) !== null) {
+            scenes.push(parseFloat(match[1]));
+        }
+        
+        // Remove duplicates and very close timestamps if needed
+        // For now, return raw detection
+        res.json({ scenes });
+    });
+    
+    ffmpeg.on('error', (err) => {
+         console.error("FFmpeg scene detection error:", err);
          res.status(500).send("Server error");
     });
 });
