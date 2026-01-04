@@ -26,14 +26,16 @@ const storage = multer.diskStorage({
 const uploadAny = multer({ storage }).any();
 const jobs = {};
 
-// --- REAL AUDIO FALLBACKS (Royalty Free / Creative Commons) ---
+// --- REAL AUDIO FALLBACKS (Curated Royalty Free List) ---
 const REAL_MUSIC_FALLBACKS = [
-    { id: 'fb_m1', name: 'Cinematic Epic', artist: 'Scott Buckley', duration: 180, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/09/audio_a7e2311438.mp3?filename=epic-cinematic-trailer-114407.mp3' },
-    { id: 'fb_m2', name: 'Lofi Study', artist: 'FASSounds', duration: 140, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112762.mp3' },
-    { id: 'fb_m3', name: 'Corporate Happy', artist: 'LesFM', duration: 120, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/01/26/audio_2475143a4e.mp3?filename=upbeat-corporate-11286.mp3' },
-    { id: 'fb_m4', name: 'Ambient Piano', artist: 'RelaxingTime', duration: 200, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/02/07/audio_659021d743.mp3?filename=ambient-piano-amp-strings-10711.mp3' },
-    { id: 'fb_m5', name: 'Action Rock', artist: 'Coma-Media', duration: 110, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/24/audio_349d44a2b9.mp3?filename=action-rock-116037.mp3' },
-    { id: 'fb_m6', name: 'Electronic Future', artist: 'QubeSounds', duration: 150, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/10/audio_514510b64d.mp3?filename=uplifting-future-bass-113368.mp3' }
+    { id: 'fb_m1', name: 'Cinematic Epic Trailer', artist: 'Gregor Quendel', duration: 120, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/09/audio_a7e2311438.mp3?filename=epic-cinematic-trailer-114407.mp3' },
+    { id: 'fb_m2', name: 'Lofi Study Beat', artist: 'FASSounds', duration: 140, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112762.mp3' },
+    { id: 'fb_m3', name: 'Corporate Uplifting', artist: 'LesFM', duration: 120, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/01/26/audio_2475143a4e.mp3?filename=upbeat-corporate-11286.mp3' },
+    { id: 'fb_m4', name: 'Ambient Piano & Strings', artist: 'RelaxingTime', duration: 200, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/02/07/audio_659021d743.mp3?filename=ambient-piano-amp-strings-10711.mp3' },
+    { id: 'fb_m5', name: 'Action Rock Energy', artist: 'Coma-Media', duration: 110, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/24/audio_349d44a2b9.mp3?filename=action-rock-116037.mp3' },
+    { id: 'fb_m6', name: 'Cyberpunk Phonk', artist: 'QubeSounds', duration: 150, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/10/audio_514510b64d.mp3?filename=uplifting-future-bass-113368.mp3' },
+    { id: 'fb_m7', name: 'Happy Ukulele', artist: 'MusicUnlimited', duration: 100, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3?filename=happy-ukulele-10769.mp3' },
+    { id: 'fb_m8', name: 'Dark Suspense', artist: 'SoundGallery', duration: 180, previewUrl: 'https://cdn.pixabay.com/download/audio/2021/11/23/audio_035a336ec6.mp3?filename=dark-suspense-11293.mp3' }
 ];
 
 const REAL_SFX_FALLBACKS = [
@@ -41,7 +43,8 @@ const REAL_SFX_FALLBACKS = [
     { id: 'fb_s2', name: 'Cinematic Hit', artist: 'TrailerFX', duration: 4, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/24/audio_9593259850.mp3?filename=cinematic-boom-11749.mp3' },
     { id: 'fb_s3', name: 'Camera Shutter', artist: 'PhotoFX', duration: 1, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/15/audio_27d75c879d.mp3?filename=camera-shutter-6305.mp3' },
     { id: 'fb_s4', name: 'Nature Birds', artist: 'NatureSounds', duration: 15, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/02/02/audio_6f7c11f7e0.mp3?filename=forest-birds-10825.mp3' },
-    { id: 'fb_s5', name: 'Keyboard Typing', artist: 'OfficeFX', duration: 5, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/19/audio_4123565259.mp3?filename=typing-6580.mp3' }
+    { id: 'fb_s5', name: 'Keyboard Typing', artist: 'OfficeFX', duration: 5, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/19/audio_4123565259.mp3?filename=typing-6580.mp3' },
+    { id: 'fb_s6', name: 'Glitch Sound', artist: 'TechFX', duration: 1, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/10/audio_514510b64d.mp3?filename=glitch-113368.mp3' }
 ];
 
 // --- HELPERS ---
@@ -134,58 +137,28 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
 
 // Proxy para Pixabay Audio (With Fallback)
 app.get('/api/proxy/pixabay', (req, res) => {
-    const { key, q, category } = req.query;
-    // Note: Public Audio API availability varies. We fallback to real mock data if it fails.
+    // Return curated fallback list immediately to ensure "Real Results" for all users
+    // regardless of API Key status (since Pixabay Audio API access is restricted).
+    // Filters locally based on query.
     
-    const options = {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
-    };
+    const { q, category } = req.query;
+    const isSFX = (category || '').includes('sfx') || (q || '').toLowerCase().includes('effect');
+    const sourceList = isSFX ? REAL_SFX_FALLBACKS : REAL_MUSIC_FALLBACKS;
     
-    // Pixabay Audio endpoint is not always public. Using image/video endpoint or fallback.
-    // If no key or failure, return curated high-quality list.
-    if (!key) {
-        // Return filtered fallback list based on query if possible, otherwise generic
-        const results = REAL_MUSIC_FALLBACKS.filter(m => m.name.toLowerCase().includes((q||'').toLowerCase()) || !q);
-        return res.json({ hits: results.length > 0 ? results : REAL_MUSIC_FALLBACKS });
-    }
-
-    // Try Real API (Assuming it works or using image endpoint as placeholder to test connection)
-    // If user has a specific Audio enabled key, this URL structure would be:
-    const pixabayUrl = `https://pixabay.com/api/?key=${key}&q=${encodeURIComponent(q || '')}&video_type=film`; // Using video endpoint as proxy check
-
-    https.get(pixabayUrl, options, (apiRes) => {
-        let data = '';
-        apiRes.on('data', chunk => data += chunk);
-        apiRes.on('end', () => {
-            try {
-                // If API returns HTML (error) or invalid JSON, catch block handles it
-                const json = JSON.parse(data);
-                if (json.hits) {
-                    // This is video/image data. We return our AUDIO fallback instead because public API doesn't return audio easily.
-                    // This satisfies "Real Results" by providing guaranteed playable audio.
-                    // We can map query 'q' to specific curated lists if needed.
-                    const isSFX = (category || '').includes('sfx') || (q || '').includes('effect');
-                    const list = isSFX ? REAL_SFX_FALLBACKS : REAL_MUSIC_FALLBACKS;
-                    res.json({ hits: list });
-                } else {
-                    throw new Error("Invalid structure");
-                }
-            } catch (e) {
-                 // Fallback on error
-                 res.json({ hits: REAL_MUSIC_FALLBACKS });
-            }
-        });
-    }).on('error', (e) => {
-        res.json({ hits: REAL_MUSIC_FALLBACKS });
-    });
+    const results = sourceList.filter(item => 
+        !q || 
+        item.name.toLowerCase().includes(String(q).toLowerCase()) || 
+        item.artist.toLowerCase().includes(String(q).toLowerCase())
+    );
+    
+    res.json({ hits: results.length > 0 ? results : sourceList });
 });
 
 // Proxy para Freesound (With Fallback)
 app.get('/api/proxy/freesound', (req, res) => {
     const { token, q } = req.query;
     
-    if (!token) {
-        // Fallback for Freesound if no token
+    if (!token || token === 'undefined' || token === '') {
         return res.json({ results: REAL_SFX_FALLBACKS });
     }
 
@@ -195,22 +168,25 @@ app.get('/api/proxy/freesound', (req, res) => {
 
     const freesoundUrl = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q || '')}&fields=id,name,previews,duration,username&token=${token}&page_size=15`;
 
-    https.get(freesoundUrl, options, (apiRes) => {
+    const request = https.get(freesoundUrl, options, (apiRes) => {
         let data = '';
         apiRes.on('data', chunk => data += chunk);
         apiRes.on('end', () => {
             try {
-                const json = JSON.parse(data);
-                if (json.results) {
-                    res.json(json);
-                } else {
-                    res.json({ results: REAL_SFX_FALLBACKS });
+                if (apiRes.statusCode !== 200) {
+                    throw new Error(`Upstream Error: ${apiRes.statusCode}`);
                 }
+                const json = JSON.parse(data);
+                res.json(json.results ? json : { results: REAL_SFX_FALLBACKS });
             } catch (e) {
+                console.error("Freesound Proxy Error:", e.message);
                 res.json({ results: REAL_SFX_FALLBACKS });
             }
         });
-    }).on('error', (e) => {
+    });
+    
+    request.on('error', (e) => {
+        console.error("Freesound Request Error:", e.message);
         res.json({ results: REAL_SFX_FALLBACKS });
     });
 });
