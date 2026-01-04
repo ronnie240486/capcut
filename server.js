@@ -351,13 +351,14 @@ async function processSingleClipJob(jobId) {
             break;
 
         case 'viral-cuts':
-            // "Viral" style: Slightly faster, higher saturation/contrast, remove silence
+            // "Viral" style: Slightly faster, higher saturation/contrast
+            // Removing silence blindly desyncs video. For now, just speed up and styling.
             let viralFilter = `[0:v]setpts=0.9*PTS,eq=saturation=1.3:contrast=1.1[v]`;
             let viralMap = ['-map', '[v]'];
             
             if (hasAudio) {
-                // Combine speed up (atempo) with silence removal
-                viralFilter += `;[0:a]atempo=1.1,silenceremove=stop_periods=-1:stop_duration=0.5:stop_threshold=-30dB[a]`;
+                // atempo 1.1 matches setpts 0.9 (approx 1/1.1)
+                viralFilter += `;[0:a]atempo=1.111[a]`; 
                 viralMap.push('-map', '[a]');
             }
             
