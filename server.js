@@ -4,9 +4,9 @@ const cors = require('cors');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
-const https = require('https'); // Added https module
 const { spawn, exec } = require('child_process');
 const handleExport = require('./exportVideo.js');
+const https = require('https'); // Modulo nativo para requisições externas
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -111,6 +111,55 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
         }
     });
 }
+
+// --- PROXY ROUTES PARA RESULTADOS REAIS ---
+
+// Proxy para Pixabay Audio
+app.get('/api/proxy/pixabay', (req, res) => {
+    const { key, q, category } = req.query;
+    if (!key) return res.status(400).json({ error: 'API Key required' });
+
+    const pixabayUrl = `https://pixabay.com/api/audio/?key=${key}&q=${encodeURIComponent(q || '')}&category=${category || ''}&per_page=10`;
+
+    https.get(pixabayUrl, (apiRes) => {
+        let data = '';
+        apiRes.on('data', chunk => data += chunk);
+        apiRes.on('end', () => {
+            try {
+                const json = JSON.parse(data);
+                res.json(json);
+            } catch (e) {
+                res.status(500).json({ error: 'Failed to parse Pixabay response' });
+            }
+        });
+    }).on('error', (e) => {
+        res.status(500).json({ error: e.message });
+    });
+});
+
+// Proxy para Freesound
+app.get('/api/proxy/freesound', (req, res) => {
+    const { token, q } = req.query;
+    if (!token) return res.status(400).json({ error: 'Token required' });
+
+    const freesoundUrl = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q || '')}&fields=id,name,previews,duration,username&token=${token}&page_size=10`;
+
+    https.get(freesoundUrl, (apiRes) => {
+        let data = '';
+        apiRes.on('data', chunk => data += chunk);
+        apiRes.on('end', () => {
+            try {
+                const json = JSON.parse(data);
+                res.json(json);
+            } catch (e) {
+                res.status(500).json({ error: 'Failed to parse Freesound response' });
+            }
+        });
+    }).on('error', (e) => {
+        res.status(500).json({ error: e.message });
+    });
+});
+
 
 async function processSingleClipJob(jobId) {
     const job = jobs[jobId];
@@ -247,55 +296,6 @@ app.get('/api/process/download/:jobId', (req, res) => {
         return res.status(404).send("Arquivo não encontrado.");
     }
     res.download(job.outputPath);
-});
-
-// PROXY ROUTES (Updated to use native HTTPS module)
-app.get('/api/proxy/epidemic/search', (req, res) => {
-    const { term } = req.query;
-    const token = req.headers['x-epidemic-token'];
-    
-    if (!term || !token) {
-        return res.status(400).json({ error: "Missing term or token" });
-    }
-
-    const options = {
-        hostname: 'api.epidemicsound.com',
-        path: `/v1/tracks/search?term=${encodeURIComponent(term)}&limit=10`,
-        method: 'GET',
-        headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-        }
-    };
-
-    const proxyReq = https.request(options, (proxyRes) => {
-        let data = '';
-        proxyRes.on('data', (chunk) => {
-            data += chunk;
-        });
-
-        proxyRes.on('end', () => {
-            if (proxyRes.statusCode >= 200 && proxyRes.statusCode < 300) {
-                try {
-                    const jsonData = JSON.parse(data);
-                    res.json(jsonData);
-                } catch (e) {
-                    console.error("Epidemic Parse Error", e);
-                    res.status(500).json({ error: "Failed to parse upstream response" });
-                }
-            } else {
-                console.error("Epidemic Upstream Error:", proxyRes.statusCode, data);
-                res.status(proxyRes.statusCode).send(data);
-            }
-        });
-    });
-
-    proxyReq.on('error', (e) => {
-        console.error("Epidemic Proxy Request Error:", e);
-        res.status(500).json({ error: e.message });
-    });
-
-    proxyReq.end();
 });
 
 app.get('/api/check-ffmpeg', (req, res) => res.send("FFmpeg is ready"));
