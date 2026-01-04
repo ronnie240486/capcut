@@ -1,5 +1,4 @@
 
-
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -349,6 +348,27 @@ async function processSingleClipJob(jobId) {
             else if(p === 'helium') af = "asetrate=44100*1.4,atempo=0.7";
             
             args = ['-i', videoFile.path, '-vn', '-af', af, '-y', outputPath];
+            break;
+
+        case 'viral-cuts':
+            // "Viral" style: Slightly faster, higher saturation/contrast, remove silence
+            let viralFilter = `[0:v]setpts=0.9*PTS,eq=saturation=1.3:contrast=1.1[v]`;
+            let viralMap = ['-map', '[v]'];
+            
+            if (hasAudio) {
+                // Combine speed up (atempo) with silence removal
+                viralFilter += `;[0:a]atempo=1.1,silenceremove=stop_periods=-1:stop_duration=0.5:stop_threshold=-30dB[a]`;
+                viralMap.push('-map', '[a]');
+            }
+            
+            args = [
+                '-i', videoFile.path,
+                '-filter_complex', viralFilter,
+                ...viralMap,
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26', 
+                '-pix_fmt', 'yuv420p',
+                '-y', outputPath
+            ];
             break;
 
         default:
