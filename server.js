@@ -4,6 +4,7 @@ const cors = require('cors');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
+const https = require('https'); // Added https module
 const { spawn, exec } = require('child_process');
 const handleExport = require('./exportVideo.js');
 
@@ -248,8 +249,8 @@ app.get('/api/process/download/:jobId', (req, res) => {
     res.download(job.outputPath);
 });
 
-// PROXY ROUTES
-app.get('/api/proxy/epidemic/search', async (req, res) => {
+// PROXY ROUTES (Updated to use native HTTPS module)
+app.get('/api/proxy/epidemic/search', (req, res) => {
     const { term } = req.query;
     const token = req.headers['x-epidemic-token'];
     
@@ -257,26 +258,44 @@ app.get('/api/proxy/epidemic/search', async (req, res) => {
         return res.status(400).json({ error: "Missing term or token" });
     }
 
-    try {
-        const response = await fetch(`https://api.epidemicsound.com/v1/tracks/search?term=${encodeURIComponent(term)}&limit=10`, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
+    const options = {
+        hostname: 'api.epidemicsound.com',
+        path: `/v1/tracks/search?term=${encodeURIComponent(term)}&limit=10`,
+        method: 'GET',
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+        }
+    };
+
+    const proxyReq = https.request(options, (proxyRes) => {
+        let data = '';
+        proxyRes.on('data', (chunk) => {
+            data += chunk;
+        });
+
+        proxyRes.on('end', () => {
+            if (proxyRes.statusCode >= 200 && proxyRes.statusCode < 300) {
+                try {
+                    const jsonData = JSON.parse(data);
+                    res.json(jsonData);
+                } catch (e) {
+                    console.error("Epidemic Parse Error", e);
+                    res.status(500).json({ error: "Failed to parse upstream response" });
+                }
+            } else {
+                console.error("Epidemic Upstream Error:", proxyRes.statusCode, data);
+                res.status(proxyRes.statusCode).send(data);
             }
         });
-        
-        if (!response.ok) {
-            const text = await response.text();
-            console.error("Epidemic Upstream Error:", response.status, text);
-            return res.status(response.status).send(text);
-        }
+    });
 
-        const data = await response.json();
-        res.json(data);
-    } catch (e) {
-        console.error("Epidemic Proxy Error:", e);
+    proxyReq.on('error', (e) => {
+        console.error("Epidemic Proxy Request Error:", e);
         res.status(500).json({ error: e.message });
-    }
+    });
+
+    proxyReq.end();
 });
 
 app.get('/api/check-ffmpeg', (req, res) => res.send("FFmpeg is ready"));
