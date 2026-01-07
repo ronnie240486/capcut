@@ -5,143 +5,142 @@ module.exports = {
     buildTimeline: (clips, fileMap, mediaLibrary) => {
         let inputs = [];
         let filterChain = '';
-        let inputIndexCounter = 0;
-
-        // 1. Separate Visual (Base) and Audio (Overlay) Clips
-        // Visual clips form the structure/length of the video via CONCAT.
-        // Audio clips are mixed on top via AMIX.
-        const visualClips = clips.filter(c => 
-            ['video', 'camada'].includes(c.track) || 
-            (c.type === 'video' || c.type === 'image')
-        ).sort((a, b) => a.start - b.start);
-
-        const audioOverlayClips = clips.filter(c => 
-            ['audio', 'narration', 'music', 'sfx'].includes(c.track) || 
-            c.type === 'audio'
-        );
-
-        // --- PART 1: VISUAL BACKBONE (CONCAT) ---
         let videoStreamLabels = [];
         let audioStreamLabels = [];
+        
+        let inputIndexCounter = 0;
 
-        visualClips.forEach((clip, i) => {
+        clips.forEach((clip, i) => {
             const filePath = fileMap[clip.fileName];
+            
             if (!filePath) {
-                console.warn(`[Builder] Arquivo visual faltando: ${clip.fileName}`);
+                console.warn(`[Builder] Arquivo faltando: ${clip.fileName}`);
                 return;
             }
 
             inputs.push('-i', filePath);
-            const idx = inputIndexCounter++;
+            const currentInputIndex = inputIndexCounter;
+            inputIndexCounter++;
 
-            // Video Processing
-            let vStream = `[${idx}:v]`;
-            const addV = (f) => {
-                const lbl = `v${i}_${Math.random().toString(36).substr(2,4)}`;
-                filterChain += `${vStream}${f}[${lbl}];`;
-                vStream = `[${lbl}]`;
+            // --- PROCESSAMENTO DE VÍDEO ---
+            let currentVideoStream = `[${currentInputIndex}:v]`;
+            
+            const addVideoFilter = (filterText) => {
+                if (!filterText) return;
+                const nextLabel = `vtmp${i}_${Math.random().toString(36).substr(2, 5)}`;
+                filterChain += `${currentVideoStream}${filterText}[${nextLabel}];`;
+                currentVideoStream = `[${nextLabel}]`;
             };
 
-            const duration = parseFloat(clip.duration) || 5;
-            
-            // Loop image / Scale
-            let prep = [];
-            if (clip.type === 'image') prep.push('loop=loop=-1:size=1:start=0');
-            prep.push(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
-            addV(prep.join(','));
+            const safeDuration = parseFloat(clip.duration) || 5;
 
-            // Trim
+            // 1. Preparação (Loop Imagem + Padronização)
+            let prepFilters = [];
             if (clip.type === 'image') {
-                addV(`trim=duration=${duration},setpts=PTS-STARTPTS`);
+                prepFilters.push('loop=loop=-1:size=1:start=0');
+            }
+            // Importante: setsar=1 garante pixel aspect ratio quadrado
+            prepFilters.push(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
+            
+            addVideoFilter(prepFilters.join(','));
+
+            // 2. Trim (Corte no tempo)
+            if (clip.type === 'image') {
+                addVideoFilter(`trim=duration=${safeDuration},setpts=PTS-STARTPTS`);
             } else {
                 const start = parseFloat(clip.mediaStartOffset) || 0;
-                addV(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
+                addVideoFilter(`trim=start=${start}:duration=${start + safeDuration},setpts=PTS-STARTPTS`);
             }
 
-            // Effects & Motion (Simplified)
+            // 3. Efeitos de Cor
+            let colorFilters = [];
             if (clip.effect) {
                 const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                if (fx) addV(fx);
+                if (fx) colorFilters.push(fx);
             }
-            // Add Movement
-             if (clip.properties && clip.properties.movement) {
-                const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image');
-                if (moveFilter) addV(moveFilter);
+            if (clip.properties && clip.properties.adjustments) {
+                const adj = clip.properties.adjustments;
+                let eqParts = [];
+                if (adj.brightness !== 1) eqParts.push(`brightness=${(adj.brightness - 1).toFixed(2)}`);
+                if (adj.contrast !== 1) eqParts.push(`contrast=${adj.contrast.toFixed(2)}`);
+                if (adj.saturate !== 1) eqParts.push(`saturation=${adj.saturate.toFixed(2)}`);
+                
+                if (eqParts.length > 0) colorFilters.push(`eq=${eqParts.join(':')}`);
+                if (adj.hue !== 0) colorFilters.push(`hue=h=${adj.hue}`);
+            }
+            if (clip.properties && clip.properties.opacity !== undefined && clip.properties.opacity < 1) {
+                colorFilters.push(`colorchannelmixer=aa=${clip.properties.opacity}`);
+            }
+            if (colorFilters.length > 0) {
+                addVideoFilter(colorFilters.join(','));
             }
 
-            // Finalize Video Segment
-            const finalV = `seg_v${i}`;
-            // Ensure SAR/PTS are perfect for concat
-            filterChain += `${vStream}setsar=1,setpts=PTS-STARTPTS[${finalV}];`;
-            videoStreamLabels.push(`[${finalV}]`);
+            // 4. Movimento
+            if (clip.properties && clip.properties.movement) {
+                const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, safeDuration, clip.type === 'image');
+                if (moveFilter) addVideoFilter(moveFilter);
+            }
+
+            // Finaliza stream de vídeo para este clipe
+            const finalVideoLabel = `v${i}`;
+            // Se o movimento for Scale+Crop, a dimensão já é 1280x720. Se for Zoompan, também.
+            // Executamos setsar=1 novamente por segurança.
+            filterChain += `${currentVideoStream}setsar=1,setpts=PTS-STARTPTS[${finalVideoLabel}];`;
+            videoStreamLabels.push(`[${finalVideoLabel}]`);
 
 
-            // Audio Processing (For visual clip)
-            const finalA = `seg_a${i}`;
+            // --- PROCESSAMENTO DE ÁUDIO ---
             const mediaInfo = mediaLibrary && mediaLibrary[clip.fileName];
-            let hasAudioStream = clip.type === 'video' && (mediaInfo ? mediaInfo.hasAudio !== false : true);
-
-            if (hasAudioStream) {
-                 const start = parseFloat(clip.mediaStartOffset) || 0;
-                 let af = [`atrim=start=${start}:duration=${start + duration}`, `asetpts=PTS-STARTPTS`];
-                 if (clip.properties?.volume !== undefined) af.push(`volume=${clip.properties.volume}`);
-                 af.push('aformat=sample_rates=44100:channel_layouts=stereo');
-                 filterChain += `[${idx}:a]${af.join(',')}[${finalA}];`;
-            } else {
-                // Generate silence for image/silent video
-                filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${finalA}];`;
+            // FIX: Check explicit false, otherwise default to true for video/audio types
+            let hasAudio = false;
+            if (clip.type === 'audio') {
+                hasAudio = true;
+            } else if (clip.type === 'video') {
+                if (mediaInfo && mediaInfo.hasAudio !== undefined) {
+                    hasAudio = mediaInfo.hasAudio;
+                } else {
+                    hasAudio = true; // Assume true if unknown
+                }
             }
-            audioStreamLabels.push(`[${finalA}]`);
+            
+            const finalAudioLabel = `a${i}`;
+
+            if (hasAudio) {
+                const start = parseFloat(clip.mediaStartOffset) || 0;
+                let audioFilters = [`atrim=start=${start}:duration=${start + safeDuration}`, `asetpts=PTS-STARTPTS`];
+                
+                if (clip.properties && clip.properties.volume !== undefined && clip.properties.volume !== 1) {
+                    audioFilters.push(`volume=${clip.properties.volume}`);
+                }
+                
+                // CRUCIAL: Padronizar formato de áudio para evitar falhas no concat
+                audioFilters.push('aformat=sample_rates=44100:channel_layouts=stereo');
+                
+                filterChain += `[${currentInputIndex}:a]${audioFilters.join(',')}[${finalAudioLabel}];`;
+            } else {
+                // Gera silêncio compatível
+                filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${safeDuration}[${finalAudioLabel}];`;
+            }
+            audioStreamLabels.push(`[${finalAudioLabel}]`);
         });
 
-        // Concat Visuals
-        let baseVideo = '[outv]';
-        let baseAudio = '[base_a]';
-        
+        // --- CONCATENAÇÃO ---
         if (videoStreamLabels.length > 0) {
-            let concatStr = '';
-            for(let k=0; k<videoStreamLabels.length; k++) concatStr += `${videoStreamLabels[k]}${audioStreamLabels[k]}`;
-            filterChain += `${concatStr}concat=n=${videoStreamLabels.length}:v=1:a=1:unsafe=1[outv][base_a];`;
+            let concatInputs = '';
+            for(let k=0; k < videoStreamLabels.length; k++) {
+                concatInputs += `${videoStreamLabels[k]}${audioStreamLabels[k]}`;
+            }
+            // unsafe=1 ajuda com timestamps imperfeitos
+            filterChain += `${concatInputs}concat=n=${videoStreamLabels.length}:v=1:a=1:unsafe=1[outv][outa]`;
         } else {
-            // No visuals? Return empty or dummy
             return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
         }
 
-        // --- PART 2: AUDIO OVERLAYS (AMIX) ---
-        let audioOverlayLabels = [];
-        
-        audioOverlayClips.forEach((clip, i) => {
-            const filePath = fileMap[clip.fileName];
-            if (!filePath) return;
-
-            inputs.push('-i', filePath);
-            const idx = inputIndexCounter++;
-            
-            const startOffset = parseFloat(clip.start) || 0;
-            const mediaStart = parseFloat(clip.mediaStartOffset) || 0;
-            const duration = parseFloat(clip.duration) || 5;
-            
-            // 1. Trim source
-            // 2. Volume
-            // 3. Delay (position in timeline)
-            
-            let af = [];
-            af.push(`atrim=start=${mediaStart}:duration=${mediaStart + duration}`);
-            af.push(`asetpts=PTS-STARTPTS`);
-            
-            if (clip.properties?.volume !== undefined) af.push(`volume=${clip.properties.volume}`);
-            
-            // adelay uses milliseconds. '|' allows separating channels but we use same delay for both.
-            // If start is 0, adelay might be skipped or 0.
-            const delayMs = Math.round(startOffset * 1000);
-            if (delayMs > 0) af.push(`adelay=${delayMs}|${delayMs}`);
-            
-            af.push('aformat=sample_rates=44100:channel_layouts=stereo');
-
-            const label = `overlay_a${i}`;
-            filterChain += `[${idx}:a]${af.join(',')}[${label}];`;
-            audioOverlayLabels.push(`[${label}]`);
-        });
-
-        // --- FINAL MIX ---
-
+        return {
+            inputs,
+            filterComplex: filterChain,
+            outputMapVideo: '[outv]',
+            outputMapAudio: '[outa]'
+        };
+    }
+};
