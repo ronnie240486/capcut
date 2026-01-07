@@ -61,26 +61,37 @@ module.exports = {
     getMovementFilter: (moveId, durationSec, isImage = true) => {
         const fps = 30;
         const totalDuration = durationSec || 5;
+        // Para imagens estáticas criamos vídeo; para vídeos processamos frame a frame (d=1)
         const dParam = isImage ? `:d=${Math.ceil(totalDuration * fps)}` : ':d=1';
         const sParam = ':s=1280x720';
         const fpsParam = ':fps=30';
         const common = `${dParam}${sParam}${fpsParam}`;
+
+        // Helper para zoom centralizado (somente para zoompan)
         const center = ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
 
         switch (moveId) {
+            // --- SHAKES (Robust Scale+Crop Strategy) ---
+            // Substitui zoompan random() instável por scale+crop senoidal determinístico
             case 'shake':
             case 'handheld-1':
             case 'jitter':
+                // Scale 1.05x (1344x756) -> Crop 1280x720
+                // Movimento suave/curto
                 return `scale=1344:756,crop=1280:720:(iw-ow)/2+10*sin(t*10):(ih-oh)/2+10*cos(t*15)`;
 
             case 'earthquake':
             case 'mov-shake-violent':
             case 'shake-hard':
+                // Scale 1.1x (1408x792) -> Crop 1280x720
+                // Movimento forte
                 return `scale=1408:792,crop=1280:720:(iw-ow)/2+30*sin(t*30):(ih-oh)/2+30*cos(t*35)`;
 
             case 'handheld-2':
+                // Scale 1.05x com frequência diferente
                 return `scale=1344:756,crop=1280:720:(iw-ow)/2+15*sin(t*5):(ih-oh)/2+15*cos(t*4)`;
 
+            // --- ZOOMS BÁSICOS ---
             case 'zoom-in':
             case 'kenBurns':
             case 'zoom-slow-in':
@@ -97,6 +108,7 @@ module.exports = {
             case 'mov-zoom-bounce-in':
                 return `zoompan=z='1.0+0.1*sin(time*2)'${center}${common}`;
 
+            // --- POP & EFEITOS RÁPIDOS ---
             case 'pop-in':
             case 'pop-up':
             case 'mov-pop-up':
@@ -109,6 +121,7 @@ module.exports = {
             case 'mov-flash-pulse':
                 return `zoompan=z='1.0+0.05*sin(time*10)'${center}${common}`;
 
+            // --- PANS DIRECIONAIS (MOV-*) ---
             case 'pan-left':
             case 'slide-left':
             case 'mov-pan-slow-l':
@@ -125,9 +138,10 @@ module.exports = {
             case 'mov-pan-slow-d':
                 return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(time/${totalDuration})'${common}`;
 
+            // --- PADRÃO ---
             default:
-                // FIX: Return null instead of zoompan z=1 to prevent jitter/shaking on static images
-                return null; 
+                if (isImage) return `zoompan=z=1${common}`;
+                return null;
         }
     }
 };
