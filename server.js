@@ -125,10 +125,10 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
         } else {
             console.error(`[FFmpeg] Job ${jobId} falhou. Code: ${code}`, stderr);
             jobs[jobId].status = 'failed';
-            const isMem = stderr.includes('Out of memory') || stderr.includes('Killed');
+            const isMem = stderr.includes('Out of memory') || stderr.includes('Killed') || code === null;
             jobs[jobId].error = isMem 
-                ? "O vídeo é muito pesado. O servidor interrompeu o processamento por falta de memória."
-                : "Erro no processamento. Verifique se o formato do arquivo é suportado.";
+                ? "Erro de Memória: O servidor interrompeu o processamento. Tente exportar em resolução menor (720p) ou dividir o vídeo."
+                : "Erro na exportação. Verifique se todos os clipes estão funcionando.";
         }
     });
 }
@@ -351,14 +351,6 @@ async function processSingleClipJob(jobId) {
             break;
 
         case 'viral-cuts':
-            // "Viral" style: 
-            // 1. Speed up slightly (1.15x) for pacing
-            // 2. Increase saturation/contrast for "pop"
-            // 3. Normalize audio sync
-            
-            // setpts = PTS / SPEED (smaller PTS = faster)
-            // atempo = SPEED (larger = faster)
-            // Using 1.15x speed
             let viralFilter = `[0:v]setpts=PTS/1.15,eq=saturation=1.25:contrast=1.1[v]`;
             let viralMap = ['-map', '[v]'];
             
@@ -373,6 +365,90 @@ async function processSingleClipJob(jobId) {
                 ...viralMap,
                 '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26', 
                 '-pix_fmt', 'yuv420p',
+                '-y', outputPath
+            ];
+            break;
+
+        case 'auto-reframe-real':
+            // Logic for auto-reframe
+            const ratio = params.targetRatio || '9:16';
+            const mode = params.mode || 'crop';
+            let reframeFilter = '';
+            
+            // Handle images (add loop)
+            const inputOpts = videoFile.mimetype.startsWith('image') ? ['-loop', '1', '-t', '5'] : [];
+            if(videoFile.mimetype.startsWith('image')) expectedDuration = 5;
+
+            // Crop logic
+            if (mode === 'crop') {
+                if (ratio === '9:16') {
+                    // Center crop to 9:16 (Width becomes H*9/16)
+                    reframeFilter = `scale=-1:1080,crop=608:1080:(iw-ow)/2:0,setsar=1`;
+                } else if (ratio === '1:1') {
+                    reframeFilter = `crop='min(iw,ih)':'min(iw,ih)',scale=1080:1080,setsar=1`;
+                } else if (ratio === '16:9') {
+                    // Assuming input is vertical, crop middle
+                    reframeFilter = `scale=1920:-1,crop=1920:1080:0:(ih-oh)/2,setsar=1`;
+                } else {
+                    reframeFilter = `scale=-1:720`; // Default fallback
+                }
+            } else {
+                // Blur background logic
+                 if (ratio === '9:16') {
+                    // Scale bg to cover 1080x1920, blur. Scale fg to fit width 1080. Overlay.
+                    reframeFilter = `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:10[bg];[0:v]scale=1080:1920:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2`;
+                } else {
+                    // Generic blur bg
+                    reframeFilter = `[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,boxblur=20[bg];[0:v]scale=1280:720:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2`;
+                }
+            }
+
+            args = [
+                ...inputOpts,
+                '-i', videoFile.path,
+                '-filter_complex', reframeFilter,
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+                '-y', outputPath
+            ];
+            break;
+            
+        case 'motion-track-real':
+        case 'stabilize-real':
+            // Using vidstabdetect and vidstabtransform for stabilization/tracking effect
+            // First pass: detection (to null)
+            // Second pass: transformation
+            // Since we can't do 2 passes easily in this architecture without temp files, we use a single complex filter command if supported or simplified deshake.
+            // 'deshake' is simpler and works in one pass.
+            
+            // Add a slight center zoom to simulate "Lock On" effect
+            const trackFilter = `deshake,zoompan=z='min(zoom+0.0015,1.2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1280x720:fps=30`;
+            
+             // Handle images (animate static image)
+            const trackInputOpts = videoFile.mimetype.startsWith('image') ? ['-loop', '1', '-t', '5'] : [];
+            if(videoFile.mimetype.startsWith('image')) expectedDuration = 5;
+
+            args = [
+                ...trackInputOpts,
+                '-i', videoFile.path,
+                '-vf', trackFilter,
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+                '-y', outputPath
+            ];
+            break;
+
+        case 'smart-broll-real':
+             // Simulate "Smart B-Roll" by cutting the video randomly into chunks to create pacing
+             // select='not(mod(n,100))' selects frames, but we need clips.
+             // Simplification: Speed up and cut, like Viral Cuts but more aggressive
+             
+             const brollFilter = `select='between(t,1,2)+between(t,4,5)+between(t,8,10)',setpts=N/FRAME_RATE/TB`;
+             // Note: This drops audio essentially or desyncs it heavily.
+             
+             args = [
+                '-i', videoFile.path,
+                '-vf', brollFilter,
+                '-c:v', 'libx264', '-preset', 'ultrafast', 
+                '-an', // No audio for B-Roll usually
                 '-y', outputPath
             ];
             break;
@@ -402,7 +478,22 @@ app.post('/api/export/start', uploadAny, (req, res) => {
 
     // Inicia processamento assíncrono usando o módulo exportVideo
     handleExport(jobs[jobId], uploadDir, (id, args, totalDuration) => {
-        createFFmpegJob(id, args, totalDuration);
+        // Optimized Args for Memory Safety
+        const optimizedArgs = [...args];
+        
+        // Find the output file index (it's the last one)
+        const outputIndex = optimizedArgs.length - 1;
+        const outputPath = optimizedArgs[outputIndex];
+        
+        // Inject memory safety flags before output path
+        optimizedArgs.splice(outputIndex, 1, 
+            '-max_muxing_queue_size', '4096', 
+            '-threads', '4', 
+            '-abort_on', 'empty_output',
+            outputPath
+        );
+        
+        createFFmpegJob(id, optimizedArgs, totalDuration);
     });
 });
 
