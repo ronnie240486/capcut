@@ -7,7 +7,7 @@ module.exports = {
         let filterChain = '';
         let inputIndexCounter = 0;
 
-        // 1. Separar Clipes Visuais (Base do Vídeo) e Clipes de Áudio (Overlays)
+        // 1. Separate Visual Clips (Base) and Audio Overlays
         const visualClips = clips.filter(c => 
             ['video', 'camada'].includes(c.track) || 
             (c.type === 'video' || c.type === 'image')
@@ -18,21 +18,18 @@ module.exports = {
             c.type === 'audio'
         );
 
-        // --- PARTE 1: BASE VISUAL (CONCAT) ---
+        // --- PART 1: VISUAL BASE (CONCAT) ---
         let videoStreamLabels = [];
         let audioStreamLabels = [];
 
         visualClips.forEach((clip, i) => {
             const filePath = fileMap[clip.fileName];
-            if (!filePath) {
-                return; 
-            }
+            if (!filePath) return;
 
             const duration = parseFloat(clip.duration) || 5;
 
-            // FIX: Loop images at input level to create a stream, avoids massive zoompan buffering
+            // FIX: Loop images at input level
             if (clip.type === 'image') {
-                // Loop 1 time (infinite), but limit with -t to safe duration to avoid hang
                 inputs.push('-loop', '1', '-t', (duration + 2).toString(), '-i', filePath);
             } else {
                 inputs.push('-i', filePath);
@@ -40,7 +37,7 @@ module.exports = {
             
             const idx = inputIndexCounter++;
 
-            // --- PROCESSAMENTO DE VÍDEO ---
+            // --- VIDEO PROCESSING ---
             let vStream = `[${idx}:v]`;
             const addV = (f) => {
                 const lbl = `v${i}_${Math.random().toString(36).substr(2,4)}`;
@@ -48,12 +45,10 @@ module.exports = {
                 vStream = `[${lbl}]`;
             };
             
-            // 1. Padronização Inicial (Scale, FPS, SAR)
-            // Pixel format yuv420p is essential for compatibility
+            // 1. Standardize (Scale, FPS, SAR)
             addV(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
 
-            // 2. Corte (Trim)
-            // Essential for both video (cut segment) and image (limit loop duration)
+            // 2. Trim
             if (clip.type === 'image') {
                 addV(`trim=duration=${duration},setpts=PTS-STARTPTS`);
             } else {
@@ -61,27 +56,25 @@ module.exports = {
                 addV(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
             }
 
-            // 3. Efeitos Visuais
+            // 3. Effects
             if (clip.effect) {
                 const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                 if (fx) addV(fx);
             }
             
-            // 4. Movimento (Zoom/Pan/Shake)
+            // 4. Movement
             if (clip.properties && clip.properties.movement) {
                 // Pass false for isImage because we converted images to video streams via loop
-                // This ensures zoompan uses d=1 (frame by frame processing) instead of generating frames
                 const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, false);
                 if (moveFilter) addV(moveFilter);
             }
 
-            // Label final deste segmento de vídeo
             const finalV = `seg_v${i}`;
             filterChain += `${vStream}setsar=1,setpts=PTS-STARTPTS[${finalV}];`;
             videoStreamLabels.push(`[${finalV}]`);
 
 
-            // --- PROCESSAMENTO DE ÁUDIO ---
+            // --- AUDIO PROCESSING FOR VIDEO CLIPS ---
             const finalA = `seg_a${i}`;
             const mediaInfo = mediaLibrary && mediaLibrary[clip.fileName];
             let hasAudioStream = clip.type === 'video' && (mediaInfo ? mediaInfo.hasAudio !== false : true);
@@ -101,7 +94,7 @@ module.exports = {
             audioStreamLabels.push(`[${finalA}]`);
         });
 
-        // --- CONCATENAÇÃO DA BASE ---
+        // --- CONCAT ---
         let baseVideo = '[outv]';
         let baseAudio = '[base_a]';
         
@@ -117,7 +110,7 @@ module.exports = {
             return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
         }
 
-        // --- PARTE 2: ÁUDIO OVERLAYS ---
+        // --- PART 2: AUDIO OVERLAYS ---
         let audioOverlayLabels = [];
         
         audioOverlayClips.forEach((clip, i) => {
@@ -146,7 +139,7 @@ module.exports = {
             audioOverlayLabels.push(`[${label}]`);
         });
 
-        // --- MIXAGEM FINAL ---
+        // --- FINAL MIX ---
         let finalAudioMap = baseAudio;
         
         if (audioOverlayLabels.length > 0) {
@@ -164,4 +157,3 @@ module.exports = {
         };
     }
 };
-
