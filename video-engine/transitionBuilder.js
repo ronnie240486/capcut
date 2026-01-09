@@ -1,166 +1,130 @@
 
-const presetGenerator = require('./presetGenerator.js');
-
 module.exports = {
-    buildTimeline: (clips, fileMap, mediaLibrary) => {
-        let inputs = [];
-        let filterChain = '';
-        let inputIndexCounter = 0;
+    getVideoArgs: () => [
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart',
+        '-r', '30'
+    ],
 
-        // 1. Separate Visual Clips (Base) and Audio Overlays
-        const visualClips = clips.filter(c => 
-            ['video', 'camada'].includes(c.track) || 
-            (c.type === 'video' || c.type === 'image')
-        ).sort((a, b) => a.start - b.start);
+    getAudioArgs: () => [
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-ar', '44100'
+    ],
 
-        const audioOverlayClips = clips.filter(c => 
-            ['audio', 'narration', 'music', 'sfx'].includes(c.track) || 
-            c.type === 'audio'
-        );
+    getAudioExtractArgs: () => [
+        '-vn', 
+        '-acodec', 'libmp3lame', 
+        '-q:a', '2'
+    ],
 
-        // --- PART 1: VISUAL BASE (CONCAT) ---
-        let videoStreamLabels = [];
-        let audioStreamLabels = [];
-
-        visualClips.forEach((clip, i) => {
-            const filePath = fileMap[clip.fileName];
-            if (!filePath) return;
-
-            const duration = parseFloat(clip.duration) || 5;
-
-            // FIX: Loop images at input level
-            if (clip.type === 'image') {
-                inputs.push('-loop', '1', '-t', (duration + 2).toString(), '-i', filePath);
-            } else {
-                inputs.push('-i', filePath);
-            }
-            
-            const idx = inputIndexCounter++;
-
-            // --- VIDEO PROCESSING ---
-            let vStream = `[${idx}:v]`;
-            const addV = (f) => {
-                if (!f) return;
-                const lbl = `v${i}_${Math.random().toString(36).substr(2,4)}`;
-                filterChain += `${vStream}${f}[${lbl}];`;
-                vStream = `[${lbl}]`;
-            };
-            
-            // 1. Standardize (Scale, FPS, SAR)
-            addV(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
-
-            // 2. Trim
-            if (clip.type === 'image') {
-                addV(`trim=duration=${duration},setpts=PTS-STARTPTS`);
-            } else {
-                const start = parseFloat(clip.mediaStartOffset) || 0;
-                addV(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
-            }
-
-            // 3. Effects
-            if (clip.effect) {
-                const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                if (fx) addV(fx);
-            }
-            
-            // 4. Movement
-            if (clip.properties && clip.properties.movement) {
-                // Pass false for isImage because we converted images to video streams via loop
-                const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, false);
-                if (moveFilter) addV(moveFilter);
-            }
-
-            const finalV = `seg_v${i}`;
-            filterChain += `${vStream}setsar=1,setpts=PTS-STARTPTS[${finalV}];`;
-            videoStreamLabels.push(`[${finalV}]`);
-
-
-            // --- AUDIO PROCESSING FOR VIDEO CLIPS ---
-            const finalA = `seg_a${i}`;
-            const mediaInfo = mediaLibrary && mediaLibrary[clip.fileName];
-            let hasAudioStream = clip.type === 'video' && (mediaInfo ? mediaInfo.hasAudio !== false : true);
-
-            if (hasAudioStream) {
-                 const start = parseFloat(clip.mediaStartOffset) || 0;
-                 let af = [];
-                 af.push(`atrim=start=${start}:duration=${start + duration}`);
-                 af.push(`asetpts=PTS-STARTPTS`);
-                 if (clip.properties?.volume !== undefined) af.push(`volume=${clip.properties.volume}`);
-                 af.push('aformat=sample_rates=44100:channel_layouts=stereo');
-                 
-                 filterChain += `[${idx}:a]${af.join(',')}[${finalA}];`;
-            } else {
-                filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${finalA}];`;
-            }
-            audioStreamLabels.push(`[${finalA}]`);
-        });
-
-        // --- CONCAT ---
-        let baseVideo = '[outv]';
-        let baseAudio = '[base_a]';
-        
-        if (videoStreamLabels.length > 0) {
-            let concatStr = '';
-            for(let k=0; k<videoStreamLabels.length; k++) {
-                concatStr += `${videoStreamLabels[k]}${audioStreamLabels[k]}`;
-            }
-            filterChain += `${concatStr}concat=n=${videoStreamLabels.length}:v=1:a=1:unsafe=1[concat_v][concat_a];`;
-            filterChain += `[concat_v]fps=30,format=yuv420p[outv];`;
-            filterChain += `[concat_a]aformat=sample_rates=44100:channel_layouts=stereo[base_a];`;
-        } else {
-            return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
-        }
-
-        // --- PART 2: AUDIO OVERLAYS ---
-        let audioOverlayLabels = [];
-        
-        audioOverlayClips.forEach((clip, i) => {
-            const filePath = fileMap[clip.fileName];
-            if (!filePath) return;
-
-            inputs.push('-i', filePath);
-            const idx = inputIndexCounter++;
-            
-            const timelineStart = parseFloat(clip.start) || 0;
-            const mediaStart = parseFloat(clip.mediaStartOffset) || 0;
-            const duration = parseFloat(clip.duration) || 5;
-            
-            let af = [];
-            af.push(`atrim=start=${mediaStart}:duration=${mediaStart + duration}`);
-            af.push(`asetpts=PTS-STARTPTS`);
-            if (clip.properties?.volume !== undefined) af.push(`volume=${clip.properties.volume}`);
-            
-            const delayMs = Math.round(timelineStart * 1000);
-            if (delayMs > 0) af.push(`adelay=${delayMs}|${delayMs}`);
-            
-            af.push('aformat=sample_rates=44100:channel_layouts=stereo');
-
-            const label = `overlay_a${i}`;
-            filterChain += `[${idx}:a]${af.join(',')}[${label}];`;
-            audioOverlayLabels.push(`[${label}]`);
-        });
-
-        // --- FINAL MIX ---
-        let finalAudioMap = baseAudio;
-        
-        if (audioOverlayLabels.length > 0) {
-            const allAudioInputs = [baseAudio, ...audioOverlayLabels];
-            const count = allAudioInputs.length;
-            filterChain += `${allAudioInputs.join('')}amix=inputs=${count}:duration=first:dropout_transition=0,volume=2[mixed_a];`;
-            finalAudioMap = '[mixed_a]';
-        }
-
-        // --- CLEANUP ---
-        // Remove trailing semicolon to prevent "No such filter: ''" error
-        if (filterChain.endsWith(';')) {
-            filterChain = filterChain.slice(0, -1);
-        }
-
-        return {
-            inputs,
-            filterComplex: filterChain,
-            outputMapVideo: baseVideo,
-            outputMapAudio: finalAudioMap
+    getFFmpegFilterFromEffect: (effectId) => {
+        const effects = {
+            'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,curves=contrast',
+            'matrix': 'colorbalance=gs=0.4:rs=-0.2:bs=-0.2,eq=contrast=1.2:saturation=1.2', 
+            'noir': 'hue=s=0,eq=contrast=1.3:brightness=-0.1',
+            'vintage-warm': 'colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.1:saturation=0.8',
+            'cool-morning': 'colorbalance=bs=0.2:rs=-0.1,eq=brightness=0.05',
+            'cyberpunk': 'eq=contrast=1.2:saturation=1.5,colorbalance=bs=0.2:gs=0.1',
+            'posterize': 'curves=posterize',
+            'night-vision': 'hue=s=0,eq=contrast=1.2:brightness=0.1,colorbalance=gs=0.5',
+            'bw': 'hue=s=0',
+            'mono': 'hue=s=0',
+            'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2',
+            'warm': 'colorbalance=rs=0.1:bs=-0.1',
+            'cool': 'colorbalance=bs=0.1:rs=-0.1',
+            'vivid': 'eq=saturation=1.5:contrast=1.1',
+            'high-contrast': 'eq=contrast=1.5',
+            'invert': 'negate',
+            'dreamy': 'boxblur=2:1,eq=brightness=0.1'
         };
+        return effects[effectId] || null;
+    },
+
+    getMovementFilter: (moveId, durationSec) => {
+        const d = durationSec || 5;
+        const totalFrames = Math.ceil(d * 30);
+        
+        // Configuração base para evitar jitter: S=1280x720, FPS=30
+        // Usamos 'on' (frame number) para cálculos de interpolação mais estáveis que 'time'
+        const center = "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
+        const baseSettings = `d=1:s=1280x720:fps=30`;
+
+        switch (moveId) {
+            // --- ZOOMS (Ajustados para suavidade máxima) ---
+            case 'zoom-slow-in':
+            case 'mov-zoom-pulse-slow':
+                return `zoompan=z='min(1.0+(on*0.3/${totalFrames}),1.3)':${center}:${baseSettings}`;
+            
+            case 'zoom-in':
+            case 'kenBurns':
+                return `zoompan=z='min(1.0+(on*0.5/${totalFrames}),1.5)':${center}:${baseSettings}`;
+
+            case 'zoom-fast-in':
+            case 'mov-zoom-crash-in':
+                return `zoompan=z='min(1.0+(on*1.0/${totalFrames}),2.0)':${center}:${baseSettings}`;
+
+            case 'zoom-out':
+            case 'zoom-slow-out':
+                return `zoompan=z='max(1.5-(on*0.5/${totalFrames}),1.0)':${center}:${baseSettings}`;
+            
+            case 'zoom-bounce':
+            case 'mov-zoom-bounce-in':
+                return `zoompan=z='1.1+0.1*sin(on*0.2)':${center}:${baseSettings}`;
+
+            case 'mov-zoom-twist-in':
+                return `zoompan=z='1.0+(on*0.5/${totalFrames})':${center}:${baseSettings},rotate='on*0.05*PI/180'`;
+
+            // --- PANS (Ajustados para movimento linear sem tremer) ---
+            case 'pan-left':
+            case 'mov-pan-slow-l':
+                return `zoompan=z=1.2:x='(iw-iw/zoom)*(on/${totalFrames})':y='ih/2-(ih/zoom/2)':${baseSettings}`;
+            
+            case 'pan-right':
+            case 'mov-pan-slow-r':
+                return `zoompan=z=1.2:x='(iw-iw/zoom)*(1-(on/${totalFrames}))':y='ih/2-(ih/zoom/2)':${baseSettings}`;
+
+            case 'mov-pan-slow-u':
+                return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(1-(on/${totalFrames}))':${baseSettings}`;
+
+            case 'mov-pan-slow-d':
+                return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(on/${totalFrames})':${baseSettings}`;
+
+            // --- SHAKES & HANDHELD (Usando Crop Dinâmico para evitar distorção de zoompan) ---
+            case 'handheld-1':
+                // Escala levemente maior e move a janela de crop
+                return `scale=1344:756,crop=1280:720:'(iw-ow)/2+10*sin(on*0.1)':'(ih-oh)/2+7*cos(on*0.08)'`;
+
+            case 'handheld-2':
+                return `scale=1344:756,crop=1280:720:'(iw-ow)/2+20*sin(on*0.15)':'(ih-oh)/2+15*cos(on*0.12)'`;
+
+            case 'shake-hard':
+            case 'mov-shake-violent':
+            case 'earthquake':
+                return `scale=1408:792,crop=1280:720:'(iw-ow)/2+random(on)*30-15':'(ih-oh)/2+random(on+1)*30-15'`;
+
+            case 'jitter':
+            case 'mov-jitter-x':
+                return `scale=1344:756,crop=1280:720:'(iw-ow)/2+random(on)*10-5':(ih-oh)/2`;
+
+            // --- 3D & EFEITOS ESPECIAIS ---
+            case 'mov-3d-roll':
+                return `rotate='on*2*PI/180'`;
+            
+            case 'mov-3d-float':
+                return `scale=1344:756,crop=1280:720:'(iw-ow)/2+15*sin(on*0.05)':'(ih-oh)/2+25*cos(on*0.03)',rotate='sin(on*0.02)*0.02'`;
+
+            case 'photo-flash':
+                return `drawbox=c=white:t=fill:enable='between(mod(on,30),0,2)'`;
+
+            default:
+                // Se for ID desconhecido mas começar com 'mov-pan', tentamos um pan genérico
+                if (moveId?.startsWith('mov-pan-diag')) {
+                    return `zoompan=z=1.3:x='(iw-iw/zoom)*(on/${totalFrames})':y='(ih-ih/zoom)*(on/${totalFrames})':${baseSettings}`;
+                }
+                return null;
+        }
     }
 };
