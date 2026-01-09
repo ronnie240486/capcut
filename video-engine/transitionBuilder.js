@@ -44,10 +44,10 @@ module.exports = {
                 vStream = `[${lbl}]`;
             };
             
-            // 1. Padronização e Limpeza
+            // 1. Padronização
             addV(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
 
-            // 2. Reset de PTS (Obrigatório para filtros baseados em frames/tempo funcionarem por clipe)
+            // 2. Reset de PTS
             if (clip.type === 'image') {
                 addV(`trim=duration=${duration},setpts=PTS-STARTPTS`);
             } else {
@@ -61,7 +61,7 @@ module.exports = {
                 if (fx) addV(fx);
             }
 
-            // 4. Movimentos de Biblioteca (Pans, Zooms, 3D, Glitch, etc)
+            // 4. Movimentos de Biblioteca
             if (clip.properties && clip.properties.movement) {
                 const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration);
                 if (moveFilter) addV(moveFilter);
@@ -131,3 +131,4 @@ module.exports = {
             outputMapAudio: finalAudioMap
         };
     }
+};
