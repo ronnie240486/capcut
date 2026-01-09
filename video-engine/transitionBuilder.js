@@ -1,130 +1,136 @@
 
+const presetGenerator = require('./presetGenerator.js');
+
 module.exports = {
-    getVideoArgs: () => [
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-pix_fmt', 'yuv420p',
-        '-movflags', '+faststart',
-        '-r', '30'
-    ],
+    buildTimeline: (clips, fileMap, mediaLibrary) => {
+        let inputs = [];
+        let filterChain = '';
+        let inputIndexCounter = 0;
 
-    getAudioArgs: () => [
-        '-c:a', 'aac',
-        '-b:a', '192k',
-        '-ar', '44100'
-    ],
+        const visualClips = clips.filter(c => 
+            ['video', 'camada', 'text', 'subtitle'].includes(c.track) || 
+            (c.type === 'video' || c.type === 'image' || c.type === 'text')
+        ).sort((a, b) => a.start - b.start);
 
-    getAudioExtractArgs: () => [
-        '-vn', 
-        '-acodec', 'libmp3lame', 
-        '-q:a', '2'
-    ],
+        const audioOverlayClips = clips.filter(c => 
+            ['audio', 'narration', 'music', 'sfx'].includes(c.track) || 
+            c.type === 'audio'
+        );
 
-    getFFmpegFilterFromEffect: (effectId) => {
-        const effects = {
-            'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,curves=contrast',
-            'matrix': 'colorbalance=gs=0.4:rs=-0.2:bs=-0.2,eq=contrast=1.2:saturation=1.2', 
-            'noir': 'hue=s=0,eq=contrast=1.3:brightness=-0.1',
-            'vintage-warm': 'colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.1:saturation=0.8',
-            'cool-morning': 'colorbalance=bs=0.2:rs=-0.1,eq=brightness=0.05',
-            'cyberpunk': 'eq=contrast=1.2:saturation=1.5,colorbalance=bs=0.2:gs=0.1',
-            'posterize': 'curves=posterize',
-            'night-vision': 'hue=s=0,eq=contrast=1.2:brightness=0.1,colorbalance=gs=0.5',
-            'bw': 'hue=s=0',
-            'mono': 'hue=s=0',
-            'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2',
-            'warm': 'colorbalance=rs=0.1:bs=-0.1',
-            'cool': 'colorbalance=bs=0.1:rs=-0.1',
-            'vivid': 'eq=saturation=1.5:contrast=1.1',
-            'high-contrast': 'eq=contrast=1.5',
-            'invert': 'negate',
-            'dreamy': 'boxblur=2:1,eq=brightness=0.1'
-        };
-        return effects[effectId] || null;
-    },
+        let videoStreamLabels = [];
+        let audioStreamLabels = [];
 
-    getMovementFilter: (moveId, durationSec) => {
-        const d = durationSec || 5;
-        const totalFrames = Math.ceil(d * 30);
-        
-        // Configuração base para evitar jitter: S=1280x720, FPS=30
-        // Usamos 'on' (frame number) para cálculos de interpolação mais estáveis que 'time'
-        const center = "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
-        const baseSettings = `d=1:s=1280x720:fps=30`;
+        visualClips.forEach((clip, i) => {
+            const filePath = fileMap[clip.fileName];
+            if (!filePath && clip.type !== 'text') return;
 
-        switch (moveId) {
-            // --- ZOOMS (Ajustados para suavidade máxima) ---
-            case 'zoom-slow-in':
-            case 'mov-zoom-pulse-slow':
-                return `zoompan=z='min(1.0+(on*0.3/${totalFrames}),1.3)':${center}:${baseSettings}`;
+            const duration = parseFloat(clip.duration) || 5;
+
+            if (clip.type === 'image') {
+                inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath);
+            } else if (clip.type === 'video') {
+                inputs.push('-i', filePath);
+            } else if (clip.type === 'text') {
+                // Para texto puro na timeline, geramos uma cor base preta
+                inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', `color=c=black:s=1280x720:r=30`);
+            }
             
-            case 'zoom-in':
-            case 'kenBurns':
-                return `zoompan=z='min(1.0+(on*0.5/${totalFrames}),1.5)':${center}:${baseSettings}`;
+            const idx = inputIndexCounter++;
+            let vStream = `[${idx}:v]`;
 
-            case 'zoom-fast-in':
-            case 'mov-zoom-crash-in':
-                return `zoompan=z='min(1.0+(on*1.0/${totalFrames}),2.0)':${center}:${baseSettings}`;
-
-            case 'zoom-out':
-            case 'zoom-slow-out':
-                return `zoompan=z='max(1.5-(on*0.5/${totalFrames}),1.0)':${center}:${baseSettings}`;
+            const addV = (f) => {
+                if (!f) return;
+                const lbl = `v${i}_${Math.random().toString(36).substr(2,4)}`;
+                filterChain += `${vStream}${f}[${lbl}];`;
+                vStream = `[${lbl}]`;
+            };
             
-            case 'zoom-bounce':
-            case 'mov-zoom-bounce-in':
-                return `zoompan=z='1.1+0.1*sin(on*0.2)':${center}:${baseSettings}`;
+            // 1. Padronização
+            addV(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
 
-            case 'mov-zoom-twist-in':
-                return `zoompan=z='1.0+(on*0.5/${totalFrames})':${center}:${baseSettings},rotate='on*0.05*PI/180'`;
+            // 2. Trim e Reset de Timestamp (Essencial para movimentos funcionarem por clipe)
+            if (clip.type === 'image') {
+                addV(`trim=duration=${duration},setpts=PTS-STARTPTS`);
+            } else {
+                const start = parseFloat(clip.mediaStartOffset) || 0;
+                addV(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
+            }
 
-            // --- PANS (Ajustados para movimento linear sem tremer) ---
-            case 'pan-left':
-            case 'mov-pan-slow-l':
-                return `zoompan=z=1.2:x='(iw-iw/zoom)*(on/${totalFrames})':y='ih/2-(ih/zoom/2)':${baseSettings}`;
-            
-            case 'pan-right':
-            case 'mov-pan-slow-r':
-                return `zoompan=z=1.2:x='(iw-iw/zoom)*(1-(on/${totalFrames}))':y='ih/2-(ih/zoom/2)':${baseSettings}`;
+            // 3. Efeitos
+            if (clip.effect) {
+                const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
+                if (fx) addV(fx);
+            }
 
-            case 'mov-pan-slow-u':
-                return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(1-(on/${totalFrames}))':${baseSettings}`;
+            // 4. Movimentos
+            if (clip.properties && clip.properties.movement) {
+                const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration);
+                if (moveFilter) addV(moveFilter);
+            }
 
-            case 'mov-pan-slow-d':
-                return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(on/${totalFrames})':${baseSettings}`;
+            // 5. Overlays de Texto (se houver)
+            if (clip.type === 'text' && clip.properties.text) {
+                const txt = clip.properties.text.replace(/'/g, '').replace(/:/g, '');
+                const fontColor = clip.properties.textDesign?.color || 'white';
+                // Simplificado para export:
+                addV(`drawtext=text='${txt}':fontcolor=${fontColor}:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black:shadowx=2:shadowy=2`);
+            }
 
-            // --- SHAKES & HANDHELD (Usando Crop Dinâmico para evitar distorção de zoompan) ---
-            case 'handheld-1':
-                // Escala levemente maior e move a janela de crop
-                return `scale=1344:756,crop=1280:720:'(iw-ow)/2+10*sin(on*0.1)':'(ih-oh)/2+7*cos(on*0.08)'`;
+            const finalV = `seg_v${i}`;
+            filterChain += `${vStream}setsar=1,setpts=PTS-STARTPTS[${finalV}];`;
+            videoStreamLabels.push(`[${finalV}]`);
 
-            case 'handheld-2':
-                return `scale=1344:756,crop=1280:720:'(iw-ow)/2+20*sin(on*0.15)':'(ih-oh)/2+15*cos(on*0.12)'`;
+            // Audio do clipe
+            const finalA = `seg_a${i}`;
+            const mediaInfo = mediaLibrary && mediaLibrary[clip.fileName];
+            let hasAudioStream = clip.type === 'video' && (mediaInfo ? mediaInfo.hasAudio !== false : true);
 
-            case 'shake-hard':
-            case 'mov-shake-violent':
-            case 'earthquake':
-                return `scale=1408:792,crop=1280:720:'(iw-ow)/2+random(on)*30-15':'(ih-oh)/2+random(on+1)*30-15'`;
+            if (hasAudioStream) {
+                 const start = parseFloat(clip.mediaStartOffset) || 0;
+                 filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${clip.properties?.volume || 1},aformat=sample_rates=44100:channel_layouts=stereo[${finalA}];`;
+            } else {
+                filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${finalA}];`;
+            }
+            audioStreamLabels.push(`[${finalA}]`);
+        });
 
-            case 'jitter':
-            case 'mov-jitter-x':
-                return `scale=1344:756,crop=1280:720:'(iw-ow)/2+random(on)*10-5':(ih-oh)/2`;
-
-            // --- 3D & EFEITOS ESPECIAIS ---
-            case 'mov-3d-roll':
-                return `rotate='on*2*PI/180'`;
-            
-            case 'mov-3d-float':
-                return `scale=1344:756,crop=1280:720:'(iw-ow)/2+15*sin(on*0.05)':'(ih-oh)/2+25*cos(on*0.03)',rotate='sin(on*0.02)*0.02'`;
-
-            case 'photo-flash':
-                return `drawbox=c=white:t=fill:enable='between(mod(on,30),0,2)'`;
-
-            default:
-                // Se for ID desconhecido mas começar com 'mov-pan', tentamos um pan genérico
-                if (moveId?.startsWith('mov-pan-diag')) {
-                    return `zoompan=z=1.3:x='(iw-iw/zoom)*(on/${totalFrames})':y='(ih-ih/zoom)*(on/${totalFrames})':${baseSettings}`;
-                }
-                return null;
+        if (videoStreamLabels.length > 0) {
+            let concatStr = '';
+            for(let k=0; k<videoStreamLabels.length; k++) {
+                concatStr += `${videoStreamLabels[k]}${audioStreamLabels[k]}`;
+            }
+            filterChain += `${concatStr}concat=n=${videoStreamLabels.length}:v=1:a=1:unsafe=1[outv][base_a];`;
+        } else {
+            return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
         }
+
+        let finalAudioMap = '[base_a]';
+        if (audioOverlayClips.length > 0) {
+            let audioOverlayLabels = [];
+            audioOverlayClips.forEach((clip, i) => {
+                const filePath = fileMap[clip.fileName];
+                if (!filePath) return;
+                inputs.push('-i', filePath);
+                const idx = inputIndexCounter++;
+                const timelineStart = parseFloat(clip.start) || 0;
+                const duration = parseFloat(clip.duration) || 5;
+                const label = `overlay_a${i}`;
+                const delayMs = Math.round(timelineStart * 1000);
+                filterChain += `[${idx}:a]atrim=duration=${duration},asetpts=PTS-STARTPTS,volume=${clip.properties?.volume || 1},adelay=${delayMs}|${delayMs},aformat=sample_rates=44100:channel_layouts=stereo[${label}];`;
+                audioOverlayLabels.push(`[${label}]`);
+            });
+            const allAudio = `[base_a]${audioOverlayLabels.join('')}`;
+            filterChain += `${allAudio}amix=inputs=${audioOverlayLabels.length + 1}:duration=first:dropout_transition=0,volume=2[mixed_a]`;
+            finalAudioMap = '[mixed_a]';
+        }
+
+        if (filterChain.endsWith(';')) filterChain = filterChain.slice(0, -1);
+
+        return {
+            inputs,
+            filterComplex: filterChain,
+            outputMapVideo: '[outv]',
+            outputMapAudio: finalAudioMap
+        };
     }
 };
