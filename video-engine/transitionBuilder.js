@@ -31,7 +31,6 @@ module.exports = {
             } else if (clip.type === 'video') {
                 inputs.push('-i', filePath);
             } else if (clip.type === 'text') {
-                // Para texto puro na timeline, geramos uma cor base preta
                 inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', `color=c=black:s=1280x720:r=30`);
             }
             
@@ -45,10 +44,10 @@ module.exports = {
                 vStream = `[${lbl}]`;
             };
             
-            // 1. Padronização
+            // 1. Padronização e Limpeza
             addV(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
 
-            // 2. Trim e Reset de Timestamp (Essencial para movimentos funcionarem por clipe)
+            // 2. Reset de PTS (Obrigatório para filtros baseados em frames/tempo funcionarem por clipe)
             if (clip.type === 'image') {
                 addV(`trim=duration=${duration},setpts=PTS-STARTPTS`);
             } else {
@@ -56,23 +55,22 @@ module.exports = {
                 addV(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
             }
 
-            // 3. Efeitos
+            // 3. Efeitos Visuais
             if (clip.effect) {
                 const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                 if (fx) addV(fx);
             }
 
-            // 4. Movimentos
+            // 4. Movimentos de Biblioteca (Pans, Zooms, 3D, Glitch, etc)
             if (clip.properties && clip.properties.movement) {
                 const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration);
                 if (moveFilter) addV(moveFilter);
             }
 
-            // 5. Overlays de Texto (se houver)
+            // 5. Overlays de Texto
             if (clip.type === 'text' && clip.properties.text) {
                 const txt = clip.properties.text.replace(/'/g, '').replace(/:/g, '');
                 const fontColor = clip.properties.textDesign?.color || 'white';
-                // Simplificado para export:
                 addV(`drawtext=text='${txt}':fontcolor=${fontColor}:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black:shadowx=2:shadowy=2`);
             }
 
@@ -133,4 +131,3 @@ module.exports = {
             outputMapAudio: finalAudioMap
         };
     }
-};
