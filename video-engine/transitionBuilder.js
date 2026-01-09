@@ -40,6 +40,7 @@ module.exports = {
             // --- VIDEO PROCESSING ---
             let vStream = `[${idx}:v]`;
             const addV = (f) => {
+                if (!f) return;
                 const lbl = `v${i}_${Math.random().toString(36).substr(2,4)}`;
                 filterChain += `${vStream}${f}[${lbl}];`;
                 vStream = `[${lbl}]`;
@@ -147,6 +148,12 @@ module.exports = {
             const count = allAudioInputs.length;
             filterChain += `${allAudioInputs.join('')}amix=inputs=${count}:duration=first:dropout_transition=0,volume=2[mixed_a];`;
             finalAudioMap = '[mixed_a]';
+        }
+
+        // --- CLEANUP ---
+        // Remove trailing semicolon to prevent "No such filter: ''" error
+        if (filterChain.endsWith(';')) {
+            filterChain = filterChain.slice(0, -1);
         }
 
         return {
