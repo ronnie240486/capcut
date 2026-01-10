@@ -75,7 +75,8 @@ module.exports = {
             }
 
             const finalV = `seg_v${i}`;
-            filterChain += `${vStream}setsar=1,setpts=PTS-STARTPTS[${finalV}];`;
+            // Always ensure output is exactly 1280x720 and has SAR 1 after any distortion filters
+            filterChain += `${vStream}scale=1280:720,setsar=1,setpts=PTS-STARTPTS[${finalV}];`;
             videoStreamLabels.push(`[${finalV}]`);
 
             // 6. Áudio do Clipe
