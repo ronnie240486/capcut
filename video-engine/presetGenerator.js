@@ -35,11 +35,10 @@ module.exports = {
         const d = durationSec || 5;
         const totalFrames = Math.ceil(d * 30);
         const center = "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
-        // CRITICAL: d=1 because inputs are already frame streams. 'on' is the current output frame.
-        const baseSettings = `d=1:s=1280x720:fps=30`;
+        const baseSettings = `d=1:s=1280x720:fps=30`; // d=1 processa frame a frame na stream
 
         switch (moveId) {
-            // --- CINEMATIC PANS (Zoompan uses 'on') ---
+            // --- CINEMATIC PANS (Usa 'on') ---
             case 'mov-pan-slow-l': return `zoompan=z=1.2:x='(iw-iw/zoom)*(on/${totalFrames})':y='ih/2-(ih/zoom/2)':${baseSettings}`;
             case 'mov-pan-slow-r': return `zoompan=z=1.2:x='(iw-iw/zoom)*(1-(on/${totalFrames}))':y='ih/2-(ih/zoom/2)':${baseSettings}`;
             case 'mov-pan-slow-u': return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(1-(on/${totalFrames}))':${baseSettings}`;
@@ -51,7 +50,7 @@ module.exports = {
             case 'mov-pan-diag-bl': return `zoompan=z=1.3:x='(iw-iw/zoom)*(1-(on/${totalFrames}))':y='(ih-ih/zoom)*(on/${totalFrames})':${baseSettings}`;
             case 'mov-pan-diag-br': return `zoompan=z=1.3:x='(iw-iw/zoom)*(on/${totalFrames})':y='(ih-ih/zoom)*(on/${totalFrames})':${baseSettings}`;
 
-            // --- DYNAMIC ZOOMS (Zoompan uses 'on') ---
+            // --- DYNAMIC ZOOMS (Usa 'on') ---
             case 'mov-zoom-crash-in': return `zoompan=z='min(1.0+(on*1.5/15),2.0)':${center}:${baseSettings}`;
             case 'mov-zoom-crash-out': return `zoompan=z='max(2.0-(on*1.5/15),1.0)':${center}:${baseSettings}`;
             case 'mov-zoom-twist-in': return `zoompan=z='min(1.0+(on*0.5/${totalFrames}),1.5)':${center}:${baseSettings},rotate='on*0.05'`;
@@ -63,13 +62,12 @@ module.exports = {
             case 'mov-zoom-shake': return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+random(on)*20-10':y='ih/2-(ih/zoom/2)+random(on+1)*20-10':${baseSettings}`;
             case 'mov-dolly-vertigo': return `zoompan=z='1.0+(on*0.5/${totalFrames})':${center}:${baseSettings},perspective=x0='on*0.5':y0=0:x1='W-on*0.5':y1=0:x2=0:y2=H:x3=W:y3=H`;
 
-            // --- 3D TRANSFORMS (Perspective uses 'n') ---
-            // scale and rotate dimensions cannot use 'n'. We use perspective to simulate 3D stretching/squeezing.
+            // --- 3D TRANSFORMS (Usa 'n' no perspective) ---
             case 'mov-3d-flip-x': return `perspective=x0='W*0.5*(1-abs(cos(n*0.1)))':y0=0:x1='W-W*0.5*(1-abs(cos(n*0.1)))':y1=0:x2='W*0.5*(1-abs(cos(n*0.1)))':y2=H:x3='W-W*0.5*(1-abs(cos(n*0.1)))':y3=H`;
             case 'mov-3d-flip-y': return `perspective=x0=0:y0='H*0.5*(1-abs(cos(n*0.1)))':x1=W:y1='H*0.5*(1-abs(cos(n*0.1)))':x2=0:y2='H-H*0.5*(1-abs(cos(n*0.1)))':x3=W:y3='H-H*0.5*(1-abs(cos(n*0.1)))'`;
+            case 'mov-3d-spin-axis': return `perspective=x0='W*0.5*(1-cos(n*0.1))':y0=0:x1='W-W*0.5*(1-cos(n*0.1))':y1=0:x2='W*0.5*(1-cos(n*0.1))':y2=H:x3='W-W*0.5*(1-cos(n*0.1))':y3=H`;
             case 'mov-3d-tumble': return `rotate='n*0.05',perspective=x0='sin(n*0.05)*20':y0='cos(n*0.05)*20':x1='W-sin(n*0.05)*20':y1='cos(n*0.05)*20':x2='sin(n*0.05)*20':y2='H-cos(n*0.05)*20':x3='W-sin(n*0.05)*20':y3='H-cos(n*0.05)*20'`;
             case 'mov-3d-roll': return `rotate='n*0.05'`;
-            case 'mov-3d-spin-axis': return `perspective=x0='W*0.5*(1-cos(n*0.1))':y0=0:x1='W-W*0.5*(1-cos(n*0.1))':y1=0:x2='W*0.5*(1-cos(n*0.1))':y2=H:x3='W-W*0.5*(1-cos(n*0.1))':y3=H`;
             case 'mov-3d-swing-l': return `perspective=x0='min(n*2,W/4)':y0=0:x1=W:y1=0:x2='min(n*2,W/4)':y2=H:x3=W:y3=H`;
             case 'mov-3d-swing-r': return `perspective=x0=0:y0=0:x1='max(W-n*2,3*W/4)':y1=0:x2=0:y2=H:x3='max(W-n*2,3*W/4)':y3=H`;
             case 'mov-3d-perspective-u': return `perspective=x0=0:y0='min(n,H/4)':x1=W:y1='min(n,H/4)':x2=0:y2=H:x3=W:y3=H`;
@@ -88,11 +86,11 @@ module.exports = {
             case 'mov-frame-skip': return `framestep=2`;
             case 'mov-vhs-tracking': return `curves=all='0/0.1 1/0.9',crop=1280:720:0:'mod(n*2,20)-10'`;
 
-            // --- ELASTIC & FUN (Zoompan uses 'on', Perspective uses 'n') ---
+            // --- ELASTIC & FUN (Usa 'perspective' para simular Rubber Band) ---
+            case 'mov-rubber-band': return `perspective=x0='-30*sin(n*0.2)*exp(-n*0.05)':y0=0:x1='W+30*sin(n*0.2)*exp(-n*0.05)':y1=0:x2='-30*sin(n*0.2)*exp(-n*0.05)':y2=H:x3='W+30*sin(n*0.2)*exp(-n*0.05)':y3=H`;
             case 'mov-bounce-drop': return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(abs(sin(on*0.15))*(1-on/${totalFrames}))':${baseSettings}`;
             case 'mov-elastic-snap-l': return `zoompan=z=1.1:x='if(lt(on,20),(iw-iw/zoom)*(1-on/20),0)':y='ih/2-(ih/zoom/2)':${baseSettings}`;
             case 'mov-elastic-snap-r': return `zoompan=z=1.1:x='if(lt(on,20),(iw-iw/zoom)*(on/20),0)':y='ih/2-(ih/zoom/2)':${baseSettings}`;
-            case 'mov-rubber-band': return `perspective=x0='-20*sin(n*0.2)':y0=0:x1='W+20*sin(n*0.2)':y1=0:x2='-20*sin(n*0.2)':y2=H:x3='W+20*sin(n*0.2)':y3=H`;
             case 'mov-jelly-wobble': return `rotate='sin(n*0.2)*0.1',perspective=x0='10*sin(n*0.2)':y0=0:x1='W+10*sin(n*0.2)':y1=0:x2='10*sin(n*0.2)':y2=H:x3='W+10*sin(n*0.2)':y3=H`;
             case 'mov-spring-up': return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y='if(lt(on,15),(ih-ih/zoom)*(1-on/15),0)':${baseSettings}`;
             case 'mov-spring-down': return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y='if(lt(on,15),(ih-ih/zoom)*(on/15),0)':${baseSettings}`;
