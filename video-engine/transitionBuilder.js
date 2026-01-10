@@ -7,11 +7,13 @@ module.exports = {
         let filterChain = '';
         let inputIndexCounter = 0;
 
+        // Filtramos apenas clips visuais para a trilha de vídeo principal
         const visualClips = clips.filter(c => 
             ['video', 'camada', 'text', 'subtitle'].includes(c.track) || 
             (c.type === 'video' || c.type === 'image' || c.type === 'text')
         ).sort((a, b) => a.start - b.start);
 
+        // Trilhas de áudio independentes
         const audioOverlayClips = clips.filter(c => 
             ['audio', 'narration', 'music', 'sfx'].includes(c.track) || 
             c.type === 'audio'
@@ -26,17 +28,20 @@ module.exports = {
 
             const duration = parseFloat(clip.duration) || 5;
 
+            // Adicionamos o input ao array global de inputs do FFmpeg
             if (clip.type === 'image') {
                 inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath);
             } else if (clip.type === 'video') {
                 inputs.push('-i', filePath);
             } else if (clip.type === 'text') {
+                // Background preto para clips de texto puro
                 inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', `color=c=black:s=1280x720:r=30`);
             }
             
             const idx = inputIndexCounter++;
             let vStream = `[${idx}:v]`;
 
+            // Função auxiliar para encadear filtros de vídeo
             const addV = (f) => {
                 if (!f) return;
                 const lbl = `v${i}_${Math.random().toString(36).substr(2,4)}`;
@@ -44,10 +49,10 @@ module.exports = {
                 vStream = `[${lbl}]`;
             };
             
-            // 1. Padronização
+            // 1. Padronização de Resolução e FPS
             addV(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
 
-            // 2. Reset de PTS
+            // 2. Reset de Tempo (CRÍTICO para movimentos funcionarem por clipe)
             if (clip.type === 'image') {
                 addV(`trim=duration=${duration},setpts=PTS-STARTPTS`);
             } else {
@@ -55,19 +60,19 @@ module.exports = {
                 addV(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
             }
 
-            // 3. Efeitos Visuais
+            // 3. Efeitos Visuais (Color Grade, Noir, etc)
             if (clip.effect) {
                 const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                 if (fx) addV(fx);
             }
 
-            // 4. Movimentos de Biblioteca
+            // 4. Movimentos de Biblioteca (Pans, Zooms, 3D, Glitch)
             if (clip.properties && clip.properties.movement) {
                 const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration);
                 if (moveFilter) addV(moveFilter);
             }
 
-            // 5. Overlays de Texto
+            // 5. Overlays de Texto (se o clip for do tipo texto)
             if (clip.type === 'text' && clip.properties.text) {
                 const txt = clip.properties.text.replace(/'/g, '').replace(/:/g, '');
                 const fontColor = clip.properties.textDesign?.color || 'white';
@@ -78,7 +83,7 @@ module.exports = {
             filterChain += `${vStream}setsar=1,setpts=PTS-STARTPTS[${finalV}];`;
             videoStreamLabels.push(`[${finalV}]`);
 
-            // Audio do clipe
+            // 6. Processamento do Áudio do Clipe
             const finalA = `seg_a${i}`;
             const mediaInfo = mediaLibrary && mediaLibrary[clip.fileName];
             let hasAudioStream = clip.type === 'video' && (mediaInfo ? mediaInfo.hasAudio !== false : true);
@@ -87,11 +92,13 @@ module.exports = {
                  const start = parseFloat(clip.mediaStartOffset) || 0;
                  filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${clip.properties?.volume || 1},aformat=sample_rates=44100:channel_layouts=stereo[${finalA}];`;
             } else {
+                // Áudio silencioso se não houver stream
                 filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${finalA}];`;
             }
             audioStreamLabels.push(`[${finalA}]`);
         });
 
+        // Concatenação de todos os segmentos
         if (videoStreamLabels.length > 0) {
             let concatStr = '';
             for(let k=0; k<videoStreamLabels.length; k++) {
@@ -102,6 +109,7 @@ module.exports = {
             return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
         }
 
+        // Mixagem com trilhas de áudio sobrepostas (Narração, Música, SFX)
         let finalAudioMap = '[base_a]';
         if (audioOverlayClips.length > 0) {
             let audioOverlayLabels = [];
@@ -114,6 +122,7 @@ module.exports = {
                 const duration = parseFloat(clip.duration) || 5;
                 const label = `overlay_a${i}`;
                 const delayMs = Math.round(timelineStart * 1000);
+                
                 filterChain += `[${idx}:a]atrim=duration=${duration},asetpts=PTS-STARTPTS,volume=${clip.properties?.volume || 1},adelay=${delayMs}|${delayMs},aformat=sample_rates=44100:channel_layouts=stereo[${label}];`;
                 audioOverlayLabels.push(`[${label}]`);
             });
