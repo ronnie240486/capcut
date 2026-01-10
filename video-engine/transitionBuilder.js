@@ -7,9 +7,10 @@ module.exports = {
         let filterChain = '';
         let inputIndexCounter = 0;
 
+        // Filtramos clipes visuais (Vídeos e Imagens) ordenados pelo tempo de início na timeline
         const visualClips = clips.filter(c => 
-            ['video', 'camada', 'text', 'subtitle'].includes(c.track) || 
-            (c.type === 'video' || c.type === 'image' || c.type === 'text')
+            ['video', 'camada', 'image'].includes(c.track) || 
+            (c.type === 'video' || c.type === 'image')
         ).sort((a, b) => a.start - b.start);
 
         const audioOverlayClips = clips.filter(c => 
@@ -17,111 +18,144 @@ module.exports = {
             c.type === 'audio'
         );
 
-        let videoStreamLabels = [];
-        let audioStreamLabels = [];
+        if (visualClips.length === 0) {
+             return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
+        }
+
+        // 1. Processar cada clipe visual individualmente (Pre-processing)
+        let processedVideoLabels = [];
+        let processedAudioLabels = [];
 
         visualClips.forEach((clip, i) => {
             const filePath = fileMap[clip.fileName];
-            if (!filePath && clip.type !== 'text') return;
+            if (!filePath) return;
 
             const duration = parseFloat(clip.duration) || 5;
-
+            
+            // Adicionar input
             if (clip.type === 'image') {
-                inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath);
-            } else if (clip.type === 'video') {
+                inputs.push('-loop', '1', '-t', (duration + 2).toString(), '-i', filePath);
+            } else {
                 inputs.push('-i', filePath);
-            } else if (clip.type === 'text') {
-                inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', `color=c=black:s=1280x720:r=30`);
             }
             
             const idx = inputIndexCounter++;
             let vStream = `[${idx}:v]`;
+            let aStream = `[${idx}:a]`;
 
+            // Helper para adicionar filtros de vídeo
             const addV = (f) => {
-                if (!f) return;
-                const lbl = `v${i}_${Math.random().toString(36).substr(2,4)}`;
+                const lbl = `v_pre_${i}_${Math.random().toString(36).substr(2,4)}`;
                 filterChain += `${vStream}${f}[${lbl}];`;
                 vStream = `[${lbl}]`;
             };
-            
-            // 1. Padronização Global
+
+            // A. Padronização (Escala, FPS, Formato)
             addV(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
 
-            // 2. Trim e Reset de PTS (Essencial para animações começarem no tempo certo)
+            // B. Trim (Vídeos precisam de offset de mídia)
             if (clip.type === 'image') {
                 addV(`trim=duration=${duration},setpts=PTS-STARTPTS`);
             } else {
-                const start = parseFloat(clip.mediaStartOffset) || 0;
-                addV(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
+                const mediaStart = parseFloat(clip.mediaStartOffset) || 0;
+                addV(`trim=start=${mediaStart}:duration=${duration},setpts=PTS-STARTPTS`);
             }
 
-            // 3. Efeitos Visuais (Color Grade)
+            // C. Efeitos Visuais
             if (clip.effect) {
                 const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                 if (fx) addV(fx);
             }
 
-            // 4. Aplicação de Todos os Movimentos (O "Tudo sem Exceção")
+            // D. Movimentos (Zoompan)
             if (clip.properties && clip.properties.movement) {
                 const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration);
                 if (moveFilter) addV(moveFilter);
             }
 
-            // 5. Overlays de Texto
-            if (clip.type === 'text' && clip.properties.text) {
-                const txt = clip.properties.text.replace(/'/g, '').replace(/:/g, '');
-                const fontColor = clip.properties.textDesign?.color || 'white';
-                addV(`drawtext=text='${txt}':fontcolor=${fontColor}:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black:shadowx=2:shadowy=2`);
-            }
+            const finalV = `v_ready_${i}`;
+            filterChain += `${vStream}null[${finalV}];`;
+            processedVideoLabels.push(finalV);
 
-            const finalV = `seg_v${i}`;
-            // Always ensure output is exactly 1280x720 and has SAR 1 after any distortion filters
-            filterChain += `${vStream}scale=1280:720,setsar=1,setpts=PTS-STARTPTS[${finalV}];`;
-            videoStreamLabels.push(`[${finalV}]`);
+            // E. Áudio do clipe
+            const finalA = `a_ready_${i}`;
+            const mediaInfo = mediaLibrary[clip.fileName];
+            const hasAudio = clip.type === 'video' && (mediaInfo ? mediaInfo.hasAudio !== false : true);
 
-            // 6. Áudio do Clipe
-            const finalA = `seg_a${i}`;
-            const mediaInfo = mediaLibrary && mediaLibrary[clip.fileName];
-            let hasAudioStream = clip.type === 'video' && (mediaInfo ? mediaInfo.hasAudio !== false : true);
-
-            if (hasAudioStream) {
-                 const start = parseFloat(clip.mediaStartOffset) || 0;
-                 filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${clip.properties?.volume || 1},aformat=sample_rates=44100:channel_layouts=stereo[${finalA}];`;
+            if (hasAudio) {
+                const mediaStart = parseFloat(clip.mediaStartOffset) || 0;
+                filterChain += `${aStream}atrim=start=${mediaStart}:duration=${duration},asetpts=PTS-STARTPTS,volume=${clip.properties?.volume || 1}[${finalA}];`;
             } else {
                 filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${finalA}];`;
             }
-            audioStreamLabels.push(`[${finalA}]`);
+            processedAudioLabels.push(finalA);
         });
 
-        if (videoStreamLabels.length > 0) {
-            let concatStr = '';
-            for(let k=0; k<videoStreamLabels.length; k++) {
-                concatStr += `${videoStreamLabels[k]}${audioStreamLabels[k]}`;
+        // 2. Encadeamento de clipes com Transições (xfade)
+        let lastV = processedVideoLabels[0];
+        let lastA = processedAudioLabels[0];
+        let currentOffset = visualClips[0].duration;
+
+        for (let i = 1; i < visualClips.length; i++) {
+            const clip = visualClips[i];
+            const prevClip = visualClips[i-1];
+            const nextV = processedVideoLabels[i];
+            const nextA = processedAudioLabels[i];
+
+            // Verificamos se o clipe atual tem uma transição definida
+            const trans = clip.transition;
+            const transDur = trans ? Math.min(parseFloat(trans.duration), prevClip.duration, clip.duration) : 0;
+
+            if (transDur > 0) {
+                const transType = presetGenerator.getTransitionType(trans.id);
+                const outV = `v_trans_${i}`;
+                const outA = `a_trans_${i}`;
+                
+                // Cálculo do offset para o xfade: Fim do clipe anterior menos a duração da transição
+                const xfadeOffset = currentOffset - transDur;
+                
+                filterChain += `[${lastV}][${nextV}]xfade=transition=${transType}:duration=${transDur}:offset=${xfadeOffset}[${outV}];`;
+                // Transição de áudio (acrossfade simples para suavidade)
+                filterChain += `[${lastA}][${nextA}]acrossfade=d=${transDur}[${outA}];`;
+                
+                lastV = outV;
+                lastA = outA;
+                currentOffset = xfadeOffset + clip.duration;
+            } else {
+                // Sem transição: Concatenação simples
+                const outV = `v_cat_${i}`;
+                const outA = `a_cat_${i}`;
+                filterChain += `[${lastV}][${nextV}]concat=n=2:v=1:a=0[${outV}];`;
+                filterChain += `[${lastA}][${nextA}]concat=n=2:v=0:a=1[${outA}];`;
+                
+                lastV = outV;
+                lastA = outA;
+                currentOffset += clip.duration;
             }
-            filterChain += `${concatStr}concat=n=${videoStreamLabels.length}:v=1:a=1:unsafe=1[outv][base_a];`;
-        } else {
-            return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
         }
 
-        // Mixagem de Áudio Overlays (Música, Narração, etc)
-        let finalAudioMap = '[base_a]';
+        // 3. Adicionar Overlays de Áudio (Música, Narração)
+        let finalAudioMap = `[${lastA}]`;
         if (audioOverlayClips.length > 0) {
-            let audioOverlayLabels = [];
-            audioOverlayClips.forEach((clip, i) => {
-                const filePath = fileMap[clip.fileName];
+            let overlayLabels = [];
+            audioOverlayClips.forEach((aclip, j) => {
+                const filePath = fileMap[aclip.fileName];
                 if (!filePath) return;
+
                 inputs.push('-i', filePath);
                 const idx = inputIndexCounter++;
-                const timelineStart = parseFloat(clip.start) || 0;
-                const duration = parseFloat(clip.duration) || 5;
-                const label = `overlay_a${i}`;
-                const delayMs = Math.round(timelineStart * 1000);
-                filterChain += `[${idx}:a]atrim=duration=${duration},asetpts=PTS-STARTPTS,volume=${clip.properties?.volume || 1},adelay=${delayMs}|${delayMs},aformat=sample_rates=44100:channel_layouts=stereo[${label}];`;
-                audioOverlayLabels.push(`[${label}]`);
+                const delayMs = Math.round(parseFloat(aclip.start) * 1000);
+                const aLabel = `a_ov_${j}`;
+                
+                // adelay aplica o atraso para sincronizar com a timeline
+                filterChain += `[${idx}:a]volume=${aclip.properties?.volume || 1},adelay=${delayMs}|${delayMs}[${aLabel}];`;
+                overlayLabels.push(aLabel);
             });
-            const allAudio = `[base_a]${audioOverlayLabels.join('')}`;
-            filterChain += `${allAudio}amix=inputs=${audioOverlayLabels.length + 1}:duration=first:dropout_transition=0,volume=2[mixed_a]`;
-            finalAudioMap = '[mixed_a]';
+
+            const mixedA = `a_mixed_final`;
+            const amixInputs = overlayLabels.length + 1;
+            filterChain += `[${lastA}]${overlayLabels.map(l => `[${l}]`).join('')}amix=inputs=${amixInputs}:duration=first:dropout_transition=0,volume=${amixInputs}[${mixedA}];`;
+            finalAudioMap = `[${mixedA}]`;
         }
 
         if (filterChain.endsWith(';')) filterChain = filterChain.slice(0, -1);
@@ -129,7 +163,7 @@ module.exports = {
         return {
             inputs,
             filterComplex: filterChain,
-            outputMapVideo: '[outv]',
+            outputMapVideo: `[${lastV}]`,
             outputMapAudio: finalAudioMap
         };
     }
