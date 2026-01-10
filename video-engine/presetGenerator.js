@@ -35,7 +35,7 @@ module.exports = {
         const d = durationSec || 5;
         const totalFrames = Math.ceil(d * 30);
         const center = "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
-        const baseSettings = `d=1:s=1280x720:fps=30`; // d=1 processa frame a frame na stream
+        const baseSettings = `d=1:s=1280x720:fps=30`; 
 
         switch (moveId) {
             // --- CINEMATIC PANS (Usa 'on') ---
@@ -60,53 +60,53 @@ module.exports = {
             case 'mov-zoom-pulse-fast': return `zoompan=z='1.0+0.1*sin(on*0.5)':${center}:${baseSettings}`;
             case 'mov-zoom-wobble': return `zoompan=z='1.1+0.05*sin(on*0.2)':x='iw/2-(iw/zoom/2)+10*cos(on*0.1)':y='ih/2-(ih/zoom/2)+10*sin(on*0.1)':${baseSettings}`;
             case 'mov-zoom-shake': return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+random(on)*20-10':y='ih/2-(ih/zoom/2)+random(on+1)*20-10':${baseSettings}`;
-            case 'mov-dolly-vertigo': return `zoompan=z='1.0+(on*0.5/${totalFrames})':${center}:${baseSettings},perspective=x0='on*0.5':y0=0:x1='W-on*0.5':y1=0:x2=0:y2=H:x3=W:y3=H`;
+            case 'mov-dolly-vertigo': return `zoompan=z='1.0+(on*0.5/${totalFrames})':${center}:${baseSettings},rotate='sin(on*0.05)*0.02'`;
 
-            // --- 3D TRANSFORMS (Usa 'n' no perspective) ---
-            case 'mov-3d-flip-x': return `perspective=x0='W*0.5*(1-abs(cos(n*0.1)))':y0=0:x1='W-W*0.5*(1-abs(cos(n*0.1)))':y1=0:x2='W*0.5*(1-abs(cos(n*0.1)))':y2=H:x3='W-W*0.5*(1-abs(cos(n*0.1)))':y3=H`;
-            case 'mov-3d-flip-y': return `perspective=x0=0:y0='H*0.5*(1-abs(cos(n*0.1)))':x1=W:y1='H*0.5*(1-abs(cos(n*0.1)))':x2=0:y2='H-H*0.5*(1-abs(cos(n*0.1)))':x3=W:y3='H-H*0.5*(1-abs(cos(n*0.1)))'`;
-            case 'mov-3d-spin-axis': return `perspective=x0='W*0.5*(1-cos(n*0.1))':y0=0:x1='W-W*0.5*(1-cos(n*0.1))':y1=0:x2='W*0.5*(1-cos(n*0.1))':y2=H:x3='W-W*0.5*(1-cos(n*0.1))':y3=H`;
-            case 'mov-3d-tumble': return `rotate='n*0.05',perspective=x0='sin(n*0.05)*20':y0='cos(n*0.05)*20':x1='W-sin(n*0.05)*20':y1='cos(n*0.05)*20':x2='sin(n*0.05)*20':y2='H-cos(n*0.05)*20':x3='W-sin(n*0.05)*20':y3='H-cos(n*0.05)*20'`;
-            case 'mov-3d-roll': return `rotate='n*0.05'`;
-            case 'mov-3d-swing-l': return `perspective=x0='min(n*2,W/4)':y0=0:x1=W:y1=0:x2='min(n*2,W/4)':y2=H:x3=W:y3=H`;
-            case 'mov-3d-swing-r': return `perspective=x0=0:y0=0:x1='max(W-n*2,3*W/4)':y1=0:x2=0:y2=H:x3='max(W-n*2,3*W/4)':y3=H`;
-            case 'mov-3d-perspective-u': return `perspective=x0=0:y0='min(n,H/4)':x1=W:y1='min(n,H/4)':x2=0:y2=H:x3=W:y3=H`;
-            case 'mov-3d-perspective-d': return `perspective=x0=0:y0=0:x1=W:y1=0:x2=0:y2='max(H-n,3*H/4)':x3=W:y3='max(H-n,3*H/4)'`;
-            case 'mov-3d-float': return `rotate='sin(n*0.02)*0.03',perspective=x0='10*sin(n*0.05)':y0='10*cos(n*0.03)':x1='W-10*sin(n*0.05)':y1='10*cos(n*0.03)':x2='10*sin(n*0.05)':y2='H-10*cos(n*0.03)':x3='W-10*sin(n*0.05)':y3='H-10*cos(n*0.03)'`;
+            // --- 3D & SPIN EFFECTS (Usa 'n' no rotate) ---
+            case 'mov-3d-flip-x': return `rotate='n*0.2',zoompan=z='1+0.5*abs(cos(on*0.1))':${center}:${baseSettings}`;
+            case 'mov-3d-flip-y': return `rotate='n*0.2',zoompan=z='1+0.5*abs(sin(on*0.1))':${center}:${baseSettings}`;
+            case 'mov-3d-spin-axis': return `rotate='n*0.4'`;
+            case 'mov-3d-tumble': return `rotate='n*0.1',zoompan=z='1.1+0.1*sin(on*0.05)':${center}:${baseSettings}`;
+            case 'mov-3d-roll': return `rotate='n*0.1'`;
+            case 'mov-3d-swing-l': return `rotate='-0.2*abs(sin(n*0.05))',zoompan=z=1.1:x='on':y='ih/2-(ih/zoom/2)':${baseSettings}`;
+            case 'mov-3d-swing-r': return `rotate='0.2*abs(sin(n*0.05))',zoompan=z=1.1:x='iw-iw/zoom-on':y='ih/2-(ih/zoom/2)':${baseSettings}`;
+            case 'mov-3d-perspective-u': return `zoompan=z='1.2-0.2*(on/${totalFrames})':${center}:${baseSettings}`;
+            case 'mov-3d-perspective-d': return `zoompan=z='1.0+0.2*(on/${totalFrames})':${center}:${baseSettings}`;
+            case 'mov-3d-float': return `rotate='sin(n*0.02)*0.03',zoompan=z='1.1+0.05*sin(on*0.05)':x='iw/2-(iw/zoom/2)+10*cos(on*0.03)':y='ih/2-(ih/zoom/2)+10*sin(on*0.03)':${baseSettings}`;
 
-            // --- GLITCH & CHAOS (Usa 'n') ---
-            case 'mov-glitch-snap': return `crop=1280:720:'if(gt(mod(n,15),12),random(n)*40-20,0)':0`;
-            case 'mov-glitch-skid': return `curves=all='0.1/0.1 0.9/0.9',rotate='if(gt(mod(n,20),15),random(n)*0.1-0.05,0)'`;
-            case 'mov-shake-violent': return `crop=1280:720:'random(n)*60-30':'random(n+1)*60-30'`;
-            case 'mov-jitter-x': return `crop=1280:720:'random(n)*10-5':0`;
-            case 'mov-jitter-y': return `crop=1280:720:0:'random(n)*10-5'`;
-            case 'mov-rgb-shift-move': return `chromashift=cbh='sin(n*0.2)*5':crv='cos(n*0.2)*5'`;
-            case 'mov-strobe-move': return `drawbox=t=fill:c=black:enable='eq(mod(n,4),0)'`;
-            case 'mov-digital-tear': return `tile=2x1,scale=1280:720,crop=1280:720:0:'if(eq(mod(n,10),0),random(n)*20,0)'`;
-            case 'mov-frame-skip': return `framestep=2`;
-            case 'mov-vhs-tracking': return `curves=all='0/0.1 1/0.9',crop=1280:720:0:'mod(n*2,20)-10'`;
+            // --- GLITCH & CHAOS (Usa 'n' no crop/eq) ---
+            case 'mov-glitch-snap': return `crop=1200:680:40:20,pad=1280:720:40:20,rotate='if(gt(mod(n,20),17),0.1,0)'`;
+            case 'mov-glitch-skid': return `rotate='if(gt(mod(n,30),25),random(n)*0.2-0.1,0)',eq=brightness='if(gt(mod(n,30),25),0.2,0)'`;
+            case 'mov-shake-violent': return `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+random(on)*50-25':y='ih/2-(ih/zoom/2)+random(on+1)*50-25':${baseSettings}`;
+            case 'mov-jitter-x': return `crop=1200:720:'random(n)*20':0,pad=1280:720:0:0`;
+            case 'mov-jitter-y': return `crop=1280:680:0:'random(n)*20',pad=1280:720:0:0`;
+            case 'mov-rgb-shift-move': return `colorbalance=rs='0.2*sin(n*0.3)':bs='0.2*cos(n*0.3)'`;
+            case 'mov-strobe-move': return `eq=brightness='if(eq(mod(n,4),0),-0.5,0)'`;
+            case 'mov-digital-tear': return `crop=1280:720:0:'if(eq(mod(n,10),0),random(n)*30,0)'`;
+            case 'mov-frame-skip': return `setpts='PTS+(mod(n,2)*0.1)'`;
+            case 'mov-vhs-tracking': return `eq=contrast=1.2:brightness=-0.1,rotate='sin(n*0.01)*0.01'`;
 
-            // --- ELASTIC & FUN (Usa 'perspective' para simular Rubber Band) ---
-            case 'mov-rubber-band': return `perspective=x0='-30*sin(n*0.2)*exp(-n*0.05)':y0=0:x1='W+30*sin(n*0.2)*exp(-n*0.05)':y1=0:x2='-30*sin(n*0.2)*exp(-n*0.05)':y2=H:x3='W+30*sin(n*0.2)*exp(-n*0.05)':y3=H`;
-            case 'mov-bounce-drop': return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(abs(sin(on*0.15))*(1-on/${totalFrames}))':${baseSettings}`;
+            // --- ELASTIC & FUN (Usa 'on' no zoompan) ---
+            case 'mov-rubber-band': return `zoompan=z='1.0+0.2*abs(sin(on*0.2))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':${baseSettings}`;
+            case 'mov-bounce-drop': return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*abs(sin(on*0.15))':${baseSettings}`;
             case 'mov-elastic-snap-l': return `zoompan=z=1.1:x='if(lt(on,20),(iw-iw/zoom)*(1-on/20),0)':y='ih/2-(ih/zoom/2)':${baseSettings}`;
             case 'mov-elastic-snap-r': return `zoompan=z=1.1:x='if(lt(on,20),(iw-iw/zoom)*(on/20),0)':y='ih/2-(ih/zoom/2)':${baseSettings}`;
-            case 'mov-jelly-wobble': return `rotate='sin(n*0.2)*0.1',perspective=x0='10*sin(n*0.2)':y0=0:x1='W+10*sin(n*0.2)':y1=0:x2='10*sin(n*0.2)':y2=H:x3='W+10*sin(n*0.2)':y3=H`;
+            case 'mov-jelly-wobble': return `rotate='sin(n*0.2)*0.1',zoompan=z='1.0+0.05*cos(on*0.2)':${center}:${baseSettings}`;
             case 'mov-spring-up': return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y='if(lt(on,15),(ih-ih/zoom)*(1-on/15),0)':${baseSettings}`;
             case 'mov-spring-down': return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y='if(lt(on,15),(ih-ih/zoom)*(on/15),0)':${baseSettings}`;
             case 'mov-pendulum-swing': return `rotate='sin(n*0.1)*0.2'`;
             case 'mov-pop-up': return `zoompan=z='if(lt(on,15),on/15,1.0)':${center}:${baseSettings}`;
-            case 'mov-squash-stretch': return `perspective=x0='-15*sin(n*0.2)':y0='15*sin(n*0.2)':x1='W+15*sin(n*0.2)':y1='15*sin(n*0.2)':x2='-15*sin(n*0.2)':y2='H-15*sin(n*0.2)':x3='W+15*sin(n*0.2)':y3='H-15*sin(n*0.2)'`;
+            case 'mov-squash-stretch': return `zoompan=z='1.0+0.1*sin(on*0.2)':x='iw/2-(iw/zoom/2)+20*sin(on*0.2)':y='ih/2-(ih/zoom/2)':${baseSettings}`;
             case 'mov-tada': return `rotate='if(lt(n,30),sin(n*0.5)*0.1,0)',zoompan=z='if(lt(on,30),1.1,1.0)':${center}:${baseSettings}`;
-            case 'mov-flash-pulse': return `drawbox=c=white:t=fill:enable='eq(mod(n,10),0)',fade=t=in:st=0:d=0.2`;
+            case 'mov-flash-pulse': return `eq=brightness='if(eq(mod(n,10),0),0.5,0)',fade=t=in:st=0:d=0.2`;
 
             // --- LOOPS & DEFAULTS ---
             case 'pulse': return `zoompan=z='1.0+0.05*sin(on*0.1)':${center}:${baseSettings}`;
-            case 'float': return `perspective=x0=0:y0='15*sin(n*0.07)':x1=W:y1='15*sin(n*0.07)':x2=0:y2='H+15*sin(n*0.07)':x3=W:y3='H+15*sin(n*0.07)'`;
+            case 'float': return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)+15*sin(on*0.07)':${baseSettings}`;
             case 'wiggle': return `rotate='sin(n*0.2)*0.05'`;
             case 'heartbeat': return `zoompan=z='1.0+if(lt(mod(on,30),10),0.1,0)':${center}:${baseSettings}`;
             case 'spin-slow': return `rotate='n*0.02'`;
-            case 'photo-flash': return `drawbox=c=white:t=fill:enable='between(n,0,3)',fade=t=in:st=0:d=0.2`;
+            case 'photo-flash': return `eq=brightness='if(lt(n,3),0.8,0)',fade=t=in:st=0:d=0.2`;
             case 'kenBurns': return `zoompan=z='min(1.0+(on*0.4/${totalFrames}),1.4)':x='(iw-iw/zoom)*(on/${totalFrames})':y='(ih-ih/zoom)*(on/${totalFrames})':${baseSettings}`;
 
             default:
