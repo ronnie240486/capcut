@@ -138,7 +138,8 @@ module.exports = {
         const center = "x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)";
 
         // Helper para efeito de Blur com Overlay e Zoom usando fade/geq para alpha
-        const blurWithZoom = (alphaFilter, zoomExpr = `min(1.0+(on*0.2/${totalFrames}),1.1)`) => {
+        // Fix: Adjusted zoom expression to span full duration (1.0 to 1.1 linearly) instead of clamping early
+        const blurWithZoom = (alphaFilter, zoomExpr = `(1.0+(0.1*on/${totalFrames}))`) => {
             // Note: alphaFilter should be something like 'fade=t=out:st=0:d=1:alpha=1' or 'geq=a=...'
             // We use format=yuva420p to ensure alpha channel exists before manipulating it.
             // overlay uses the input's alpha channel.
