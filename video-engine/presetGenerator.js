@@ -123,199 +123,171 @@ module.exports = {
         return null;
     },
 
-    getMovementFilter: (moveId, durationSec) => {
+    getMovementFilter: (moveId, durationSec, isImage, config = {}) => {
         const d = parseFloat(durationSec) || 5;
         const totalFrames = Math.ceil(d * 30);
-        // Gera um ID único para os labels do filtro para evitar colisão no grafo
         const uid = Math.floor(Math.random() * 1000000);
         
-        const base = `:d=1:s=1280x720:fps=30`; 
+        // High resolution for zoompan to prevent shaking (4K processing)
+        // Then we scale down later in the chain
+        const base = `:d=1:s=3840x2160:fps=30`; 
         
-        // Helper to escape commas for FFmpeg expressions inside filter strings
         const esc = (s) => s.replace(/,/g, '\\,');
-
-        // Unquoted center expression
         const center = "x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)";
 
-        // Helper para efeito de Blur com Overlay e Zoom usando fade/geq para alpha
-        // Fix: Adjusted zoom expression to span full duration (1.0 to 1.1 linearly) instead of clamping early
-        const blurWithZoom = (alphaFilter, zoomExpr = `(1.0+(0.1*on/${totalFrames}))`) => {
-            // Note: alphaFilter should be something like 'fade=t=out:st=0:d=1:alpha=1' or 'geq=a=...'
-            // We use format=yuva420p to ensure alpha channel exists before manipulating it.
-            // overlay uses the input's alpha channel.
+        // Get Speed/Intensity from config (default to 1)
+        const speed = parseFloat(config.speed || config.intensity || 1);
+
+        // Helper para efeito de Blur com Overlay e Zoom
+        const blurWithZoom = (alphaFilter, zoomExpr = `(1.0+(0.1*${speed}*on/${totalFrames}))`) => {
             return `zoompan=z=${esc(zoomExpr)}:${center}${base},split=2[main${uid}][to_blur${uid}];[to_blur${uid}]boxblur=20:2,format=yuva420p,${alphaFilter}[blurred${uid}];[main${uid}][blurred${uid}]overlay=x=0:y=0:shortest=1`;
         };
 
         switch (moveId) {
             // === 0. BLUR (Focar/Desfocar com Movimento) ===
             case 'mov-blur-in':
-                // Começa borrado (alpha 1) e fica nítido (alpha 0) no primeiro 1 segundo
-                return blurWithZoom(`fade=t=out:st=0:d=1:alpha=1`);
+                return blurWithZoom(`fade=t=out:st=0:d=${1/speed}:alpha=1`);
             
             case 'mov-blur-out':
-                // Começa nítido (alpha 0) e fica borrado (alpha 1) no último 1 segundo
-                return blurWithZoom(`fade=t=in:st=${d-1}:d=1:alpha=1`);
+                const startTime = Math.max(0, d - (1/speed));
+                return blurWithZoom(`fade=t=in:st=${startTime}:d=${1/speed}:alpha=1`);
             
             case 'mov-blur-pulse':
-                // Pulsa o blur (geq T is time in seconds)
-                return blurWithZoom(`geq=a='128*(1+sin(T*5))'`);
+                return blurWithZoom(`geq=a='128*(1+sin(T*5*${speed}))'`);
             
             case 'mov-blur-zoom':
-                 // Zoom mais agressivo + Blur in
-                 return blurWithZoom(`fade=t=out:st=0:d=1:alpha=1`, `min(1.0+(on*0.8/${totalFrames}),1.5)`);
+                 return blurWithZoom(`fade=t=out:st=0:d=1:alpha=1`, `min(1.0+(on*0.8*${speed}/${totalFrames}),1.5)`);
             
             case 'mov-blur-motion':
-                 // Simula Motion Blur Horizontal (Blur estático direcional fake)
-                 return `boxblur=luma_radius=10:luma_power=1`;
+                 return `boxblur=luma_radius=${10*speed}:luma_power=1`;
 
             // === 1. CINEMATIC PANS ===
+            // Zoom base is adjusted by speed to create more/less movement space
             case 'mov-pan-slow-l': 
-                return `zoompan=z=1.2:x=${esc(`(iw-iw/zoom)*(on/${totalFrames})`)}:y=ih/2-(ih/zoom/2)${base}`;
+                return `zoompan=z=${1.1 + (0.1 * speed)}:x=${esc(`(iw-iw/zoom)*(on/${totalFrames})`)}:y=ih/2-(ih/zoom/2)${base}`;
             case 'mov-pan-slow-r': 
-                return `zoompan=z=1.2:x=${esc(`(iw-iw/zoom)*(1-(on/${totalFrames}))`)}:y=ih/2-(ih/zoom/2)${base}`;
+                return `zoompan=z=${1.1 + (0.1 * speed)}:x=${esc(`(iw-iw/zoom)*(1-(on/${totalFrames}))`)}:y=ih/2-(ih/zoom/2)${base}`;
             case 'mov-pan-slow-u': 
-                return `zoompan=z=1.2:x=iw/2-(iw/zoom/2):y=${esc(`(ih-ih/zoom)*(1-(on/${totalFrames}))`)}${base}`;
+                return `zoompan=z=${1.1 + (0.1 * speed)}:x=iw/2-(iw/zoom/2):y=${esc(`(ih-ih/zoom)*(1-(on/${totalFrames}))`)}${base}`;
             case 'mov-pan-slow-d': 
-                return `zoompan=z=1.2:x=iw/2-(iw/zoom/2):y=${esc(`(ih-ih/zoom)*(on/${totalFrames})`)}${base}`;
+                return `zoompan=z=${1.1 + (0.1 * speed)}:x=iw/2-(iw/zoom/2):y=${esc(`(ih-ih/zoom)*(on/${totalFrames})`)}${base}`;
             case 'mov-pan-fast-l': 
-                return `zoompan=z=1.4:x=${esc(`(iw-iw/zoom)*(on/${totalFrames})`)}:y=ih/2-(ih/zoom/2)${base}`;
+                return `zoompan=z=${1.3 + (0.2 * speed)}:x=${esc(`(iw-iw/zoom)*(on/${totalFrames})`)}:y=ih/2-(ih/zoom/2)${base}`;
             case 'mov-pan-fast-r': 
-                return `zoompan=z=1.4:x=${esc(`(iw-iw/zoom)*(1-(on/${totalFrames}))`)}:y=ih/2-(ih/zoom/2)${base}`;
+                return `zoompan=z=${1.3 + (0.2 * speed)}:x=${esc(`(iw-iw/zoom)*(1-(on/${totalFrames}))`)}:y=ih/2-(ih/zoom/2)${base}`;
             case 'mov-pan-diag-tl': 
-                return `zoompan=z=1.4:x=${esc(`(iw-iw/zoom)*(on/${totalFrames})`)}:y=${esc(`(ih-ih/zoom)*(on/${totalFrames})`)}${base}`;
+                return `zoompan=z=${1.2 + (0.1 * speed)}:x=${esc(`(iw-iw/zoom)*(on/${totalFrames})`)}:y=${esc(`(ih-ih/zoom)*(on/${totalFrames})`)}${base}`;
             case 'mov-pan-diag-tr': 
-                return `zoompan=z=1.4:x=${esc(`(iw-iw/zoom)*(1-(on/${totalFrames}))`)}:y=${esc(`(ih-ih/zoom)*(on/${totalFrames})`)}${base}`;
+                return `zoompan=z=${1.2 + (0.1 * speed)}:x=${esc(`(iw-iw/zoom)*(1-(on/${totalFrames}))`)}:y=${esc(`(ih-ih/zoom)*(on/${totalFrames})`)}${base}`;
             case 'mov-pan-diag-bl': 
-                return `zoompan=z=1.4:x=${esc(`(iw-iw/zoom)*(on/${totalFrames})`)}:y=${esc(`(ih-ih/zoom)*(1-(on/${totalFrames}))`)}${base}`;
+                return `zoompan=z=${1.2 + (0.1 * speed)}:x=${esc(`(iw-iw/zoom)*(on/${totalFrames})`)}:y=${esc(`(ih-ih/zoom)*(1-(on/${totalFrames}))`)}${base}`;
             case 'mov-pan-diag-br': 
-                return `zoompan=z=1.4:x=${esc(`(iw-iw/zoom)*(1-(on/${totalFrames}))`)}:y=${esc(`(ih-ih/zoom)*(1-(on/${totalFrames}))`)}${base}`;
+                return `zoompan=z=${1.2 + (0.1 * speed)}:x=${esc(`(iw-iw/zoom)*(1-(on/${totalFrames}))`)}:y=${esc(`(ih-ih/zoom)*(1-(on/${totalFrames}))`)}${base}`;
 
             // === 2. DYNAMIC ZOOMS ===
             case 'mov-zoom-crash-in': 
             case 'zoom-fast-in':
             case 'zoom-in':
-                return `zoompan=z=${esc(`min(1.0+(on*2.0/${totalFrames}),3.0)`)}:${center}${base}`;
+                // Linear zoom from 1.0 to (1 + 0.5*speed)
+                return `zoompan=z=${esc(`1.0+(${0.5 * speed}*on/${totalFrames})`)}:${center}${base}`;
             case 'mov-zoom-crash-out': 
             case 'zoom-out':
-                return `zoompan=z=${esc(`max(3.0-(on*2.0/${totalFrames}),1.0)`)}:${center}${base}`;
+                 // Linear zoom from (1 + 0.5*speed) to 1.0
+                return `zoompan=z=${esc(`${1.0 + (0.5 * speed)}-(${0.5 * speed}*on/${totalFrames})`)}:${center}${base}`;
             case 'mov-zoom-slow-in':
             case 'zoom-slow-in':
             case 'kenBurns':
-                 return `zoompan=z=${esc(`min(1.0+(on*0.3/${totalFrames}),1.3)`)}:${center}${base}`;
+                 // Gentler zoom
+                 return `zoompan=z=${esc(`1.0+(${0.2 * speed}*on/${totalFrames})`)}:${center}${base}`;
             case 'mov-zoom-slow-out':
             case 'zoom-slow-out':
-                 return `zoompan=z=${esc(`max(1.3-(on*0.3/${totalFrames}),1.0)`)}:${center}${base}`;
+                 return `zoompan=z=${esc(`${1.0 + (0.2 * speed)}-(${0.2 * speed}*on/${totalFrames})`)}:${center}${base}`;
             case 'mov-zoom-bounce-in':
             case 'zoom-bounce':
             case 'mov-zoom-bounce':
-                 return `zoompan=z=${esc(`1.0+0.1*abs(sin(on*0.1))`)}:${center}${base}`;
+                 return `zoompan=z=${esc(`1.0+${0.1 * speed}*abs(sin(on*0.1*${speed}))`)}:${center}${base}`;
             case 'mov-zoom-pulse-slow':
             case 'pulse':
-                 return `zoompan=z=${esc(`1.0+0.05*sin(on*0.05)`)}:${center}${base}`;
+                 return `zoompan=z=${esc(`1.0+${0.05 * speed}*sin(on*0.05*${speed})`)}:${center}${base}`;
             case 'mov-zoom-pulse-fast':
-                 return `zoompan=z=${esc(`1.0+0.1*sin(on*0.2)`)}:${center}${base}`;
+                 return `zoompan=z=${esc(`1.0+${0.1 * speed}*sin(on*0.2*${speed})`)}:${center}${base}`;
             case 'mov-dolly-vertigo':
             case 'dolly-zoom':
-                 return `zoompan=z=${esc(`min(1.0+(on*1.0/${totalFrames}),2.0)`)}:${center}${base}`;
+                 return `zoompan=z=${esc(`min(1.0+(on*1.0*${speed}/${totalFrames}),2.0)`)}:${center}${base}`;
             case 'mov-zoom-twist-in':
-                 return `rotate=a=${esc('0.1*t')}:c=black,zoompan=z=${esc(`min(1.0+(on*1.0/${totalFrames}),2.0)`)}:${center}${base}`;
+                 return `rotate=a=${esc(`0.1*${speed}*t`)}:c=black,zoompan=z=${esc(`min(1.0+(on*1.0*${speed}/${totalFrames}),2.0)`)}:${center}${base}`;
             case 'mov-zoom-twist-out':
-                 return `rotate=a=${esc('-0.1*t')}:c=black,zoompan=z=${esc(`max(2.0-(on*1.0/${totalFrames}),1.0)`)}:${center}${base}`;
+                 return `rotate=a=${esc(`-0.1*${speed}*t`)}:c=black,zoompan=z=${esc(`max(2.0-(on*1.0*${speed}/${totalFrames}),1.0)`)}:${center}${base}`;
             case 'mov-zoom-wobble':
-                 return `zoompan=z=${esc(`1.1+0.05*sin(on*0.2)`)}:x=${esc(`iw/2-(iw/zoom/2)+10*sin(on*0.3)`)}:y=${esc(`ih/2-(ih/zoom/2)+10*cos(on*0.4)`)}${base}`;
+                 return `zoompan=z=${esc(`1.1+0.05*${speed}*sin(on*0.2)`)}:x=${esc(`iw/2-(iw/zoom/2)+10*${speed}*sin(on*0.3)`)}:y=${esc(`ih/2-(ih/zoom/2)+10*${speed}*cos(on*0.4)`)}${base}`;
             case 'mov-zoom-shake':
-                 return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+random(1)*20-10`)}:y=${esc(`ih/2-(ih/zoom/2)+random(1)*20-10`)}${base}`;
+                 return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+(random(1)*20-10)*${speed}`)}:y=${esc(`ih/2-(ih/zoom/2)+(random(1)*20-10)*${speed}`)}${base}`;
 
-            // === 3. 3D TRANSFORMS ===
+            // === 3. 3D TRANSFORMS (Simulated via Scale/Rotate) ===
             case 'mov-3d-flip-x': 
-                return `scale=w=${esc(`iw*abs(cos(t*2))`)}:h=ih,pad=1280:720:(1280-iw)/2:(720-ih)/2:black`;
+                return `scale=w=${esc(`iw*abs(cos(t*2*${speed}))`)}:h=ih,pad=1280:720:(1280-iw)/2:(720-ih)/2:black`;
             case 'mov-3d-flip-y':
-                return `scale=w=iw:h=${esc(`ih*abs(cos(t*2))`)}:pad=1280:720:(1280-iw)/2:(720-ih)/2:black`;
+                return `scale=w=iw:h=${esc(`ih*abs(cos(t*2*${speed}))`)}:pad=1280:720:(1280-iw)/2:(720-ih)/2:black`;
             case 'mov-3d-spin-axis': 
             case 'spin-slow':
-                return `rotate=${esc('t*0.5')}:ow=iw:oh=ih:c=black`;
+                return `rotate=${esc(`t*0.5*${speed}`)}:ow=iw:oh=ih:c=black`;
             case 'mov-3d-swing-l':
             case 'pendulum':
-                return `rotate=${esc(`sin(t*2)*0.1`)}:ow=iw:oh=ih:c=black`;
+                return `rotate=${esc(`sin(t*2*${speed})*0.1*${speed}`)}:ow=iw:oh=ih:c=black`;
             case 'mov-3d-swing-r':
-                return `rotate=${esc(`-sin(t*2)*0.1`)}:ow=iw:oh=ih:c=black`;
+                return `rotate=${esc(`-sin(t*2*${speed})*0.1*${speed}`)}:ow=iw:oh=ih:c=black`;
             case 'mov-3d-tumble':
-                return `rotate=t:ow=iw:oh=ih:c=black`;
+                return `rotate=t*${speed}:ow=iw:oh=ih:c=black`;
             case 'mov-3d-roll':
-                return `rotate=${esc('t*2')}:ow=iw:oh=ih:c=black`;
+                return `rotate=${esc(`t*2*${speed}`)}:ow=iw:oh=ih:c=black`;
             case 'mov-3d-float':
-                return `zoompan=z=${esc(`1.05+0.02*sin(time)`)}:x=${esc(`iw/2-(iw/zoom/2)+10*sin(time*0.5)`)}:y=${esc(`ih/2-(ih/zoom/2)+10*cos(time*0.7)`)}${base}`;
+                return `zoompan=z=${esc(`1.05+0.02*${speed}*sin(time*${speed})`)}:x=${esc(`iw/2-(iw/zoom/2)+10*${speed}*sin(time*0.5*${speed})`)}:y=${esc(`ih/2-(ih/zoom/2)+10*${speed}*cos(time*0.7*${speed})`)}${base}`;
 
             // === 4. GLITCH & CHAOS ===
             case 'mov-glitch-snap':
-                return `crop=w=${esc(`iw-mod(n,10)*10`)}:h=ih:x=${esc(`mod(n,10)*5`)}:y=0`;
+                return `crop=w=${esc(`iw-mod(n,10)*10*${speed}`)}:h=ih:x=${esc(`mod(n,10)*5*${speed}`)}:y=0`;
             case 'mov-glitch-skid':
-                 return `crop=x=${esc(`random(1)*20`)}:y=${esc(`random(1)*20`)}:w=iw-20:h=ih-20`;
+                 return `crop=x=${esc(`random(1)*20*${speed}`)}:y=${esc(`random(1)*20*${speed}`)}:w=iw-20:h=ih-20`;
             case 'mov-shake-violent':
             case 'shake-hard':
-                 return `zoompan=z=1.2:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*100`)}:y=${esc(`ih/2-(ih/zoom/2)+(random(1)-0.5)*100`)}${base}`;
+                 return `zoompan=z=1.2:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*100*${speed}`)}:y=${esc(`ih/2-(ih/zoom/2)+(random(1)-0.5)*100*${speed}`)}${base}`;
             case 'mov-jitter-x':
             case 'jitter':
-                 return `zoompan=z=1.05:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*30`)}:y=ih/2-(ih/zoom/2)${base}`;
+                 return `zoompan=z=1.05:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*30*${speed}`)}:y=ih/2-(ih/zoom/2)${base}`;
             case 'mov-jitter-y':
-                 return `zoompan=z=1.05:x=iw/2-(iw/zoom/2):y=${esc(`ih/2-(ih/zoom/2)+(random(1)-0.5)*30`)}${base}`;
+                 return `zoompan=z=1.05:x=iw/2-(iw/zoom/2):y=${esc(`ih/2-(ih/zoom/2)+(random(1)-0.5)*30*${speed}`)}${base}`;
             case 'mov-rgb-shift-move':
-                 return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*20`)}:y=ih/2-(ih/zoom/2)${base},colorchannelmixer=rr=1:gg=0:bb=0:rb=0:br=0:bg=0`;
-            case 'mov-strobe-move':
-                return `eq=brightness=${esc(`if(lt(mod(n,10),5),0.5,-0.2)`)}`;
-            case 'mov-frame-skip':
-                return `fps=10`;
-            case 'mov-vhs-tracking':
-                return `crop=iw:ih:0:${esc(`if(eq(mod(n,30),0),10,0)`)}`;
+                 return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*20*${speed}`)}:y=ih/2-(ih/zoom/2)${base},colorchannelmixer=rr=1:gg=0:bb=0:rb=0:br=0:bg=0`;
 
             // === 5. ELASTIC & FUN ===
             case 'mov-rubber-band':
             case 'mov-squash-stretch':
-                 return `zoompan=z=${esc(`1.0+0.1*abs(sin(on*0.3))`)}:${center}${base}`;
+                 return `zoompan=z=${esc(`1.0+0.1*${speed}*abs(sin(on*0.3*${speed}))`)}:${center}${base}`;
             case 'mov-jelly-wobble':
-                 return `zoompan=z=${esc(`1.05+0.05*sin(on*0.5)`)}:x=${esc(`iw/2-(iw/zoom/2)+5*sin(on*0.8)`)}:y=${esc(`ih/2-(ih/zoom/2)+5*cos(on*0.7)`)}${base}`;
-            case 'mov-spring-up':
-                 return `zoompan=z=1:y=${esc(`if(lte(on,20), (ih)*(1-on/20), 0)`)}${base}`;
-            case 'mov-spring-down':
-                 return `zoompan=z=1:y=${esc(`if(lte(on,20), -(ih)*(1-on/20), 0)`)}${base}`;
+                 return `zoompan=z=${esc(`1.05+0.05*${speed}*sin(on*0.5*${speed})`)}:x=${esc(`iw/2-(iw/zoom/2)+5*${speed}*sin(on*0.8*${speed})`)}:y=${esc(`ih/2-(ih/zoom/2)+5*${speed}*cos(on*0.7*${speed})`)}${base}`;
             case 'mov-pop-up':
             case 'pop-in':
-                return `zoompan=z=${esc(`if(lte(on,15),min(on/15,1.0),1.0)`)}:${center}${base}`;
-            case 'mov-tada':
-                 return `rotate=${esc(`if(lt(on,30), sin(on*0.5)*0.1, 0)`)}:c=black`;
-            case 'mov-flash-pulse':
-                 return `eq=brightness=${esc(`1+0.5*sin(t*10)`)}`;
+                return `zoompan=z=${esc(`if(lte(on,15/${speed}),min(on*${speed}/15,1.0),1.0)`)}:${center}${base}`;
             case 'mov-bounce-drop':
-                 return `zoompan=z=${esc(`if(lt(on,20),1.0+0.2*abs(cos(on*0.3)),1.0)`)}:${center}${base}`;
-            case 'mov-elastic-snap-l':
-                 return `zoompan=z=1.0:x=${esc(`if(lt(on,15),(iw/2)-(iw/2)*(1-on/15),iw/2)`)}:${center}${base}`;
-            case 'mov-elastic-snap-r':
-                 return `zoompan=z=1.0:x=${esc(`if(lt(on,15),(iw/2)+(iw/2)*(1-on/15),iw/2)`)}:${center}${base}`;
-            case 'mov-pendulum-swing':
-                 return `rotate=${esc(`sin(t*3)*0.1`)}:ow=iw:oh=ih:c=black`;
+                 return `zoompan=z=${esc(`if(lt(on,20/${speed}),1.0+0.2*${speed}*abs(cos(on*0.3*${speed})),1.0)`)}:${center}${base}`;
 
             // === 6. HANDHELD ===
             case 'handheld-1':
-                 return `zoompan=z=1.05:x=${esc(`iw/2-(iw/zoom/2)+sin(on*0.05)*5`)}:y=${esc(`ih/2-(ih/zoom/2)+cos(on*0.07)*5`)}${base}`;
+                 return `zoompan=z=1.05:x=${esc(`iw/2-(iw/zoom/2)+sin(on*0.05*${speed})*5`)}:y=${esc(`ih/2-(ih/zoom/2)+cos(on*0.07*${speed})*5`)}${base}`;
             case 'handheld-2':
-                 return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+sin(on*0.1)*10`)}:y=${esc(`ih/2-(ih/zoom/2)+cos(on*0.15)*10`)}${base}`;
+                 return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+sin(on*0.1*${speed})*10`)}:y=${esc(`ih/2-(ih/zoom/2)+cos(on*0.15*${speed})*10`)}${base}`;
             case 'earthquake':
-                 return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*40`)}:y=${esc(`ih/2-(ih/zoom/2)+(random(1)-0.5)*40`)}${base}`;
+                 return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*40*${speed}`)}:y=${esc(`ih/2-(ih/zoom/2)+(random(1)-0.5)*40*${speed}`)}${base}`;
 
             // === 7. ENTRY ANIMATIONS ===
             case 'slide-in-left': 
-                return `zoompan=z=1.0:x=${esc(`if(lte(on,30),(iw/2-(iw/zoom/2)) - (iw)*(1-on/30), iw/2-(iw/zoom/2))`)}:y=ih/2-(ih/zoom/2)${base}`;
+                return `zoompan=z=1.0:x=${esc(`if(lte(on,30/${speed}),(iw/2-(iw/zoom/2)) - (iw)*(1-on*${speed}/30), iw/2-(iw/zoom/2))`)}:y=ih/2-(ih/zoom/2)${base}`;
             case 'slide-in-right':
-                return `zoompan=z=1.0:x=${esc(`if(lte(on,30),(iw/2-(iw/zoom/2)) + (iw)*(1-on/30), iw/2-(iw/zoom/2))`)}:y=ih/2-(ih/zoom/2)${base}`;
-            case 'slide-in-bottom':
-                return `zoompan=z=1.0:y=${esc(`if(lte(on,30),(ih/2-(ih/zoom/2)) + (ih)*(1-on/30), ih/2-(ih/zoom/2))`)}:x=iw/2-(iw/zoom/2)${base}`;
-            case 'fade-in':
-                 return `colorchannelmixer=aa=${esc(`min(t,1)`)}`;
-
+                return `zoompan=z=1.0:x=${esc(`if(lte(on,30/${speed}),(iw/2-(iw/zoom/2)) + (iw)*(1-on*${speed}/30), iw/2-(iw/zoom/2))`)}:y=ih/2-(ih/zoom/2)${base}`;
+            
             default:
-                // Fallback for any unknown moveId that contains "zoom"
                 if (moveId && moveId.includes('zoom')) {
-                    return `zoompan=z=${esc(`min(1.0+(on*0.3/${totalFrames}),1.3)`)}:${center}${base}`;
+                    return `zoompan=z=${esc(`min(1.0+(on*0.3*${speed}/${totalFrames}),1.3)`)}:${center}${base}`;
                 }
                 return null;
         }
