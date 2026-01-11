@@ -141,7 +141,7 @@ module.exports = {
     },
 
     getMovementFilter: (moveId, durationSec) => {
-        const d = durationSec || 5;
+        const d = parseFloat(durationSec) || 5;
         const fps = 30;
         const totalFrames = Math.ceil(d * 30);
         
@@ -151,37 +151,25 @@ module.exports = {
         const center = "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
 
         switch (moveId) {
-            // === 0. BLUR MOVEMENTS (NEW) ===
+            // === 0. SAFE BLUR/EFFECT MOVEMENTS ===
             case 'mov-blur-in':
-                // Starts blurry (radius 20), fades to 0 over duration
-                // We use boxblur with expression capability. 
-                // Since boxblur expressions are limited in some older FFmpeg versions, we use smartblur or unsharp if boxblur fails, but boxblur supports expression in modern builds.
-                // If boxblur expression not supported, we fall back to a static blur or a dissolve trick. 
-                // Assuming modern ffmpeg: luma_radius = min((1-t/d)*20, 20)
-                // However, zoompan is safer for movement. We can chain them.
-                // For blur, we return just the blur filter. transitionBuilder handles re-scaling.
-                return `boxblur=luma_radius='min((1-t/${d})*20,20)':luma_power=1:enable='between(t,0,${d})'`;
+            case 'mov-blur-zoom':
+                // Simulate "Blur In" using slight zoom-in and scaling artifacts (safe fallback)
+                // boxblur evaluation is unstable in this context.
+                // We assume 'Blur In' means start slightly out of focus (not easily doable without filters) 
+                // So we do a slow zoom in which often looks like "coming into focus" cinematically.
+                return `zoompan=z='min(1.0+(on*0.3/${totalFrames}),1.1)':${center}${base}`;
 
             case 'mov-blur-out':
-                return `boxblur=luma_radius='min((t/${d})*20,20)':luma_power=1:enable='between(t,0,${d})'`;
+                return `zoompan=z='max(1.1-(on*0.3/${totalFrames}),1.0)':${center}${base}`;
 
             case 'mov-blur-pulse':
-                return `boxblur=luma_radius='min(10*abs(sin(t*2)),20)':luma_power=1:enable='between(t,0,${d})'`;
-
-            case 'mov-blur-zoom':
-                 // Combine Zoom and Blur? 
-                 // Since getMovementFilter returns a single filter string, we can chain them with commas if we are careful, 
-                 // BUT transitionBuilder usually expects one complex filter or adds labels. 
-                 // The safest way is to return the zoompan, and maybe the frontend preview shows blur, 
-                 // but backend does just zoom to avoid complexity, OR we chain:
-                 // "zoompan=...,boxblur=..."
-                 return `zoompan=z='min(1.0+(on*0.5/${totalFrames}),1.5)':${center}${base},boxblur=luma_radius='min((t/${d})*10,10)':luma_power=1`;
+                // Simulate pulse with zoom
+                return `zoompan=z='1.0+0.05*abs(sin(on*0.1))':${center}${base}`;
 
             case 'mov-blur-motion':
-                 // Simulated motion blur (directional) is hard. We use a static moderate blur.
-                 // tpad filter can create trails but it's complex. 
-                 // Let's use a simple horizontal blur.
-                 return `boxblur=luma_radius=5:luma_power=1`;
+                 // Using tmix to create motion trails (ghosting) which simulates motion blur
+                 return `tmix=frames=3:weights="1 1 1"`;
 
             // === 1. CAMERA PANS ===
             case 'mov-pan-slow-l': 
