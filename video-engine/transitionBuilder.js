@@ -7,10 +7,10 @@ module.exports = {
         let filterChain = '';
         let inputIndexCounter = 0;
 
-        // Filtramos clipes visuais (Vídeos e Imagens) ordenados pelo tempo de início na timeline
+        // Sort visual clips by start time
         const visualClips = clips.filter(c => 
-            ['video', 'camada', 'image'].includes(c.track) || 
-            (c.type === 'video' || c.type === 'image')
+            ['video', 'camada', 'text', 'subtitle'].includes(c.track) || 
+            (c.type === 'video' || c.type === 'image' || c.type === 'text')
         ).sort((a, b) => a.start - b.start);
 
         const audioOverlayClips = clips.filter(c => 
@@ -18,144 +18,170 @@ module.exports = {
             c.type === 'audio'
         );
 
-        if (visualClips.length === 0) {
-             return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
-        }
-
-        // 1. Processar cada clipe visual individualmente (Pre-processing)
-        let processedVideoLabels = [];
-        let processedAudioLabels = [];
+        // Process Visual Clips
+        let preparedSegments = [];
 
         visualClips.forEach((clip, i) => {
             const filePath = fileMap[clip.fileName];
-            if (!filePath) return;
+            if (!filePath && clip.type !== 'text') return;
 
             const duration = parseFloat(clip.duration) || 5;
-            
-            // Adicionar input
+
+            // Input Logic
             if (clip.type === 'image') {
-                inputs.push('-loop', '1', '-t', (duration + 2).toString(), '-i', filePath);
-            } else {
+                inputs.push('-loop', '1', '-t', (duration + 2).toString(), '-i', filePath); // +2s buffer for transition
+            } else if (clip.type === 'video') {
                 inputs.push('-i', filePath);
+            } else if (clip.type === 'text') {
+                inputs.push('-f', 'lavfi', '-t', (duration + 2).toString(), '-i', `color=c=black:s=1280x720:r=30`);
             }
             
             const idx = inputIndexCounter++;
             let vStream = `[${idx}:v]`;
-            let aStream = `[${idx}:a]`;
 
-            // Helper para adicionar filtros de vídeo
+            // Helper to append filter
             const addV = (f) => {
-                const lbl = `v_pre_${i}_${Math.random().toString(36).substr(2,4)}`;
+                if (!f) return;
+                const lbl = `v${i}_${Math.random().toString(36).substr(2,4)}`;
                 filterChain += `${vStream}${f}[${lbl}];`;
                 vStream = `[${lbl}]`;
             };
-
-            // A. Padronização (Escala, FPS, Formato)
+            
+            // 1. Standardize
             addV(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`);
 
-            // B. Trim (Vídeos precisam de offset de mídia)
+            // 2. Trim
+            // Note: For xfade, we need overlaps. We DON'T setpts=PTS-STARTPTS here if we want to offset later, 
+            // but typical xfade usage prepares clean 0-start clips and uses offset parameter.
             if (clip.type === 'image') {
+                // Images generated with loop already, just ensure duration
                 addV(`trim=duration=${duration},setpts=PTS-STARTPTS`);
             } else {
-                const mediaStart = parseFloat(clip.mediaStartOffset) || 0;
-                addV(`trim=start=${mediaStart}:duration=${duration},setpts=PTS-STARTPTS`);
+                const start = parseFloat(clip.mediaStartOffset) || 0;
+                addV(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
             }
 
-            // C. Efeitos Visuais
+            // 3. Effects
             if (clip.effect) {
                 const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                 if (fx) addV(fx);
             }
 
-            // D. Movimentos (Zoompan)
+            // 4. Movement
             if (clip.properties && clip.properties.movement) {
                 const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration);
                 if (moveFilter) addV(moveFilter);
             }
 
-            const finalV = `v_ready_${i}`;
-            filterChain += `${vStream}null[${finalV}];`;
-            processedVideoLabels.push(finalV);
-
-            // E. Áudio do clipe
-            const finalA = `a_ready_${i}`;
-            const mediaInfo = mediaLibrary[clip.fileName];
-            const hasAudio = clip.type === 'video' && (mediaInfo ? mediaInfo.hasAudio !== false : true);
-
-            if (hasAudio) {
-                const mediaStart = parseFloat(clip.mediaStartOffset) || 0;
-                filterChain += `${aStream}atrim=start=${mediaStart}:duration=${duration},asetpts=PTS-STARTPTS,volume=${clip.properties?.volume || 1}[${finalA}];`;
-            } else {
-                filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${finalA}];`;
+            // 5. Text Overlay
+            if (clip.type === 'text' && clip.properties.text) {
+                const txt = clip.properties.text.replace(/'/g, '').replace(/:/g, '');
+                const fontColor = clip.properties.textDesign?.color || 'white';
+                addV(`drawtext=text='${txt}':fontcolor=${fontColor}:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black:shadowx=2:shadowy=2`);
             }
-            processedAudioLabels.push(finalA);
+
+            // Store the final stream label and metadata for mixing
+            preparedSegments.push({
+                label: vStream,
+                duration: duration,
+                transition: clip.transition
+            });
         });
 
-        // 2. Encadeamento de clipes com Transições (xfade)
-        let lastV = processedVideoLabels[0];
-        let lastA = processedAudioLabels[0];
-        let currentOffset = visualClips[0].duration;
+        // Mix Video Segments with XFade
+        let finalV = '[black_bg]'; // Fallback
+        
+        if (preparedSegments.length > 0) {
+             // Create a black background to start (optional, but good for safety)
+             // Or simpler: Start with first clip
+             let currentStream = preparedSegments[0].label;
+             let accumulatedOffset = preparedSegments[0].duration;
 
-        for (let i = 1; i < visualClips.length; i++) {
-            const clip = visualClips[i];
-            const prevClip = visualClips[i-1];
-            const nextV = processedVideoLabels[i];
-            const nextA = processedAudioLabels[i];
-
-            // Verificamos se o clipe atual tem uma transição definida
-            const trans = clip.transition;
-            const transDur = trans ? Math.min(parseFloat(trans.duration), prevClip.duration, clip.duration) : 0;
-
-            if (transDur > 0) {
-                const transType = presetGenerator.getTransitionType(trans.id);
-                const outV = `v_trans_${i}`;
-                const outA = `a_trans_${i}`;
-                
-                // Cálculo do offset para o xfade: Fim do clipe anterior menos a duração da transição
-                const xfadeOffset = currentOffset - transDur;
-                
-                filterChain += `[${lastV}][${nextV}]xfade=transition=${transType}:duration=${transDur}:offset=${xfadeOffset}[${outV}];`;
-                // Transição de áudio (acrossfade simples para suavidade)
-                filterChain += `[${lastA}][${nextA}]acrossfade=d=${transDur}[${outA}];`;
-                
-                lastV = outV;
-                lastA = outA;
-                currentOffset = xfadeOffset + clip.duration;
-            } else {
-                // Sem transição: Concatenação simples
-                const outV = `v_cat_${i}`;
-                const outA = `a_cat_${i}`;
-                filterChain += `[${lastV}][${nextV}]concat=n=2:v=1:a=0[${outV}];`;
-                filterChain += `[${lastA}][${nextA}]concat=n=2:v=0:a=1[${outA}];`;
-                
-                lastV = outV;
-                lastA = outA;
-                currentOffset += clip.duration;
-            }
+             for (let i = 1; i < preparedSegments.length; i++) {
+                 const nextSeg = preparedSegments[i];
+                 const prevSeg = preparedSegments[i-1];
+                 
+                 // Determine transition
+                 const trans = prevSeg.transition || { id: 'fade', duration: 0.5 }; // Default simple cut/fade if logic requires
+                 const transId = presetGenerator.getTransitionXfade(trans.id);
+                 const transDur = trans.duration || 0.5;
+                 
+                 // Calculate offset: Where the NEXT clip starts relative to TOTAL time.
+                 // Xfade offset is the timestamp in the first input where the transition begins.
+                 // accumulatedOffset represents the end of the current chain.
+                 // We want transition to start at (End of Prev - Transition Duration).
+                 const offset = accumulatedOffset - transDur;
+                 
+                 const outLabel = `mix_${i}`;
+                 filterChain += `${currentStream}${nextSeg.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${outLabel}];`;
+                 
+                 currentStream = `[${outLabel}]`;
+                 // Update total duration: (Previous End) + (Next Duration) - (Overlap)
+                 accumulatedOffset = offset + transDur + (nextSeg.duration - transDur);
+             }
+             
+             finalV = currentStream;
+        } else {
+             // No video clips, create black
+             filterChain += `color=c=black:s=1280x720:d=5[black_bg];`;
         }
 
-        // 3. Adicionar Overlays de Áudio (Música, Narração)
-        let finalAudioMap = `[${lastA}]`;
-        if (audioOverlayClips.length > 0) {
-            let overlayLabels = [];
-            audioOverlayClips.forEach((aclip, j) => {
-                const filePath = fileMap[aclip.fileName];
-                if (!filePath) return;
+        // Process Audio (Standard Concatenation/Mixing for now, xfade audio is 'acrossfade' which is complex to sync with video xfade loop above)
+        // For this MVP, we will mix all audio streams simply.
+        let audioStreamLabels = [];
+        // Re-iterate clips to find audio
+        visualClips.forEach((clip, i) => {
+            // Re-find index (it matches inputIndex order for visual clips if we assume audio comes from same file input)
+            // But we pushed inputs sequentially. The index `i` in visualClips aligns with `i` in preparedSegments.
+            // We need the input index. visualClips are 0..N. Inputs are 0..N.
+            // Assuming 1:1 mapping of visual clip to input.
+            const hasAudio = clip.type === 'video'; 
+            if(hasAudio) {
+                 const start = parseFloat(clip.mediaStartOffset) || 0;
+                 const duration = parseFloat(clip.duration);
+                 const albl = `aud_${i}`;
+                 // Note: Input index is `i` because we pushed exactly one input per visual clip
+                 filterChain += `[${i}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${albl}];`;
+                 audioStreamLabels.push(`[${albl}]`);
+            } else {
+                 const albl = `aud_silent_${i}`;
+                 const duration = parseFloat(clip.duration);
+                 filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${albl}];`;
+                 audioStreamLabels.push(`[${albl}]`);
+            }
+        });
 
-                inputs.push('-i', filePath);
-                const idx = inputIndexCounter++;
-                const delayMs = Math.round(parseFloat(aclip.start) * 1000);
-                const aLabel = `a_ov_${j}`;
-                
-                // adelay aplica o atraso para sincronizar com a timeline
-                filterChain += `[${idx}:a]volume=${aclip.properties?.volume || 1},adelay=${delayMs}|${delayMs}[${aLabel}];`;
-                overlayLabels.push(aLabel);
-            });
+        let finalA = '[base_a]';
+        if (audioStreamLabels.length > 0) {
+            // Concat audio (hard cuts, syncs better than mixing for timeline logic usually)
+            // acrossfade is better but requires overlapping logic similar to video
+            filterChain += `${audioStreamLabels.join('')}concat=n=${audioStreamLabels.length}:v=0:a=1[base_a];`;
+        } else {
+            filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=1[base_a];`;
+        }
 
-            const mixedA = `a_mixed_final`;
-            const amixInputs = overlayLabels.length + 1;
-            filterChain += `[${lastA}]${overlayLabels.map(l => `[${l}]`).join('')}amix=inputs=${amixInputs}:duration=first:dropout_transition=0,volume=${amixInputs}[${mixedA}];`;
-            finalAudioMap = `[${mixedA}]`;
+        // Mix Overlay Audio
+        let audioOverlays = [];
+        audioOverlayClips.forEach((clip, i) => {
+             const filePath = fileMap[clip.fileName];
+             if(!filePath) return;
+             inputs.push('-i', filePath); // Add new input
+             const idx = inputIndexCounter++; 
+             
+             const start = parseFloat(clip.start);
+             const duration = parseFloat(clip.duration);
+             const lbl = `overlay_aud_${i}`;
+             const delay = Math.round(start * 1000);
+             
+             filterChain += `[${idx}:a]atrim=duration=${duration},asetpts=PTS-STARTPTS,volume=${clip.properties?.volume || 1},adelay=${delay}|${delay},aformat=sample_rates=44100:channel_layouts=stereo[${lbl}];`;
+             audioOverlays.push(`[${lbl}]`);
+        });
+
+        let outputAudioMap = finalA;
+        if(audioOverlays.length > 0) {
+            const allAudios = `${finalA}${audioOverlays.join('')}`;
+            filterChain += `${allAudios}amix=inputs=${audioOverlays.length + 1}:duration=first:dropout_transition=0,volume=2[final_a_mix]`;
+            outputAudioMap = '[final_a_mix]';
         }
 
         if (filterChain.endsWith(';')) filterChain = filterChain.slice(0, -1);
@@ -163,8 +189,8 @@ module.exports = {
         return {
             inputs,
             filterComplex: filterChain,
-            outputMapVideo: `[${lastV}]`,
-            outputMapAudio: finalAudioMap
+            outputMapVideo: finalV,
+            outputMapAudio: outputAudioMap
         };
     }
 };
