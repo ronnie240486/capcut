@@ -137,31 +137,31 @@ module.exports = {
         // Unquoted center expression
         const center = "x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)";
 
-        // Helper para efeito de Blur com Overlay e Zoom
-        const blurWithZoom = (alphaExpr, zoomExpr = `min(1.0+(on*0.2/${totalFrames}),1.1)`) => {
-            // Important: Do not quote arguments when they are already escaped (via esc function).
-            // Using quotes + backslash escapes causes double escaping issues in FFmpeg evaluation.
-            return `zoompan=z=${esc(zoomExpr)}:${center}${base},split=2[main${uid}][to_blur${uid}];[to_blur${uid}]boxblur=20:2[blurred${uid}];[main${uid}][blurred${uid}]overlay=x=0:y=0:alpha=${esc(alphaExpr)}:shortest=1`;
+        // Helper para efeito de Blur com Overlay e Zoom usando fade/geq para alpha
+        const blurWithZoom = (alphaFilter, zoomExpr = `min(1.0+(on*0.2/${totalFrames}),1.1)`) => {
+            // Note: alphaFilter should be something like 'fade=t=out:st=0:d=1:alpha=1' or 'geq=a=...'
+            // We use format=yuva420p to ensure alpha channel exists before manipulating it.
+            // overlay uses the input's alpha channel.
+            return `zoompan=z=${esc(zoomExpr)}:${center}${base},split=2[main${uid}][to_blur${uid}];[to_blur${uid}]boxblur=20:2,format=yuva420p,${alphaFilter}[blurred${uid}];[main${uid}][blurred${uid}]overlay=x=0:y=0:shortest=1`;
         };
 
         switch (moveId) {
             // === 0. BLUR (Focar/Desfocar com Movimento) ===
             case 'mov-blur-in':
                 // Começa borrado (alpha 1) e fica nítido (alpha 0) no primeiro 1 segundo
-                // Uses 't' (timestamp) instead of 'n' (frame) for safer expression parsing in overlay
-                return blurWithZoom(`if(lt(t,1),1-t,0)`);
+                return blurWithZoom(`fade=t=out:st=0:d=1:alpha=1`);
             
             case 'mov-blur-out':
                 // Começa nítido (alpha 0) e fica borrado (alpha 1) no último 1 segundo
-                return blurWithZoom(`if(gt(t,${d-1}),t-(${d}-1),0)`);
+                return blurWithZoom(`fade=t=in:st=${d-1}:d=1:alpha=1`);
             
             case 'mov-blur-pulse':
-                // Pulsa o blur
-                return blurWithZoom(`0.5*(1+sin(t*5))`);
+                // Pulsa o blur (geq T is time in seconds)
+                return blurWithZoom(`geq=a='128*(1+sin(T*5))'`);
             
             case 'mov-blur-zoom':
                  // Zoom mais agressivo + Blur in
-                 return blurWithZoom(`if(lt(t,1),1-t,0)`, `min(1.0+(on*0.8/${totalFrames}),1.5)`);
+                 return blurWithZoom(`fade=t=out:st=0:d=1:alpha=1`, `min(1.0+(on*0.8/${totalFrames}),1.5)`);
             
             case 'mov-blur-motion':
                  // Simula Motion Blur Horizontal (Blur estático direcional fake)
