@@ -145,19 +145,20 @@ module.exports = {
             // === 0. BLUR (Focar/Desfocar com Movimento) ===
             case 'mov-blur-in':
                 // Começa borrado (alpha 1) e fica nítido (alpha 0) no primeiro 1 segundo
-                return blurWithZoom(`if(lt(t,1),1-t,0)`);
+                // Fixed: Replace 't' with 'n/30' to ensure compatibility with overlay filter in all envs
+                return blurWithZoom(`if(lt(n/30,1),1-(n/30),0)`);
             
             case 'mov-blur-out':
                 // Começa nítido (alpha 0) e fica borrado (alpha 1) no último 1 segundo
-                return blurWithZoom(`if(gt(t,${d-1}),t-(${d}-1),0)`);
+                return blurWithZoom(`if(gt(n/30,${d-1}),(n/30)-(${d}-1),0)`);
             
             case 'mov-blur-pulse':
                 // Pulsa o blur
-                return blurWithZoom(`0.5*(1+sin(t*5))`);
+                return blurWithZoom(`0.5*(1+sin((n/30)*5))`);
             
             case 'mov-blur-zoom':
                  // Zoom mais agressivo + Blur in
-                 return blurWithZoom(`if(lt(t,1),1-t,0)`, `min(1.0+(on*0.8/${totalFrames}),1.5)`);
+                 return blurWithZoom(`if(lt(n/30,1),1-(n/30),0)`, `min(1.0+(on*0.8/${totalFrames}),1.5)`);
             
             case 'mov-blur-motion':
                  // Simula Motion Blur Horizontal (Blur estático direcional fake)
