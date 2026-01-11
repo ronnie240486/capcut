@@ -145,29 +145,44 @@ module.exports = {
         const fps = 30;
         const totalFrames = Math.ceil(d * 30);
         
+        // Helper to get unique IDs for complex filter chains
+        const uid = Math.floor(Math.random() * 100000);
+        
         // ZoomPan Basics: d=1 means output 1 frame per input frame. s=1280x720 output size.
         // We use 'on' (current frame number) or 'time' for interpolation.
         const base = `:d=1:s=1280x720:fps=30`; 
         const center = "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
 
         switch (moveId) {
-            // === 0. SAFE BLUR/EFFECT MOVEMENTS (FIXED) ===
+            // === 0. BLUR MOVEMENTS (Implemented using Overlay + Alpha Fade for stability) ===
+            
             case 'mov-blur-in':
-            case 'mov-blur-zoom':
-                // Simulate "Blur In" using slight zoom-in and scaling artifacts (safe fallback)
-                return `zoompan=z='min(1.0+(on*0.3/${totalFrames}),1.1)':${center}${base}`;
+                // Blur starts at 100% and fades to 0% over 1 second (or d if d<1)
+                // Using split to create a blurred copy, then overlaying it with fading alpha
+                // boxblur=20 (Strong blur)
+                return `split[base${uid}][to_blur${uid}];[to_blur${uid}]boxblur=20[blurred${uid}];[base${uid}][blurred${uid}]overlay=eval=frame:alpha='max(0,1-t)'`;
 
             case 'mov-blur-out':
-                return `zoompan=z='max(1.1-(on*0.3/${totalFrames}),1.0)':${center}${base}`;
+                // Blur starts at 0% and fades to 100% at the end
+                // We want it to start blurring near the end. Let's say last 1 second.
+                // alpha = max(0, t - (d-1)) -> if d=5, at t=4 alpha=0, at t=5 alpha=1
+                return `split[base${uid}][to_blur${uid}];[to_blur${uid}]boxblur=20[blurred${uid}];[base${uid}][blurred${uid}]overlay=eval=frame:alpha='max(0,t-(${d}-1))'`;
 
             case 'mov-blur-pulse':
-                // Simulate pulse with zoom
-                return `zoompan=z='1.0+0.05*abs(sin(on*0.1))':${center}${base}`;
+                // Pulse blur every 1 second
+                // alpha = 0.5 * (1 + sin(t * speed))
+                return `split[base${uid}][to_blur${uid}];[to_blur${uid}]boxblur=15[blurred${uid}];[base${uid}][blurred${uid}]overlay=eval=frame:alpha='0.5*(1+sin(t*5))'`;
+
+            case 'mov-blur-zoom':
+                 // Combine Zoom and Blur In
+                 // First apply zoompan, then apply the blur overlay technique
+                 // Note: 'zoompan' creates a new stream. We apply zoompan first, then split the zoomed result.
+                 return `zoompan=z='min(1.0+(on*0.5/${totalFrames}),1.5)':${center}${base},split[base${uid}][to_blur${uid}];[to_blur${uid}]boxblur=20[blurred${uid}];[base${uid}][blurred${uid}]overlay=eval=frame:alpha='max(0,1-t)'`;
 
             case 'mov-blur-motion':
-                 // Using tmix to create motion trails (ghosting) which simulates motion blur
-                 // tmix is a standard filter, robust.
-                 return `tmix=frames=3:weights="1 1 1"`;
+                 // Directional blur (Motion Blur)
+                 // Use a static horizontal blur
+                 return `boxblur=luma_radius=10:luma_power=1`;
 
             // === 1. CAMERA PANS ===
             case 'mov-pan-slow-l': 
