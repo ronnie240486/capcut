@@ -136,7 +136,7 @@ module.exports = {
         // 1. Aplica Zoom Pan (movimento sutil)
         // 2. Divide o stream
         // 3. Em uma cópia aplica boxblur
-        // 4. Faz overlay usando alpha expression
+        // 4. Faz overlay usando alpha expression com 'if' (mais seguro que min/max em algumas builds)
         const blurWithZoom = (alphaExpr, zoomExpr = `min(1.0+(on*0.2/${totalFrames}),1.1)`) => {
             return `zoompan=z='${zoomExpr}':${center}${base},split=2[main${uid}][to_blur${uid}];[to_blur${uid}]boxblur=20:2[blurred${uid}];[main${uid}][blurred${uid}]overlay=x=0:y=0:alpha='${alphaExpr}':shortest=1`;
         };
@@ -145,12 +145,13 @@ module.exports = {
             // === 0. BLUR (Focar/Desfocar com Movimento) ===
             case 'mov-blur-in':
                 // Começa borrado (alpha 1) e fica nítido (alpha 0) no primeiro 1 segundo
-                return blurWithZoom(`1-min(t,1)`);
+                // alpha = if(t < 1, 1-t, 0)
+                return blurWithZoom(`if(lt(t,1),1-t,0)`);
             
             case 'mov-blur-out':
                 // Começa nítido (alpha 0) e fica borrado (alpha 1) no último 1 segundo
-                // alpha = se tempo > duração-1, então sobe de 0 a 1
-                return blurWithZoom(`if(gt(t,${d-1}),min(t-(${d}-1),1),0)`);
+                // alpha = if(t > d-1, t-(d-1), 0)
+                return blurWithZoom(`if(gt(t,${d-1}),t-(${d}-1),0)`);
             
             case 'mov-blur-pulse':
                 // Pulsa o blur
@@ -158,10 +159,10 @@ module.exports = {
             
             case 'mov-blur-zoom':
                  // Zoom mais agressivo + Blur in
-                 return blurWithZoom(`1-min(t,1)`, `min(1.0+(on*0.8/${totalFrames}),1.5)`);
+                 return blurWithZoom(`if(lt(t,1),1-t,0)`, `min(1.0+(on*0.8/${totalFrames}),1.5)`);
             
             case 'mov-blur-motion':
-                 // Simula Motion Blur Horizontal (Blur estático direcional fake usando boxblur normal por enquanto, pois tmix é pesado)
+                 // Simula Motion Blur Horizontal (Blur estático direcional fake)
                  return `boxblur=luma_radius=10:luma_power=1`;
 
             // === 1. CINEMATIC PANS ===
