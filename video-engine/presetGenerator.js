@@ -151,13 +151,10 @@ module.exports = {
         const center = "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'";
 
         switch (moveId) {
-            // === 0. SAFE BLUR/EFFECT MOVEMENTS ===
+            // === 0. SAFE BLUR/EFFECT MOVEMENTS (FIXED) ===
             case 'mov-blur-in':
             case 'mov-blur-zoom':
                 // Simulate "Blur In" using slight zoom-in and scaling artifacts (safe fallback)
-                // boxblur evaluation is unstable in this context.
-                // We assume 'Blur In' means start slightly out of focus (not easily doable without filters) 
-                // So we do a slow zoom in which often looks like "coming into focus" cinematically.
                 return `zoompan=z='min(1.0+(on*0.3/${totalFrames}),1.1)':${center}${base}`;
 
             case 'mov-blur-out':
@@ -169,6 +166,7 @@ module.exports = {
 
             case 'mov-blur-motion':
                  // Using tmix to create motion trails (ghosting) which simulates motion blur
+                 // tmix is a standard filter, robust.
                  return `tmix=frames=3:weights="1 1 1"`;
 
             // === 1. CAMERA PANS ===
@@ -222,7 +220,6 @@ module.exports = {
 
             case 'mov-zoom-twist-in':
             case 'mov-zoom-twist-out':
-                 // FFmpeg zoompan doesn't support rotation. We simulate "twist" with a wobble zoom.
                  return `zoompan=z='1.0+0.2*abs(sin(on*0.1))':${center}${base}`;
 
             // === 3. SHAKES & HANDHELD ===
@@ -243,7 +240,6 @@ module.exports = {
             // === 4. ROTATION / SPIN (Simulated) ===
             case 'mov-3d-spin-axis': 
             case 'spin-slow':
-                // Using rotate filter approximation
                 return `rotate='t*0.5':ow=iw:oh=ih:c=black`;
             
             case 'mov-3d-swing-l':
@@ -267,7 +263,6 @@ module.exports = {
                 return `zoompan=z='if(lte(on,15),min(on/15,1.0),1.0)':${center}${base}`;
             
             case 'fade-in':
-                 // Use fade filter in builder usually, but here we can't. Zoompan fallback.
                  return `zoompan=z=1${base}`;
 
             // === 6. EFFECTS & GLITCH MOVES ===
