@@ -124,7 +124,7 @@ module.exports = {
     },
 
     getMovementFilter: (moveId, durationSec, isImage, config = {}) => {
-        const d = parseFloat(durationSec) || 5;
+        const d = parseFloat(durationSec) || 8; // Default to 8 seconds
         const totalFrames = Math.ceil(d * 30);
         const uid = Math.floor(Math.random() * 1000000);
         
@@ -141,8 +141,9 @@ module.exports = {
         const speed = parseFloat(config.speed || config.intensity || 1);
 
         // Helper para efeito de Blur com Overlay e Zoom
-        // Prolonged blur duration: Using (d/2) or at least 3 seconds for base duration before speed scaling
-        const blurDuration = Math.min(d, 3.0) / speed; 
+        // Prolonged blur duration: Using up to 8.0 seconds for base duration based on speed
+        // This ensures movement lasts longer/feels slower
+        const blurDuration = Math.min(d, 8.0) / speed; 
         
         const blurWithZoom = (alphaFilter, zoomExpr = `(1.0+(0.1*${speed}*on/${totalFrames}))`) => {
             return `zoompan=z=${esc(zoomExpr)}:${center}${base},split=2[main${uid}][to_blur${uid}];[to_blur${uid}]boxblur=40:5,format=yuva420p,${alphaFilter}[blurred${uid}];[main${uid}][blurred${uid}]overlay=x=0:y=0:shortest=1`;
@@ -309,6 +310,7 @@ module.exports = {
             'clock-wipe': 'clock', 'iris-in': 'iris', 'iris-out': 'iris',
             'checker-wipe': 'checkerboard', 'checkerboard': 'checkerboard', 'grid-flip': 'checkerboard',
             'blind-h': 'hblur', 'blind-v': 'vblur', 'shutters': 'hblur', 'stripes-h': 'hblur', 'stripes-v': 'vblur',
+            'barn-door-h': 'hl', 'barn-door-v': 'vu',
             'triangle-wipe': 'diagtl', 'star-zoom': 'circleopen', 'spiral-wipe': 'spiral', 'heart-wipe': 'circleopen',
             'glitch': 'glitchdisplace', 'color-glitch': 'glitchmem', 'urban-glitch': 'glitchdisplace',
             'pixelize': 'pixelize', 'pixel-sort': 'pixelize', 'rgb-shake': 'rgbscanup', 'hologram': 'holographic',
