@@ -28,23 +28,23 @@ const jobs = {};
 
 // --- REAL AUDIO FALLBACKS (Curated Royalty Free List) ---
 const REAL_MUSIC_FALLBACKS = [
-    { id: 'fb_m1', name: 'Cinematic Epic Trailer', artist: 'Gregor Quendel', duration: 120, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/09/audio_a7e2311438.mp3?filename=epic-cinematic-trailer-114407.mp3' },
-    { id: 'fb_m2', name: 'Lofi Study Beat', artist: 'FASSounds', duration: 140, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112762.mp3' },
-    { id: 'fb_m3', name: 'Corporate Uplifting', artist: 'LesFM', duration: 120, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/01/26/audio_2475143a4e.mp3?filename=upbeat-corporate-11286.mp3' },
-    { id: 'fb_m4', name: 'Ambient Piano & Strings', artist: 'RelaxingTime', duration: 200, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/02/07/audio_659021d743.mp3?filename=ambient-piano-amp-strings-10711.mp3' },
-    { id: 'fb_m5', name: 'Action Rock Energy', artist: 'Coma-Media', duration: 110, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/24/audio_349d44a2b9.mp3?filename=action-rock-116037.mp3' },
-    { id: 'fb_m6', name: 'Cyberpunk Phonk', artist: 'QubeSounds', duration: 150, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/10/audio_514510b64d.mp3?filename=uplifting-future-bass-113368.mp3' },
-    { id: 'fb_m7', name: 'Happy Ukulele', artist: 'MusicUnlimited', duration: 100, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3?filename=happy-ukulele-10769.mp3' },
-    { id: 'fb_m8', name: 'Dark Suspense', artist: 'SoundGallery', duration: 180, previewUrl: 'https://cdn.pixabay.com/download/audio/2021/11/23/audio_035a336ec6.mp3?filename=dark-suspense-11293.mp3' }
+    { id: 'fb_m1', name: 'Cinematic Epic Trailer', artist: 'Gregor Quendel', duration: 120, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/03/09/audio_a7e2311438.mp3?filename=epic-cinematic-trailer-114407.mp3'} },
+    { id: 'fb_m2', name: 'Lofi Study Beat', artist: 'FASSounds', duration: 140, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112762.mp3'} },
+    { id: 'fb_m3', name: 'Corporate Uplifting', artist: 'LesFM', duration: 120, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/01/26/audio_2475143a4e.mp3?filename=upbeat-corporate-11286.mp3'} },
+    { id: 'fb_m4', name: 'Ambient Piano & Strings', artist: 'RelaxingTime', duration: 200, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/02/07/audio_659021d743.mp3?filename=ambient-piano-amp-strings-10711.mp3'} },
+    { id: 'fb_m5', name: 'Action Rock Energy', artist: 'Coma-Media', duration: 110, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/03/24/audio_349d44a2b9.mp3?filename=action-rock-116037.mp3'} },
+    { id: 'fb_m6', name: 'Cyberpunk Phonk', artist: 'QubeSounds', duration: 150, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/03/10/audio_514510b64d.mp3?filename=uplifting-future-bass-113368.mp3'} },
+    { id: 'fb_m7', name: 'Happy Ukulele', artist: 'MusicUnlimited', duration: 100, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3?filename=happy-ukulele-10769.mp3'} },
+    { id: 'fb_m8', name: 'Dark Suspense', artist: 'SoundGallery', duration: 180, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2021/11/23/audio_035a336ec6.mp3?filename=dark-suspense-11293.mp3'} }
 ];
 
 const REAL_SFX_FALLBACKS = [
-    { id: 'fb_s1', name: 'Whoosh Transition', artist: 'SoundEffect', duration: 2, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/10/audio_c36c1e54c2.mp3?filename=whoosh-6316.mp3' },
-    { id: 'fb_s2', name: 'Cinematic Hit', artist: 'TrailerFX', duration: 4, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/24/audio_9593259850.mp3?filename=cinematic-boom-11749.mp3' },
-    { id: 'fb_s3', name: 'Camera Shutter', artist: 'PhotoFX', duration: 1, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/15/audio_27d75c879d.mp3?filename=camera-shutter-6305.mp3' },
-    { id: 'fb_s4', name: 'Nature Birds', artist: 'NatureSounds', duration: 15, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/02/02/audio_6f7c11f7e0.mp3?filename=forest-birds-10825.mp3' },
-    { id: 'fb_s5', name: 'Keyboard Typing', artist: 'OfficeFX', duration: 5, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/19/audio_4123565259.mp3?filename=typing-6580.mp3' },
-    { id: 'fb_s6', name: 'Glitch Sound', artist: 'TechFX', duration: 1, previewUrl: 'https://cdn.pixabay.com/download/audio/2022/03/10/audio_514510b64d.mp3?filename=glitch-113368.mp3' }
+    { id: 'fb_s1', name: 'Whoosh Transition', artist: 'SoundEffect', duration: 2, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/03/10/audio_c36c1e54c2.mp3?filename=whoosh-6316.mp3'} },
+    { id: 'fb_s2', name: 'Cinematic Hit', artist: 'TrailerFX', duration: 4, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/03/24/audio_9593259850.mp3?filename=cinematic-boom-11749.mp3'} },
+    { id: 'fb_s3', name: 'Camera Shutter', artist: 'PhotoFX', duration: 1, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/03/15/audio_27d75c879d.mp3?filename=camera-shutter-6305.mp3'} },
+    { id: 'fb_s4', name: 'Nature Birds', artist: 'NatureSounds', duration: 15, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/02/02/audio_6f7c11f7e0.mp3?filename=forest-birds-10825.mp3'} },
+    { id: 'fb_s5', name: 'Keyboard Typing', artist: 'OfficeFX', duration: 5, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/03/19/audio_4123565259.mp3?filename=typing-6580.mp3'} },
+    { id: 'fb_s6', name: 'Glitch Sound', artist: 'TechFX', duration: 1, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/download/audio/2022/03/10/audio_514510b64d.mp3?filename=glitch-113368.mp3'} }
 ];
 
 // --- HELPERS ---
@@ -153,9 +153,11 @@ app.get('/api/proxy/pixabay', (req, res) => {
 // Proxy para Freesound (With Fallback)
 app.get('/api/proxy/freesound', (req, res) => {
     const { token, q } = req.query;
+    const isMusicSearch = (q || '').toLowerCase().includes('music');
+    const fallbackList = isMusicSearch ? REAL_MUSIC_FALLBACKS : REAL_SFX_FALLBACKS;
     
     if (!token || token === 'undefined' || token === '') {
-        return res.json({ results: REAL_SFX_FALLBACKS });
+        return res.json({ results: fallbackList });
     }
 
     const options = {
@@ -173,17 +175,17 @@ app.get('/api/proxy/freesound', (req, res) => {
                     throw new Error(`Upstream Error: ${apiRes.statusCode}`);
                 }
                 const json = JSON.parse(data);
-                res.json(json.results ? json : { results: REAL_SFX_FALLBACKS });
+                res.json(json.results ? json : { results: fallbackList });
             } catch (e) {
                 console.error("Freesound Proxy Error:", e.message);
-                res.json({ results: REAL_SFX_FALLBACKS });
+                res.json({ results: fallbackList });
             }
         });
     });
     
     request.on('error', (e) => {
         console.error("Freesound Request Error:", e.message);
-        res.json({ results: REAL_SFX_FALLBACKS });
+        res.json({ results: fallbackList });
     });
 });
 
@@ -339,14 +341,60 @@ async function processSingleClipJob(jobId) {
         
         case 'voice-fx-real':
             const p = params.preset;
-            let af = 'anull';
-            if(p === 'robot') af = "asetrate=44100*0.9,atempo=1.1,chorus=0.5:0.9:50|60|40:0.4|0.32|0.3:0.25|0.4|0.3:2|2.3|1.3";
-            else if(p === 'chipmunk') af = "asetrate=44100*1.4,atempo=0.7"; 
-            else if(p === 'monster') af = "asetrate=44100*0.6,atempo=1.6";
-            else if(p === 'echo') af = "aecho=0.8:0.9:1000:0.3";
-            else if(p === 'radio') af = "highpass=f=500,lowpass=f=3000,afftdn";
-            else if(p === 'helium') af = "asetrate=44100*1.4,atempo=0.7";
+            const fx = {
+                // Pitch Based
+                'chipmunk': 'asetrate=44100*1.5,atempo=0.66',
+                'monster': 'asetrate=44100*0.6,atempo=1.66',
+                'baby': 'asetrate=44100*1.4,atempo=0.71,equalizer=f=400:t=h:w=1:g=-5',
+                'giant': 'asetrate=44100*0.5,atempo=2.0,lowpass=f=2000',
+                'helium': 'asetrate=44100*1.4,atempo=0.71',
+                'minion': 'asetrate=44100*1.4,atempo=0.71,equalizer=f=800:t=h:w=1:g=5',
+                'squirrel': 'asetrate=44100*1.8,atempo=0.55',
+                'wario': 'asetrate=44100*1.2,atempo=0.83,acrusher=0.1:1:64:0:log',
+                'dwarf': 'asetrate=44100*1.2,atempo=0.83',
+                'orc': 'asetrate=44100*0.7,atempo=1.42,equalizer=f=100:t=h:w=1:g=5',
+                
+                // Gender Swap (Simple approximation)
+                'man_to_woman': 'asetrate=44100*1.25,atempo=0.8',
+                'woman_to_man': 'asetrate=44100*0.75,atempo=1.33',
+                
+                // Sci-Fi / Tech
+                'robot': 'asetrate=44100*0.9,atempo=1.1,chorus=0.5:0.9:50|60|40:0.4|0.32|0.3:0.25|0.4|0.3:2|2.3|1.3',
+                'alien': 'phaser=0.6:0.66:3:0.6:0.5:2,asetrate=44100*0.8,atempo=1.25',
+                'astronaut': 'highpass=f=300,lowpass=f=3000,aecho=0.8:0.9:20:0.2',
+                'cyborg': 'flanger=delay=20:depth=4:regen=50:speed=0.5,acrusher=0.1:1:50:0:log',
+                'dalek': 'modulator=sin:25',
+                'glitch': 'apulsator=hz=0.5',
+                'radio': 'highpass=f=500,lowpass=f=3000,acrusher=0.1:1:64:0:log',
+                'telephone': 'highpass=f=400,lowpass=f=3400,afftdn',
+                'megaphone': 'acrusher=0.1:1:64:0:log,highpass=f=600,lowpass=f=3000',
+                'walkie_talkie': 'highpass=f=400,lowpass=f=3000,acrusher=0.1:1:40:0:log,noise=alls=20:allf=t:a=1',
+                
+                // Environment / Reverb
+                'cave': 'aecho=0.8:0.9:1000:0.3',
+                'hall': 'aecho=0.8:0.8:60:0.5,aecho=0.6:0.7:120:0.3',
+                'cathedral': 'aecho=0.8:0.9:1000:0.3,aecho=0.6:0.7:2000:0.2',
+                'bathroom': 'aecho=0.8:0.9:30:0.4',
+                'underwater': 'lowpass=f=500,aecho=0.8:0.9:1000:0.3',
+                'space': 'aecho=0.8:0.9:1000:0.8,flanger',
+                
+                // Horror / Scary
+                'demon': 'asetrate=44100*0.5,atempo=2,tremolo=5:1,lowpass=f=1000',
+                'ghost': 'aecho=0.8:0.8:300:0.5,flanger',
+                'zombie': 'asetrate=44100*0.7,atempo=1.42,chorus=0.5:0.9:50|60|40:0.4|0.32|0.3:0.25|0.4|0.3:2|2.3|1.3',
+                'poltergeist': 'areverse,aecho=0.8:0.8:100:0.5,areverse',
+                'killer': 'asetrate=44100*0.8,atempo=1.25,tremolo=2:1',
+                
+                // Misc
+                'fan': 'tremolo=10:1',
+                'vibrato': 'vibrato=f=7:d=0.5',
+                'drunk': 'atempo=0.8,vibrato=f=2:d=0.1',
+                'fast': 'atempo=1.5',
+                'slow': 'atempo=0.7',
+                'reverse': 'areverse'
+            };
             
+            const af = fx[p] || "anull";
             args = ['-i', videoFile.path, '-vn', '-af', af, '-y', outputPath];
             break;
 
