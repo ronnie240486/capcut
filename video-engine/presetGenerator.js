@@ -90,55 +90,45 @@ module.exports = {
 
         if (effects[effectId]) return effects[effectId];
 
-        // 2. Procedural Generation for "Massive" Lists (cg-pro-1 to cg-pro-50, etc)
-        
-        // Color Grade (1-50)
+        // 2. Procedural Generation for "Massive" Lists
         if (effectId.startsWith('cg-pro-')) {
             const i = parseInt(effectId.split('-')[2]) || 1;
-            const c = 1 + (i % 5) * 0.1; // Contrast variation
-            const s = 1 + (i % 3) * 0.2; // Saturation variation
-            const h = (i * 15) % 360;    // Hue rotation
+            const c = 1 + (i % 5) * 0.1;
+            const s = 1 + (i % 3) * 0.2;
+            const h = (i * 15) % 360;
             return `eq=contrast=${c.toFixed(2)}:saturation=${s.toFixed(2)},hue=h=${h}`;
         }
         
-        // Vintage Style (1-30)
         if (effectId.startsWith('vintage-style-')) {
             const i = parseInt(effectId.split('-')[2]) || 1;
             const sepia = 0.1 + (i % 5) * 0.05;
             return `colorbalance=rs=${sepia.toFixed(2)}:bs=-${sepia.toFixed(2)},eq=contrast=0.9`;
         }
         
-        // Cyber Neon (1-20)
         if (effectId.startsWith('cyber-neon-')) {
              const i = parseInt(effectId.split('-')[2]) || 1;
              return `eq=contrast=1.2:saturation=1.5,hue=h=${i*10}`;
         }
         
-        // Nature Fresh (1-20)
         if (effectId.startsWith('nature-fresh-')) {
              const i = parseInt(effectId.split('-')[2]) || 1;
              return `eq=saturation=1.3:brightness=0.05,hue=h=-${i*2}`;
         }
         
-        // Art Duotone (1-30)
         if (effectId.startsWith('art-duo-')) {
              const i = parseInt(effectId.split('-')[2]) || 1;
              return `hue=s=0,colorbalance=rs=${0.1 * (i%3)}:bs=${0.1 * (i%2)}`;
         }
         
-        // Noir Style (1-20)
         if (effectId.startsWith('noir-style-')) {
              const i = parseInt(effectId.split('-')[2]) || 1;
              return `hue=s=0,eq=contrast=${(1 + i*0.05).toFixed(2)}`;
         }
         
-        // Film Stock (1-20)
         if (effectId.startsWith('film-stock-')) {
-             const i = parseInt(effectId.split('-')[2]) || 1;
              return `eq=saturation=0.8:contrast=1.1`;
         }
         
-        // Light Leaks (Overlay Logic handled in frontend/builder, here just basic brightness boost)
         if (effectId.startsWith('leak-overlay-') || effectId.startsWith('light-leak-')) {
             return 'eq=brightness=0.1:gamma=1.1';
         }
@@ -152,9 +142,7 @@ module.exports = {
         const totalFrames = Math.ceil(d * 30);
         const uid = Math.floor(Math.random() * 1000000);
         
-        // FIX: Increased supersampling to 3840x2160 (4K) to eliminate pixel tremor/jitter during zoom
-        // This is a trade-off: uses more RAM than 1080p, but much less than 8K (which crashed).
-        // 4K provides smooth sub-pixel interpolation.
+        // 4K Internal Processing for smoothness
         const base = `:d=1:s=3840x2160:fps=30`; 
         
         const esc = (s) => s.replace(/,/g, '\\,');
@@ -352,13 +340,29 @@ module.exports = {
             'blind-h': 'hblur', 'blind-v': 'vblur', 'shutters': 'hblur', 'stripes-h': 'hblur', 'stripes-v': 'vblur',
             'barn-door-h': 'hl', 'barn-door-v': 'vu',
             'triangle-wipe': 'diagtl', 'star-zoom': 'circleopen', 'spiral-wipe': 'spiral', 'heart-wipe': 'circleopen',
-            'glitch': 'glitchdisplace', 'color-glitch': 'glitchmem', 'urban-glitch': 'glitchdisplace',
-            'pixelize': 'pixelize', 'pixel-sort': 'pixelize', 'rgb-shake': 'rgbscanup', 'hologram': 'holographic',
-            'block-glitch': 'mosaic', 'cyber-zoom': 'zoomin', 'scan-line-v': 'wipetl', 'color-tear': 'glitchmem',
-            'digital-noise': 'noise', 'glitch-scan': 'rgbscanup', 'datamosh': 'glitchdisplace', 'rgb-split': 'glitchmem',
-            'noise-jump': 'noise', 'cyber-slice': 'wipetl', 'glitch-chroma': 'glitchmem',
+            
+            // Fallbacks for complex/new transitions to ensure compatibility
+            'glitch': 'pixelize', // fallback
+            'color-glitch': 'pixelize', // fallback
+            'urban-glitch': 'pixelize', // fallback
+            'pixelize': 'pixelize', 
+            'pixel-sort': 'pixelize', // fallback
+            'rgb-shake': 'wipetl', // fallback
+            'hologram': 'holographic', // Keep if supported, else fade
+            'block-glitch': 'pixelize', // fallback for mosaic if not present, but mosaic is standard in filters not transitions sometimes, map to pixelize
+            'cyber-zoom': 'zoomin', 
+            'scan-line-v': 'wipetl', 
+            'color-tear': 'pixelize',
+            'digital-noise': 'pixelize', 
+            'glitch-scan': 'wipetl', 
+            'datamosh': 'pixelize', 
+            'rgb-split': 'pixelize',
+            'noise-jump': 'pixelize', 
+            'cyber-slice': 'wipetl', 
+            'glitch-chroma': 'pixelize',
+
             'blood-mist': 'dissolve', 'black-smoke': 'fadeblack', 'white-smoke': 'fadewhite', 'fire-burn': 'dissolve',
-            'visual-buzz': 'glitchdisplace', 'rip-diag': 'wipetl', 'zoom-neg': 'zoomin', 'infinity-1': 'dissolve',
+            'visual-buzz': 'pixelize', 'rip-diag': 'wipetl', 'zoom-neg': 'zoomin', 'infinity-1': 'dissolve',
             'digital-paint': 'dissolve', 'brush-wind': 'wipeleft', 'dust-burst': 'dissolve', 'filter-blur': 'blur',
             'film-roll-v': 'slideup', 'astral-project': 'dissolve', 'lens-flare': 'fadewhite', 'pull-away': 'zoomout',
             'flash-black': 'fadeblack', 'flash-white': 'fadewhite', 'flashback': 'fadewhite', 'combine-overlay': 'dissolve',
@@ -379,6 +383,9 @@ module.exports = {
             'bounce-scale': 'zoomin', 'jelly': 'wipetl',
             'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'blur'
         };
+        
+        // Final fallback: if key exists but value is known to be complex/unsupported in some builds, we've mapped it above.
+        // If the key doesn't exist, default to 'fade'
         return map[transId] || 'fade';
     }
 };
