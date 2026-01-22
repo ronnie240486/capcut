@@ -23,7 +23,6 @@ module.exports = {
     getFFmpegFilterFromEffect: (effectId) => {
         if (!effectId) return null;
 
-        // 1. Static Dictionary for Famous/Complex Effects
         const effects = {
             // --- Cinematic Pro ---
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.3',
@@ -90,7 +89,6 @@ module.exports = {
 
         if (effects[effectId]) return effects[effectId];
 
-        // 2. Procedural Generation for "Massive" Lists
         if (effectId.startsWith('cg-pro-')) {
             const i = parseInt(effectId.split('-')[2]) || 1;
             const c = 1 + (i % 5) * 0.1;
@@ -137,8 +135,8 @@ module.exports = {
     },
 
     getMovementFilter: (moveId, durationSec, isImage, config = {}) => {
-        // === CRITICAL: MOVEMENT DURATION DEFAULT TO 8 SECONDS ===
-        const d = parseFloat(durationSec) || 8.0; 
+        // === CRITICAL: MOVEMENT DURATION ===
+        const d = parseFloat(durationSec) || 5.0; 
         const totalFrames = Math.ceil(d * 30);
         const uid = Math.floor(Math.random() * 1000000);
         
@@ -155,6 +153,11 @@ module.exports = {
         
         const blurWithZoom = (alphaFilter, zoomExpr = `(1.0+(0.1*${speed}*on/${totalFrames}))`) => {
             return `zoompan=z=${esc(zoomExpr)}:${center}${base},split=2[main${uid}][to_blur${uid}];[to_blur${uid}]boxblur=40:5,format=yuva420p,${alphaFilter}[blurred${uid}];[main${uid}][blurred${uid}]overlay=x=0:y=0:shortest=1`;
+        };
+
+        // Helper for overlay-based translation (Elastic, Slide, etc.)
+        const overlayTranslate = (xExpr, yExpr) => {
+            return `split=2[bg${uid}][fg${uid}];[bg${uid}]drawbox=t=fill:c=black[bg_clean${uid}];[bg_clean${uid}][fg${uid}]overlay=x='${xExpr}':y='${yExpr}':shortest=1`;
         };
 
         switch (moveId) {
@@ -266,7 +269,7 @@ module.exports = {
             case 'mov-rgb-shift-move':
                  return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*20*${speed}`)}:y=ih/2-(ih/zoom/2)${base},colorchannelmixer=rr=1:gg=0:bb=0:rb=0:br=0:bg=0`;
 
-            // === 5. ELASTIC & FUN ===
+            // === 5. ELASTIC & FUN (Using Overlay for translation) ===
             case 'mov-rubber-band':
             case 'mov-squash-stretch':
                  return `zoompan=z=${esc(`1.0+0.1*${speed}*abs(sin(on*0.3*${speed}))`)}:${center}${base}`;
@@ -288,17 +291,19 @@ module.exports = {
             
             // === 7. NEWLY ADDED MOVEMENTS (STROBE, ELASTIC SNAP, TADA, ETC) ===
             case 'mov-strobe-move':
-                 // Move slightly and flash brightness
-                 return `zoompan=z=${esc(`min(1.0+(0.05*on/${totalFrames}),1.1)`)}:${center}${base},eq=brightness=${esc(`'if(eq(mod(n,5),0),0.3,0)'`)}:eval=frame`;
+                 return `zoompan=z=${esc(`min(1.0+(0.05*on/${totalFrames}),1.1)`)}:${center}${base},eq=brightness='if(eq(mod(n,5),0),0.3,0)':eval=frame`;
 
-            case 'mov-elastic-snap-l':
-                 return `zoompan=z=1.0:x=${esc(`(iw/2-(iw/zoom/2)) - (iw/2 * exp(-4*on*${speed}/${totalFrames}) * cos(10*on*${speed}/${totalFrames}))`)}:y='ih/2-(ih/zoom/2)'${base}`;
+            case 'mov-elastic-snap-l': // Slides in from left
+                 return overlayTranslate(`-W * exp(-3*t) * cos(8*t)`, `0`);
 
-            case 'mov-elastic-snap-r':
-                 return `zoompan=z=1.0:x=${esc(`(iw/2-(iw/zoom/2)) + (iw/2 * exp(-4*on*${speed}/${totalFrames}) * cos(10*on*${speed}/${totalFrames}))`)}:y='ih/2-(ih/zoom/2)'${base}`;
+            case 'mov-elastic-snap-r': // Slides in from right
+                 return overlayTranslate(`W * exp(-3*t) * cos(8*t)`, `0`);
 
-            case 'mov-spring-up':
-                 return `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y=${esc(`(ih/2-(ih/zoom/2)) + (ih/2 * exp(-4*on*${speed}/${totalFrames}) * cos(10*on*${speed}/${totalFrames}))`)}${base}`;
+            case 'mov-spring-up': // Slides up from bottom
+                 return overlayTranslate(`0`, `H * exp(-3*t) * cos(8*t)`);
+
+            case 'mov-spring-down': // Slides down from top
+                 return overlayTranslate(`0`, `-H * exp(-3*t) * cos(8*t)`);
 
             case 'mov-tada':
                  return `zoompan=z=${esc(`1.0+0.05*sin(on*0.5*${speed})`)}:x=${esc(`iw/2-(iw/zoom/2)+10*sin(on*0.8*${speed})`)}:y=${esc(`ih/2-(ih/zoom/2)`)}${base}`;
@@ -314,9 +319,9 @@ module.exports = {
 
             // === 8. ENTRY ANIMATIONS ===
             case 'slide-in-left': 
-                return `zoompan=z=1.0:x=${esc(`if(lte(on,30/${speed}),(iw/2-(iw/zoom/2)) - (iw)*(1-on*${speed}/30), iw/2-(iw/zoom/2))`)}:y=ih/2-(ih/zoom/2)${base}`;
+                 return overlayTranslate(`-W * (1 - min(t*${speed}, 1))`, `0`);
             case 'slide-in-right':
-                return `zoompan=z=1.0:x=${esc(`if(lte(on,30/${speed}),(iw/2-(iw/zoom/2)) + (iw)*(1-on*${speed}/30), iw/2-(iw/zoom/2))`)}:y=ih/2-(ih/zoom/2)${base}`;
+                 return overlayTranslate(`W * (1 - min(t*${speed}, 1))`, `0`);
             
             default:
                 if (moveId && moveId.includes('zoom')) {
@@ -327,7 +332,6 @@ module.exports = {
     },
 
     getTransitionXfade: (transId) => {
-        // Massive mapping from frontend IDs to FFmpeg xfade transition names
         const map = {
             'fade-classic': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'black': 'fadeblack', 'white': 'fadewhite',
             'wipe-up': 'wipeup', 'wipe-down': 'wipedown', 'wipe-left': 'wipeleft', 'wipe-right': 'wiperight',
@@ -342,14 +346,14 @@ module.exports = {
             'triangle-wipe': 'diagtl', 'star-zoom': 'circleopen', 'spiral-wipe': 'spiral', 'heart-wipe': 'circleopen',
             
             // Fallbacks for complex/new transitions to ensure compatibility
-            'glitch': 'pixelize', // fallback
-            'color-glitch': 'pixelize', // fallback
-            'urban-glitch': 'pixelize', // fallback
+            'glitch': 'pixelize',
+            'color-glitch': 'pixelize',
+            'urban-glitch': 'pixelize',
             'pixelize': 'pixelize', 
-            'pixel-sort': 'pixelize', // fallback
-            'rgb-shake': 'wipetl', // fallback
-            'hologram': 'holographic', // Keep if supported, else fade
-            'block-glitch': 'pixelize', // fallback for mosaic if not present, but mosaic is standard in filters not transitions sometimes, map to pixelize
+            'pixel-sort': 'pixelize',
+            'rgb-shake': 'wipetl',
+            'hologram': 'holographic',
+            'block-glitch': 'pixelize',
             'cyber-zoom': 'zoomin', 
             'scan-line-v': 'wipetl', 
             'color-tear': 'pixelize',
@@ -384,8 +388,6 @@ module.exports = {
             'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'blur'
         };
         
-        // Final fallback: if key exists but value is known to be complex/unsupported in some builds, we've mapped it above.
-        // If the key doesn't exist, default to 'fade'
         return map[transId] || 'fade';
     }
 };
