@@ -152,9 +152,10 @@ module.exports = {
         const totalFrames = Math.ceil(d * 30);
         const uid = Math.floor(Math.random() * 1000000);
         
-        // FIX: Reduced supersampling from 8K to 1920x1080 to prevent Out of Memory errors
-        // FIX: Forced fps=30 to match timeline and prevent xfade/concat issues
-        const base = `:d=1:s=1920x1080:fps=30`; 
+        // FIX: Increased supersampling to 3840x2160 (4K) to eliminate pixel tremor/jitter during zoom
+        // This is a trade-off: uses more RAM than 1080p, but much less than 8K (which crashed).
+        // 4K provides smooth sub-pixel interpolation.
+        const base = `:d=1:s=3840x2160:fps=30`; 
         
         const esc = (s) => s.replace(/,/g, '\\,');
         const center = "x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)";
