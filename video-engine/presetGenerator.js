@@ -14,11 +14,18 @@ module.exports = {
         '-ar', '44100'
     ],
 
+    getAudioExtractArgs: () => [
+        '-vn', 
+        '-acodec', 'libmp3lame', 
+        '-q:a', '2'
+    ],
+
     getFFmpegFilterFromEffect: (effectId) => {
         if (!effectId) return null;
 
+        // 1. Static Dictionary for Famous/Complex Effects
         const effects = {
-            // Cinematic Pro
+            // --- Cinematic Pro ---
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.3',
             'matrix': 'colorbalance=gs=0.3:rs=-0.2:bs=-0.2,eq=contrast=1.2',
             'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
@@ -40,7 +47,7 @@ module.exports = {
             'scifi': 'colorbalance=bs=0.2:gs=0.1,eq=contrast=1.3',
             'pastel': 'eq=saturation=0.7:brightness=0.1:contrast=0.9',
 
-            // Estilos Artísticos
+            // --- Artistic Styles ---
             'pop-art': 'eq=saturation=3:contrast=1.5',
             'sketch-sim': 'hue=s=0,eq=contrast=5:brightness=0.3', 
             'invert': 'negate',
@@ -52,7 +59,7 @@ module.exports = {
             'deep-fried': 'eq=saturation=3:contrast=2,unsharp=5:5:2.0',
             'ethereal': 'boxblur=3:1,eq=brightness=0.2',
 
-            // Tendência & Filtros Básicos
+            // --- Trends & Basics ---
             'dv-cam': 'eq=saturation=0.8,noise=alls=5:allf=t',
             'bling': 'eq=brightness=0.1',
             'soft-angel': 'boxblur=2:1,eq=brightness=0.1',
@@ -66,7 +73,7 @@ module.exports = {
             'dreamy': 'boxblur=2:1',
             'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2',
 
-            // Glitch & Retro
+            // --- Glitch & Retro ---
             'glitch-pro-1': 'colorbalance=gs=0.1,noise=alls=10:allf=t',
             'glitch-pro-2': 'scale=iw/10:ih/10,scale=iw*10:ih*10:flags=neighbor',
             'vhs-distort': 'eq=saturation=1.5,boxblur=1:1,noise=alls=10:allf=t',
@@ -83,39 +90,55 @@ module.exports = {
 
         if (effects[effectId]) return effects[effectId];
 
-        // Procedural
+        // 2. Procedural Generation for "Massive" Lists (cg-pro-1 to cg-pro-50, etc)
+        
+        // Color Grade (1-50)
         if (effectId.startsWith('cg-pro-')) {
             const i = parseInt(effectId.split('-')[2]) || 1;
-            const c = 1 + (i % 5) * 0.1;
-            const s = 1 + (i % 3) * 0.2;
-            const h = (i * 15) % 360;
+            const c = 1 + (i % 5) * 0.1; // Contrast variation
+            const s = 1 + (i % 3) * 0.2; // Saturation variation
+            const h = (i * 15) % 360;    // Hue rotation
             return `eq=contrast=${c.toFixed(2)}:saturation=${s.toFixed(2)},hue=h=${h}`;
         }
+        
+        // Vintage Style (1-30)
         if (effectId.startsWith('vintage-style-')) {
             const i = parseInt(effectId.split('-')[2]) || 1;
             const sepia = 0.1 + (i % 5) * 0.05;
             return `colorbalance=rs=${sepia.toFixed(2)}:bs=-${sepia.toFixed(2)},eq=contrast=0.9`;
         }
+        
+        // Cyber Neon (1-20)
         if (effectId.startsWith('cyber-neon-')) {
              const i = parseInt(effectId.split('-')[2]) || 1;
              return `eq=contrast=1.2:saturation=1.5,hue=h=${i*10}`;
         }
+        
+        // Nature Fresh (1-20)
         if (effectId.startsWith('nature-fresh-')) {
              const i = parseInt(effectId.split('-')[2]) || 1;
              return `eq=saturation=1.3:brightness=0.05,hue=h=-${i*2}`;
         }
+        
+        // Art Duotone (1-30)
         if (effectId.startsWith('art-duo-')) {
              const i = parseInt(effectId.split('-')[2]) || 1;
              return `hue=s=0,colorbalance=rs=${0.1 * (i%3)}:bs=${0.1 * (i%2)}`;
         }
+        
+        // Noir Style (1-20)
         if (effectId.startsWith('noir-style-')) {
              const i = parseInt(effectId.split('-')[2]) || 1;
              return `hue=s=0,eq=contrast=${(1 + i*0.05).toFixed(2)}`;
         }
+        
+        // Film Stock (1-20)
         if (effectId.startsWith('film-stock-')) {
              const i = parseInt(effectId.split('-')[2]) || 1;
              return `eq=saturation=0.8:contrast=1.1`;
         }
+        
+        // Light Leaks (Overlay Logic handled in frontend/builder, here just basic brightness boost)
         if (effectId.startsWith('leak-overlay-') || effectId.startsWith('light-leak-')) {
             return 'eq=brightness=0.1:gamma=1.1';
         }
@@ -124,25 +147,21 @@ module.exports = {
     },
 
     getMovementFilter: (moveId, durationSec, isImage, config = {}) => {
-        const d = parseFloat(durationSec) || 8; // Default to 8 seconds
+        // === CRITICAL: MOVEMENT DURATION DEFAULT TO 8 SECONDS ===
+        const d = parseFloat(durationSec) || 8.0; 
         const totalFrames = Math.ceil(d * 30);
         const uid = Math.floor(Math.random() * 1000000);
         
-        // --- JITTER FIX & BLUR UPDATE ---
-        // 1. Increased resolution to 8K (7680x4320) for internal zoom processing.
-        //    This acts as super-sampling to eliminate sub-pixel jitters during slow zooms.
-        // 2. Increased internal FPS to 60 for smoother calculation steps.
-        const base = `:d=1:s=7680x4320:fps=60`; 
+        // FIX: Reduced supersampling from 8K to 1920x1080 to prevent Out of Memory errors
+        // FIX: Forced fps=30 to match timeline and prevent xfade/concat issues
+        const base = `:d=1:s=1920x1080:fps=30`; 
         
         const esc = (s) => s.replace(/,/g, '\\,');
         const center = "x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)";
 
-        // Get Speed/Intensity from config (default to 1)
         const speed = parseFloat(config.speed || config.intensity || 1);
 
-        // Helper para efeito de Blur com Overlay e Zoom
-        // Prolonged blur duration: Using up to 8.0 seconds for base duration based on speed
-        // This ensures movement lasts longer/feels slower
+        // Helper for Blur calculations
         const blurDuration = Math.min(d, 8.0) / speed; 
         
         const blurWithZoom = (alphaFilter, zoomExpr = `(1.0+(0.1*${speed}*on/${totalFrames}))`) => {
@@ -150,26 +169,20 @@ module.exports = {
         };
 
         switch (moveId) {
-            // === 0. BLUR (Focar/Desfocar com Movimento) ===
+            // === 0. BLUR (Focus/Defocus) ===
             case 'mov-blur-in':
-                // Starts blurry and fades to clear over 'blurDuration'
                 return blurWithZoom(`fade=t=out:st=0:d=${blurDuration}:alpha=1`);
-            
             case 'mov-blur-out':
-                // Starts clear and fades to blur at the end
                 const startTime = Math.max(0, d - blurDuration);
                 return blurWithZoom(`fade=t=in:st=${startTime}:d=${blurDuration}:alpha=1`);
-            
             case 'mov-blur-pulse':
                 return blurWithZoom(`geq=a='128*(1+sin(T*3*${speed}))'`);
-            
             case 'mov-blur-zoom':
                  return blurWithZoom(`fade=t=out:st=0:d=${blurDuration}:alpha=1`, `min(1.0+(on*0.8*${speed}/${totalFrames}),1.5)`);
-            
             case 'mov-blur-motion':
                  return `boxblur=luma_radius=${15*speed}:luma_power=2`;
 
-            // === 1. CINEMATIC PANS (Smoother Math) ===
+            // === 1. CINEMATIC PANS (Standardized Math) ===
             case 'mov-pan-slow-l': 
                 return `zoompan=z=${1.1 + (0.1 * speed)}:x=${esc(`(iw-iw/zoom)*(on/(${totalFrames}))`)}:y=ih/2-(ih/zoom/2)${base}`;
             case 'mov-pan-slow-r': 
@@ -202,7 +215,7 @@ module.exports = {
             case 'mov-zoom-slow-in':
             case 'zoom-slow-in':
             case 'kenBurns':
-                 // Very slight zoom for Ken Burns to ensure smoothness
+                 // Ken Burns is 8 seconds by default now
                  return `zoompan=z=${esc(`1.0+(${0.2 * speed}*on/${totalFrames})`)}:${center}${base}`;
             case 'mov-zoom-slow-out':
             case 'zoom-slow-out':
@@ -299,7 +312,7 @@ module.exports = {
     },
 
     getTransitionXfade: (transId) => {
-        // Full mapping from frontend IDs to FFmpeg xfade transition names
+        // Massive mapping from frontend IDs to FFmpeg xfade transition names
         const map = {
             'fade-classic': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'black': 'fadeblack', 'white': 'fadewhite',
             'wipe-up': 'wipeup', 'wipe-down': 'wipedown', 'wipe-left': 'wipeleft', 'wipe-right': 'wiperight',
