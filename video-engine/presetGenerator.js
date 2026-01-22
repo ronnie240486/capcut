@@ -297,8 +297,34 @@ module.exports = {
                  return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+sin(on*0.1*${speed})*10`)}:y=${esc(`ih/2-(ih/zoom/2)+cos(on*0.15*${speed})*10`)}${base}`;
             case 'earthquake':
                  return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+(random(1)-0.5)*40*${speed}`)}:y=${esc(`ih/2-(ih/zoom/2)+(random(1)-0.5)*40*${speed}`)}${base}`;
+            
+            // === 7. NEWLY ADDED MOVEMENTS (STROBE, ELASTIC SNAP, TADA, ETC) ===
+            case 'mov-strobe-move':
+                 // Move slightly and flash brightness
+                 return `zoompan=z=${esc(`min(1.0+(0.05*on/${totalFrames}),1.1)`)}:${center}${base},eq=brightness=${esc(`'if(eq(mod(n,5),0),0.3,0)'`)}:eval=frame`;
 
-            // === 7. ENTRY ANIMATIONS ===
+            case 'mov-elastic-snap-l':
+                 return `zoompan=z=1.0:x=${esc(`(iw/2-(iw/zoom/2)) - (iw/2 * exp(-4*on*${speed}/${totalFrames}) * cos(10*on*${speed}/${totalFrames}))`)}:y='ih/2-(ih/zoom/2)'${base}`;
+
+            case 'mov-elastic-snap-r':
+                 return `zoompan=z=1.0:x=${esc(`(iw/2-(iw/zoom/2)) + (iw/2 * exp(-4*on*${speed}/${totalFrames}) * cos(10*on*${speed}/${totalFrames}))`)}:y='ih/2-(ih/zoom/2)'${base}`;
+
+            case 'mov-spring-up':
+                 return `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y=${esc(`(ih/2-(ih/zoom/2)) + (ih/2 * exp(-4*on*${speed}/${totalFrames}) * cos(10*on*${speed}/${totalFrames}))`)}${base}`;
+
+            case 'mov-tada':
+                 return `zoompan=z=${esc(`1.0+0.05*sin(on*0.5*${speed})`)}:x=${esc(`iw/2-(iw/zoom/2)+10*sin(on*0.8*${speed})`)}:y=${esc(`ih/2-(ih/zoom/2)`)}${base}`;
+
+            case 'mov-digital-tear':
+                 return `zoompan=z=1.05:x=${esc(`iw/2-(iw/zoom/2)+(random(1)>0.8)*(random(1)-0.5)*200`)}:y='ih/2-(ih/zoom/2)'${base}`;
+
+            case 'mov-frame-skip':
+                 return `zoompan=z=${esc(`min(1.0+(0.2*on/${totalFrames}),1.2)`)}:${center}${base},fps=fps=10`;
+
+            case 'mov-vhs-tracking':
+                 return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)':y=${esc(`mod(on*4, ih-ih/zoom)`)}${base}`;
+
+            // === 8. ENTRY ANIMATIONS ===
             case 'slide-in-left': 
                 return `zoompan=z=1.0:x=${esc(`if(lte(on,30/${speed}),(iw/2-(iw/zoom/2)) - (iw)*(1-on*${speed}/30), iw/2-(iw/zoom/2))`)}:y=ih/2-(ih/zoom/2)${base}`;
             case 'slide-in-right':
