@@ -23,7 +23,14 @@ const storage = multer.diskStorage({
     filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s/g, '_')}`)
 });
 
-const uploadAny = multer({ storage }).any();
+// Configure Multer with increased limits
+const uploadAny = multer({ 
+    storage,
+    limits: {
+        fieldSize: 50 * 1024 * 1024, // 50MB for non-file fields (like projectState JSON)
+        fileSize: 500 * 1024 * 1024 // 500MB for file uploads
+    }
+}).any();
 const jobs = {};
 
 // --- REAL AUDIO FALLBACKS (Curated Royalty Free List) ---
