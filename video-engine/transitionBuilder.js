@@ -34,7 +34,7 @@ module.exports = {
                 inputs.push('-i', filePath);
             } else if (clip.type === 'text') {
                 // Transparent input for text
-                inputs.push('-f', 'lavfi', '-t', (duration + 2).toString(), '-i', `color=c=black@0.0:s=1920x1080:r=30`);
+                inputs.push('-f', 'lavfi', '-t', (duration + 2).toString(), '-i', `color=c=black@0.0:s=1280x720:r=30`);
             }
             
             const idx = inputIndexCounter++;
@@ -48,10 +48,10 @@ module.exports = {
                 vStream = `[${lbl}]`;
             };
             
-            // 1. Standardize (1080p Processing for Stability)
+            // 1. Standardize (720p Processing for Stability)
             // Use safe scaling with padding to prevent odd-dimension errors
             // setsar=1 ensures square pixels
-            addV(`scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
+            addV(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
 
             // 2. Trim & Reset PTS
             if (clip.type === 'image') {
@@ -77,8 +77,8 @@ module.exports = {
                 );
                 if (moveFilter) {
                     addV(moveFilter);
-                    // After zoompan, enforce 1080p again to handle any zoompan scaling side effects
-                    addV(`scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1`);
+                    // After zoompan, enforce 720p again to handle any zoompan scaling side effects
+                    addV(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1`);
                 }
             }
 
@@ -88,12 +88,12 @@ module.exports = {
                 const design = clip.properties.textDesign || {};
                 const fontColor = design.color || 'white';
                 // Basic drawtext fallback for backend
-                addV(`drawtext=text='${txt}':fontcolor=${fontColor}:fontsize=80:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black:shadowx=2:shadowy=2`);
+                addV(`drawtext=text='${txt}':fontcolor=${fontColor}:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2:shadowcolor=black:shadowx=2:shadowy=2`);
             }
             
             // 6. Final Format Check (Crucial for xfade)
             // Strict enforcement before mixing
-            addV(`scale=1920:1080,setsar=1,format=yuv420p`);
+            addV(`scale=1280:720,setsar=1,format=yuv420p`);
 
             // Store for mixing
             preparedSegments.push({
@@ -131,7 +131,7 @@ module.exports = {
              finalV = currentStream;
         } else {
              // Fallback if no visual clips
-             inputs.push('-f', 'lavfi', '-i', 'color=c=black:s=1920x1080:d=5');
+             inputs.push('-f', 'lavfi', '-i', 'color=c=black:s=1280x720:d=5');
              inputIndexCounter++; // Consume input index
              finalV = `[${inputIndexCounter-1}:v]`;
         }
