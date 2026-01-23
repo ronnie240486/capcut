@@ -74,11 +74,11 @@ module.exports = {
 
             // --- Glitch & Retro ---
             'glitch-pro-1': 'colorbalance=gs=0.1,noise=alls=10:allf=t',
-            'glitch-pro-2': 'scale=iw/10:ih/10,scale=iw*10:ih*10:flags=neighbor',
+            'glitch-pro-2': "scale='max(1,iw/10)':'max(1,ih/10)',scale=iw*10:ih*10:flags=neighbor,setsar=1",
             'vhs-distort': 'eq=saturation=1.5,boxblur=1:1,noise=alls=10:allf=t',
             'bad-signal': 'noise=alls=30:allf=t',
             'chromatic': 'colorbalance=rs=0.1:bs=0.1',
-            'pixelate': 'scale=iw/20:ih/20,scale=iw*20:ih*20:flags=neighbor',
+            'pixelate': "scale='max(1,iw/20)':'max(1,ih/20)',scale=iw*20:ih*20:flags=neighbor,setsar=1",
             'old-film': 'eq=saturation=0.5,noise=alls=15:allf=t',
             'dust': 'noise=alls=5:allf=t',
             'grain': 'noise=alls=15:allf=t',
@@ -234,11 +234,11 @@ module.exports = {
             case 'mov-zoom-shake':
                  return `zoompan=z=1.1:x=${esc(`iw/2-(iw/zoom/2)+(random(1)*20-10)*${speed}`)}:y=${esc(`ih/2-(ih/zoom/2)+(random(1)*20-10)*${speed}`)}${base}`;
 
-            // === 3. 3D TRANSFORMS ===
+            // === 3. 3D TRANSFORMS (Fixed 0 scale issue) ===
             case 'mov-3d-flip-x': 
-                return `scale=w=${esc(`iw*abs(cos(t*2*${speed}))`)}:h=ih,pad=1920:1080:(1920-iw)/2:(1080-ih)/2:black`;
+                return `scale=w=${esc(`max(1,iw*abs(cos(t*2*${speed})))`)}:h=ih,pad=1920:1080:(1920-iw)/2:(1080-ih)/2:black`;
             case 'mov-3d-flip-y':
-                return `scale=w=iw:h=${esc(`ih*abs(cos(t*2*${speed}))`)}:pad=1920:1080:(1920-iw)/2:(1080-ih)/2:black`;
+                return `scale=w=iw:h=${esc(`max(1,ih*abs(cos(t*2*${speed})))`)}:pad=1920:1080:(1920-iw)/2:(1080-ih)/2:black`;
             case 'mov-3d-spin-axis': 
             case 'spin-slow':
                 return `rotate=${esc(`t*0.5*${speed}`)}:ow=iw:oh=ih:c=black`;
@@ -256,7 +256,7 @@ module.exports = {
 
             // === 4. GLITCH & CHAOS ===
             case 'mov-glitch-snap':
-                return `crop=w=${esc(`iw-mod(n,10)*10*${speed}`)}:h=ih:x=${esc(`mod(n,10)*5*${speed}`)}:y=0`;
+                return `crop=w=${esc(`max(10,iw-mod(n,10)*10*${speed})`)}:h=ih:x=${esc(`mod(n,10)*5*${speed}`)}:y=0`;
             case 'mov-glitch-skid':
                  return `crop=x=${esc(`random(1)*20*${speed}`)}:y=${esc(`random(1)*20*${speed}`)}:w=iw-20:h=ih-20`;
             case 'mov-shake-violent':
