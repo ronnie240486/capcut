@@ -1,4 +1,3 @@
-
 /**
  * FFmpeg FULL PRESETS + MOVEMENTS
  * Production-safe version
@@ -16,7 +15,7 @@ module.exports = {
     ========================= */
     getVideoArgs: () => [
         '-c:v', 'libx264',
-        '-preset', 'ultrafast', // Crucial para velocidade no Railway
+        '-preset', 'ultrafast', 
         '-profile:v', 'high',
         '-level', '4.1',
         '-pix_fmt', 'yuv420p',
@@ -44,7 +43,6 @@ module.exports = {
         if (!effectId) return null;
 
         const effects = {
-            // --- Cinematic Pro ---
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.3',
             'matrix': 'colorbalance=gs=0.3:rs=-0.2:bs=-0.2,eq=contrast=1.2',
             'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
@@ -65,8 +63,6 @@ module.exports = {
             'night-vision': 'hue=s=0,eq=brightness=0.1,colorbalance=gs=0.5,noise=alls=20:allf=t',
             'scifi': 'colorbalance=bs=0.2:gs=0.1,eq=contrast=1.3',
             'pastel': 'eq=saturation=0.7:brightness=0.1:contrast=0.9',
-
-            // --- Artistic Styles ---
             'pop-art': 'eq=saturation=3:contrast=1.5',
             'sketch-sim': 'hue=s=0,eq=contrast=5:brightness=0.3', 
             'invert': 'negate',
@@ -77,8 +73,6 @@ module.exports = {
             'radioactive': 'hue=h=90:s=2',
             'deep-fried': 'eq=saturation=3:contrast=2,unsharp=5:5:2.0',
             'ethereal': 'boxblur=3:1,eq=brightness=0.2',
-
-            // --- Trends & Basics ---
             'dv-cam': 'eq=saturation=0.8,noise=alls=5:allf=t',
             'bling': 'eq=brightness=0.1',
             'soft-angel': 'boxblur=2:1,eq=brightness=0.1',
@@ -90,8 +84,6 @@ module.exports = {
             'vintage': 'colorbalance=rs=0.2:gs=0.1:bs=-0.2,eq=contrast=0.9',
             'dreamy': 'boxblur=2:1',
             'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2',
-
-            // --- Glitch & Retro ---
             'glitch-pro-1': 'colorbalance=gs=0.1,noise=alls=10:allf=t',
             'glitch-pro-2': "scale='max(1,iw/10)':'max(1,ih/10)',scale=iw*10:ih*10:flags=neighbor,setsar=1",
             'vhs-distort': 'eq=saturation=1.5,boxblur=1:1,noise=alls=10:allf=t',
@@ -106,7 +98,6 @@ module.exports = {
             'noise': 'noise=alls=20:allf=t'
         };
 
-        // Fallbacks procedurais
         if (effects[effectId]) return effects[effectId];
         if (effectId.startsWith('cg-pro-')) return 'eq=contrast=1.1:saturation=1.2';
         if (effectId.startsWith('vintage-style-')) return 'colorbalance=rs=0.2:bs=-0.2';
@@ -117,19 +108,14 @@ module.exports = {
     },
 
     /* =========================
-       MOVEMENTS (ALL – SAFE)
-       s=1280x720:fps=30 is MANDATORY to avoid [auto_scale] error
+       MOVEMENTS (SAFE)
     ========================= */
     getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
         const speed = parseFloat(config.speed || config.intensity || 1);
         const frames = Math.max(1, Math.ceil(durationSec * 30));
-        
-        // Base rigorosa: Resolução 720p, FPS 30. Evita reinit de filtros.
         const base = `zoompan=d=1:s=1280x720:fps=30`; 
-        const esc = (s) => s; // Placeholder se precisar de escape complexo, mas aqui simplificamos
 
         switch (moveId) {
-            // === 1. CINEMATIC PANS ===
             case 'pan-left':
             case 'mov-pan-slow-l':
                 return `${base}:z=1.2:x='(iw-iw/zoom)*(on/${frames})':y='ih/2-(ih/zoom/2)'`;
@@ -142,8 +128,6 @@ module.exports = {
                 return `${base}:z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(on/${frames})'`;
             case 'mov-pan-fast-l':
                 return `${base}:z=1.5:x='(iw-iw/zoom)*(on/${frames})':y='ih/2-(ih/zoom/2)'`;
-
-            // === 2. DYNAMIC ZOOMS ===
             case 'zoom-in':
             case 'kenBurns':
             case 'zoom-slow-in':
@@ -160,16 +144,12 @@ module.exports = {
             case 'pulse':
             case 'mov-zoom-pulse-slow':
                 return `${base}:z='1+0.05*sin(on*0.15*${speed})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
-            
-            // === 3. 3D TRANSFORMS & ROTATIONS ===
             case 'spin-slow':
             case 'mov-3d-spin-axis':
                 return `rotate=t*${0.2 * speed}:ow=iw:oh=ih:c=black`;
             case 'mov-3d-swing-l':
             case 'pendulum':
                 return `rotate='sin(t*2*${speed})*0.1':ow=iw:oh=ih:c=black`;
-            
-            // === 4. CHAOS / SHAKE ===
             case 'shake':
             case 'earthquake':
             case 'mov-shake-violent':
@@ -177,10 +157,7 @@ module.exports = {
             case 'jitter':
             case 'mov-jitter-x':
                 return `${base}:z=1.05:x='iw/2-(iw/zoom/2)+(random(1)-0.5)*${10 * speed}':y='ih/2-(ih/zoom/2)'`;
-
-            // === 5. DEFAULTS ===
             default:
-                // Retorna estático seguro se for imagem, null se for vídeo (sem movimento)
                 if (isImage) return `${base}:z=1`;
                 return null;
         }
@@ -197,7 +174,7 @@ module.exports = {
             'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
             'circle-open': 'circleopen', 'circle-close': 'circleclose',
             'zoomin': 'zoomin', 'zoomout': 'zoomout',
-            'pixelize': 'pixelize', 'glitch': 'pixelize', // Fallback seguro
+            'pixelize': 'pixelize', 'glitch': 'pixelize',
             'hblur': 'hblur', 'vblur': 'vblur'
         };
         return map[id] || 'fade';
