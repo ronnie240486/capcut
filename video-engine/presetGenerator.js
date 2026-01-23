@@ -140,9 +140,8 @@ module.exports = {
         const totalFrames = Math.ceil(d * 30);
         const uid = Math.floor(Math.random() * 1000000);
         
-        // 1080p Internal Processing (1920x1080) for stability and performance
-        // Previous 4K (3840x2160) might cause memory issues on some instances
-        const base = `:d=1:s=1920x1080:fps=30`; 
+        // 720p Internal Processing (1280x720) for stability and performance on limited backends
+        const base = `:d=1:s=1280x720:fps=30`; 
         
         const esc = (s) => s.replace(/,/g, '\\,');
         const center = "x=iw/2-(iw/zoom/2):y=ih/2-(ih/zoom/2)";
@@ -236,9 +235,9 @@ module.exports = {
 
             // === 3. 3D TRANSFORMS (Fixed 0 scale issue) ===
             case 'mov-3d-flip-x': 
-                return `scale=w=${esc(`max(1,iw*abs(cos(t*2*${speed})))`)}:h=ih,pad=1920:1080:(1920-iw)/2:(1080-ih)/2:black`;
+                return `scale=w=${esc(`max(1,iw*abs(cos(t*2*${speed})))`)}:h=ih,pad=1280:720:(1280-iw)/2:(720-ih)/2:black`;
             case 'mov-3d-flip-y':
-                return `scale=w=iw:h=${esc(`max(1,ih*abs(cos(t*2*${speed})))`)}:pad=1920:1080:(1920-iw)/2:(1080-ih)/2:black`;
+                return `scale=w=iw:h=${esc(`max(1,ih*abs(cos(t*2*${speed})))`)}:pad=1280:720:(1280-iw)/2:(720-ih)/2:black`;
             case 'mov-3d-spin-axis': 
             case 'spin-slow':
                 return `rotate=${esc(`t*0.5*${speed}`)}:ow=iw:oh=ih:c=black`;
