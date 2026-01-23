@@ -48,14 +48,10 @@ module.exports = {
                 vStream = `[${lbl}]`;
             };
             
-            // 1. Standardize (High Res Processing)
-            // CRITICAL FIX: Scale IMAGES to 4K (3840x2160) first to allow smooth zooming without pixelation/jitter.
-            // Scale VIDEOS to 1080p (1920x1080).
-            const internalW = clip.type === 'image' ? 3840 : 1920;
-            const internalH = clip.type === 'image' ? 2160 : 1080;
-            
-            // Use Lanczos for high quality upscaling/downscaling to prevent aliasing
-            addV(`scale=${internalW}:${internalH}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${internalW}:${internalH}:-1:-1,setsar=1,fps=30,format=yuv420p`);
+            // 1. Standardize (1080p Processing for Stability)
+            // Use safe scaling with padding to prevent odd-dimension errors
+            // setsar=1 ensures square pixels
+            addV(`scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
 
             // 2. Trim & Reset PTS
             if (clip.type === 'image') {
@@ -81,16 +77,9 @@ module.exports = {
                 );
                 if (moveFilter) {
                     addV(moveFilter);
-                    // After zoompan, strictly enforce 1080p output and pixel format
-                    // zoompan might output the size defined in 's', here we ensure we normalize back to project res (1080p)
-                    addV(`scale=1920:1080:flags=lanczos,setsar=1,fps=30,format=yuv420p`);
-                } else {
-                     // If no movement but it was 4K image, downscale to 1080p now
-                     addV(`scale=1920:1080:flags=lanczos,setsar=1`);
+                    // After zoompan, enforce 1080p again to handle any zoompan scaling side effects
+                    addV(`scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1`);
                 }
-            } else {
-                 // No movement, just ensure 1080p
-                 addV(`scale=1920:1080:flags=lanczos,setsar=1`);
             }
 
             // 5. Text Overlay (Burn-in)
@@ -103,7 +92,7 @@ module.exports = {
             }
             
             // 6. Final Format Check (Crucial for xfade)
-            // Ensure everything is 1920x1080 before mixing
+            // Strict enforcement before mixing
             addV(`scale=1920:1080,setsar=1,format=yuv420p`);
 
             // Store for mixing
@@ -141,7 +130,10 @@ module.exports = {
              
              finalV = currentStream;
         } else {
-             filterChain += `color=c=black:s=1920:1080:d=5[black_bg];`;
+             // Fallback if no visual clips
+             inputs.push('-f', 'lavfi', '-i', 'color=c=black:s=1920x1080:d=5');
+             inputIndexCounter++; // Consume input index
+             finalV = `[${inputIndexCounter-1}:v]`;
         }
 
         // Process Audio
