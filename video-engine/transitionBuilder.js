@@ -1,4 +1,3 @@
-
 const presetGenerator = require('./presetGenerator.js');
 
 module.exports = {
@@ -9,35 +8,34 @@ module.exports = {
         
         let inputIndexCounter = 0;
 
-        // Filtra clipes visuais e ordena por tempo
+        // Visual clips only
         const visualClips = clips.filter(c => 
             ['video', 'camada', 'text', 'subtitle'].includes(c.track) || 
             (c.type === 'video' || c.type === 'image' || c.type === 'text')
         ).sort((a, b) => a.start - b.start);
 
+        if (visualClips.length === 0) {
+            return { inputs: [], filterComplex: null, outputMapVideo: null, outputMapAudio: null };
+        }
+
         visualClips.forEach((clip, i) => {
             const filePath = fileMap[clip.fileName];
-            
-            // Tratamento para texto (sem arquivo) vs midia
             if (!filePath && clip.type !== 'text') return;
 
-            const duration = parseFloat(clip.duration) || 5;
+            const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
 
             // --- INPUT LOGIC ---
             if (clip.type === 'image') {
-                // Loop de imagem com duração fixa
                 inputs.push('-loop', '1', '-t', (duration + 2).toString(), '-i', filePath); 
             } else if (clip.type === 'video') {
                 inputs.push('-i', filePath);
             } else if (clip.type === 'text') {
-                // Dummy input para texto
                 inputs.push('-f', 'lavfi', '-t', (duration + 2).toString(), '-i', `color=c=black@0.0:s=1280x720:r=30`);
             }
 
             const currentInputIndex = inputIndexCounter++;
             let currentStream = `[${currentInputIndex}:v]`;
             
-            // Função auxiliar para encadear filtros
             const addFilter = (filterText) => {
                 if (!filterText) return;
                 const nextLabel = `tmp${i}_${Math.random().toString(36).substr(2, 5)}`;
@@ -45,46 +43,45 @@ module.exports = {
                 currentStream = `[${nextLabel}]`;
             };
 
-            // 1. NORMALIZAÇÃO DE ENTRADA (CRÍTICO)
-            // Força tudo para 720p ANTES de qualquer coisa. Evita erro auto_scale.
+            // 1. INPUT NORMALIZATION (STRICT)
+            // Ensure 720p 30fps YUV420p SAR 1 before any processing
             addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
 
-            // 2. CORTE / TRIM
+            // 2. TRIM / TIMING
             if (clip.type !== 'image') {
                 const start = clip.mediaStartOffset || 0;
-                addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
+                addFilter(`trim=start=${start}:duration=${duration},setpts=PTS-STARTPTS`);
             } else {
                 addFilter(`trim=duration=${duration},setpts=PTS-STARTPTS`);
             }
 
-            // 3. EFEITOS DE COR
+            // 3. COLOR EFFECTS
             if (clip.effect) {
                 const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                 if (fx) addFilter(fx);
             }
             
-            // 4. MOVIMENTO (ZOOM/PAN)
+            // 4. MOVEMENT (ZOOM/PAN)
             if (clip.properties && clip.properties.movement) {
                 const moveFilter = presetGenerator.getMovementFilter(
                     clip.properties.movement.type, 
                     duration, 
                     clip.type === 'image',
-                    clip.properties.movement.config
+                    clip.properties.movement.config || {}
                 );
                 
                 if (moveFilter) {
                     addFilter(moveFilter);
-                    // 5. RE-NORMALIZAÇÃO PÓS-MOVIMENTO (CRÍTICO)
-                    // Zoompan pode alterar SAR ou dimensões. Resetamos para garantir compatibilidade com XFADE.
-                    addFilter(`scale=1280:720,setsar=1`); 
                 }
             } else if (clip.type === 'image') {
-                // Imagens estáticas precisam de zoompan estático para virarem vídeo
                 addFilter(presetGenerator.getMovementFilter(null, duration, true));
-                addFilter(`scale=1280:720,setsar=1`);
             }
 
-            // 6. TEXTO (Overlay simples se necessário)
+            // 5. POST-MOVEMENT NORMALIZATION (CRITICAL)
+            // Re-scale to ensure fixed 720p output pad for xfade compatibility
+            addFilter(`scale=1280:720,setsar=1,fps=30,format=yuv420p`);
+
+            // 6. TEXT OVERLAY
             if (clip.type === 'text' && clip.properties.text) {
                 const txt = clip.properties.text.replace(/'/g, '').replace(/:/g, '\\:');
                 const color = clip.properties.textDesign?.color || 'white';
@@ -98,8 +95,8 @@ module.exports = {
             });
         });
 
-        // --- MIXAGEM (XFADE) ---
-        let finalV = '[black_bg]';
+        // --- VIDEO MIXING (XFADE) ---
+        let finalV = '';
         
         if (streamLabels.length > 0) {
             let currentMix = streamLabels[0].label;
@@ -109,13 +106,12 @@ module.exports = {
                 const nextClip = streamLabels[i];
                 const prevClip = streamLabels[i-1];
                 
-                // Configuração da transição
                 const trans = prevClip.transition || { id: 'fade', duration: 0.5 };
                 const transId = presetGenerator.getTransitionXfade(trans.id);
-                const transDur = Math.min(trans.duration || 0.5, prevClip.duration / 2, nextClip.duration / 2);
+                const transDur = Math.max(0.1, Math.min(trans.duration || 0.5, prevClip.duration / 2, nextClip.duration / 2));
                 
-                const offset = accumulatedDuration - transDur;
-                const nextLabel = `mix_${i}`;
+                const offset = Math.max(0, accumulatedDuration - transDur);
+                const nextLabel = `v_mix_${i}`;
                 
                 filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
                 
@@ -123,37 +119,28 @@ module.exports = {
                 accumulatedDuration = offset + transDur + (nextClip.duration - transDur);
             }
             finalV = currentMix;
-        } else {
-            // Fallback se timeline vazia
-            inputs.push('-f', 'lavfi', '-i', 'color=c=black:s=1280x720:d=5');
-            finalV = `[${inputIndexCounter}:v]`;
         }
 
-        // --- ÁUDIO (SIMPLES CONCAT) ---
-        // Para simplificar e evitar erros de memória, usamos concat simples para áudio nesta versão "safe"
-        // Em produção real, usaria amix/adelay, mas concat é mais robusto para MVP
+        // --- AUDIO MIXING (CONCAT) ---
         let audioParts = [];
-        let audioFilter = '';
-        
-        // Criar faixas de silêncio ou áudio para cada clipe visual para manter sincronia
         visualClips.forEach((clip, i) => {
             const hasAudio = clip.type === 'video';
             const lbl = `a_chunk_${i}`;
+            const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
             
             if (hasAudio) {
                 const start = clip.mediaStartOffset || 0;
-                audioFilter += `[${i}:a]atrim=start=${start}:duration=${start + clip.duration},asetpts=PTS-STARTPTS[${lbl}];`;
+                filterChain += `[${i}:a]atrim=start=${start}:duration=${duration},asetpts=PTS-STARTPTS,aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[${lbl}];`;
             } else {
-                audioFilter += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${clip.duration}[${lbl}];`;
+                filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${lbl}];`;
             }
             audioParts.push(`[${lbl}]`);
         });
 
         if (audioParts.length > 0) {
-            audioFilter += `${audioParts.join('')}concat=n=${audioParts.length}:v=0:a=1[outa]`;
-            filterChain += audioFilter;
+            filterChain += `${audioParts.join('')}concat=n=${audioParts.length}:v=0:a=1[outa]`;
         } else {
-            filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=5[outa]`;
+            filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=1[outa]`;
         }
 
         return {
