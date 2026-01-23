@@ -16,7 +16,7 @@ module.exports = {
     ========================= */
     getVideoArgs: () => [
         '-c:v', 'libx264',
-        '-preset', 'ultrafast', // Crucial para velocidade no Railway
+        '-preset', 'ultrafast',
         '-profile:v', 'high',
         '-level', '4.1',
         '-pix_fmt', 'yuv420p',
@@ -38,7 +38,7 @@ module.exports = {
     ],
 
     /* =========================
-       EFFECT PRESETS (ALL MAPPED)
+       EFFECT PRESETS (ALL MAPPED FROM FRONTEND)
     ========================= */
     getFFmpegFilterFromEffect: (effectId) => {
         if (!effectId) return null;
@@ -55,7 +55,7 @@ module.exports = {
             'horror': 'hue=s=0,eq=contrast=1.5:brightness=-0.2,noise=alls=10:allf=t',
             'underwater': 'colorbalance=bs=0.4:gs=0.1:rs=-0.3,eq=contrast=0.9',
             'sunset': 'colorbalance=rs=0.3:gs=-0.1:bs=-0.2,eq=saturation=1.3',
-            'posterize': 'eq=contrast=2.0:saturation=1.5',
+            'posterize': 'eq=contrast=2.0:saturation=1.5', // Curves posterize not standard in all builds, eq approx
             'fade': 'eq=contrast=0.8:brightness=0.1',
             'vibrant': 'eq=saturation=2.0',
             'muted': 'eq=saturation=0.5',
@@ -80,7 +80,7 @@ module.exports = {
 
             // --- Trends & Basics ---
             'dv-cam': 'eq=saturation=0.8,noise=alls=5:allf=t',
-            'bling': 'eq=brightness=0.1',
+            'bling': 'eq=brightness=0.1', // Overlay approximation
             'soft-angel': 'boxblur=2:1,eq=brightness=0.1',
             'sharpen': 'unsharp=5:5:1.5:5:5:0.0',
             'warm': 'colorbalance=rs=0.1:bs=-0.1',
@@ -93,7 +93,7 @@ module.exports = {
 
             // --- Glitch & Retro ---
             'glitch-pro-1': 'colorbalance=gs=0.1,noise=alls=10:allf=t',
-            'glitch-pro-2': "scale='max(1,iw/10)':'max(1,ih/10)',scale=iw*10:ih*10:flags=neighbor,setsar=1",
+            'glitch-pro-2': "scale='max(1,iw/10)':'max(1,ih/10)',scale=iw*10:ih*10:flags=neighbor,setsar=1", // Blocky
             'vhs-distort': 'eq=saturation=1.5,boxblur=1:1,noise=alls=10:allf=t',
             'bad-signal': 'noise=alls=30:allf=t',
             'chromatic': 'colorbalance=rs=0.1:bs=0.1',
@@ -103,15 +103,30 @@ module.exports = {
             'grain': 'noise=alls=15:allf=t',
             'vignette': 'eq=brightness=-0.1',
             'super8': 'eq=saturation=0.8:contrast=1.1,colorbalance=rs=0.1',
-            'noise': 'noise=alls=20:allf=t'
+            'noise': 'noise=alls=20:allf=t',
+            
+            // --- Atmosphere & Light ---
+            'light-leak-1': 'eq=brightness=0.1:contrast=0.9', // Simplification
+            'light-leak-2': 'eq=brightness=0.15:contrast=0.85',
+            'sun-flare': 'eq=brightness=0.2',
+            'god-rays': 'boxblur=1:1,eq=brightness=0.2',
+            'neon-glow': 'eq=saturation=2:contrast=1.2',
+            'strobe': "eq=brightness='if(eq(mod(n,5),0),2,0)'" // Simple Strobe
         };
 
-        // Fallbacks procedurais
+        // Procedural Fallbacks (cg-pro, vintage-style, etc)
         if (effects[effectId]) return effects[effectId];
-        if (effectId.startsWith('cg-pro-')) return 'eq=contrast=1.1:saturation=1.2';
+        
+        if (effectId.startsWith('cg-pro-')) {
+            const i = parseInt(effectId.split('-')[2]) || 1;
+            return `eq=contrast=${1 + (i % 5) * 0.05}:saturation=${1 + (i % 3) * 0.1}`;
+        }
         if (effectId.startsWith('vintage-style-')) return 'colorbalance=rs=0.2:bs=-0.2';
         if (effectId.startsWith('cyber-neon-')) return 'eq=contrast=1.2:saturation=1.5';
         if (effectId.startsWith('film-stock-')) return 'eq=saturation=0.8:contrast=1.1';
+        if (effectId.startsWith('leak-overlay-')) return 'eq=brightness=0.1';
+        if (effectId.startsWith('noir-style-')) return 'hue=s=0,eq=contrast=1.2';
+        if (effectId.startsWith('art-duo-')) return 'hue=s=0,colorbalance=rs=0.2';
 
         return null;
     },
@@ -126,7 +141,7 @@ module.exports = {
         
         // Base rigorosa: Resolução 720p, FPS 30. Evita reinit de filtros.
         const base = `zoompan=d=1:s=1280x720:fps=30`; 
-        const esc = (s) => s; // Placeholder se precisar de escape complexo, mas aqui simplificamos
+        const esc = (s) => s;
 
         switch (moveId) {
             // === 1. CINEMATIC PANS ===
@@ -142,6 +157,16 @@ module.exports = {
                 return `${base}:z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(on/${frames})'`;
             case 'mov-pan-fast-l':
                 return `${base}:z=1.5:x='(iw-iw/zoom)*(on/${frames})':y='ih/2-(ih/zoom/2)'`;
+            case 'mov-pan-fast-r':
+                 return `${base}:z=1.5:x='(iw-iw/zoom)*(1-on/${frames})':y='ih/2-(ih/zoom/2)'`;
+            case 'mov-pan-diag-tl':
+                 return `${base}:z=1.2:x='(iw-iw/zoom)*(on/${frames})':y='(ih-ih/zoom)*(on/${frames})'`;
+            case 'mov-pan-diag-tr':
+                 return `${base}:z=1.2:x='(iw-iw/zoom)*(1-on/${frames})':y='(ih-ih/zoom)*(on/${frames})'`;
+            case 'mov-pan-diag-bl':
+                 return `${base}:z=1.2:x='(iw-iw/zoom)*(on/${frames})':y='(ih-ih/zoom)*(1-on/${frames})'`;
+            case 'mov-pan-diag-br':
+                 return `${base}:z=1.2:x='(iw-iw/zoom)*(1-on/${frames})':y='(ih-ih/zoom)*(1-on/${frames})'`;
 
             // === 2. DYNAMIC ZOOMS ===
             case 'zoom-in':
@@ -159,26 +184,68 @@ module.exports = {
                 return `${base}:z='1+0.1*abs(sin(on*0.1*${speed}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             case 'pulse':
             case 'mov-zoom-pulse-slow':
+            case 'mov-zoom-pulse-fast':
                 return `${base}:z='1+0.05*sin(on*0.15*${speed})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
-            
+            case 'mov-zoom-wobble':
+            case 'zoom-wobble':
+                return `${base}:z='1.1+0.05*sin(on*0.1)':x='iw/2-(iw/zoom/2)+10*sin(on*0.2)':y='ih/2-(ih/zoom/2)+10*cos(on*0.2)'`;
+            case 'dolly-zoom':
+            case 'mov-dolly-vertigo':
+                // Simulated dolly: Zoom in while scaling (requires complex filter, here just aggressive zoom)
+                return `${base}:z='1+${0.8 * speed}*on/${frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+
             // === 3. 3D TRANSFORMS & ROTATIONS ===
+            // Note: True 3D rotation (yaw/pitch) needs complex filters not standard in basic ffmpeg builds. 
+            // We approximate with 2D rotation or zoompan tricks.
             case 'spin-slow':
             case 'mov-3d-spin-axis':
                 return `rotate=t*${0.2 * speed}:ow=iw:oh=ih:c=black`;
             case 'mov-3d-swing-l':
             case 'pendulum':
                 return `rotate='sin(t*2*${speed})*0.1':ow=iw:oh=ih:c=black`;
-            
+            case 'mov-3d-swing-r':
+                return `rotate='-sin(t*2*${speed})*0.1':ow=iw:oh=ih:c=black`;
+            case 'mov-3d-roll':
+                return `rotate=t*${0.5 * speed}:ow=iw:oh=ih:c=black`;
+
             // === 4. CHAOS / SHAKE ===
             case 'shake':
             case 'earthquake':
             case 'mov-shake-violent':
+            case 'shake-hard':
                 return `${base}:z=1.1:x='iw/2-(iw/zoom/2)+(random(1)-0.5)*${20 * speed}':y='ih/2-(ih/zoom/2)+(random(1)-0.5)*${20 * speed}'`;
             case 'jitter':
             case 'mov-jitter-x':
+            case 'mov-jitter-y':
                 return `${base}:z=1.05:x='iw/2-(iw/zoom/2)+(random(1)-0.5)*${10 * speed}':y='ih/2-(ih/zoom/2)'`;
+            case 'mov-glitch-snap':
+            case 'mov-glitch-skid':
+                // Simulate glitch jump
+                return `${base}:x='if(eq(mod(on,30),0),iw/2-(iw/zoom/2)+50,iw/2-(iw/zoom/2))':y='ih/2-(ih/zoom/2)'`;
 
-            // === 5. DEFAULTS ===
+            // === 5. BLUR / FOCUS (Approximated via Zoompan + Blur logic in builder, here just subtle zoom) ===
+            case 'mov-blur-in':
+            case 'mov-blur-out':
+            case 'mov-blur-zoom':
+                 return `${base}:z='min(1.0+(0.1*on/${frames}),1.1)'`;
+            
+            // === 6. ELASTIC & FUN ===
+            case 'mov-bounce-drop':
+            case 'mov-rubber-band':
+            case 'mov-jelly-wobble':
+            case 'mov-pop-up':
+            case 'mov-tada':
+            case 'mov-squash-stretch':
+                 // Approximated by bouncy zoom
+                 return `${base}:z='1+0.1*abs(sin(on*0.2*${speed}))'`;
+
+            // === 7. PHOTO FX ===
+            case 'photo-flash':
+            case 'mov-flash-pulse':
+                 // Logic handled in effects mostly, but here add zoom punch
+                 return `${base}:z='if(lt(mod(on,30),5),1.2,1.0)'`;
+            
+            // === DEFAULT ===
             default:
                 // Retorna estático seguro se for imagem, null se for vídeo (sem movimento)
                 if (isImage) return `${base}:z=1`;
@@ -190,21 +257,56 @@ module.exports = {
        TRANSITIONS (SAFE)
     ========================= */
     getTransitionXfade: (id) => {
+        // Map ALL frontend transition IDs to FFmpeg xfade names
         const map = {
+            // Basics
             'fade-classic': 'fade', 'crossfade': 'fade', 'mix': 'fade', 
-            'black': 'fadeblack', 'white': 'fadewhite',
+            'black': 'fadeblack', 'white': 'fadewhite', 'dissolve': 'dissolve',
+            
+            // Slides / Wipes
             'wipe-up': 'wipeup', 'wipe-down': 'wipedown', 'wipe-left': 'wipeleft', 'wipe-right': 'wiperight',
             'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
+            'push-left': 'slideleft', 'push-right': 'slideright',
+            'rect-crop': 'rectcrop', 'circle-crop': 'circlecrop',
             'circle-open': 'circleopen', 'circle-close': 'circleclose',
-            'zoomin': 'zoomin', 'zoomout': 'zoomout',
-            'pixelize': 'pixelize', 'glitch': 'pixelize', // Fallback seguro
-            'hblur': 'hblur', 'vblur': 'vblur'
+            'diamond-in': 'diagtl', 'diamond-out': 'diagbr', 'diamond-zoom': 'hl', // fallback
+            
+            // Zooms
+            'zoomin': 'zoomin', 'zoomout': 'zoomout', 'zoom-in': 'zoomin', 'zoom-out': 'zoomout',
+            
+            // Shapes
+            'clock-wipe': 'clock', 'iris-in': 'iris', 'iris-out': 'iris', // iris is available in newer ffmpeg
+            'checker-wipe': 'checkerboard', 'checkerboard': 'checkerboard',
+            'blind-h': 'hblur', 'blind-v': 'vblur', // fallbacks
+            'barn-door-h': 'hl', 'barn-door-v': 'vu', // barn door approx
+            
+            // Glitch / Complex (Fallbacks to pixelize/wipes if specific xfade doesn't exist)
+            'glitch': 'pixelize', 'pixelize': 'pixelize', 'pixel-sort': 'pixelize',
+            'glitch-scan': 'hblur', 'block-glitch': 'pixelize', 'rgb-split': 'pixelize',
+            'color-glitch': 'pixelize', 'urban-glitch': 'pixelize', 'visual-buzz': 'pixelize',
+            'digital-noise': 'pixelize', 'datamosh': 'pixelize',
+            
+            // Trend / Artistic
+            'blood-mist': 'dissolve', 'black-smoke': 'fadeblack', 'white-smoke': 'fadewhite',
+            'fire-burn': 'dissolve', 'water-ripple': 'ripple', 'liquid-melt': 'dissolve',
+            'ink-splash': 'dissolve', 'oil-paint': 'dissolve',
+            'blur-warp': 'blur', 'blur-dissolve': 'blur', 'dynamic-blur': 'blur',
+            'film-roll': 'slideup', 'film-roll-v': 'slideup',
+            'page-turn': 'coverleft', 'paper-rip': 'wipetl', 'burn-paper': 'dissolve',
+            'flash-bang': 'fadewhite', 'exposure': 'fadewhite', 'burn': 'dissolve',
+            'luma-fade': 'fade', 'morph': 'dissolve', 'swirl': 'spiral', 'kaleidoscope': 'dissolve',
+            
+            // 3D / Motion
+            'cube-rotate-l': 'slideleft', 'cube-rotate-r': 'slideright', 
+            'spin-zoom-in': 'zoomin', 'spin-zoom-out': 'zoomout',
+            'whip-left': 'whipleft', 'whip-right': 'whipright', 'whip-up': 'whipup', 'whip-down': 'whipdown'
         };
+        
         return map[id] || 'fade';
     },
 
     /* =========================
-       FINAL FILTER EXPORT
+       FINAL FILTER (MANDATORY)
     ========================= */
     getFinalVideoFilter: () => FINAL_FILTER
 };
