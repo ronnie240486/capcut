@@ -1,8 +1,19 @@
+/**
+ * FFmpeg FULL PRESETS + MOVEMENTS
+ * Versão otimizada para movimentos suaves e sincronia perfeita
+ */
 
-export default {
+const FINAL_FILTER =
+    'scale=1280:720:force_original_aspect_ratio=decrease,' +
+    'pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,' +
+    'setsar=1,format=yuv420p,fps=30';
+
+module.exports = {
     getVideoArgs: () => [
         '-c:v', 'libx264',
-        '-preset', 'ultrafast',
+        '-preset', 'ultrafast', 
+        '-profile:v', 'high',
+        '-level', '4.1',
         '-pix_fmt', 'yuv420p',
         '-movflags', '+faststart',
         '-r', '30'
@@ -11,107 +22,89 @@ export default {
     getAudioArgs: () => [
         '-c:a', 'aac',
         '-b:a', '192k',
-        '-ar', '44100'
+        '-ar', '44100',
+        '-ac', '2'
     ],
 
     getAudioExtractArgs: () => [
-        '-vn', 
-        '-acodec', 'libmp3lame', 
+        '-vn',
+        '-acodec', 'libmp3lame',
         '-q:a', '2'
     ],
 
-    // Mapeamento de Efeitos Visuais
     getFFmpegFilterFromEffect: (effectId) => {
-        // Sintaxe: usar : para separar parâmetros de um mesmo filtro
-        // Usar , para separar filtros diferentes dentro da string de retorno (será processado pelo builder)
+        if (!effectId) return null;
+
         const effects = {
-            // Cinematic
-            'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,curves=contrast',
-            'matrix': 'colorbalance=gs=0.4:rs=-0.2:bs=-0.2,eq=contrast=1.2:saturation=1.2', // Mais verde, menos vermelho/azul
-            'noir': 'hue=s=0,eq=contrast=1.3:brightness=-0.1',
-            'vintage-warm': 'colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.1:saturation=0.8',
+            'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.3',
+            'matrix': 'colorbalance=gs=0.3:rs=-0.2:bs=-0.2,eq=contrast=1.2',
+            'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
+            'vintage-warm': 'colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.2:saturation=0.8',
             'cool-morning': 'colorbalance=bs=0.2:rs=-0.1,eq=brightness=0.05',
             'cyberpunk': 'eq=contrast=1.2:saturation=1.5,colorbalance=bs=0.2:gs=0.1',
-            
-            // Basics
-            'bw': 'hue=s=0',
+            'dreamy-blur': 'boxblur=2:1,eq=brightness=0.1:saturation=1.2',
+            'horror': 'hue=s=0,eq=contrast=1.5:brightness=-0.2,noise=alls=10:allf=t',
+            'underwater': 'colorbalance=bs=0.4:gs=0.1:rs=-0.3,eq=contrast=0.9',
+            'sunset': 'colorbalance=rs=0.3:gs=-0.1:bs=-0.2,eq=saturation=1.3',
+            'vibrant': 'eq=saturation=2.0',
             'mono': 'hue=s=0',
-            'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2',
-            'sepia-max': 'colorbalance=rs=0.4:gs=0.2:bs=-0.4',
-            'warm': 'colorbalance=rs=0.1:bs=-0.1',
-            'cool': 'colorbalance=bs=0.1:rs=-0.1',
-            'vivid': 'eq=saturation=1.5:contrast=1.1',
-            'high-contrast': 'eq=contrast=1.5',
-            'invert': 'negate',
-            'posterize': 'curves=posterize',
-            'night-vision': 'hue=s=0,eq=contrast=1.2:brightness=0.1,colorbalance=gs=0.5' // Verde monocromático
+            'vintage': 'colorbalance=rs=0.2:gs=0.1:bs=-0.2,eq=contrast=0.9',
+            'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2'
         };
 
         if (effects[effectId]) return effects[effectId];
-        
-        // Fallbacks baseados em texto
-        if (effectId.includes('bw') || effectId.includes('noir')) return 'hue=s=0';
-        if (effectId.includes('matrix')) return 'colorbalance=gs=0.3';
-        if (effectId.includes('contrast')) return 'eq=contrast=1.3';
-        if (effectId.includes('sepia')) return 'colorbalance=rs=.3:gs=.2:bs=-.2';
-        
         return null;
     },
 
-    // Gerador de Movimento (Zoom/Pan)
-    // d = duração total em segundos (não frames) para cálculo baseado em tempo
-    getMovementFilter: (moveId, durationSec, isImage = true) => {
-        // Para vídeo, usamos d=1 para processar frame a frame, mas a matemática usa 'time' (segundos atuais)
-        // Para imagem, d é a duração total em frames * 30fps
-        
+    /**
+     * Gerador de Movimento Suave (Smooth Zoom)
+     * Para imagens: d deve ser igual ao total de frames (duration * fps)
+     * Para vídeos: d deve ser 1 (aplica por frame do vídeo)
+     */
+    getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
+        const speed = parseFloat(config.speed || config.intensity || 1);
         const fps = 30;
-        const totalDuration = durationSec || 8; // UPDATED: Fallback to 8s
-        const dParam = isImage ? `:d=${Math.ceil(totalDuration * fps)}` : ':d=1';
-        const sParam = ':s=1280x720';
-        const fpsParam = ':fps=30';
-        const common = `${dParam}${sParam}${fpsParam}`;
-
-        // Fórmulas baseadas em 'time' (t) para suavidade
-        // zoompad padrão: z='...' x='...' y='...'
+        const totalFrames = Math.max(1, Math.ceil(durationSec * fps));
         
+        // d define quantos frames o filtro vai gerar a partir de 1 frame de entrada (imagem)
+        // Se for vídeo, d=1 pois o FFmpeg processa frame a frame da fonte
+        const dValue = isImage ? totalFrames : 1;
+        const base = `zoompan=d=${dValue}:s=1280x720:fps=${fps}`; 
+
+        // x e y usam 'trunc' para evitar o jitter (tremido) do zoompan
+        // zoom linear progressivo baseado no frame atual 'on'
         switch (moveId) {
             case 'zoom-in':
             case 'kenBurns':
             case 'zoom-slow-in':
-                // Zoom de 1.0 a 1.5
-                return `zoompan=z='min(1.0+(0.5*time/${totalDuration}),1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${common}`;
+                const zIn = `min(zoom+(${0.0015 * speed}),1.5)`;
+                return `${base}:z='${zIn}':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))'`;
             
             case 'zoom-fast-in':
-                // Zoom de 1.0 a 2.0
-                return `zoompan=z='min(1.0+(1.0*time/${totalDuration}),2.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${common}`;
+            case 'mov-zoom-crash-in':
+                const zCrash = `min(zoom+(${0.005 * speed}),2.0)`;
+                return `${base}:z='${zCrash}':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))'`;
 
             case 'zoom-out':
             case 'zoom-slow-out':
-                // Zoom de 1.5 a 1.0
-                return `zoompan=z='max(1.5-(0.5*time/${totalDuration}),1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${common}`;
-            
-            case 'zoom-bounce':
-                return `zoompan=z='1+0.1*sin(time*2)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${common}`;
+                // Começa em 1.5 e desce até 1.0
+                return `${base}:z='if(eq(on,1),1.5,max(zoom-0.0015,1))':x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))'`;
 
             case 'pan-left':
-            case 'slide-left':
-                // Move da direita para esquerda (x diminui? não, x aumenta para mostrar o lado esquerdo da imagem se a imagem for maior, ou viewport move... zoompan move o viewport)
-                // Se z=1.2, temos folga.
-                // x='(iw-iw/zoom)*(time/duration)' move o viewport da esquerda (0) para direita (max).
-                // Para pan left (imagem move para esquerda), o viewport deve mover para a direita.
-                return `zoompan=z=1.2:x='(iw-iw/zoom)*(time/${totalDuration})':y='ih/2-(ih/zoom/2)'${common}`;
-            
+            case 'mov-pan-slow-l':
+                return `${base}:z=1.2:x='trunc((iw-iw/zoom)*(on/${totalFrames}))':y='trunc(ih/2-(ih/zoom/2))'`;
+
             case 'pan-right':
-            case 'slide-right':
-                return `zoompan=z=1.2:x='(iw-iw/zoom)*(1-(time/${totalDuration}))':y='ih/2-(ih/zoom/2)'${common}`;
+            case 'mov-pan-slow-r':
+                return `${base}:z=1.2:x='trunc((iw-iw/zoom)*(1-on/${totalFrames}))':y='trunc(ih/2-(ih/zoom/2))'`;
 
             case 'shake':
-            case 'earthquake':
-                // Tremor aleatório
-                return `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+random(1)*20-10':y='ih/2-(ih/zoom/2)+random(1)*20-10'${common}`;
+            case 'mov-shake-violent':
+                return `${base}:z=1.1:x='trunc(iw/2-(iw/zoom/2)+(random(1)-0.5)*${20 * speed})':y='trunc(ih/2-(ih/zoom/2)+(random(1)-0.5)*${20 * speed})'`;
 
             default:
-                if (isImage) return `zoompan=z=1${common}`;
+                // Se for imagem e não tiver movimento, gera um vídeo estático da duração correta
+                if (isImage) return `${base}:z=1:x='trunc(iw/2-(iw/zoom/2))':y='trunc(ih/2-(ih/zoom/2))'`;
                 return null;
         }
     }
