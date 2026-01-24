@@ -1,5 +1,7 @@
 const presetGenerator = require('./presetGenerator.js');
 
+const SYNC_FILTER = 'settb=AVTB,fps=30,setpts=PTS-STARTPTS';
+
 module.exports = {
   buildTimeline: (clips, fileMap, mediaLibrary) => {
     let inputs = [];
@@ -54,16 +56,16 @@ module.exports = {
 
       const addFilter = (txt) => {
         if (!txt) return;
-        const lbl = `v_${i}_${Math.random().toString(36).slice(2, 7)}`;
+        const lbl = `v_${i}_${Math.random().toString(36).slice(2, 8)}`;
         filterChain += `${currentV}${txt}[${lbl}];`;
         currentV = `[${lbl}]`;
       };
 
       /* ---------- NORMALIZAÇÃO INICIAL ---------- */
       addFilter(
-        'scale=1280:720:force_original_aspect_ratio=decrease,' +
-        'pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,' +
-        'setsar=1,format=yuv420p'
+        `scale=1280:720:force_original_aspect_ratio=decrease,` +
+        `pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,` +
+        `setsar=1,format=yuv420p`
       );
 
       /* ---------- TRIM ---------- */
@@ -81,30 +83,22 @@ module.exports = {
       }
 
       /* ---------- MOVIMENTO ---------- */
-      let moveFilter = null;
       if (clip.properties?.movement) {
-        moveFilter = presetGenerator.getMovementFilter(
+        const mv = presetGenerator.getMovementFilter(
           clip.properties.movement.type,
           duration,
           clip.type === 'image',
           clip.properties.movement.config
         );
-      } else if (clip.type === 'image') {
-        moveFilter = presetGenerator.getMovementFilter(null, duration, true);
-      }
-
-      if (moveFilter) {
-        addFilter(moveFilter);
-        addFilter(
-          'scale=1280:720:force_original_aspect_ratio=decrease,' +
-          'pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,' +
-          'setsar=1'
-        );
+        if (mv) addFilter(mv);
       }
 
       /* ---------- TEXTO ---------- */
       if (clip.type === 'text' && clip.properties?.text) {
-        const txt = clip.properties.text.replace(/'/g, '').replace(/:/g, '\\:');
+        const txt = clip.properties.text
+          .replace(/'/g, '')
+          .replace(/:/g, '\\:');
+
         const color = clip.properties.textDesign?.color || 'white';
 
         addFilter(
@@ -113,6 +107,9 @@ module.exports = {
           `shadowcolor=black:shadowx=2:shadowy=2`
         );
       }
+
+      /* ---------- 🔥 SINCRONIZAÇÃO OBRIGATÓRIA ---------- */
+      addFilter(SYNC_FILTER);
 
       visualStreamLabels.push({
         label: currentV,
@@ -165,7 +162,7 @@ module.exports = {
         );
 
         const offset = accDur - tDur;
-        const lbl = `mix_${i}`;
+        const lbl = `xf_${i}`;
 
         filterChain +=
           `${current}${next.label}` +
@@ -183,16 +180,15 @@ module.exports = {
     }
 
     /* =========================
-       NORMALIZAÇÃO FINAL (SEM FPS)
+       NORMALIZAÇÃO FINAL
     ========================== */
 
     const finalVideoLabel = 'v_final';
-
     filterChain +=
       `${finalV}` +
       `scale=1280:720:force_original_aspect_ratio=decrease,` +
       `pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,` +
-      `setsar=1,format=yuv420p` +
+      `setsar=1,format=yuv420p,fps=30` +
       `[${finalVideoLabel}];`;
 
     finalV = `[${finalVideoLabel}]`;
@@ -206,7 +202,7 @@ module.exports = {
     if (baseAudioSegments.length > 0) {
       filterChain +=
         `${baseAudioSegments.join('')}` +
-        `concat=n=${baseAudioSegments.length}:v=0:a=1,asetpts=PTS-STARTPTS` +
+        `concat=n=${baseAudioSegments.length}:v=0:a=1` +
         `${baseAudioLabel};`;
     } else {
       filterChain +=
@@ -234,8 +230,7 @@ module.exports = {
 
       filterChain +=
         `[${idx}:a]atrim=start=${start}:duration=${clip.duration},` +
-        `asetpts=PTS-STARTPTS,volume=${vol},` +
-        `adelay=${delay}|${delay}` +
+        `asetpts=PTS-STARTPTS,volume=${vol},adelay=${delay}|${delay}` +
         `[${lbl}];`;
 
       overlayLabels.push(`[${lbl}]`);
@@ -251,11 +246,8 @@ module.exports = {
       filterChain +=
         `${baseAudioLabel}${overlayLabels.join('')}` +
         `amix=inputs=${overlayLabels.length + 1}:duration=first:` +
-        `dropout_transition=0:normalize=0[mixed];`;
-
-      filterChain +=
-        `[mixed]aformat=sample_rates=44100:channel_layouts=stereo` +
-        `${finalA}`;
+        `dropout_transition=0:normalize=0[mixed];` +
+        `[mixed]aformat=sample_rates=44100:channel_layouts=stereo${finalA}`;
     } else {
       finalA = baseAudioLabel;
     }
