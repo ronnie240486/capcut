@@ -84,37 +84,65 @@ module.exports = {
     },
 
     getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
-        const speed = parseFloat(config.speed || config.intensity || 1);
-        const frames = Math.max(1, Math.ceil(durationSec * 30));
+        // Fix: Use totalFrames to calculate smooth step per frame
+        const fps = 30;
+        const totalFrames = Math.max(1, durationSec * fps);
         
         // CRITICAL: Ensure s=1280x720 is always present
         const base = `zoompan=d=1:s=1280x720:fps=30`; 
 
         switch (moveId) {
-            case 'zoom-in':
             case 'kenBurns':
+                // Check if user provided custom scale, otherwise default 1.0 -> 1.5
+                const startScale = config.startScale || 1.0;
+                const endScale = config.endScale || 1.5;
+                const scaleDiff = endScale - startScale;
+                const step = scaleDiff / totalFrames;
+                
+                // Formula: Start + (Step * CurrentFrame)
+                const zExpr = `${startScale}+(${step.toFixed(6)}*on)`;
+                
+                // Use Pan logic if provided (simplified to center for now to ensure robustness, 
+                // typically Ken Burns also moves X/Y, but Z is the most important part)
+                return `${base}:z='${zExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+
+            case 'zoom-in':
             case 'zoom-slow-in':
-                return `${base}:z='min(1+${0.0015 * 30 * speed}*on,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+                // Zoom 1.0 -> 1.5 smoothly over duration
+                return `${base}:z='min(1.0+((0.5)/${totalFrames})*on,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+            
             case 'zoom-fast-in':
-                 return `${base}:z='min(1+${0.003 * 30 * speed}*on,2.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+                 // Zoom 1.0 -> 2.0
+                 return `${base}:z='min(1.0+((1.0)/${totalFrames})*on,2.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+            
             case 'zoom-out':
             case 'zoom-slow-out':
-                return `${base}:z='max(1.5-${0.0015 * 30 * speed}*on,1)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+                // Zoom 1.5 -> 1.0
+                return `${base}:z='max(1.5-((0.5)/${totalFrames})*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+            
             case 'pan-left':
-                return `${base}:z=1.2:x='(iw-iw/zoom)*(on/${frames})':y='ih/2-(ih/zoom/2)'`;
+                // Move viewport from left to right (Image appears to move Left)
+                return `${base}:z=1.2:x='(iw-iw/zoom)*(on/${totalFrames})':y='ih/2-(ih/zoom/2)'`;
+            
             case 'pan-right':
-                return `${base}:z=1.2:x='(iw-iw/zoom)*(1-on/${frames})':y='ih/2-(ih/zoom/2)'`;
+                return `${base}:z=1.2:x='(iw-iw/zoom)*(1-on/${totalFrames})':y='ih/2-(ih/zoom/2)'`;
+            
             case 'pan-up':
-                return `${base}:z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(on/${frames})'`;
+                return `${base}:z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(on/${totalFrames})'`;
+            
             case 'pan-down':
-                return `${base}:z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(1-on/${frames})'`;
+                return `${base}:z=1.2:x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(1-on/${totalFrames})'`;
+            
             case 'shake':
             case 'earthquake':
             case 'handheld-1':
             case 'handheld-2':
-                return `${base}:z=1.1:x='iw/2-(iw/zoom/2)+random(1)*${10*speed}-5':y='ih/2-(ih/zoom/2)+random(1)*${10*speed}-5'`;
+                return `${base}:z=1.1:x='iw/2-(iw/zoom/2)+random(1)*10-5':y='ih/2-(ih/zoom/2)+random(1)*10-5'`;
+            
             case 'pulse':
+                const speed = config.speed || 1;
                 return `${base}:z='1+0.05*sin(on/30*${speed}*6.28)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+            
             default:
                 if (isImage) return `${base}:z=1`; // Static fix
                 return null;
@@ -192,7 +220,6 @@ module.exports = {
         };
         
         // Se o ID não existir, retorna 'fade' (padrão seguro)
-        // Isso impede que o vídeo quebre se o usuário escolher "Super Hyper Glitch" que não mapeamos
         return map[id] || 'fade';
     },
 
