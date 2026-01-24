@@ -59,11 +59,11 @@ module.exports = {
         currentV = `[${lbl}]`;
       };
 
-      /* ---------- NORMALIZAÇÃO INICIAL (ÚNICA) ---------- */
+      /* ---------- NORMALIZAÇÃO INICIAL ---------- */
       addFilter(
-        `scale=1280:720:force_original_aspect_ratio=decrease,
-         pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,
-         setsar=1,format=yuv420p`
+        'scale=1280:720:force_original_aspect_ratio=decrease,' +
+        'pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,' +
+        'setsar=1,format=yuv420p'
       );
 
       /* ---------- TRIM ---------- */
@@ -93,19 +93,24 @@ module.exports = {
         moveFilter = presetGenerator.getMovementFilter(null, duration, true);
       }
 
-      if (moveFilter) addFilter(moveFilter);
+      if (moveFilter) {
+        addFilter(moveFilter);
+        addFilter(
+          'scale=1280:720:force_original_aspect_ratio=decrease,' +
+          'pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,' +
+          'setsar=1'
+        );
+      }
 
       /* ---------- TEXTO ---------- */
       if (clip.type === 'text' && clip.properties?.text) {
-        const txt = clip.properties.text
-          .replace(/'/g, '')
-          .replace(/:/g, '\\:');
+        const txt = clip.properties.text.replace(/'/g, '').replace(/:/g, '\\:');
         const color = clip.properties.textDesign?.color || 'white';
 
         addFilter(
-          `drawtext=text='${txt}':fontcolor=${color}:fontsize=60:
-           x=(w-text_w)/2:y=(h-text_h)/2:
-           shadowcolor=black:shadowx=2:shadowy=2`
+          `drawtext=text='${txt}':fontcolor=${color}:fontsize=60:` +
+          `x=(w-text_w)/2:y=(h-text_h)/2:` +
+          `shadowcolor=black:shadowx=2:shadowy=2`
         );
       }
 
@@ -149,6 +154,7 @@ module.exports = {
       for (let i = 1; i < visualStreamLabels.length; i++) {
         const prev = visualStreamLabels[i - 1];
         const next = visualStreamLabels[i];
+
         const trans = prev.transition || { id: 'fade', duration: 0.1 };
         const transId = presetGenerator.getTransitionXfade(trans.id);
 
@@ -177,15 +183,16 @@ module.exports = {
     }
 
     /* =========================
-       NORMALIZAÇÃO FINAL (ÚNICA)
+       NORMALIZAÇÃO FINAL (SEM FPS)
     ========================== */
 
     const finalVideoLabel = 'v_final';
+
     filterChain +=
       `${finalV}` +
       `scale=1280:720:force_original_aspect_ratio=decrease,` +
       `pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,` +
-      `setsar=1,format=yuv420p,fps=30` +
+      `setsar=1,format=yuv420p` +
       `[${finalVideoLabel}];`;
 
     finalV = `[${finalVideoLabel}]`;
@@ -199,7 +206,7 @@ module.exports = {
     if (baseAudioSegments.length > 0) {
       filterChain +=
         `${baseAudioSegments.join('')}` +
-        `concat=n=${baseAudioSegments.length}:v=0:a=1` +
+        `concat=n=${baseAudioSegments.length}:v=0:a=1,asetpts=PTS-STARTPTS` +
         `${baseAudioLabel};`;
     } else {
       filterChain +=
