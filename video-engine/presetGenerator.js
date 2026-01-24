@@ -91,8 +91,38 @@ module.exports = {
         const base = `zoompan=d=1:s=1280x720:fps=30`; 
 
         switch (moveId) {
-            case 'zoom-in':
             case 'kenBurns':
+                 // Parameters from UI (defaults if missing)
+                 const sS = config.startScale !== undefined ? Number(config.startScale) : 1.0;
+                 const eS = config.endScale !== undefined ? Number(config.endScale) : 1.5;
+                 // Offsets in UI are -50 to 50 (percentage). Convert to -0.5 to 0.5 fraction.
+                 const sX = config.startX !== undefined ? Number(config.startX) / 100 : 0;
+                 const sY = config.startY !== undefined ? Number(config.startY) / 100 : 0;
+                 const eX = config.endX !== undefined ? Number(config.endX) / 100 : 0;
+                 const eY = config.endY !== undefined ? Number(config.endY) / 100 : 0;
+                 
+                 // Interpolation factor (0 to 1) based on current frame 'on'
+                 const p = `on/${frames}`;
+                 
+                 // Zoom Expression: Linear interpolation between start and end scale
+                 const zExpr = `${sS}+(${eS - sS})*${p}`;
+                 
+                 // X/Y Expressions:
+                 // The x/y in zoompan define the top-left coordinate of the viewport.
+                 // We want to control the center offset.
+                 // Center X relative to image width: 0.5 + offset
+                 // Top-Left X = (Center X * iw) - (Viewport Width / 2)
+                 // Viewport Width = iw / zoom
+                 // Formula: iw * (0.5 + offset) - (iw / zoom) / 2
+                 // Simplify: iw * (0.5 - 0.5/zoom + offset)
+                 // We interpolate the offset (sX to eX) using 'p'
+                 
+                 const xExpr = `iw*(0.5-0.5/zoom+(${sX}+(${eX - sX})*${p}))`;
+                 const yExpr = `ih*(0.5-0.5/zoom+(${sY}+(${eY - sY})*${p}))`;
+                 
+                 return `${base}:z='${zExpr}':x='${xExpr}':y='${yExpr}'`;
+
+            case 'zoom-in':
             case 'zoom-slow-in':
                 return `${base}:z='min(1+${0.0015 * 30 * speed}*on,1.5)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             case 'zoom-fast-in':
