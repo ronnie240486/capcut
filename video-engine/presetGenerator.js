@@ -1,9 +1,11 @@
 
 /**
  * FFmpeg FULL PRESETS + MOVEMENTS
- * Production-safe version with SMOOTH ABSOLUTE INTERPOLATION
+ * Production-safe version with SMOOTH ABSOLUTE INTERPOLATION & SUPER-SAMPLING
  */
 
+// Final output scaler (downscale at the very end if needed, but keeping 1080p internal helps quality)
+// We will output 720p final to keep file size low, but processing happens at 1080p
 const FINAL_FILTER = 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p,fps=30';
 
 module.exports = {
@@ -82,15 +84,14 @@ module.exports = {
     },
 
     getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
-        // SMOOTH MOVEMENT LOGIC (NO SHAKING)
-        // We use 'on' (current frame index) and Total Frames to create a linear interpolation (Lerp).
-        // This avoids the 'jitter' caused by recursive relative math (zoom+0.001).
+        // SMOOTH MOVEMENT LOGIC (SUPER-SAMPLING)
+        // Processing at 1080p (1920x1080) internally prevents sub-pixel shaking when scaling down to 720p.
         
         const fps = 30;
         const frames = Math.max(1, Math.ceil(durationSec * fps));
         
-        // Base zoompan settings. s=1280x720 forces the internal canvas to be HD, preventing low-res upscale jitter.
-        const base = `zoompan=d=${isImage ? frames : 1}:s=1280x720:fps=${fps}`; 
+        // High-res internal buffer (1080p) to smooth out calculations
+        const base = `zoompan=d=${isImage ? frames : 1}:s=1920x1080:fps=${fps}`; 
 
         // Normalized progress (0.0 to 1.0)
         const progress = `(on/${frames})`; 
@@ -99,25 +100,17 @@ module.exports = {
             case 'kenBurns':
                  // Parameters
                  const sS = config.startScale !== undefined ? Number(config.startScale) : 1.0;
-                 const eS = config.endScale !== undefined ? Number(config.endScale) : 1.3; // Lower default end scale for smoothness
+                 const eS = config.endScale !== undefined ? Number(config.endScale) : 1.3;
                  
-                 // Offsets are -50 to 50. Convert to -0.5 to 0.5.
-                 // We add 0.5 to center it (0.0 to 1.0 coordinate space)
                  const startXNorm = 0.5 + (config.startX !== undefined ? Number(config.startX) / 100 : 0);
                  const startYNorm = 0.5 + (config.startY !== undefined ? Number(config.startY) / 100 : 0);
                  const endXNorm = 0.5 + (config.endX !== undefined ? Number(config.endX) / 100 : 0);
                  const endYNorm = 0.5 + (config.endY !== undefined ? Number(config.endY) / 100 : 0);
                  
-                 // Absolute Zoom Formula
                  const zExpr = `${sS}+(${eS - sS})*${progress}`;
-                 
-                 // Absolute Center Position Formula (Lerp)
                  const cxExpr = `${startXNorm}+(${endXNorm - startXNorm})*${progress}`;
                  const cyExpr = `${startYNorm}+(${endYNorm - startYNorm})*${progress}`;
 
-                 // Convert Center (cx, cy) to Top-Left corner (x, y) required by zoompan
-                 // x = (Center_X * Image_Width) - (Viewport_Width / 2)
-                 // Viewport_Width = Image_Width / Zoom
                  const xExpr = `iw*(${cxExpr})-(iw/zoom/2)`;
                  const yExpr = `ih*(${cyExpr})-(ih/zoom/2)`;
                  
@@ -125,30 +118,25 @@ module.exports = {
 
             case 'zoom-in':
             case 'zoom-slow-in':
-                // Absolute Zoom from 1.0 to 1.5, perfectly centered
                 return `${base}:z='1.0+(0.5)*${progress}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             
             case 'zoom-fast-in':
             case 'mov-zoom-crash-in':
-                 // Absolute Zoom from 1.0 to 2.0
                  return `${base}:z='1.0+(1.0)*${progress}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             
             case 'zoom-out':
             case 'zoom-slow-out':
             case 'mov-zoom-crash-out':
-                // Absolute Zoom from 1.5 to 1.0
                 return `${base}:z='1.5-(0.5)*${progress}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             
             case 'pan-left':
             case 'mov-pan-slow-l':
-                // Move viewport from Left (0) to Right (max) to simulate image moving Left? 
-                // Or Standard Pan: Show left side then right side.
-                // Center starts at 0.4 and goes to 0.6
+                // Move camera right to pan image left
                 return `${base}:z=1.2:x='iw*(0.4+(0.2)*${progress})-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             
             case 'pan-right':
             case 'mov-pan-slow-r':
-                 // Center starts at 0.6 and goes to 0.4
+                 // Move camera left to pan image right
                 return `${base}:z=1.2:x='iw*(0.6-(0.2)*${progress})-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             
             case 'pan-up':
@@ -164,7 +152,6 @@ module.exports = {
             case 'handheld-1':
             case 'mov-shake-violent':
             case 'jitter':
-                // Random shake remains for specific effects
                 return `${base}:z=1.1:x='iw/2-(iw/zoom/2)+random(1)*10-5':y='ih/2-(ih/zoom/2)+random(1)*10-5'`;
             
             case 'pulse':
@@ -230,7 +217,7 @@ module.exports = {
             'white-smoke': 'fadewhite',
             
             // SPECIFIC REQUESTS
-            'rip-diag': 'wipedown', // Fallback for Rip Diagonal
+            'rip-diag': 'wipeleft', // UPDATED: Horizontal Wipe for Rasgo do Dia
             'flash-bang': 'fadewhite',
             'lens-flare': 'fadewhite',
             'blur-dissolve': 'distance',
