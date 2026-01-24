@@ -35,7 +35,8 @@ module.exports = {
             } else if (clip.type === 'video') {
                 inputs.push('-i', filePath);
             } else if (clip.type === 'text') {
-                inputs.push('-f', 'lavfi', '-t', (duration + 3).toString(), '-i', `color=c=black@0.0:s=1920x1080:r=30`); // Use 1080p base for text
+                // Use 1080p for text generation to match internal resolution
+                inputs.push('-f', 'lavfi', '-t', (duration + 3).toString(), '-i', `color=c=black@0.0:s=1920x1080:r=30`);
             }
 
             const idx = inputIndexCounter++;
@@ -71,6 +72,7 @@ module.exports = {
                 const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config);
                 if (moveFilter) addFilter(moveFilter);
             } else if (clip.type === 'image') {
+                // Default static movement at 1080p to prevent format issues
                 const staticMove = presetGenerator.getMovementFilter(null, duration, true);
                 addFilter(staticMove);
             }
