@@ -140,24 +140,66 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     });
 }
 
-// --- PROXY ROUTES PARA RESULTADOS REAIS ---
+// --- PROXY ROUTES ---
 
-// Proxy para Pixabay Audio (With Fallback)
+// Proxy for Pixabay (Combined Audio/Video/Image)
 app.get('/api/proxy/pixabay', (req, res) => {
-    const { q, category } = req.query;
-    const isSFX = (category || '').includes('sfx') || (q || '').toLowerCase().includes('effect');
-    const sourceList = isSFX ? REAL_SFX_FALLBACKS : REAL_MUSIC_FALLBACKS;
+    const { q, category, type, token } = req.query;
+    // Default to image if type is not specified but usually handled by params
+    // Type can be 'photo', 'video', 'audio'
     
-    const results = sourceList.filter(item => 
-        !q || 
-        item.name.toLowerCase().includes(String(q).toLowerCase()) || 
-        item.artist.toLowerCase().includes(String(q).toLowerCase())
-    );
+    if (!token || token === 'undefined') {
+        return res.json({ hits: [] });
+    }
+
+    const medType = type || 'photo';
+    let url = '';
     
-    res.json({ hits: results.length > 0 ? results : sourceList });
+    if (medType === 'video') {
+         url = `https://pixabay.com/api/videos/?key=${token}&q=${encodeURIComponent(q || '')}&per_page=10`;
+    } else {
+         url = `https://pixabay.com/api/?key=${token}&q=${encodeURIComponent(q || '')}&image_type=photo&per_page=10`;
+    }
+
+    https.get(url, (apiRes) => {
+        let data = '';
+        apiRes.on('data', chunk => data += chunk);
+        apiRes.on('end', () => {
+            try {
+                const json = JSON.parse(data);
+                res.json(json);
+            } catch (e) {
+                res.json({ hits: [] });
+            }
+        });
+    }).on('error', () => res.json({ hits: [] }));
 });
 
-// Proxy para Freesound (With Fallback)
+// Proxy for Unsplash (Images)
+app.get('/api/proxy/unsplash', (req, res) => {
+    const { q, token } = req.query;
+    
+    if (!token || token === 'undefined') {
+        return res.json({ results: [] });
+    }
+
+    const url = `https://api.unsplash.com/search/photos?query=${encodeURIComponent(q || '')}&per_page=10&client_id=${token}`;
+
+    https.get(url, (apiRes) => {
+        let data = '';
+        apiRes.on('data', chunk => data += chunk);
+        apiRes.on('end', () => {
+            try {
+                const json = JSON.parse(data);
+                res.json(json);
+            } catch (e) {
+                res.json({ results: [] });
+            }
+        });
+    }).on('error', () => res.json({ results: [] }));
+});
+
+// Proxy for Freesound (Audio)
 app.get('/api/proxy/freesound', (req, res) => {
     const { token, q } = req.query;
     const isMusicSearch = (q || '').toLowerCase().includes('music');
