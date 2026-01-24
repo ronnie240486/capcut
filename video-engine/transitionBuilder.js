@@ -35,7 +35,7 @@ module.exports = {
             } else if (clip.type === 'video') {
                 inputs.push('-i', filePath);
             } else if (clip.type === 'text') {
-                inputs.push('-f', 'lavfi', '-t', (duration + 3).toString(), '-i', `color=c=black@0.0:s=1280x720:r=30`);
+                inputs.push('-f', 'lavfi', '-t', (duration + 3).toString(), '-i', `color=c=black@0.0:s=1920x1080:r=30`); // Use 1080p base for text
             }
 
             const idx = inputIndexCounter++;
@@ -48,8 +48,9 @@ module.exports = {
                 currentV = `[${nextLabel}]`;
             };
 
-            // 1. NORMALIZAÇÃO
-            addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
+            // 1. NORMALIZAÇÃO - SUPER-SAMPLING (1920x1080)
+            // Processamos em 1080p para evitar tremedeira em zooms, depois reduzimos para 720p no final.
+            addFilter(`scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
 
             // 2. TRIM
             if (clip.type !== 'image') {
@@ -65,7 +66,7 @@ module.exports = {
                 if (fx) addFilter(fx);
             }
             
-            // 4. MOVIMENTO SUAVE (SMOOTH MOVEMENT)
+            // 4. MOVIMENTO SUAVE (SMOOTH MOVEMENT via 1080p Zoompan)
             if (clip.properties && clip.properties.movement) {
                 const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config);
                 if (moveFilter) addFilter(moveFilter);
@@ -78,11 +79,12 @@ module.exports = {
             if (clip.type === 'text' && clip.properties.text) {
                 const txt = clip.properties.text.replace(/'/g, '').replace(/:/g, '\\:');
                 const color = clip.properties.textDesign?.color || 'white';
-                addFilter(`drawtext=text='${txt}':fontcolor=${color}:fontsize=60:x=(w-text_w)/2:y=(h-text_h)/2`);
+                // Scale text size for 1080p
+                addFilter(`drawtext=text='${txt}':fontcolor=${color}:fontsize=90:x=(w-text_w)/2:y=(h-text_h)/2`);
             }
 
-            // 6. SAFE SCALE
-            addFilter(`scale=1280:720,setsar=1`);
+            // 6. SAFE SCALE - Manter 1080p para mistura
+            addFilter(`scale=1920:1080,setsar=1`);
 
             visualStreamLabels.push({
                 label: currentV,
@@ -96,7 +98,6 @@ module.exports = {
             
             if (clip.type === 'video' && mediaInfo?.hasAudio) {
                 const start = clip.mediaStartOffset || 0;
-                // APAD pads audio if video is longer. ATRIM cuts it.
                 filterChain += `[${idx}:a]atrim=start=${start},apad,atrim=duration=${duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
             } else {
                 filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${audioLabel}];`;
@@ -104,8 +105,8 @@ module.exports = {
             baseAudioSegments.push(`[${audioLabel}]`);
         });
 
-        // --- VIDEO MIXING ---
-        let finalVideo = '[black_bg]';
+        // --- VIDEO MIXING (Full HD Mixing) ---
+        let finalVideo1080 = '[black_bg]';
         
         if (visualStreamLabels.length > 0) {
             let currentMix = visualStreamLabels[0].label;
@@ -125,11 +126,17 @@ module.exports = {
                 currentMix = `[${nextLabel}]`;
                 accumulatedDuration = offset + transDur + (nextClip.duration - transDur);
             }
-            finalVideo = currentMix;
+            finalVideo1080 = currentMix;
         } else {
-            inputs.push('-f', 'lavfi', '-i', 'color=c=black:s=1280x720:d=5');
-            finalVideo = `[${inputIndexCounter++}:v]`;
+            inputs.push('-f', 'lavfi', '-i', 'color=c=black:s=1920x1080:d=5');
+            finalVideo1080 = `[${inputIndexCounter++}:v]`;
         }
+
+        // --- DOWNSCALE TO 720p FINAL ---
+        // This is the final super-sampling step that removes aliasing
+        const finalVideo = '[final_out_720]';
+        filterChain += `${finalVideo1080}scale=1280:720:flags=lanczos,setsar=1[final_out_720];`;
+
 
         // --- AUDIO MIXING ---
         let baseAudio = '[base_audio_combined]';
