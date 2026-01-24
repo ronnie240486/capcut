@@ -82,7 +82,7 @@ module.exports = {
     },
 
     getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
-        // SMOOTH MOVEMENT LOGIC
+        // SMOOTH MOVEMENT LOGIC (NO SHAKING)
         // We use 'on' (current frame index) and Total Frames to create a linear interpolation (Lerp).
         // This avoids the 'jitter' caused by recursive relative math (zoom+0.001).
         
@@ -93,7 +93,6 @@ module.exports = {
         const base = `zoompan=d=${isImage ? frames : 1}:s=1280x720:fps=${fps}`; 
 
         // Normalized progress (0.0 to 1.0)
-        // We use (on+1) to ensure we reach the end target smoothly
         const progress = `(on/${frames})`; 
 
         switch (moveId) {
@@ -130,37 +129,46 @@ module.exports = {
                 return `${base}:z='1.0+(0.5)*${progress}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             
             case 'zoom-fast-in':
+            case 'mov-zoom-crash-in':
                  // Absolute Zoom from 1.0 to 2.0
                  return `${base}:z='1.0+(1.0)*${progress}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             
             case 'zoom-out':
             case 'zoom-slow-out':
+            case 'mov-zoom-crash-out':
                 // Absolute Zoom from 1.5 to 1.0
                 return `${base}:z='1.5-(0.5)*${progress}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             
             case 'pan-left':
+            case 'mov-pan-slow-l':
                 // Move viewport from Left (0) to Right (max) to simulate image moving Left? 
                 // Or Standard Pan: Show left side then right side.
                 // Center starts at 0.4 and goes to 0.6
                 return `${base}:z=1.2:x='iw*(0.4+(0.2)*${progress})-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             
             case 'pan-right':
+            case 'mov-pan-slow-r':
                  // Center starts at 0.6 and goes to 0.4
                 return `${base}:z=1.2:x='iw*(0.6-(0.2)*${progress})-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             
             case 'pan-up':
+            case 'mov-pan-slow-u':
                 return `${base}:z=1.2:x='iw/2-(iw/zoom/2)':y='ih*(0.4+(0.2)*${progress})-(ih/zoom/2)'`;
             
             case 'pan-down':
+            case 'mov-pan-slow-d':
                 return `${base}:z=1.2:x='iw/2-(iw/zoom/2)':y='ih*(0.6-(0.2)*${progress})-(ih/zoom/2)'`;
 
             case 'shake':
             case 'earthquake':
             case 'handheld-1':
+            case 'mov-shake-violent':
+            case 'jitter':
                 // Random shake remains for specific effects
                 return `${base}:z=1.1:x='iw/2-(iw/zoom/2)+random(1)*10-5':y='ih/2-(ih/zoom/2)+random(1)*10-5'`;
             
             case 'pulse':
+            case 'mov-zoom-pulse-slow':
                 return `${base}:z='1+0.05*sin(on/30*2*6.28)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
             
             default:
@@ -171,6 +179,7 @@ module.exports = {
 
     getTransitionXfade: (id) => {
         const map = {
+            // BASIC
             'crossfade': 'fade',
             'mix': 'fade',
             'fade-classic': 'fade',
@@ -180,9 +189,8 @@ module.exports = {
             'flash-black': 'fadeblack',
             'flash-white': 'fadewhite',
             'flash': 'fadewhite',
-            'blur-dissolve': 'distance',
-            'blur': 'distance',
-            'dynamic-blur': 'distance',
+            
+            // GEOMETRIC & WIPES
             'wipe-up': 'wipeup',
             'wipe-down': 'wipedown',
             'wipe-left': 'wipeleft',
@@ -195,17 +203,52 @@ module.exports = {
             'circle-close': 'circleclose',
             'iris-in': 'circleopen',
             'iris-out': 'circleclose',
+            'radial': 'radial',
+            'smooth-left': 'smoothleft',
+            'smooth-right': 'smoothright',
+            'rect-crop': 'rectcrop',
+            'circle-crop': 'circlecrop',
+            'diamond-in': 'diagtl',
+            'diamond-out': 'diagbr',
+            
+            // ZOOM
             'zoom-in': 'zoomin',
             'zoomin': 'zoomin',
-            'zoom-out': 'circleclose', // Fallback mapped to circleclose to allow "zoom out" feel without invalid filter
+            'zoom-out': 'circleclose', 
             'zoomout': 'circleclose',
             'pull-away': 'distance',
+            
+            // GLITCH & SPECIAL
             'glitch': 'pixelize',
             'pixelize': 'pixelize',
             'pixel-sort': 'pixelize',
             'rgb-shake': 'hblur',
             'color-glitch': 'distance',
-            'urban-glitch': 'squeezev'
+            'urban-glitch': 'squeezev',
+            'blood-mist': 'distance',
+            'black-smoke': 'fadeblack',
+            'white-smoke': 'fadewhite',
+            
+            // SPECIFIC REQUESTS
+            'rip-diag': 'wipedown', // Fallback for Rip Diagonal
+            'flash-bang': 'fadewhite',
+            'lens-flare': 'fadewhite',
+            'blur-dissolve': 'distance',
+            'dynamic-blur': 'distance',
+            'film-roll': 'slideup',
+            'film-roll-v': 'slideup',
+            
+            // LIQUID & ORGANIC
+            'liquid-melt': 'hlslice',
+            'ink-splash': 'hrslice',
+            'water-ripple': 'radial',
+            'smoke-reveal': 'fade',
+            
+            // 3D
+            'cube-rotate-l': 'smoothleft',
+            'cube-rotate-r': 'smoothright',
+            'door-open': 'hblur',
+            'flip-card': 'vblur'
         };
         return map[id] || 'fade';
     },
