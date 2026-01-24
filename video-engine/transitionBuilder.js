@@ -20,21 +20,6 @@ module.exports = {
             (c.type === 'audio' && !['video', 'camada', 'text'].includes(c.track))
         );
 
-        // === SINCRONIA PROFISSIONAL (SMART SYNC) ===
-        visualClips.forEach(vClip => {
-            const vStart = vClip.start;
-            const syncedNarrations = overlayClips.filter(aClip => 
-                ['narration', 'audio'].includes(aClip.track) && 
-                Math.abs(aClip.start - vStart) < 0.25
-            );
-            if (syncedNarrations.length > 0) {
-                const maxAudioDuration = Math.max(...syncedNarrations.map(n => n.duration));
-                if (maxAudioDuration > vClip.duration) {
-                    vClip.duration = maxAudioDuration + 0.1;
-                }
-            }
-        });
-
         let visualStreamLabels = [];
         let baseAudioSegments = [];
 
@@ -105,15 +90,13 @@ module.exports = {
                 transition: clip.transition
             });
 
-            // --- AUDIO BASE (FIX SYNC) ---
+            // --- AUDIO BASE ---
             const mediaInfo = mediaLibrary[clip.fileName];
             const audioLabel = `a_base_${i}`;
             
             if (clip.type === 'video' && mediaInfo?.hasAudio) {
                 const start = clip.mediaStartOffset || 0;
-                // CRITICAL FIX: use apad to pad with silence if the original video audio is shorter than the desired duration
-                // Then atrim to cut exactly at the desired duration. 
-                // This ensures sync even if we extended the video clip (e.g. frozen last frame).
+                // APAD pads audio if video is longer. ATRIM cuts it.
                 filterChain += `[${idx}:a]atrim=start=${start},apad,atrim=duration=${duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
             } else {
                 filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${audioLabel}];`;
