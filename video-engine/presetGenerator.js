@@ -199,9 +199,9 @@ module.exports = {
             // Zooms
             'zoom-in': 'zoomin',
             'zoomin': 'zoomin',
-            'zoom-out': 'zoomout',
-            'zoomout': 'zoomout',
-            'pull-away': 'zoomout',
+            'zoom-out': 'distance', // 'zoomout' is not valid in FFmpeg, 'distance' creates a blur/depth effect
+            'zoomout': 'distance',
+            'pull-away': 'distance',
             'dreamy-zoom': 'circlecrop',
 
             // Glitch & Trends (Approximations using standard xfades)
@@ -220,7 +220,7 @@ module.exports = {
             'white-smoke': 'fadewhite',
             'fire-burn': 'hlslice',
             'visual-buzz': 'hblur',
-            'zoom-neg': 'zoomout',
+            'zoom-neg': 'distance', // 'zoomout' invalid, use distance
             'infinity-1': 'kaleidoscope',
             'digital-paint': 'pixelize',
             'brush-wind': 'wipetl',
@@ -266,7 +266,7 @@ module.exports = {
             'flip-card': 'horzopen',
             'room-fly': 'zoomin',
             'spin-zoom-in': 'zoomin',
-            'spin-zoom-out': 'zoomout',
+            'spin-zoom-out': 'distance', // 'zoomout' invalid
             'whip-diagonal-1': 'diagtl',
             'whip-diagonal-2': 'diagtr',
             'flash-bang': 'fadewhite',
