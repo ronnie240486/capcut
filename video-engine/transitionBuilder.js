@@ -56,16 +56,16 @@ module.exports = {
 
       const addFilter = (txt) => {
         if (!txt) return;
-        const lbl = `v_${i}_${Math.random().toString(36).slice(2, 8)}`;
+        const lbl = `v_${i}_${Math.random().toString(36).slice(2, 7)}`;
         filterChain += `${currentV}${txt}[${lbl}];`;
         currentV = `[${lbl}]`;
       };
 
       /* ---------- NORMALIZAÇÃO INICIAL ---------- */
       addFilter(
-        `scale=1280:720:force_original_aspect_ratio=decrease,` +
-        `pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,` +
-        `setsar=1,format=yuv420p`
+        'scale=1280:720:force_original_aspect_ratio=decrease,' +
+        'pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,' +
+        'setsar=1,format=yuv420p'
       );
 
       /* ---------- TRIM ---------- */
@@ -83,22 +83,23 @@ module.exports = {
       }
 
       /* ---------- MOVIMENTO ---------- */
+      let moveFilter = null;
       if (clip.properties?.movement) {
-        const mv = presetGenerator.getMovementFilter(
+        moveFilter = presetGenerator.getMovementFilter(
           clip.properties.movement.type,
           duration,
           clip.type === 'image',
           clip.properties.movement.config
         );
-        if (mv) addFilter(mv);
+      } else if (clip.type === 'image') {
+        moveFilter = presetGenerator.getMovementFilter(null, duration, true);
       }
+
+      if (moveFilter) addFilter(moveFilter);
 
       /* ---------- TEXTO ---------- */
       if (clip.type === 'text' && clip.properties?.text) {
-        const txt = clip.properties.text
-          .replace(/'/g, '')
-          .replace(/:/g, '\\:');
-
+        const txt = clip.properties.text.replace(/'/g, '').replace(/:/g, '\\:');
         const color = clip.properties.textDesign?.color || 'white';
 
         addFilter(
@@ -108,7 +109,7 @@ module.exports = {
         );
       }
 
-      /* ---------- 🔥 SINCRONIZAÇÃO OBRIGATÓRIA ---------- */
+      /* ---------- SYNC OBRIGATÓRIO P/ XFADE ---------- */
       addFilter(SYNC_FILTER);
 
       visualStreamLabels.push({
@@ -151,7 +152,6 @@ module.exports = {
       for (let i = 1; i < visualStreamLabels.length; i++) {
         const prev = visualStreamLabels[i - 1];
         const next = visualStreamLabels[i];
-
         const trans = prev.transition || { id: 'fade', duration: 0.1 };
         const transId = presetGenerator.getTransitionXfade(trans.id);
 
@@ -162,7 +162,7 @@ module.exports = {
         );
 
         const offset = accDur - tDur;
-        const lbl = `xf_${i}`;
+        const lbl = `mix_${i}`;
 
         filterChain +=
           `${current}${next.label}` +
@@ -180,7 +180,8 @@ module.exports = {
     }
 
     /* =========================
-       NORMALIZAÇÃO FINAL
+       NORMALIZAÇÃO FINAL DE VÍDEO
+       (SINCRONIZADO COM ÁUDIO)
     ========================== */
 
     const finalVideoLabel = 'v_final';
@@ -188,7 +189,7 @@ module.exports = {
       `${finalV}` +
       `scale=1280:720:force_original_aspect_ratio=decrease,` +
       `pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,` +
-      `setsar=1,format=yuv420p,fps=30` +
+      `setsar=1,format=yuv420p,fps=30,setpts=N/30/TB` +
       `[${finalVideoLabel}];`;
 
     finalV = `[${finalVideoLabel}]`;
@@ -230,7 +231,8 @@ module.exports = {
 
       filterChain +=
         `[${idx}:a]atrim=start=${start}:duration=${clip.duration},` +
-        `asetpts=PTS-STARTPTS,volume=${vol},adelay=${delay}|${delay}` +
+        `asetpts=PTS-STARTPTS,volume=${vol},` +
+        `adelay=${delay}|${delay}` +
         `[${lbl}];`;
 
       overlayLabels.push(`[${lbl}]`);
@@ -246,8 +248,11 @@ module.exports = {
       filterChain +=
         `${baseAudioLabel}${overlayLabels.join('')}` +
         `amix=inputs=${overlayLabels.length + 1}:duration=first:` +
-        `dropout_transition=0:normalize=0[mixed];` +
-        `[mixed]aformat=sample_rates=44100:channel_layouts=stereo${finalA}`;
+        `dropout_transition=0:normalize=0[mixed];`;
+
+      filterChain +=
+        `[mixed]aformat=sample_rates=44100:channel_layouts=stereo` +
+        `${finalA}`;
     } else {
       finalA = baseAudioLabel;
     }
@@ -256,7 +261,8 @@ module.exports = {
       inputs,
       filterComplex: filterChain,
       outputMapVideo: finalV,
-      outputMapAudio: finalA
+      outputMapAudio: finalA,
+      outputOptions: ['-shortest']
     };
   }
 };
