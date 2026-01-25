@@ -33,6 +33,8 @@ module.exports = {
         
         if (mainTrackClips.length === 0) {
             // Create a dummy black background if no video present
+            // Generate it inside filter complex to avoid input issues? No, main track usually needs an input to be robust.
+            // But we can use lavfi here for just one input.
             inputs.push('-f', 'lavfi', '-t', '5', '-i', 'color=c=black:s=1280x720:r=30');
             mainTrackLabels.push(`[${inputIndexCounter++}:v]`);
             // Dummy audio
@@ -165,9 +167,10 @@ module.exports = {
             let overlayInputLabel = '';
             
             if (clip.type === 'text') {
-                 // Generate text image using lavfi or drawtext?
-                 // Creating a transparent input for drawtext is easiest
-                 // We create a transparent video of clip duration
+                 // FIX: Generate text background INSIDE filter_complex to avoid "Resource temporarily unavailable" (too many inputs)
+                 const bgLabel = `txtbg_${i}`;
+                 filterChain += `color=c=black@0.0:s=1280x720:r=30:d=${clip.duration}[${bgLabel}];`;
+
                  const txt = (clip.properties.text || '').replace(/'/g, '').replace(/:/g, '\\:');
                  
                  // Handle Colors
@@ -197,14 +200,9 @@ module.exports = {
                      }
                  }
 
-                 // Using a separate input for text allows better control? 
-                 // Actually, overlaying directly is hard with complex drawtext.
-                 // Let's create a transparent video stream with the text drawn on it.
-                 inputs.push('-f', 'lavfi', '-t', clip.duration.toString(), '-i', `color=c=black@0.0:s=1280x720:r=30`);
-                 const idx = inputIndexCounter++;
                  const txtLabel = `txt_${i}`;
-                 // Drawtext on transparent bg
-                 filterChain += `[${idx}:v]drawtext=text='${txt}':fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}[${txtLabel}];`;
+                 // Drawtext on generated transparent bg
+                 filterChain += `[${bgLabel}]drawtext=text='${txt}':fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}[${txtLabel}];`;
                  overlayInputLabel = `[${txtLabel}]`;
 
             } else {
@@ -246,7 +244,9 @@ module.exports = {
         if (baseAudioSegments.length > 0) {
              filterChain += `${baseAudioSegments.join('')}concat=n=${baseAudioSegments.length}:v=0:a=1[base_audio_seq];`;
         } else {
-             inputs.push('-f', 'lavfi', '-t', '0.1', '-i', 'anullsrc');
+             // Create silent audio stream inside filter complex if possible?
+             // anullsrc is better as input to guarantee stream properties
+             inputs.push('-f', 'lavfi', '-t', '0.1', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
              baseAudioCombined = `[${inputIndexCounter++}:a]`;
         }
         
@@ -276,6 +276,11 @@ module.exports = {
             filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
             finalAudio = baseAudioCombined;
+        }
+
+        // REMOVE TRAILING SEMICOLON TO FIX "No such filter: ''"
+        if (filterChain.endsWith(';')) {
+            filterChain = filterChain.slice(0, -1);
         }
 
         return {
