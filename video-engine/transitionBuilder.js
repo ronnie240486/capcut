@@ -1,6 +1,25 @@
 
 const presetGenerator = require('./presetGenerator.js');
 
+// Helper to wrap text for drawtext
+function wrapText(text, maxCharsPerLine) {
+    if (!text) return '';
+    const words = text.split(' ');
+    let lines = [];
+    let currentLine = words[0];
+
+    for (let i = 1; i < words.length; i++) {
+        if (currentLine.length + 1 + words[i].length <= maxCharsPerLine) {
+            currentLine += ' ' + words[i];
+        } else {
+            lines.push(currentLine);
+            currentLine = words[i];
+        }
+    }
+    lines.push(currentLine);
+    return lines.join('\n');
+}
+
 module.exports = {
     buildTimeline: (clips, fileMap, mediaLibrary) => {
         let inputs = [];
@@ -171,7 +190,10 @@ module.exports = {
                  const bgLabel = `txtbg_${i}`;
                  filterChain += `color=c=black@0.0:s=1280x720:r=30:d=${clip.duration}[${bgLabel}];`;
 
-                 const txt = (clip.properties.text || '').replace(/'/g, '').replace(/:/g, '\\:');
+                 let txt = (clip.properties.text || '');
+                 // AUTOMATIC WRAPPING LOGIC (Max ~30 chars per line for typical subtitle size)
+                 // This prevents text cutting off in exported video
+                 txt = wrapText(txt, 30).replace(/'/g, '').replace(/:/g, '\\:');
                  
                  // Handle Colors
                  let color = clip.properties.textDesign?.color || 'white';
