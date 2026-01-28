@@ -1,6 +1,7 @@
 const presetGenerator = require('./presetGenerator');
 
-// -------- helper --------
+/* ===================== HELPERS ===================== */
+
 function wrapText(text, maxChars) {
     if (!text) return '';
     const words = text.split(' ');
@@ -19,17 +20,18 @@ function wrapText(text, maxChars) {
     return lines.join('\n');
 }
 
+/* ===================== BUILDER ===================== */
+
 module.exports = {
     buildTimeline(clips = [], fileMap = {}, mediaLibrary = {}) {
 
-        // 🔒 DEFESA ABSOLUTA
-        if (!Array.isArray(clips)) {
-            clips = [];
-        }
+        if (!Array.isArray(clips)) clips = [];
 
         let inputs = [];
         let filter = '';
         let idx = 0;
+
+        /* ---------- SEPARAÇÃO ---------- */
 
         const videos = clips
             .filter(c => c && c.track === 'video')
@@ -46,13 +48,15 @@ module.exports = {
 
         let timelineDuration = 0;
 
-        // ---------- VIDEO BASE ----------
+        /* ---------- BASE DE VÍDEO ---------- */
+
         if (videos.length === 0) {
             inputs.push('-f','lavfi','-t','5','-i','color=c=black:s=1280x720:r=30');
             inputs.push('-f','lavfi','-t','5','-i','anullsrc=r=44100:cl=stereo');
 
             videoParts.push(`[${idx}:v]`);
             audioParts.push(`[${idx + 1}:a]`);
+
             timelineDuration = 5;
             idx += 2;
         } else {
@@ -65,8 +69,8 @@ module.exports = {
 
                 inputs.push('-i', file);
 
-                const vtmp = `v_${i}`;
-                const atmp = `a_${i}`;
+                const v = `v_${i}`;
+                const a = `a_${i}`;
 
                 filter += `
                     [${idx}:v]
@@ -74,7 +78,7 @@ module.exports = {
                     pad=1280:720:(ow-iw)/2:(oh-ih)/2,
                     fps=30,setsar=1,
                     trim=0:${dur},setpts=PTS-STARTPTS
-                    [${vtmp}];
+                    [${v}];
                 `;
 
                 if (mediaLibrary[clip.fileName]?.hasAudio) {
@@ -82,30 +86,28 @@ module.exports = {
                         [${idx}:a]
                         atrim=0:${dur},
                         asetpts=PTS-STARTPTS
-                        [${atmp}];
+                        [${a}];
                     `;
                 } else {
                     filter += `
                         anullsrc=r=44100:cl=stereo:d=${dur}
-                        [${atmp}];
+                        [${a}];
                     `;
                 }
 
-                videoParts.push(`[${vtmp}]`);
-                audioParts.push(`[${atmp}]`);
+                videoParts.push(`[${v}]`);
+                audioParts.push(`[${a}]`);
                 idx++;
             });
         }
 
-        // ---------- CONCAT VIDEO ----------
+        /* ---------- CONCAT BASE ---------- */
+
         filter += `
             ${videoParts.join('')}
             concat=n=${videoParts.length}:v=1:a=0
             [video_base];
-        `;
 
-        // ---------- CONCAT AUDIO ----------
-        filter += `
             ${audioParts.join('')}
             concat=n=${audioParts.length}:v=0:a=1
             [audio_base];
@@ -113,7 +115,8 @@ module.exports = {
 
         let currentVideo = '[video_base]';
 
-        // ---------- TEXT OVERLAYS ----------
+        /* ---------- TEXTOS ---------- */
+
         texts.forEach((clip, i) => {
             const dur = Number(clip.duration || 5);
             const start = Number(clip.start || 0);
@@ -139,7 +142,8 @@ module.exports = {
             currentVideo = `[vout_${i}]`;
         });
 
-        // ---------- AUDIO OVERLAYS ----------
+        /* ---------- ÁUDIOS OVERLAY ---------- */
+
         let mixInputs = ['[audio_base]'];
 
         audios.forEach((clip, i) => {
@@ -165,6 +169,8 @@ module.exports = {
             idx++;
         });
 
+        /* ---------- MIX FINAL + FALLBACK ---------- */
+
         filter += `
             ${mixInputs.join('')}
             amix=inputs=${mixInputs.length}:duration=longest:dropout_transition=0
@@ -173,13 +179,22 @@ module.exports = {
             [final_audio_raw]
             atrim=0:${timelineDuration}
             [final_audio_out];
+
+            anullsrc=r=44100:cl=stereo:d=0.1
+            [a_fallback];
+
+            [final_audio_out][a_fallback]
+            amix=inputs=2:duration=first
+            [audio_safe];
         `;
+
+        /* ---------- RETURN ---------- */
 
         return {
             inputs,
             filterComplex: filter.replace(/\s+/g, ' ').trim(),
             outputMapVideo: currentVideo,
-            outputMapAudio: '[final_audio_out]'
+            outputMapAudio: '[audio_safe]'
         };
     }
 };
