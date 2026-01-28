@@ -5,8 +5,8 @@
  * Comprehensive mapping of ALL frontend transitions and movements.
  */
 
-// We process movements at 1080p to allow for zooming without pixelation/jitter, then scale to 720p output.
-// This Super-Sampling approach eliminates the "shaking" effect on slow zooms.
+// We process movements at 1280x720 (Safe HD) to balance quality and memory usage.
+// Previously 1080p caused "Resource temporarily unavailable" on complex timelines.
 const FINAL_FILTER = 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p,fps=30';
 
 module.exports = {
@@ -92,17 +92,16 @@ module.exports = {
     },
 
     getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
-        // --- ANTI-SHAKE ENGINE (Super-Sampling 1080p + Absolute Math) ---
-        // We calculate movement on a virtual 1920x1080 canvas.
+        // --- ANTI-SHAKE ENGINE ---
+        // Using 1280x720 internal resolution for stability.
         // 'on' = current frame number. 'frames' = total duration in frames.
-        // Using `on` (absolute frame count) guarantees smooth interpolation unlike relative `zoom+x`.
         
         const fps = 30;
         const frames = Math.max(1, Math.ceil(durationSec * fps));
         const progress = `(on/${frames})`; // 0.0 to 1.0
         
-        // Base Zoompan: 1920x1080 internal resolution prevents sub-pixel jitter
-        const base = `zoompan=d=${isImage ? frames : 1}:s=1920x1080:fps=${fps}`; 
+        // Base Zoompan: 1280x720 internal resolution to save memory while keeping quality acceptable
+        const base = `zoompan=d=${isImage ? frames : 1}:s=1280x720:fps=${fps}`; 
 
         // Helper: Center viewport (iw/2 - viewport_w/2)
         const centerX = `(iw/2)-(iw/zoom/2)`;
@@ -173,10 +172,6 @@ module.exports = {
         }
 
         // 5. Blurs & Flashes (Using filter chains, simplified for zoompan context where possible)
-        // Note: Actual blurring needs a complex filter chain, here we simulate movement associated with it or fallback.
-        // For 'mov-blur-*', we assume these are just movements in this preset generator.
-        // If specific blur is needed, it would be in getFFmpegFilterFromEffect, but these are "Movements".
-        // We will simulate the "Action" part (Zoom/Pan) here.
         if (moveId && moveId.startsWith('mov-blur-')) {
             if (moveId === 'mov-blur-zoom') return `${base}:z='1+0.5*${progress}':x='${centerX}':y='${centerY}'`;
         }
@@ -219,8 +214,8 @@ module.exports = {
             'circle-open': 'circleopen',
             'circle-close': 'circleclose',
             'rect-crop': 'rectcrop',
-            'diamond-in': 'diagtl', // approximation
-            'diamond-out': 'diagbr', // approximation
+            'diamond-in': 'diagtl',
+            'diamond-out': 'diagbr',
             'diamond-zoom': 'diamond',
             'checker-wipe': 'checkerboard',
             'checkerboard': 'checkerboard',
@@ -234,13 +229,13 @@ module.exports = {
             'smooth-right': 'smoothright',
             'blind-h': 'hlslice',
             'blind-v': 'hrslice',
-            'barn-door-h': 'hrslice', // approx
-            'barn-door-v': 'hlslice', // approx
+            'barn-door-h': 'hrslice',
+            'barn-door-v': 'hlslice',
             'shutters': 'hlslice',
-            'hex-reveal': 'mosaic', // approx
+            'hex-reveal': 'mosaic',
             'stripes-h': 'hlslice',
             'stripes-v': 'hrslice',
-            'heart-wipe': 'circleopen', // No heart shape in xfade, fallback to circle
+            'heart-wipe': 'circleopen',
             
             // === BASICS ===
             'crossfade': 'fade',
@@ -255,11 +250,11 @@ module.exports = {
             // === ZOOM & WARP ===
             'zoom-in': 'zoomin',
             'zoomin': 'zoomin',
-            'zoom-out': 'circleclose', // fallback
+            'zoom-out': 'circleclose',
             'pull-away': 'distance',
-            'morph': 'pixelize', // fallback for morph
-            'swirl': 'hblur', // fallback
-            'kaleidoscope': 'pixelize', // fallback
+            'morph': 'pixelize',
+            'swirl': 'hblur',
+            'kaleidoscope': 'pixelize',
             'warp': 'wipetl',
             'water-drop': 'radial',
             'wave': 'hblur',
@@ -268,7 +263,7 @@ module.exports = {
             'turbulence': 'dissolve',
             'blur-warp': 'hblur',
             
-            // === GLITCH & SPECIAL (CAPCUT TRENDS) ===
+            // === GLITCH & SPECIAL ===
             'glitch': 'pixelize',
             'glitch-scan': 'hblur',
             'pixelize': 'pixelize',
@@ -276,10 +271,10 @@ module.exports = {
             'rgb-shake': 'hblur',
             'color-glitch': 'distance',
             'urban-glitch': 'squeezev',
-            'blood-mist': 'distance', // best approx
+            'blood-mist': 'distance',
             'black-smoke': 'fadeblack',
             'white-smoke': 'fadewhite',
-            'fire-burn': 'hlslice', // heat slice
+            'fire-burn': 'hlslice',
             'visual-buzz': 'hblur',
             'digital-noise': 'pixelize',
             'hologram': 'fade',
@@ -294,7 +289,7 @@ module.exports = {
             'glitch-chroma': 'hblur',
             
             // === SPECIFIC REQUESTS ===
-            'rip-diag': 'wipeleft', // *** RASGO DO DIA -> HORIZONTAL WIPE (Requested) ***
+            'rip-diag': 'wipeleft',
             'zoom-neg': 'distance',
             'infinity-1': 'distance',
             'digital-paint': 'dissolve',
@@ -366,7 +361,6 @@ module.exports = {
             'jelly': 'hblur'
         };
 
-        // Fuzzy matching if exact ID not found
         if (map[id]) return map[id];
         
         if (id.includes('wipe')) return 'wipeleft';
@@ -379,7 +373,7 @@ module.exports = {
         if (id.includes('cube')) return 'smoothleft';
         if (id.includes('glitch')) return 'pixelize';
         
-        return 'fade'; // Ultimate fallback
+        return 'fade'; 
     },
 
     getFinalVideoFilter: () => FINAL_FILTER
