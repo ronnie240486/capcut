@@ -1,149 +1,179 @@
-/**
- * FFmpeg FULL PRESETS + MOVEMENTS ENGINE
- * High-Precision Math (720p Internal) for stability.
- */
+const presetGenerator = require('./presetGenerator.js');
 
-const FINAL_FILTER =
-    'pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p,fps=30';
+// Helper to wrap text
+function wrapText(text, maxCharsPerLine) {
+    if (!text) return '';
+    const words = text.split(' ');
+    let lines = [];
+    let currentLine = words[0];
+
+    for (let i = 1; i < words.length; i++) {
+        if (currentLine.length + 1 + words[i].length <= maxCharsPerLine) {
+            currentLine += ' ' + words[i];
+        } else {
+            lines.push(currentLine);
+            currentLine = words[i];
+        }
+    }
+    lines.push(currentLine);
+    return lines.join('\n');
+}
 
 module.exports = {
+    buildTimeline: (clips, fileMap, mediaLibrary) => {
 
-    // =========================
-    // VIDEO / AUDIO ARGS
-    // =========================
+        let inputs = [];
+        let filterChain = '';
+        let inputIndexCounter = 0;
 
-    getVideoArgs: () => [
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-profile:v', 'high',
-        '-level', '4.1',
-        '-pix_fmt', 'yuv420p',
-        '-movflags', '+faststart',
-        '-r', '30'
-    ],
+        const mainTrackClips = clips
+            .filter(c => c.track === 'video')
+            .sort((a, b) => a.start - b.start);
 
-    getAudioArgs: () => [
-        '-c:a', 'aac',
-        '-b:a', '192k',
-        '-ar', '44100',
-        '-ac', '2'
-    ],
+        const overlayClips = clips.filter(c =>
+            ['text', 'subtitle'].includes(c.track)
+        );
 
-    getAudioExtractArgs: () => [
-        '-vn',
-        '-acodec', 'libmp3lame',
-        '-q:a', '2'
-    ],
+        const audioClips = clips.filter(c =>
+            ['audio', 'music', 'sfx', 'narration'].includes(c.track)
+        );
 
-    // =========================
-    // EFFECT PRESETS
-    // =========================
+        let mainTrackLabels = [];
+        let baseAudioSegments = [];
 
-    getFFmpegFilterFromEffect: (effectId) => {
-        if (!effectId) return null;
+        // ---------- MAIN VIDEO ----------
+        if (mainTrackClips.length === 0) {
+            inputs.push('-f', 'lavfi', '-t', '5', '-i', 'color=c=black:s=1280x720:r=30');
+            inputs.push('-f', 'lavfi', '-t', '5', '-i', 'anullsrc=r=44100:cl=stereo');
 
-        const effects = {
-            'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.3',
-            'matrix': 'colorbalance=gs=0.4:rs=-0.2:bs=-0.2,eq=contrast=1.2:saturation=1.2',
-            'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
-            'vintage-warm': 'colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.2:saturation=0.8',
-            'cool-morning': 'colorbalance=bs=0.2:rs=-0.1,eq=brightness=0.05',
-            'cyberpunk': 'eq=contrast=1.2:saturation=1.5,colorbalance=bs=0.2:gs=0.1',
-            'dreamy-blur': 'gblur=sigma=2,eq=brightness=1.1',
-            'horror': 'hue=s=0.2,eq=contrast=1.5:brightness=-0.2',
-            'underwater': 'colorbalance=bs=0.4:gs=0.1,eq=brightness=-0.1',
-            'sunset': 'colorbalance=rs=0.3:bs=-0.2,eq=saturation=1.4',
+            mainTrackLabels.push({
+                label: `[${inputIndexCounter}:v]`,
+                duration: 5
+            });
 
-            'bw': 'hue=s=0',
-            'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2',
-            'warm': 'colorbalance=rs=0.1:bs=-0.1',
-            'cool': 'colorbalance=bs=0.1:rs=-0.1',
-            'vivid': 'eq=saturation=1.5:contrast=1.1',
-            'high-contrast': 'eq=contrast=1.5',
-            'invert': 'negate',
+            baseAudioSegments.push(`[${inputIndexCounter + 1}:a]`);
+            inputIndexCounter += 2;
+        } else {
+            mainTrackClips.forEach((clip, i) => {
+                const filePath = fileMap[clip.fileName];
+                if (!filePath) return;
 
-            'grain': 'noise=alls=10:allf=t',
-            'bad-signal': 'noise=alls=20:allf=t+u',
-            'pixelate': 'scale=iw/10:ih/10:flags=neighbor,scale=iw:ih:flags=neighbor'
+                const duration = Number(clip.duration || 5);
+
+                inputs.push('-i', filePath);
+                const idx = inputIndexCounter++;
+
+                let vLabel = `[${idx}:v]`;
+                const tmp = `v_${i}`;
+
+                filterChain += `
+                    ${vLabel}scale=1280:720:force_original_aspect_ratio=decrease,
+                    pad=1280:720:(ow-iw)/2:(oh-ih)/2,
+                    fps=30,setsar=1,
+                    trim=duration=${duration},
+                    setpts=PTS-STARTPTS
+                    [${tmp}];
+                `;
+
+                mainTrackLabels.push({
+                    label: `[${tmp}]`,
+                    duration
+                });
+
+                if (mediaLibrary[clip.fileName]?.hasAudio) {
+                    filterChain += `
+                        [${idx}:a]atrim=duration=${duration},
+                        asetpts=PTS-STARTPTS[a_${i}];
+                    `;
+                    baseAudioSegments.push(`[a_${i}]`);
+                } else {
+                    filterChain += `
+                        anullsrc=r=44100:cl=stereo:d=${duration}[a_${i}];
+                    `;
+                    baseAudioSegments.push(`[a_${i}]`);
+                }
+            });
+        }
+
+        // ---------- XFADE ----------
+        let currentVideo = mainTrackLabels[0].label;
+        let timelineDur = mainTrackLabels[0].duration;
+
+        for (let i = 1; i < mainTrackLabels.length; i++) {
+            const next = mainTrackLabels[i];
+            const out = `xf_${i}`;
+
+            filterChain += `
+                ${currentVideo}${next.label}
+                xfade=transition=fade:duration=0.3:offset=${timelineDur - 0.3}
+                [${out}];
+            `;
+
+            timelineDur += next.duration - 0.3;
+            currentVideo = `[${out}]`;
+        }
+
+        // ---------- OVERLAYS ----------
+        overlayClips.forEach((clip, i) => {
+            const dur = clip.duration || 5;
+            const txt = wrapText(clip.properties?.text || '', 30)
+                .replace(/'/g, "\\'")
+                .replace(/:/g, '\\:');
+
+            const lbl = `txt_${i}`;
+
+            filterChain += `
+                color=c=black@0.0:s=1280x720:d=${dur}[bg_${i}];
+                [bg_${i}]drawtext=text='${txt}':fontsize=64:
+                fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2
+                [${lbl}];
+                ${currentVideo}[${lbl}]
+                overlay=enable='between(t,${clip.start},${clip.start + dur})'
+                [ov_${i}];
+            `;
+
+            currentVideo = `[ov_${i}]`;
+        });
+
+        // ---------- AUDIO BASE ----------
+        filterChain += `
+            ${baseAudioSegments.join('')}
+            concat=n=${baseAudioSegments.length}:v=0:a=1[base_audio];
+        `;
+
+        let audioInputs = ['[base_audio]'];
+
+        // ---------- AUDIO OVERLAYS ----------
+        audioClips.forEach((clip, i) => {
+            const filePath = fileMap[clip.fileName];
+            if (!filePath) return;
+
+            inputs.push('-i', filePath);
+            const idx = inputIndexCounter++;
+
+            const delay = Math.round((clip.start || 0) * 1000);
+
+            filterChain += `
+                [${idx}:a]atrim=duration=${clip.duration},
+                volume=${clip.properties?.volume ?? 1},
+                adelay=${delay}|${delay}
+                [aud_${i}];
+            `;
+
+            audioInputs.push(`[aud_${i}]`);
+        });
+
+        filterChain += `
+            ${audioInputs.join('')}
+            amix=inputs=${audioInputs.length}:normalize=0
+            [final_audio_out];
+        `;
+
+        return {
+            inputs,
+            filterComplex: filterChain.replace(/\s+/g, ' ').trim(),
+            outputMapVideo: currentVideo,
+            outputMapAudio: '[final_audio_out]'
         };
-
-        if (effectId.startsWith('cg-pro-')) {
-            const i = parseInt(effectId.split('-')[2]) || 1;
-            return `eq=contrast=${1 + (i % 5) * 0.1}:saturation=${1 + (i % 3) * 0.2}`;
-        }
-
-        return effects[effectId] || null;
-    },
-
-    // =========================
-    // MOVEMENTS (ZOOMPAN)
-    // =========================
-
-    getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
-        const fps = 30;
-        const frames = Math.max(1, Math.ceil(durationSec * fps));
-        const progress = `(on/${frames})`;
-
-        const base = `zoompan=d=${isImage ? frames : 1}:s=1280x720:fps=${fps}`;
-
-        const centerX = `(iw/2)-(iw/zoom/2)`;
-        const centerY = `(ih/2)-(ih/zoom/2)`;
-
-        if (!moveId) return `${base}:z=1`;
-
-        if (moveId === 'kenBurns') {
-            const sS = Number(config.startScale ?? 1);
-            const eS = Number(config.endScale ?? 1.3);
-            const z = `${sS}+(${eS - sS})*${progress}`;
-            return `${base}:z='${z}':x='${centerX}':y='${centerY}'`;
-        }
-
-        if (moveId.includes('zoom-in')) {
-            return `${base}:z='1+(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
-        }
-
-        if (moveId.includes('zoom-out')) {
-            return `${base}:z='1.5-(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
-        }
-
-        if (moveId.includes('shake')) {
-            return `${base}:z=1.1:x='${centerX}+random(1)*10-5':y='${centerY}+random(1)*10-5'`;
-        }
-
-        return `${base}:z=1`;
-    },
-
-    // =========================
-    // TRANSITIONS (XFADE)
-    // =========================
-
-    getTransitionXfade: (id = 'fade') => {
-        const map = {
-            fade: 'fade',
-            crossfade: 'fade',
-            dissolve: 'dissolve',
-            wipeleft: 'wipeleft',
-            wiperight: 'wiperight',
-            wipeup: 'wipeup',
-            wipedown: 'wipedown',
-            slideleft: 'slideleft',
-            slideright: 'slideright',
-            slideup: 'slideup',
-            slidedown: 'slidedown',
-            zoomin: 'zoomin',
-            distance: 'distance',
-            circleopen: 'circleopen',
-            circleclose: 'circleclose',
-            radial: 'radial',
-            pixelize: 'pixelize'
-        };
-
-        return map[id] || 'fade';
-    },
-
-    // =========================
-    // FINAL FILTER
-    // =========================
-
-    getFinalVideoFilter: () => FINAL_FILTER
+    }
 };
