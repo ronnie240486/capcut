@@ -1,230 +1,149 @@
-const presetGenerator = require('./presetGenerator.js');
+/**
+ * FFmpeg FULL PRESETS + MOVEMENTS ENGINE
+ * High-Precision Math (720p Internal) for stability.
+ */
 
-// Helper to wrap text for drawtext
-function wrapText(text, maxCharsPerLine) {
-    if (!text) return '';
-    const words = text.split(' ');
-    let lines = [];
-    let currentLine = words[0];
-
-    for (let i = 1; i < words.length; i++) {
-        if (currentLine.length + 1 + words[i].length <= maxCharsPerLine) {
-            currentLine += ' ' + words[i];
-        } else {
-            lines.push(currentLine);
-            currentLine = words[i];
-        }
-    }
-    lines.push(currentLine);
-    return lines.join('\n');
-}
+const FINAL_FILTER =
+    'pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p,fps=30';
 
 module.exports = {
-    buildTimeline: (clips, fileMap, mediaLibrary) => {
-        let inputs = [];
-        let filterChain = '';
-        let inputIndexCounter = 0;
 
-        const mainTrackClips = clips
-            .filter(c => c.track === 'video' || (c.track === 'camada' && c.type === 'video'))
-            .sort((a, b) => a.start - b.start);
+    // =========================
+    // VIDEO / AUDIO ARGS
+    // =========================
 
-        const overlayClips = clips.filter(c =>
-            ['text', 'subtitle'].includes(c.track) ||
-            (c.track === 'camada' && c.type === 'image')
-        );
+    getVideoArgs: () => [
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-profile:v', 'high',
+        '-level', '4.1',
+        '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart',
+        '-r', '30'
+    ],
 
-        const audioClips = clips.filter(c =>
-            ['audio', 'narration', 'music', 'sfx'].includes(c.track) ||
-            (c.type === 'audio' && !['video', 'camada', 'text'].includes(c.track))
-        );
+    getAudioArgs: () => [
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-ar', '44100',
+        '-ac', '2'
+    ],
 
-        let mainTrackLabels = [];
-        let baseAudioSegments = [];
+    getAudioExtractArgs: () => [
+        '-vn',
+        '-acodec', 'libmp3lame',
+        '-q:a', '2'
+    ],
 
-        // =========================
-        // 1. MAIN VIDEO TRACK
-        // =========================
+    // =========================
+    // EFFECT PRESETS
+    // =========================
 
-        if (mainTrackClips.length === 0) {
-            inputs.push('-f', 'lavfi', '-t', '5', '-i', 'color=c=black:s=1280x720:r=30');
-            mainTrackLabels.push(`[${inputIndexCounter++}:v]`);
+    getFFmpegFilterFromEffect: (effectId) => {
+        if (!effectId) return null;
 
-            inputs.push('-f', 'lavfi', '-t', '5', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-            baseAudioSegments.push(`[${inputIndexCounter++}:a]`);
-        } else {
-            mainTrackClips.forEach((clip, i) => {
-                const filePath = fileMap[clip.fileName];
-                if (!filePath && clip.type !== 'text') return;
+        const effects = {
+            'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.3',
+            'matrix': 'colorbalance=gs=0.4:rs=-0.2:bs=-0.2,eq=contrast=1.2:saturation=1.2',
+            'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
+            'vintage-warm': 'colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.2:saturation=0.8',
+            'cool-morning': 'colorbalance=bs=0.2:rs=-0.1,eq=brightness=0.05',
+            'cyberpunk': 'eq=contrast=1.2:saturation=1.5,colorbalance=bs=0.2:gs=0.1',
+            'dreamy-blur': 'gblur=sigma=2,eq=brightness=1.1',
+            'horror': 'hue=s=0.2,eq=contrast=1.5:brightness=-0.2',
+            'underwater': 'colorbalance=bs=0.4:gs=0.1,eq=brightness=-0.1',
+            'sunset': 'colorbalance=rs=0.3:bs=-0.2,eq=saturation=1.4',
 
-                const duration = Math.max(1, Number(clip.duration) || 5);
+            'bw': 'hue=s=0',
+            'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2',
+            'warm': 'colorbalance=rs=0.1:bs=-0.1',
+            'cool': 'colorbalance=bs=0.1:rs=-0.1',
+            'vivid': 'eq=saturation=1.5:contrast=1.1',
+            'high-contrast': 'eq=contrast=1.5',
+            'invert': 'negate',
 
-                if (clip.type === 'image') {
-                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath);
-                } else {
-                    inputs.push('-i', filePath);
-                }
-
-                const idx = inputIndexCounter++;
-                let currentV = `[${idx}:v]`;
-
-                const addFilter = (filter) => {
-                    if (!filter) return;
-                    const lbl = `v_${i}_${Math.random().toString(36).slice(2, 6)}`;
-                    filterChain += `${currentV}${filter}[${lbl}];`;
-                    currentV = `[${lbl}]`;
-                };
-
-                // ✅ SCALE FIXO – UMA ÚNICA VEZ (ANTES DE TUDO)
-                addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
-
-                // ✅ TRIM CORRETO
-                if (clip.type !== 'image') {
-                    const start = clip.mediaStartOffset || 0;
-                    addFilter(`trim=start=${start}:duration=${duration},setpts=PTS-STARTPTS`);
-                } else {
-                    addFilter(`trim=duration=${duration},setpts=PTS-STARTPTS`);
-                }
-
-                // EFFECTS
-                if (clip.effect) {
-                    const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                    if (fx) addFilter(fx);
-                }
-
-                // MOVEMENT (zoompan é o ÚLTIMO geométrico)
-                if (clip.properties?.movement) {
-                    const mv = presetGenerator.getMovementFilter(
-                        clip.properties.movement.type,
-                        duration,
-                        clip.type === 'image',
-                        clip.properties.movement.config
-                    );
-                    if (mv) addFilter(mv);
-                } else if (clip.type === 'image') {
-                    addFilter(presetGenerator.getMovementFilter(null, duration, true));
-                }
-
-                mainTrackLabels.push({
-                    label: currentV,
-                    duration,
-                    transition: clip.transition
-                });
-
-                // AUDIO
-                const audioLabel = `a_${i}`;
-                const mediaInfo = mediaLibrary[clip.fileName];
-
-                if (clip.type === 'video' && mediaInfo?.hasAudio) {
-                    const start = clip.mediaStartOffset || 0;
-                    filterChain += `[${idx}:a]atrim=start=${start}:duration=${duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
-                } else {
-                    filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${audioLabel}];`;
-                }
-
-                baseAudioSegments.push(`[${audioLabel}]`);
-            });
-        }
-
-        // =========================
-        // 2. XFADE SEQUENCE
-        // =========================
-
-        let mainVideoStream = mainTrackLabels[0]?.label || '[0:v]';
-        let accDuration = mainTrackLabels[0]?.duration || 0;
-
-        for (let i = 1; i < mainTrackLabels.length; i++) {
-            const prev = mainTrackLabels[i - 1];
-            const next = mainTrackLabels[i];
-            const trans = prev.transition || { id: 'fade', duration: 0.3 };
-
-            const tDur = Math.min(trans.duration || 0.3, prev.duration / 2, next.duration / 2);
-            const offset = accDuration - tDur;
-            const tId = presetGenerator.getTransitionXfade(trans.id);
-
-            const lbl = `xf_${i}`;
-            filterChain += `${mainVideoStream}${next.label}xfade=transition=${tId}:duration=${tDur}:offset=${offset}[${lbl}];`;
-
-            mainVideoStream = `[${lbl}]`;
-            accDuration = offset + tDur + (next.duration - tDur);
-        }
-
-        // =========================
-        // 3. OVERLAYS (APENAS setpts)
-        // =========================
-
-        let finalComp = mainVideoStream;
-
-        overlayClips.forEach((clip, i) => {
-            let overlayLabel = '';
-
-            if (clip.type === 'text') {
-                const bg = `txtbg_${i}`;
-                const dur = clip.duration || 5;
-
-                filterChain += `color=c=black@0.0:s=1280x720:r=30:d=${dur}[${bg}];`;
-
-                let txt = wrapText(clip.properties.text || '', 30)
-                    .replace(/'/g, "'\\''")
-                    .replace(/:/g, '\\:');
-
-                const color = clip.properties.textDesign?.color || 'white';
-                const font = clip.properties.textDesign?.fontFamily || 'Sans';
-                const size = 80;
-
-                const lbl = `txt_${i}`;
-                filterChain += `[${bg}]drawtext=text='${txt}':font=${font}:fontcolor=${color}:fontsize=${size}:x=(w-text_w)/2:y=(h-text_h)/2[${lbl}];`;
-                overlayLabel = `[${lbl}]`;
-            } else {
-                const filePath = fileMap[clip.fileName];
-                if (!filePath) return;
-
-                inputs.push('-loop', '1', '-t', clip.duration.toString(), '-i', filePath);
-                const idx = inputIndexCounter++;
-                const lbl = `img_${i}`;
-
-                filterChain += `[${idx}:v]scale=iw*0.5:-2[${lbl}];`;
-                overlayLabel = `[${lbl}]`;
-            }
-
-            const shifted = `ov_${i}`;
-            const out = `comp_${i}`;
-
-            filterChain += `${overlayLabel}setpts=PTS+${clip.start}/TB[${shifted}];`;
-            filterChain += `${finalComp}[${shifted}]overlay=eof_action=pass[${out}];`;
-
-            finalComp = `[${out}]`;
-        });
-
-        // =========================
-        // 4. AUDIO MIX
-        // =========================
-
-        filterChain += `${baseAudioSegments.join('')}concat=n=${baseAudioSegments.length}:v=0:a=1[base_audio];`;
-
-        let audioInputs = ['[base_audio]'];
-
-        audioClips.forEach((clip, i) => {
-            const filePath = fileMap[clip.fileName];
-            if (!filePath) return;
-
-            inputs.push('-i', filePath);
-            const idx = inputIndexCounter++;
-            const lbl = `sfx_${i}`;
-            const delay = Math.round((clip.start || 0) * 1000);
-            const vol = clip.properties?.volume ?? 1;
-
-            filterChain += `[${idx}:a]atrim=duration=${clip.duration},volume=${vol},adelay=${delay}|${delay}[${lbl}];`;
-            audioInputs.push(`[${lbl}]`);
-        });
-
-        filterChain += `${audioInputs.join('')}amix=inputs=${audioInputs.length}:normalize=0[final_audio];`;
-
-        return {
-            inputs,
-            filterComplex: filterChain.replace(/;$/, ''),
-            outputMapVideo: finalComp,
-            outputMapAudio: '[final_audio]'
+            'grain': 'noise=alls=10:allf=t',
+            'bad-signal': 'noise=alls=20:allf=t+u',
+            'pixelate': 'scale=iw/10:ih/10:flags=neighbor,scale=iw:ih:flags=neighbor'
         };
-    }
+
+        if (effectId.startsWith('cg-pro-')) {
+            const i = parseInt(effectId.split('-')[2]) || 1;
+            return `eq=contrast=${1 + (i % 5) * 0.1}:saturation=${1 + (i % 3) * 0.2}`;
+        }
+
+        return effects[effectId] || null;
+    },
+
+    // =========================
+    // MOVEMENTS (ZOOMPAN)
+    // =========================
+
+    getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
+        const fps = 30;
+        const frames = Math.max(1, Math.ceil(durationSec * fps));
+        const progress = `(on/${frames})`;
+
+        const base = `zoompan=d=${isImage ? frames : 1}:s=1280x720:fps=${fps}`;
+
+        const centerX = `(iw/2)-(iw/zoom/2)`;
+        const centerY = `(ih/2)-(ih/zoom/2)`;
+
+        if (!moveId) return `${base}:z=1`;
+
+        if (moveId === 'kenBurns') {
+            const sS = Number(config.startScale ?? 1);
+            const eS = Number(config.endScale ?? 1.3);
+            const z = `${sS}+(${eS - sS})*${progress}`;
+            return `${base}:z='${z}':x='${centerX}':y='${centerY}'`;
+        }
+
+        if (moveId.includes('zoom-in')) {
+            return `${base}:z='1+(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
+        }
+
+        if (moveId.includes('zoom-out')) {
+            return `${base}:z='1.5-(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
+        }
+
+        if (moveId.includes('shake')) {
+            return `${base}:z=1.1:x='${centerX}+random(1)*10-5':y='${centerY}+random(1)*10-5'`;
+        }
+
+        return `${base}:z=1`;
+    },
+
+    // =========================
+    // TRANSITIONS (XFADE)
+    // =========================
+
+    getTransitionXfade: (id = 'fade') => {
+        const map = {
+            fade: 'fade',
+            crossfade: 'fade',
+            dissolve: 'dissolve',
+            wipeleft: 'wipeleft',
+            wiperight: 'wiperight',
+            wipeup: 'wipeup',
+            wipedown: 'wipedown',
+            slideleft: 'slideleft',
+            slideright: 'slideright',
+            slideup: 'slideup',
+            slidedown: 'slidedown',
+            zoomin: 'zoomin',
+            distance: 'distance',
+            circleopen: 'circleopen',
+            circleclose: 'circleclose',
+            radial: 'radial',
+            pixelize: 'pixelize'
+        };
+
+        return map[id] || 'fade';
+    },
+
+    // =========================
+    // FINAL FILTER
+    // =========================
+
+    getFinalVideoFilter: () => FINAL_FILTER
 };
