@@ -5,7 +5,7 @@ function wrapText(text, maxChars) {
     if (!text) return '';
     const words = text.split(' ');
     let lines = [];
-    let line = words[0];
+    let line = words[0] || '';
 
     for (let i = 1; i < words.length; i++) {
         if ((line + ' ' + words[i]).length <= maxChars) {
@@ -15,20 +15,31 @@ function wrapText(text, maxChars) {
             line = words[i];
         }
     }
-    lines.push(line);
+    if (line) lines.push(line);
     return lines.join('\n');
 }
 
 module.exports = {
-    buildTimeline(clips, fileMap, mediaLibrary) {
+    buildTimeline(clips = [], fileMap = {}, mediaLibrary = {}) {
+
+        // 🔒 DEFESA ABSOLUTA
+        if (!Array.isArray(clips)) {
+            clips = [];
+        }
 
         let inputs = [];
         let filter = '';
         let idx = 0;
 
-        const videos = clips.filter(c => c.track === 'video').sort((a,b)=>a.start-b.start);
-        const texts  = clips.filter(c => c.track === 'text');
-        const audios = clips.filter(c => ['music','audio','sfx','narration'].includes(c.track));
+        const videos = clips
+            .filter(c => c && c.track === 'video')
+            .sort((a, b) => (a.start || 0) - (b.start || 0));
+
+        const texts = clips.filter(c => c && c.track === 'text');
+
+        const audios = clips.filter(c =>
+            c && ['music', 'audio', 'sfx', 'narration'].includes(c.track)
+        );
 
         let videoParts = [];
         let audioParts = [];
@@ -41,11 +52,11 @@ module.exports = {
             inputs.push('-f','lavfi','-t','5','-i','anullsrc=r=44100:cl=stereo');
 
             videoParts.push(`[${idx}:v]`);
-            audioParts.push(`[${idx+1}:a]`);
+            audioParts.push(`[${idx + 1}:a]`);
             timelineDuration = 5;
             idx += 2;
         } else {
-            videos.forEach((clip,i)=>{
+            videos.forEach((clip, i) => {
                 const file = fileMap[clip.fileName];
                 if (!file) return;
 
@@ -53,6 +64,7 @@ module.exports = {
                 timelineDuration += dur;
 
                 inputs.push('-i', file);
+
                 const vtmp = `v_${i}`;
                 const atmp = `a_${i}`;
 
@@ -102,13 +114,13 @@ module.exports = {
         let currentVideo = '[video_base]';
 
         // ---------- TEXT OVERLAYS ----------
-        texts.forEach((clip,i)=>{
+        texts.forEach((clip, i) => {
             const dur = Number(clip.duration || 5);
             const start = Number(clip.start || 0);
 
             const txt = wrapText(clip.properties?.text || '', 30)
-                .replace(/'/g,"\\'")
-                .replace(/:/g,'\\:');
+                .replace(/'/g, "\\'")
+                .replace(/:/g, '\\:');
 
             filter += `
                 color=c=black@0.0:s=1280x720:d=${dur}
@@ -121,7 +133,7 @@ module.exports = {
                 [txt_${i}];
 
                 ${currentVideo}[txt_${i}]
-                overlay=enable='between(t,${start},${start+dur})'
+                overlay=enable='between(t,${start},${start + dur})'
                 [vout_${i}];
             `;
             currentVideo = `[vout_${i}]`;
@@ -130,7 +142,7 @@ module.exports = {
         // ---------- AUDIO OVERLAYS ----------
         let mixInputs = ['[audio_base]'];
 
-        audios.forEach((clip,i)=>{
+        audios.forEach((clip, i) => {
             const file = fileMap[clip.fileName];
             if (!file) return;
 
@@ -165,7 +177,7 @@ module.exports = {
 
         return {
             inputs,
-            filterComplex: filter.replace(/\s+/g,' ').trim(),
+            filterComplex: filter.replace(/\s+/g, ' ').trim(),
             outputMapVideo: currentVideo,
             outputMapAudio: '[final_audio_out]'
         };
