@@ -1,53 +1,47 @@
+const { spawn } = require('child_process');
+const transitionBuilder = require('./video-engine/transitionBuilder');
+const presetGenerator = require('./video-engine/presetGenerator');
 
-const fs = require('fs');
-const path = require('path');
-const transitionBuilder = require('./video-engine/transitionBuilder.js');
+module.exports = async function exportVideo({
+    clips,
+    fileMap,
+    mediaLibrary,
+    outputPath
+}) {
 
-module.exports = async (job, uploadDir, onStart) => {
-    try {
-        const { projectState } = job.params;
-        const state = JSON.parse(projectState);
-        const { clips, media, totalDuration } = state;
+    const timeline = transitionBuilder.buildTimeline(
+        clips,
+        fileMap,
+        mediaLibrary
+    );
 
-        // 1. Map files
-        const fileMap = {};
-        
-        // Map uploaded files to clip filenames
-        // job.files contains files uploaded via multer
-        job.files.forEach(f => {
-            fileMap[f.originalname] = f.path;
+    const ffmpegArgs = [
+        ...timeline.inputs,
+
+        '-filter_complex', timeline.filterComplex,
+
+        '-map', timeline.outputMapVideo,
+        '-map', timeline.outputMapAudio,
+
+        '-shortest',                 // 🔒 CRÍTICO
+
+        ...presetGenerator.getVideoArgs(),
+        ...presetGenerator.getAudioArgs(),
+
+        '-y',
+        outputPath
+    ];
+
+    console.log('FFmpeg CMD:\nffmpeg ' + ffmpegArgs.join(' '));
+
+    return new Promise((resolve, reject) => {
+        const ff = spawn('ffmpeg', ffmpegArgs);
+
+        ff.stderr.on('data', d => console.log(d.toString()));
+
+        ff.on('close', code => {
+            if (code === 0) resolve(outputPath);
+            else reject(new Error('FFmpeg falhou: ' + code));
         });
-
-        // 2. Build Timeline
-        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media);
-        
-        if (!buildResult.filterComplex) {
-            throw new Error("Timeline vazia ou inválida.");
-        }
-
-        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
-        job.outputPath = outputPath;
-
-        // 3. Construct FFmpeg Args
-        const args = [
-            ...buildResult.inputs,
-            '-filter_complex', buildResult.filterComplex,
-            '-map', buildResult.outputMapVideo,
-            '-map', buildResult.outputMapAudio,
-            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26', '-pix_fmt', 'yuv420p',
-            '-c:a', 'aac', '-b:a', '192k',
-            '-movflags', '+faststart',
-            '-t', totalDuration.toString(), // Hard limit duration
-            outputPath
-        ];
-
-        // 4. Start Processing
-        onStart(job.id, args, totalDuration);
-
-    } catch (e) {
-        console.error("Export Error:", e);
-        // We can't really report back easily here unless we modified the callback, 
-        // but the main server.js catches startup errors if synchronous.
-        // For async setup errors, we might need a way to mark job as failed.
-    }
+    });
 };
