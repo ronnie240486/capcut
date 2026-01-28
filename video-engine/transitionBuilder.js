@@ -52,8 +52,6 @@ module.exports = {
         
         if (mainTrackClips.length === 0) {
             // Create a dummy black background if no video present
-            // Generate it inside filter complex to avoid input issues? No, main track usually needs an input to be robust.
-            // But we can use lavfi here for just one input.
             inputs.push('-f', 'lavfi', '-t', '5', '-i', 'color=c=black:s=1280x720:r=30');
             mainTrackLabels.push(`[${inputIndexCounter++}:v]`);
             // Dummy audio
@@ -85,8 +83,6 @@ module.exports = {
                 };
 
                 // PRE-PROCESS: Scale to 1280x720 (Standard HD) for consistency
-                // Using 1920x1080 -> 720p logic from previous step, but let's stick to 720p internal to match output for speed
-                // scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2
                 addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
 
                 // TRIM
@@ -151,12 +147,7 @@ module.exports = {
                 const nextClip = mainTrackLabels[i];
                 const prevClip = mainTrackLabels[i-1];
                 
-                const trans = prevClip.transition || { id: 'fade', duration: 0.5 }; // Default fade if transition requested? No, only if explicit.
-                // Actually, if no transition is set, we should just concat or use a 0 duration transition?
-                // xfade requires overlap. If we want simple cut, we use concat?
-                // BUT, to keep it simple, we use xfade with small duration or standard mix if transition is present.
-                // If NO transition, we should use concat ideally. But mixing concat and xfade is hard.
-                // Strategy: Use xfade for EVERYTHING. If no transition, use 'fade' with 0.1s duration (near cut).
+                const trans = prevClip.transition || { id: 'fade', duration: 0.5 };
                 
                 const hasExplicitTrans = !!prevClip.transition;
                 const transDur = hasExplicitTrans ? Math.min(trans.duration, prevClip.duration/2, nextClip.duration/2) : 0.1;
@@ -186,18 +177,17 @@ module.exports = {
             let overlayInputLabel = '';
             
             if (clip.type === 'text') {
-                 // FIX: Generate text background INSIDE filter_complex to avoid "Resource temporarily unavailable" (too many inputs)
+                 // Generate text background
                  const bgLabel = `txtbg_${i}`;
-                 filterChain += `color=c=black@0.0:s=1280x720:r=30:d=${clip.duration}[${bgLabel}];`;
+                 const dur = clip.duration || 5; 
+                 filterChain += `color=c=black@0.0:s=1280x720:r=30:d=${dur}[${bgLabel}];`;
 
                  let txt = (clip.properties.text || '');
-                 // AUTOMATIC WRAPPING LOGIC (Max ~30 chars per line for typical subtitle size)
-                 // This prevents text cutting off in exported video
-                 txt = wrapText(txt, 30).replace(/'/g, '').replace(/:/g, '\\:');
+                 // Wrap and escape text
+                 txt = wrapText(txt, 30).replace(/'/g, "'\\''").replace(/:/g, '\\:');
                  
                  // Handle Colors
                  let color = clip.properties.textDesign?.color || 'white';
-                 // FIX: FFmpeg drawtext doesn't support 'transparent' keyword directly in all versions or contexts
                  if (color === 'transparent') color = 'white@0.0';
 
                  const font = clip.properties.textDesign?.fontFamily || 'Sans';
@@ -235,26 +225,21 @@ module.exports = {
                  const idx = inputIndexCounter++;
                  const imgLabel = `img_ov_${i}`;
                  
-                 // Resize overlay to reasonable size (e.g., 30% width?) or use properties
+                 // Resize overlay
                  const scale = clip.properties.transform?.scale || 0.5;
-                 const w = Math.floor(1280 * scale / 2) * 2;
+                 const w = Math.floor(1280 * scale / 2) * 2; // Even width
                  
-                 filterChain += `[${idx}:v]scale=${w}:-1[${imgLabel}];`;
+                 // Use -2 to maintain aspect ratio and ensure height is even
+                 filterChain += `[${idx}:v]scale=${w}:-2[${imgLabel}];`;
                  overlayInputLabel = `[${imgLabel}]`;
             }
 
             // Apply Overlay
-            // enable='between(t,start,end)'
             const nextCompLabel = `comp_${i}`;
-            // Use 'overlay' filter
-            
             const startTime = clip.start;
-            // Shift timestamps of overlay
             const shiftedLabel = `shift_${i}`;
-            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
             
-            // Overlay with enable to ensure it only shows when intended (though setpts helps)
-            // EOF_ACTION=pass ensures main video continues.
+            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
             filterChain += `${finalComp}[${shiftedLabel}]overlay=enable='between(t,${startTime},${startTime + clip.duration})':eof_action=pass[${nextCompLabel}];`;
             
             finalComp = `[${nextCompLabel}]`;
@@ -266,8 +251,6 @@ module.exports = {
         if (baseAudioSegments.length > 0) {
              filterChain += `${baseAudioSegments.join('')}concat=n=${baseAudioSegments.length}:v=0:a=1[base_audio_seq];`;
         } else {
-             // Create silent audio stream inside filter complex if possible?
-             // anullsrc is better as input to guarantee stream properties
              inputs.push('-f', 'lavfi', '-t', '0.1', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
              baseAudioCombined = `[${inputIndexCounter++}:a]`;
         }
@@ -287,20 +270,17 @@ module.exports = {
             const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
             const delay = Math.round(clip.start * 1000); // ms
             
-            // atrim -> volume -> adelay
             filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delay}|${delay}[${lbl}];`;
             audioMixInputs.push(`[${lbl}]`);
         });
 
         let finalAudio = '[final_audio_out]';
         if (audioMixInputs.length > 1) {
-            // amix inputs
             filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
             finalAudio = baseAudioCombined;
         }
 
-        // REMOVE TRAILING SEMICOLON TO FIX "No such filter: ''"
         if (filterChain.endsWith(';')) {
             filterChain = filterChain.slice(0, -1);
         }
