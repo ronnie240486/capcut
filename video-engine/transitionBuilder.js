@@ -1,295 +1,173 @@
+const presetGenerator = require('./presetGenerator');
 
-const presetGenerator = require('./presetGenerator.js');
-
-// Helper to wrap text for drawtext
-function wrapText(text, maxCharsPerLine) {
+// -------- helper --------
+function wrapText(text, maxChars) {
     if (!text) return '';
     const words = text.split(' ');
     let lines = [];
-    let currentLine = words[0];
+    let line = words[0];
 
     for (let i = 1; i < words.length; i++) {
-        if (currentLine.length + 1 + words[i].length <= maxCharsPerLine) {
-            currentLine += ' ' + words[i];
+        if ((line + ' ' + words[i]).length <= maxChars) {
+            line += ' ' + words[i];
         } else {
-            lines.push(currentLine);
-            currentLine = words[i];
+            lines.push(line);
+            line = words[i];
         }
     }
-    lines.push(currentLine);
+    lines.push(line);
     return lines.join('\n');
 }
 
 module.exports = {
-    buildTimeline: (clips, fileMap, mediaLibrary) => {
+    buildTimeline(clips, fileMap, mediaLibrary) {
+
         let inputs = [];
-        let filterChain = '';
-        
-        let inputIndexCounter = 0;
+        let filter = '';
+        let idx = 0;
 
-        // SEPARATE MAIN TRACK (Sequenced) FROM LAYERS (Overlay)
-        // Main Track: 'video' only (or images treated as main video)
-        // Layers: 'text', 'camada', 'subtitle' (Overlaid on top of main track)
-        
-        const mainTrackClips = clips.filter(c => 
-            c.track === 'video' || (c.track === 'camada' && c.type === 'video') 
-        ).sort((a, b) => a.start - b.start);
+        const videos = clips.filter(c => c.track === 'video').sort((a,b)=>a.start-b.start);
+        const texts  = clips.filter(c => c.track === 'text');
+        const audios = clips.filter(c => ['music','audio','sfx','narration'].includes(c.track));
 
-        const overlayClips = clips.filter(c => 
-            ['text', 'subtitle'].includes(c.track) || (c.track === 'camada' && c.type === 'image')
-        );
+        let videoParts = [];
+        let audioParts = [];
 
-        // Audio Clips
-        const audioClips = clips.filter(c => 
-            ['audio', 'narration', 'music', 'sfx'].includes(c.track) ||
-            (c.type === 'audio' && !['video', 'camada', 'text'].includes(c.track))
-        );
+        let timelineDuration = 0;
 
-        let mainTrackLabels = [];
-        let baseAudioSegments = [];
+        // ---------- VIDEO BASE ----------
+        if (videos.length === 0) {
+            inputs.push('-f','lavfi','-t','5','-i','color=c=black:s=1280x720:r=30');
+            inputs.push('-f','lavfi','-t','5','-i','anullsrc=r=44100:cl=stereo');
 
-        // --- 1. BUILD MAIN VIDEO TRACK (Sequence with Transitions) ---
-        
-        if (mainTrackClips.length === 0) {
-            // Create a dummy black background if no video present
-            inputs.push('-f', 'lavfi', '-t', '5', '-i', 'color=c=black:s=1280x720:r=30');
-            mainTrackLabels.push(`[${inputIndexCounter++}:v]`);
-            // Dummy audio
-             inputs.push('-f', 'lavfi', '-t', '5', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-             baseAudioSegments.push(`[${inputIndexCounter++}:a]`);
+            videoParts.push(`[${idx}:v]`);
+            audioParts.push(`[${idx+1}:a]`);
+            timelineDuration = 5;
+            idx += 2;
         } else {
-             mainTrackClips.forEach((clip, i) => {
-                const filePath = fileMap[clip.fileName];
-                // Skip if file missing, unless it's generated content
-                if (!filePath && clip.type !== 'text') return; 
+            videos.forEach((clip,i)=>{
+                const file = fileMap[clip.fileName];
+                if (!file) return;
 
-                const duration = Math.max(1.0, parseFloat(clip.duration) || 5);
+                const dur = Number(clip.duration || 5);
+                timelineDuration += dur;
 
-                // INPUT
-                if (clip.type === 'image') {
-                    inputs.push('-loop', '1', '-t', (duration + 3).toString(), '-i', filePath); 
+                inputs.push('-i', file);
+                const vtmp = `v_${i}`;
+                const atmp = `a_${i}`;
+
+                filter += `
+                    [${idx}:v]
+                    scale=1280:720:force_original_aspect_ratio=decrease,
+                    pad=1280:720:(ow-iw)/2:(oh-ih)/2,
+                    fps=30,setsar=1,
+                    trim=0:${dur},setpts=PTS-STARTPTS
+                    [${vtmp}];
+                `;
+
+                if (mediaLibrary[clip.fileName]?.hasAudio) {
+                    filter += `
+                        [${idx}:a]
+                        atrim=0:${dur},
+                        asetpts=PTS-STARTPTS
+                        [${atmp}];
+                    `;
                 } else {
-                    inputs.push('-i', filePath);
+                    filter += `
+                        anullsrc=r=44100:cl=stereo:d=${dur}
+                        [${atmp}];
+                    `;
                 }
 
-                const idx = inputIndexCounter++;
-                let currentV = `[${idx}:v]`;
-                
-                const addFilter = (filterText) => {
-                    if (!filterText) return;
-                    const nextLabel = `vtmp${i}_${Math.random().toString(36).substr(2, 5)}`;
-                    filterChain += `${currentV}${filterText}[${nextLabel}];`;
-                    currentV = `[${nextLabel}]`;
-                };
-
-                // PRE-PROCESS: Scale to 1280x720 (Standard HD) for consistency
-                addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
-
-                // TRIM
-                if (clip.type !== 'image') {
-                    const start = clip.mediaStartOffset || 0;
-                    addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
-                } else {
-                    addFilter(`trim=duration=${duration},setpts=PTS-STARTPTS`);
-                }
-
-                // EFFECTS
-                if (clip.effect) {
-                    const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                    if (fx) addFilter(fx);
-                }
-
-                // MOVEMENT
-                if (clip.properties && clip.properties.movement) {
-                    const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config);
-                    if (moveFilter) addFilter(moveFilter);
-                } else if (clip.type === 'image') {
-                    const staticMove = presetGenerator.getMovementFilter(null, duration, true);
-                    addFilter(staticMove);
-                }
-
-                // Ensure strict 720p
-                addFilter(`scale=1280:720,setsar=1`);
-
-                mainTrackLabels.push({
-                    label: currentV,
-                    duration: duration,
-                    transition: clip.transition
-                });
-
-                // AUDIO for video clips
-                const mediaInfo = mediaLibrary[clip.fileName];
-                const audioLabel = `a_base_${i}`;
-                if (clip.type === 'video' && mediaInfo?.hasAudio) {
-                    const start = clip.mediaStartOffset || 0;
-                    // Extract audio from same input index
-                    filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
-                    baseAudioSegments.push(`[${audioLabel}]`);
-                } else {
-                    // Generate silent audio of same duration
-                    filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${audioLabel}];`;
-                    baseAudioSegments.push(`[${audioLabel}]`);
-                }
+                videoParts.push(`[${vtmp}]`);
+                audioParts.push(`[${atmp}]`);
+                idx++;
             });
         }
 
-        // --- COMPOSE MAIN TRACK (XFADE) ---
-        let mainVideoStream = '[black_bg]';
-        
-        if (mainTrackLabels.length > 0 && typeof mainTrackLabels[0] === 'string') {
-             // Dummy case
-             mainVideoStream = mainTrackLabels[0];
-        } else if (mainTrackLabels.length > 0) {
-            let currentMix = mainTrackLabels[0].label;
-            let accumulatedDuration = mainTrackLabels[0].duration;
+        // ---------- CONCAT VIDEO ----------
+        filter += `
+            ${videoParts.join('')}
+            concat=n=${videoParts.length}:v=1:a=0
+            [video_base];
+        `;
 
-            for (let i = 1; i < mainTrackLabels.length; i++) {
-                const nextClip = mainTrackLabels[i];
-                const prevClip = mainTrackLabels[i-1];
-                
-                const trans = prevClip.transition || { id: 'fade', duration: 0.5 };
-                
-                const hasExplicitTrans = !!prevClip.transition;
-                const transDur = hasExplicitTrans ? Math.min(trans.duration, prevClip.duration/2, nextClip.duration/2) : 0.1;
-                const transId = hasExplicitTrans ? presetGenerator.getTransitionXfade(trans.id) : 'fade';
-                
-                const offset = accumulatedDuration - transDur;
-                const nextLabel = `mix_${i}`;
-                
-                // xfade
-                filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
-                currentMix = `[${nextLabel}]`;
-                
-                accumulatedDuration = offset + transDur + (nextClip.duration - transDur);
-            }
-            mainVideoStream = currentMix;
-        } else {
-             // Fallback
-             inputs.push('-f', 'lavfi', '-t', '5', '-i', 'color=c=black:s=1280x720:r=30');
-             mainVideoStream = `[${inputIndexCounter++}:v]`;
-        }
+        // ---------- CONCAT AUDIO ----------
+        filter += `
+            ${audioParts.join('')}
+            concat=n=${audioParts.length}:v=0:a=1
+            [audio_base];
+        `;
 
-        // --- 2. APPLY OVERLAYS (Text/Image Layers) ---
-        let finalComp = mainVideoStream;
-        
-        overlayClips.forEach((clip, i) => {
-            // Prepare the overlay input
-            let overlayInputLabel = '';
-            
-            if (clip.type === 'text') {
-                 // Generate text background
-                 const bgLabel = `txtbg_${i}`;
-                 const dur = clip.duration || 5; 
-                 filterChain += `color=c=black@0.0:s=1280x720:r=30:d=${dur}[${bgLabel}];`;
+        let currentVideo = '[video_base]';
 
-                 let txt = (clip.properties.text || '');
-                 // Wrap and escape text
-                 txt = wrapText(txt, 30).replace(/'/g, "'\\''").replace(/:/g, '\\:');
-                 
-                 // Handle Colors
-                 let color = clip.properties.textDesign?.color || 'white';
-                 if (color === 'transparent') color = 'white@0.0';
+        // ---------- TEXT OVERLAYS ----------
+        texts.forEach((clip,i)=>{
+            const dur = Number(clip.duration || 5);
+            const start = Number(clip.start || 0);
 
-                 const font = clip.properties.textDesign?.fontFamily || 'Sans';
-                 const fontsize = 80;
-                 const x = clip.properties.transform?.x ? `(w-text_w)/2+${clip.properties.transform.x}` : '(w-text_w)/2';
-                 const y = clip.properties.transform?.y ? `(h-text_h)/2+${clip.properties.transform.y}` : '(h-text_h)/2';
-                 
-                 // Handle Stroke/Border
-                 let styles = '';
-                 if (clip.properties.textDesign?.stroke) {
-                     const s = clip.properties.textDesign.stroke;
-                     if (s.width > 0) {
-                        styles += `:borderw=${s.width}:bordercolor=${s.color || 'black'}`;
-                     }
-                 }
-                 
-                 // Handle Shadow
-                 if (clip.properties.textDesign?.shadow) {
-                     const sh = clip.properties.textDesign.shadow;
-                     if (sh.x || sh.y) {
-                         styles += `:shadowx=${sh.x || 2}:shadowy=${sh.y || 2}:shadowcolor=${sh.color || 'black@0.5'}`;
-                     }
-                 }
+            const txt = wrapText(clip.properties?.text || '', 30)
+                .replace(/'/g,"\\'")
+                .replace(/:/g,'\\:');
 
-                 const txtLabel = `txt_${i}`;
-                 // Drawtext on generated transparent bg
-                 filterChain += `[${bgLabel}]drawtext=text='${txt}':fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}[${txtLabel}];`;
-                 overlayInputLabel = `[${txtLabel}]`;
+            filter += `
+                color=c=black@0.0:s=1280x720:d=${dur}
+                [txtbg_${i}];
 
-            } else {
-                 // Image overlay
-                 const filePath = fileMap[clip.fileName];
-                 if (!filePath) return;
-                 inputs.push('-loop', '1', '-t', clip.duration.toString(), '-i', filePath);
-                 const idx = inputIndexCounter++;
-                 const imgLabel = `img_ov_${i}`;
-                 
-                 // Resize overlay
-                 const scale = clip.properties.transform?.scale || 0.5;
-                 const w = Math.floor(1280 * scale / 2) * 2; // Even width
-                 
-                 // Use -2 to maintain aspect ratio and ensure height is even
-                 filterChain += `[${idx}:v]scale=${w}:-2[${imgLabel}];`;
-                 overlayInputLabel = `[${imgLabel}]`;
-            }
+                [txtbg_${i}]
+                drawtext=text='${txt}':
+                fontsize=64:fontcolor=white:
+                x=(w-text_w)/2:y=(h-text_h)/2
+                [txt_${i}];
 
-            // Apply Overlay
-            const nextCompLabel = `comp_${i}`;
-            const startTime = clip.start;
-            const shiftedLabel = `shift_${i}`;
-            
-            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            filterChain += `${finalComp}[${shiftedLabel}]overlay=enable='between(t,${startTime},${startTime + clip.duration})':eof_action=pass[${nextCompLabel}];`;
-            
-            finalComp = `[${nextCompLabel}]`;
+                ${currentVideo}[txt_${i}]
+                overlay=enable='between(t,${start},${start+dur})'
+                [vout_${i}];
+            `;
+            currentVideo = `[vout_${i}]`;
         });
 
-        // --- 3. AUDIO MIXING ---
-        // Combine base audio (sequenced)
-        let baseAudioCombined = '[base_audio_seq]';
-        if (baseAudioSegments.length > 0) {
-             filterChain += `${baseAudioSegments.join('')}concat=n=${baseAudioSegments.length}:v=0:a=1[base_audio_seq];`;
-        } else {
-             inputs.push('-f', 'lavfi', '-t', '0.1', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-             baseAudioCombined = `[${inputIndexCounter++}:a]`;
-        }
-        
-        let audioMixInputs = [baseAudioCombined];
-        
-        // Add overlay audios (sfx, music)
-        audioClips.forEach((clip, i) => {
-            const filePath = fileMap[clip.fileName];
-            if (!filePath) return;
-            
-            inputs.push('-i', filePath);
-            const idx = inputIndexCounter++;
-            const lbl = `sfx_${i}`;
-            
-            const startTrim = clip.mediaStartOffset || 0;
-            const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
-            const delay = Math.round(clip.start * 1000); // ms
-            
-            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delay}|${delay}[${lbl}];`;
-            audioMixInputs.push(`[${lbl}]`);
+        // ---------- AUDIO OVERLAYS ----------
+        let mixInputs = ['[audio_base]'];
+
+        audios.forEach((clip,i)=>{
+            const file = fileMap[clip.fileName];
+            if (!file) return;
+
+            const dur = Number(clip.duration || 5);
+            const delay = Math.max(0, Math.round((clip.start || 0) * 1000));
+            const vol = clip.properties?.volume ?? 1;
+
+            inputs.push('-i', file);
+
+            filter += `
+                [${idx}:a]
+                atrim=0:${dur},
+                asetpts=PTS-STARTPTS,
+                volume=${vol},
+                adelay=${delay}|${delay}
+                [aud_${i}];
+            `;
+
+            mixInputs.push(`[aud_${i}]`);
+            idx++;
         });
 
-        let finalAudio = '[final_audio_out]';
-        if (audioMixInputs.length > 1) {
-            filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
-        } else {
-            finalAudio = baseAudioCombined;
-        }
+        filter += `
+            ${mixInputs.join('')}
+            amix=inputs=${mixInputs.length}:duration=longest:dropout_transition=0
+            [final_audio_raw];
 
-        if (filterChain.endsWith(';')) {
-            filterChain = filterChain.slice(0, -1);
-        }
+            [final_audio_raw]
+            atrim=0:${timelineDuration}
+            [final_audio_out];
+        `;
 
         return {
             inputs,
-            filterComplex: filterChain,
-            outputMapVideo: finalComp,
-            outputMapAudio: finalAudio
+            filterComplex: filter.replace(/\s+/g,' ').trim(),
+            outputMapVideo: currentVideo,
+            outputMapAudio: '[final_audio_out]'
         };
     }
 };
