@@ -26,9 +26,7 @@ module.exports = {
     getFFmpegFilterFromEffect: (effectId) => {
         if (!effectId) return null;
         
-        // Detailed Effect Mapping matching frontend constants
         const effects = {
-            // Cinematic
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.3',
             'matrix': 'colorbalance=gs=0.4:rs=-0.2:bs=-0.2,eq=contrast=1.2:saturation=1.2',
             'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
@@ -39,8 +37,6 @@ module.exports = {
             'horror': 'hue=s=0.2,eq=contrast=1.5:brightness=-0.2',
             'underwater': 'colorbalance=bs=0.4:gs=0.1,eq=brightness=-0.1',
             'sunset': 'colorbalance=rs=0.3:bs=-0.2,eq=saturation=1.4',
-            
-            // Basics
             'bw': 'hue=s=0',
             'mono': 'hue=s=0',
             'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2',
@@ -51,8 +47,6 @@ module.exports = {
             'invert': 'negate',
             'night-vision': 'hue=s=0,eq=contrast=1.2:brightness=0.1,colorbalance=gs=0.5',
             'pop-art': 'eq=saturation=2:contrast=1.3',
-            
-            // Glitch & Distortion
             'pixelate': 'scale=iw/10:-1,scale=iw*10:-1:flags=neighbor',
             'bad-signal': 'noise=alls=20:allf=t+u',
             'vhs-distort': 'colorbalance=bm=0.1,noise=alls=10:allf=t',
@@ -60,7 +54,6 @@ module.exports = {
             'grain': 'noise=alls=10:allf=t',
         };
 
-        // Procedural Generated Effects Support (Fallbacks)
         if (effectId.startsWith('cg-pro-')) {
             const i = parseInt(effectId.split('-')[2]) || 1;
             return `eq=contrast=${1 + (i%5)*0.1}:saturation=${1 + (i%3)*0.2}`;
@@ -76,12 +69,10 @@ module.exports = {
     },
 
     getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
-        // Anti-Shake / High Precision 1080p Processing
         const fps = 30;
         const frames = Math.max(1, Math.ceil(durationSec * fps));
-        const progress = `(on/${frames})`; // 0.0 to 1.0 linear progress
+        const progress = `(on/${frames})`; 
         
-        // Base Zoompan: 1920x1080 internal resolution for smooth sub-pixel movement
         const base = `zoompan=d=${isImage ? frames : 1}:s=1280x720:fps=${fps}`; 
         const centerX = `(iw/2)-(iw/zoom/2)`;
         const centerY = `(ih/2)-(ih/zoom/2)`;
@@ -110,11 +101,9 @@ module.exports = {
             return `${base}:z=1.1:x='${centerX}+random(1)*${intensity}-${intensity/2}':y='${centerY}+random(1)*${intensity}-${intensity/2}'`;
         }
         
-        // Panning
         if (moveId === 'pan-left' || moveId === 'slide-left') return `${base}:z=1.2:x='iw*(0.2+(0.6)*${progress})-(iw/zoom/2)':y='${centerY}'`;
         if (moveId === 'pan-right' || moveId === 'slide-right') return `${base}:z=1.2:x='iw*(0.8-(0.6)*${progress})-(iw/zoom/2)':y='${centerY}'`;
 
-        // Default for images: Static with minimal zoom to prevent ffmpeg issues
         if (isImage) return `${base}:z=1`;
         return null;
     },
