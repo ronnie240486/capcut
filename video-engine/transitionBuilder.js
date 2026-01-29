@@ -40,6 +40,7 @@ module.exports = {
         let inputIndexCounter = 0;
 
         // Separate tracks
+        // Ensure main track clips are sorted by start time
         const mainTrackClips = clips.filter(c => c.track === 'video' || (c.track === 'camada' && c.type === 'video')).sort((a, b) => a.start - b.start);
         const overlayClips = clips.filter(c => ['text', 'subtitle'].includes(c.track) || (c.track === 'camada' && c.type === 'image'));
         const audioClips = clips.filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track) || (c.type === 'audio' && !['video', 'camada', 'text'].includes(c.track)));
@@ -51,25 +52,26 @@ module.exports = {
         if (mainTrackClips.length === 0) {
             // Placeholder black video
             inputs.push('-f', 'lavfi', '-t', '5', '-i', 'color=c=black:s=1280x720:r=30');
-            // Pipe directly to label, avoid null filter if possible or keep simple
-            filterChain += `[${inputIndexCounter}:v]null[base_v_0];`;
-            mainTrackLabels.push({ label: `[base_v_0]`, duration: 5 });
-            inputIndexCounter++;
+            const idx = inputIndexCounter++;
+            filterChain += `[${idx}:v]null[base_v_placeholder];`;
+            mainTrackLabels.push({ label: `[base_v_placeholder]`, duration: 5 });
             
-            // Placeholder silence
+            // Placeholder silence for base track
             inputs.push('-f', 'lavfi', '-t', '5', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-            filterChain += `[${inputIndexCounter}:a]anull[base_a_0];`;
-            baseAudioSegments.push(`[base_a_0]`);
-            inputIndexCounter++;
+            const idxA = inputIndexCounter++;
+            filterChain += `[${idxA}:a]anull[base_a_placeholder];`;
+            baseAudioSegments.push(`[base_a_placeholder]`);
         } else {
             mainTrackClips.forEach((clip, i) => {
                 const filePath = fileMap[clip.fileName];
+                // Note: We skip if no file, unless it's a generated asset handled differently (but here we assume files exist)
                 if (!filePath && clip.type !== 'text') return;
 
                 const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
 
                 // Input
                 if (clip.type === 'image') {
+                    // Loop image for duration
                     inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath); 
                 } else {
                     inputs.push('-i', filePath);
@@ -85,14 +87,15 @@ module.exports = {
                     currentV = `[${nextLabel}]`;
                 };
 
-                // Standardize Resolution & Pixel Format & FPS
+                // Standardize Resolution & Pixel Format & FPS BEFORE any other processing
                 addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
 
-                // Trim Video
+                // Trim Video (Crucial for video files to start at correct offset)
                 if (clip.type !== 'image') {
                     const start = clip.mediaStartOffset || 0;
                     addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
                 } else {
+                    // For images, trim logic is handled by input -t, but trim filter ensures exactness
                     addFilter(`trim=duration=${duration},setpts=PTS-STARTPTS`);
                 }
 
@@ -122,7 +125,7 @@ module.exports = {
                     addFilter(staticMove);
                 }
 
-                // Re-enforce scale
+                // Re-enforce scale after movement (zoompan often resets SAR)
                 addFilter(`scale=1280:720,setsar=1`);
 
                 mainTrackLabels.push({
@@ -131,14 +134,16 @@ module.exports = {
                     transition: clip.transition
                 });
 
-                // Audio Handling
+                // Audio Handling for Video Clips (Base Track)
                 const mediaInfo = mediaLibrary ? mediaLibrary[clip.fileName] : null;
                 const audioLabel = `a_base_${i}`;
                 
                 if (clip.type === 'video' && (mediaInfo?.hasAudio !== false)) {
                     const start = clip.mediaStartOffset || 0;
+                    // Trim audio to match video segment
                     filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
                 } else {
+                    // Generate silence for image/silent video to keep track sync
                     filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${audioLabel}];`;
                 }
                 baseAudioSegments.push(`[${audioLabel}]`);
@@ -146,12 +151,13 @@ module.exports = {
         }
 
         // --- COMPOSE MAIN VIDEO TRACK ---
-        let mainVideoStream = '';
+        let mainVideoStreamLabel = '';
         
         if (mainTrackLabels.length > 0) {
             if (mainTrackLabels.length === 1) {
                 // No concat needed for single clip
-                mainVideoStream = mainTrackLabels[0].label;
+                filterChain += `${mainTrackLabels[0].label}null[v_concat_out];`;
+                mainVideoStreamLabel = '[v_concat_out]';
             } else {
                 let currentMix = mainTrackLabels[0].label;
                 let accumulatedDuration = mainTrackLabels[0].duration;
@@ -167,26 +173,29 @@ module.exports = {
                     const nextLabel = `mix_${i}`;
                     const transFilter = transDur > 0.15 ? presetGenerator.getTransitionXfade(trans.id) : 'fade';
                     
+                    // XFade
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=${transFilter}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
                     
                     currentMix = `[${nextLabel}]`;
                     accumulatedDuration = offset + transDur + (nextClip.duration - transDur);
                 }
-                mainVideoStream = currentMix;
+                mainVideoStreamLabel = currentMix;
             }
         } else {
+             // Fallback if empty logic hit
              filterChain += `color=c=black:s=1280x720:r=30:d=5[black_fallback];`;
-             mainVideoStream = `[black_fallback]`;
+             mainVideoStreamLabel = `[black_fallback]`;
         }
 
         // --- 2. OVERLAYS ---
-        let finalComp = mainVideoStream;
+        let finalCompLabel = mainVideoStreamLabel;
         
         overlayClips.forEach((clip, i) => {
             let overlayInputLabel = '';
             
             if (clip.type === 'text') {
                  const bgLabel = `txtbg_${i}`;
+                 // Create transparent canvas
                  filterChain += `color=c=black@0.0:s=1280x720:r=30:d=${clip.duration}[${bgLabel}];`;
                  
                  const p = clip.properties || {};
@@ -194,6 +203,8 @@ module.exports = {
                  const design = p.textDesign || {};
                  const color = hexToFfmpegColor(design.color);
                  const fontsize = 60 * (p.transform?.scale || 1);
+                 
+                 // Center logic: (w-text_w)/2 + x_offset
                  const x = `(w-text_w)/2+${(p.transform?.x || 0)}`;
                  const y = `(h-text_h)/2+${(p.transform?.y || 0)}`;
 
@@ -229,30 +240,34 @@ module.exports = {
             const startTime = clip.start;
             const shiftedLabel = `shift_${i}`;
             
+            // Set PTS to shift start time
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            filterChain += `${finalComp}[${shiftedLabel}]overlay=enable='between(t,${startTime},${startTime + clip.duration})':eof_action=pass[${nextCompLabel}];`;
+            // Overlay with enable between times
+            filterChain += `${finalCompLabel}[${shiftedLabel}]overlay=enable='between(t,${startTime},${startTime + clip.duration})':eof_action=pass[${nextCompLabel}];`;
             
-            finalComp = `[${nextCompLabel}]`;
+            finalCompLabel = `[${nextCompLabel}]`;
         });
 
         // --- 3. AUDIO MIXING ---
-        let baseAudioCombined = '';
+        let baseAudioCombinedLabel = '';
         if (baseAudioSegments.length > 0) {
             if (baseAudioSegments.length === 1) {
-                // OPTIMIZATION: Avoid concat filter for single audio track to prevent lavfi hanging
-                baseAudioCombined = baseAudioSegments[0];
+                // OPTIMIZATION: Avoid concat filter for single audio track
+                // Pass through a dummy filter to normalize label
+                filterChain += `${baseAudioSegments[0]}anull[base_audio_seq];`;
+                baseAudioCombinedLabel = '[base_audio_seq]';
             } else {
                 filterChain += `${baseAudioSegments.join('')}concat=n=${baseAudioSegments.length}:v=0:a=1[base_audio_seq];`;
-                baseAudioCombined = '[base_audio_seq]';
+                baseAudioCombinedLabel = '[base_audio_seq]';
             }
         } else {
              inputs.push('-f', 'lavfi', '-t', '1', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
              const idx = inputIndexCounter++;
              filterChain += `[${idx}:a]anull[silence_a];`;
-             baseAudioCombined = `[silence_a]`;
+             baseAudioCombinedLabel = `[silence_a]`;
         }
 
-        let audioMixInputs = [baseAudioCombined];
+        let audioMixInputs = [baseAudioCombinedLabel];
         
         audioClips.forEach((clip, i) => {
             const filePath = fileMap[clip.fileName];
@@ -266,24 +281,27 @@ module.exports = {
             const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
             const delay = Math.max(0, Math.round(clip.start * 1000)); 
             
+            // Trim, volume, delay
             filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delay}|${delay}[${lbl}];`;
             audioMixInputs.push(`[${lbl}]`);
         });
 
-        let finalAudio = '[final_audio_out]';
+        let finalAudioLabel = '';
         if (audioMixInputs.length > 1) {
             filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out]`;
+            finalAudioLabel = '[final_audio_out]';
         } else {
-            finalAudio = baseAudioCombined;
+            finalAudioLabel = baseAudioCombinedLabel;
         }
 
+        // Clean trailing semicolon
         if (filterChain.endsWith(';')) filterChain = filterChain.slice(0, -1);
 
         return {
             inputs,
             filterComplex: filterChain,
-            outputMapVideo: finalComp,
-            outputMapAudio: finalAudio
+            outputMapVideo: finalCompLabel,
+            outputMapAudio: finalAudioLabel
         };
     }
 };
