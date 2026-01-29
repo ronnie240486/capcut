@@ -1,47 +1,84 @@
 const { spawn } = require('child_process');
-const transitionBuilder = require('./video-engine/transitionBuilder');
+const path = require('path');
 const presetGenerator = require('./video-engine/presetGenerator');
+const transitionBuilder = require('./video-engine/transitionBuilder');
 
-module.exports = async function exportVideo({
-    clips,
-    fileMap,
-    mediaLibrary,
-    outputPath
-}) {
+module.exports = function exportVideo({ clips, fileMap, mediaLibrary, output }) {
+  return new Promise((resolve, reject) => {
 
-    const timeline = transitionBuilder.buildTimeline(
+    // 🔒 DEFESAS
+    if (!Array.isArray(clips)) clips = [];
+    if (!fileMap) fileMap = {};
+    if (!mediaLibrary) mediaLibrary = {};
+
+    const outputPath = output || path.join('/tmp', `export_${Date.now()}.mp4`);
+
+    let timeline;
+    try {
+      timeline = transitionBuilder.buildTimeline(
         clips,
         fileMap,
         mediaLibrary
-    );
+      );
+    } catch (err) {
+      return reject(new Error('Erro ao montar timeline: ' + err.message));
+    }
+
+    if (
+      !timeline ||
+      !Array.isArray(timeline.inputs) ||
+      !timeline.outputMapVideo ||
+      !timeline.outputMapAudio
+    ) {
+      return reject(new Error('Timeline inválida gerada'));
+    }
+
+    // 🔒 PRESETS SEGUROS
+    const videoArgs = typeof presetGenerator.getVideoArgs === 'function'
+      ? presetGenerator.getVideoArgs()
+      : ['-c:v', 'libx264', '-pix_fmt', 'yuv420p'];
+
+    const audioArgs = typeof presetGenerator.getAudioArgs === 'function'
+      ? presetGenerator.getAudioArgs()
+      : ['-c:a', 'aac', '-b:a', '192k'];
 
     const ffmpegArgs = [
-        ...timeline.inputs,
+      ...timeline.inputs,
 
-        '-filter_complex', timeline.filterComplex,
+      ...(timeline.filterComplex
+        ? ['-filter_complex', timeline.filterComplex]
+        : []),
 
-        '-map', timeline.outputMapVideo,
-        '-map', timeline.outputMapAudio,
+      '-map', timeline.outputMapVideo,
+      '-map', timeline.outputMapAudio,
 
-        '-shortest',                 // 🔒 CRÍTICO
+      '-shortest',
 
-        ...presetGenerator.getVideoArgs(),
-        ...presetGenerator.getAudioArgs(),
+      ...videoArgs,
+      ...audioArgs,
 
-        '-y',
-        outputPath
+      '-movflags', '+faststart',
+      '-y',
+      outputPath
     ];
 
-    console.log('FFmpeg CMD:\nffmpeg ' + ffmpegArgs.join(' '));
+    // 🔎 LOG PARA DEPURAÇÃO REAL
+    console.log('FFmpeg command:\nffmpeg ' + ffmpegArgs.join(' '));
 
-    return new Promise((resolve, reject) => {
-        const ff = spawn('ffmpeg', ffmpegArgs);
+    const ff = spawn('ffmpeg', ffmpegArgs);
 
-        ff.stderr.on('data', d => console.log(d.toString()));
+    let stderr = '';
 
-        ff.on('close', code => {
-            if (code === 0) resolve(outputPath);
-            else reject(new Error('FFmpeg falhou: ' + code));
-        });
+    ff.stderr.on('data', d => {
+      stderr += d.toString();
     });
+
+    ff.on('close', code => {
+      if (code !== 0) {
+        console.error(stderr);
+        return reject(new Error('FFmpeg falhou: ' + code));
+      }
+      resolve(outputPath);
+    });
+  });
 };
