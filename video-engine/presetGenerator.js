@@ -63,7 +63,6 @@ module.exports = {
         // Procedural Generated Effects Support (Fallbacks)
         if (effectId.startsWith('cg-pro-')) {
             const i = parseInt(effectId.split('-')[2]) || 1;
-            // Simulate color grade based on index
             return `eq=contrast=${1 + (i%5)*0.1}:saturation=${1 + (i%3)*0.2}`;
         }
         if (effectId.startsWith('vintage-style-')) {
@@ -95,7 +94,6 @@ module.exports = {
              const endXNorm = 0.5 + (config.endX !== undefined ? Number(config.endX) / 100 : 0);
              const endYNorm = 0.5 + (config.endY !== undefined ? Number(config.endY) / 100 : 0);
              
-             // Interpolate scale and position
              const zExpr = `${sS}+(${eS - sS})*${progress}`;
              const xExpr = `iw*(${startXNorm}+(${endXNorm - startXNorm})*${progress})-(iw/zoom/2)`;
              const yExpr = `ih*(${startYNorm}+(${endYNorm - startYNorm})*${progress})-(ih/zoom/2)`;
@@ -103,7 +101,6 @@ module.exports = {
              return `${base}:z='${zExpr}':x='${xExpr}':y='${yExpr}'`;
         }
 
-        // Basic presets if specific KenBurns config not present
         if (moveId === 'zoom-in' || moveId === 'zoom-slow-in') return `${base}:z='1.0+(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
         if (moveId === 'zoom-out' || moveId === 'zoom-slow-out') return `${base}:z='1.5-(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
         if (moveId === 'dolly-zoom') return `${base}:z='1.0+(0.5)*sin(on/30*3)':x='${centerX}':y='${centerY}'`; 
