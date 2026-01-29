@@ -49,13 +49,18 @@ module.exports = {
 
         // --- 1. BUILD MAIN VIDEO TRACK ---
         if (mainTrackClips.length === 0) {
-            // Placeholder black video if no main clips
+            // Placeholder black video
             inputs.push('-f', 'lavfi', '-t', '5', '-i', 'color=c=black:s=1280x720:r=30');
-            mainTrackLabels.push({ label: `[${inputIndexCounter}:v]`, duration: 5 });
+            // CRITICAL: Pipe raw input [i:v] through a null filter to create a graph label [base_v_0]
+            filterChain += `[${inputIndexCounter}:v]null[base_v_0];`;
+            mainTrackLabels.push({ label: `[base_v_0]`, duration: 5 });
             inputIndexCounter++;
             
+            // Placeholder silence
             inputs.push('-f', 'lavfi', '-t', '5', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-            baseAudioSegments.push(`[${inputIndexCounter}:a]`);
+            // CRITICAL: Pipe raw audio [i:a] through a null filter
+            filterChain += `[${inputIndexCounter}:a]anull[base_a_0];`;
+            baseAudioSegments.push(`[base_a_0]`);
             inputIndexCounter++;
         } else {
             mainTrackClips.forEach((clip, i) => {
@@ -169,7 +174,7 @@ module.exports = {
             }
             mainVideoStream = currentMix;
         } else {
-             // Fallback black
+             // Fallback
              filterChain += `color=c=black:s=1280x720:r=30:d=5[black_fallback];`;
              mainVideoStream = `[black_fallback]`;
         }
@@ -192,8 +197,6 @@ module.exports = {
                  const color = hexToFfmpegColor(design.color);
                  const fontsize = 60 * (p.transform?.scale || 1);
                  
-                 // Position: transform x/y are roughly pixels from center? 
-                 // Let's assume standard centered logic: (w-text_w)/2 + x
                  const x = `(w-text_w)/2+${(p.transform?.x || 0)}`;
                  const y = `(h-text_h)/2+${(p.transform?.y || 0)}`;
 
@@ -205,7 +208,6 @@ module.exports = {
                      styleParams += `:shadowx=${design.shadow.x || 2}:shadowy=${design.shadow.y || 2}:shadowcolor=${hexToFfmpegColor(design.shadow.color)}`;
                  }
                  
-                 // Using default font 'Sans' because custom fonts might not be installed on server
                  const font = 'Sans'; 
 
                  const txtLabel = `txt_${i}`;
@@ -247,7 +249,10 @@ module.exports = {
              filterChain += `${baseAudioSegments.join('')}concat=n=${baseAudioSegments.length}:v=0:a=1[base_audio_seq];`;
         } else {
              inputs.push('-f', 'lavfi', '-t', '1', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-             baseAudioCombined = `[${inputIndexCounter++}:a]`;
+             const idx = inputIndexCounter++;
+             // Create label for silence
+             filterChain += `[${idx}:a]anull[silence_a];`;
+             baseAudioCombined = `[silence_a]`;
         }
 
         let audioMixInputs = [baseAudioCombined];
@@ -262,7 +267,6 @@ module.exports = {
             
             const startTrim = clip.mediaStartOffset || 0;
             const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
-            // Adelay is in milliseconds
             const delay = Math.max(0, Math.round(clip.start * 1000)); 
             
             filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delay}|${delay}[${lbl}];`;
@@ -271,7 +275,6 @@ module.exports = {
 
         let finalAudio = '[final_audio_out]';
         if (audioMixInputs.length > 1) {
-            // Amix inputs. duration=first ensures it matches the main video length generally
             filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out]`;
         } else {
             finalAudio = baseAudioCombined;
