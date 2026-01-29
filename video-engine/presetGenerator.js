@@ -110,13 +110,44 @@ module.exports = {
 
     getTransitionXfade: (id) => {
         const map = {
+            // -- Standard --
             'wipe-up': 'wipeup', 'wipe-down': 'wipedown', 'wipe-left': 'wipeleft', 'wipe-right': 'wiperight',
             'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
             'circle-open': 'circleopen', 'circle-close': 'circleclose', 
             'zoom-in': 'zoomin', 'zoom-out': 'circleclose',
             'crossfade': 'fade', 'fade': 'fade', 'mix': 'fade',
             'pixelize': 'pixelize', 'glitch': 'pixelize',
-            'checker-wipe': 'checkerboard', 'clock-wipe': 'clock'
+            'checker-wipe': 'checkerboard', 'clock-wipe': 'clock',
+            'wipe-radial': 'radial',
+            
+            // -- Mappings for custom IDs --
+            'rip-diag': 'diagtl',         // Mapped to Diagonal Top-Left
+            'blur-dissolve': 'hblur',     // Mapped to Horizontal Blur
+            'filter-blur': 'hblur',       // Mapped to Horizontal Blur
+            'blood-mist': 'fade',         // Fallback
+            'black-smoke': 'fadeblack',   
+            'white-smoke': 'fadewhite',
+            'flash-white': 'fadewhite',
+            'flash-black': 'fadeblack',
+            'flash': 'fadewhite',
+            'luma-fade': 'fade',
+            'color-glitch': 'pixelize',
+            'urban-glitch': 'pixelize',
+            'visual-buzz': 'pixelize',
+            'zoom-neg': 'circleclose',
+            'infinity-1': 'circleopen',
+            'digital-paint': 'wipetr',
+            'brush-wind': 'wipeleft',
+            'dust-burst': 'radial',
+            'film-roll-v': 'slideup',
+            'astral-project': 'fade',
+            'lens-flare': 'fadewhite',
+            'pull-away': 'zoomout',
+            'fade-classic': 'fade',
+            'flashback': 'fadewhite',
+            'combine-overlay': 'dissolve',
+            'nightmare': 'pixelize',
+            'glitch-chroma': 'pixelize'
         };
         return map[id] || 'fade'; 
     }
