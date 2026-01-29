@@ -28,7 +28,7 @@ function hexToFfmpegColor(hex) {
 }
 
 module.exports = {
-    buildTimeline: (clips, fileMap, mediaLibrary) => {
+    buildTimeline: (clips, fileMap, mediaLibrary, totalDuration = 5) => {
         // --- SAFETY CHECK ---
         if (!clips || !Array.isArray(clips)) {
             console.warn("TransitionBuilder: 'clips' is undefined or not an array.");
@@ -40,112 +40,118 @@ module.exports = {
         let inputIndexCounter = 0;
 
         // Separate tracks
-        // Ensure main track clips are sorted by start time
-        const mainTrackClips = clips.filter(c => c.track === 'video' || (c.track === 'camada' && c.type === 'video')).sort((a, b) => a.start - b.start);
-        const overlayClips = clips.filter(c => ['text', 'subtitle'].includes(c.track) || (c.track === 'camada' && c.type === 'image'));
-        const audioClips = clips.filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track) || (c.type === 'audio' && !['video', 'camada', 'text'].includes(c.track)));
+        const mainTrackClips = clips.filter(c => c.track === 'video' || (c.track === 'camada' && c.type === 'video') || (c.track === 'camada' && c.type === 'image')).sort((a, b) => a.start - b.start);
+        const overlayClips = clips.filter(c => ['text', 'subtitle'].includes(c.track));
+        const audioClips = clips.filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track) || (c.type === 'audio' && !['video', 'camada', 'text', 'subtitle'].includes(c.track)));
 
         let mainTrackLabels = [];
         let baseAudioSegments = [];
 
         // --- 1. PREPARE INPUTS AND BASE FILTERS ---
-        if (mainTrackClips.length === 0) {
-            // Placeholder black video
-            inputs.push('-f', 'lavfi', '-t', '5', '-i', 'color=c=black:s=1280x720:r=30');
+        let hasValidMainClips = false;
+
+        mainTrackClips.forEach((clip, i) => {
+            const filePath = fileMap[clip.fileName];
+            // If file is missing and it's not text (which is handled in overlay), skip
+            if (!filePath && clip.type !== 'text') {
+                 console.warn(`Missing file for clip: ${clip.fileName}`);
+                 return;
+            }
+
+            hasValidMainClips = true;
+            const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
+
+            // Input
+            if (clip.type === 'image') {
+                // Loop image for duration + extra buffer for transitions
+                inputs.push('-loop', '1', '-t', (duration + 5).toString(), '-i', filePath); 
+            } else {
+                inputs.push('-i', filePath);
+            }
+
+            const idx = inputIndexCounter++;
+            let currentV = `[${idx}:v]`;
+            
+            const addFilter = (filterText) => {
+                if (!filterText) return;
+                const nextLabel = `vtmp${i}_${Math.random().toString(36).substr(2, 5)}`;
+                filterChain += `${currentV}${filterText}[${nextLabel}];`;
+                currentV = `[${nextLabel}]`;
+            };
+
+            // Standardize Resolution & Pixel Format & FPS
+            addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
+
+            // Trim Video
+            if (clip.type !== 'image') {
+                const start = clip.mediaStartOffset || 0;
+                addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
+            } else {
+                addFilter(`trim=duration=${duration},setpts=PTS-STARTPTS`);
+            }
+
+            // Apply Effects
+            if (clip.effect) {
+                const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
+                if (fx) addFilter(fx);
+            }
+
+            // Apply Color Adjustments
+            if (clip.properties && clip.properties.adjustments) {
+                    const adj = clip.properties.adjustments;
+                    let eqStr = [];
+                    if(adj.brightness !== 1) eqStr.push(`brightness=${adj.brightness - 1}`);
+                    if(adj.contrast !== 1) eqStr.push(`contrast=${adj.contrast}`);
+                    if(adj.saturate !== 1) eqStr.push(`saturation=${adj.saturate}`);
+                    if(eqStr.length > 0) addFilter(`eq=${eqStr.join(':')}`);
+                    if(adj.hue !== 0) addFilter(`hue=h=${adj.hue}`);
+            }
+
+            // Apply Movement
+            if (clip.properties && clip.properties.movement) {
+                const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config);
+                if (moveFilter) addFilter(moveFilter);
+            } else if (clip.type === 'image') {
+                const staticMove = presetGenerator.getMovementFilter('zoom-slow-in', duration, true);
+                addFilter(staticMove);
+            }
+
+            addFilter(`scale=1280:720,setsar=1`);
+
+            mainTrackLabels.push({
+                label: currentV,
+                duration: duration,
+                transition: clip.transition
+            });
+
+            // Audio Handling
+            const mediaInfo = mediaLibrary ? mediaLibrary[clip.fileName] : null;
+            const audioLabel = `a_base_${i}`;
+            
+            if (clip.type === 'video' && (mediaInfo?.hasAudio !== false)) {
+                const start = clip.mediaStartOffset || 0;
+                // Trim audio matches video
+                filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
+            } else {
+                // Generate silence for image/silent video
+                filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${audioLabel}];`;
+            }
+            baseAudioSegments.push(`[${audioLabel}]`);
+        });
+
+        if (!hasValidMainClips) {
+            // Placeholder black video for the duration of project
+            const dur = totalDuration > 0 ? totalDuration : 5;
+            inputs.push('-f', 'lavfi', '-t', dur.toString(), '-i', 'color=c=black:s=1280x720:r=30');
             const idx = inputIndexCounter++;
             filterChain += `[${idx}:v]null[base_v_placeholder];`;
-            mainTrackLabels.push({ label: `[base_v_placeholder]`, duration: 5 });
+            mainTrackLabels.push({ label: `[base_v_placeholder]`, duration: dur });
             
-            // Placeholder silence for base track
-            inputs.push('-f', 'lavfi', '-t', '5', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+            // Placeholder silence
+            inputs.push('-f', 'lavfi', '-t', dur.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
             const idxA = inputIndexCounter++;
             filterChain += `[${idxA}:a]anull[base_a_placeholder];`;
             baseAudioSegments.push(`[base_a_placeholder]`);
-        } else {
-            mainTrackClips.forEach((clip, i) => {
-                const filePath = fileMap[clip.fileName];
-                if (!filePath && clip.type !== 'text') return;
-
-                const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
-
-                // Input
-                if (clip.type === 'image') {
-                    // Loop image for duration + extra buffer for transitions
-                    // Adding 2s buffer to ensure we have enough frames for xfade offset overlap
-                    inputs.push('-loop', '1', '-t', (duration + 5).toString(), '-i', filePath); 
-                } else {
-                    inputs.push('-i', filePath);
-                }
-
-                const idx = inputIndexCounter++;
-                let currentV = `[${idx}:v]`;
-                
-                const addFilter = (filterText) => {
-                    if (!filterText) return;
-                    const nextLabel = `vtmp${i}_${Math.random().toString(36).substr(2, 5)}`;
-                    filterChain += `${currentV}${filterText}[${nextLabel}];`;
-                    currentV = `[${nextLabel}]`;
-                };
-
-                // Standardize Resolution & Pixel Format & FPS
-                addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
-
-                // Trim Video
-                if (clip.type !== 'image') {
-                    const start = clip.mediaStartOffset || 0;
-                    addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
-                } else {
-                    addFilter(`trim=duration=${duration},setpts=PTS-STARTPTS`);
-                }
-
-                // Apply Effects
-                if (clip.effect) {
-                    const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                    if (fx) addFilter(fx);
-                }
-
-                // Apply Color Adjustments
-                if (clip.properties && clip.properties.adjustments) {
-                     const adj = clip.properties.adjustments;
-                     let eqStr = [];
-                     if(adj.brightness !== 1) eqStr.push(`brightness=${adj.brightness - 1}`);
-                     if(adj.contrast !== 1) eqStr.push(`contrast=${adj.contrast}`);
-                     if(adj.saturate !== 1) eqStr.push(`saturation=${adj.saturate}`);
-                     if(eqStr.length > 0) addFilter(`eq=${eqStr.join(':')}`);
-                     if(adj.hue !== 0) addFilter(`hue=h=${adj.hue}`);
-                }
-
-                // Apply Movement
-                if (clip.properties && clip.properties.movement) {
-                    const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config);
-                    if (moveFilter) addFilter(moveFilter);
-                } else if (clip.type === 'image') {
-                    const staticMove = presetGenerator.getMovementFilter('zoom-slow-in', duration, true);
-                    addFilter(staticMove);
-                }
-
-                addFilter(`scale=1280:720,setsar=1`);
-
-                mainTrackLabels.push({
-                    label: currentV,
-                    duration: duration,
-                    transition: clip.transition
-                });
-
-                // Audio Handling
-                const mediaInfo = mediaLibrary ? mediaLibrary[clip.fileName] : null;
-                const audioLabel = `a_base_${i}`;
-                
-                if (clip.type === 'video' && (mediaInfo?.hasAudio !== false)) {
-                    const start = clip.mediaStartOffset || 0;
-                    // Trim audio matches video
-                    filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
-                } else {
-                    // Generate silence for image/silent video
-                    filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${audioLabel}];`;
-                }
-                baseAudioSegments.push(`[${audioLabel}]`);
-            });
         }
 
         // --- 2. COMPOSE MAIN TRACKS (VIDEO & AUDIO) ---
@@ -172,29 +178,52 @@ module.exports = {
                     const prevClip = mainTrackLabels[i-1];
                     const trans = prevClip.transition || { id: 'fade', duration: 0 };
                     
-                    // Logic: Force 0.1s overlap if no transition to prevent black frames,
-                    // otherwise use transition duration.
-                    // Important: Ensure transition isn't longer than clips.
-                    let transDur = (trans.duration > 0) ? trans.duration : 0.1;
+                    let transDur = (trans.duration > 0) ? trans.duration : 0; // Default 0 overlap if no trans
+                    
+                    // Prevent transition longer than clips
                     const maxPossible = Math.min(prevClip.duration/2, nextClipV.duration/2);
                     if (transDur > maxPossible) transDur = maxPossible;
 
-                    // --- VIDEO MIXING (XFADE) ---
+                    // If simple cut (0 duration), use concat logic or simple overlay? 
+                    // Xfade requires overlap. If duration is 0, we can simulate a cut with very small duration or just assume standard xfade handles 0 (it doesn't).
+                    // For cut, we usually use concat, but xfade is easier for chain.
+                    // Let's use 0.05s mix for "cut" to keep pipeline simple, or handle cut explicitly.
+                    // Actually, if duration is 0, we just want to append. 
+                    // But to keep code simple, let's enforce min 0.1s overlap if transition exists, else 0 offset (abut).
+                    
+                    if (transDur <= 0) {
+                        // Hard cut logic not easily done with xfade chain without adjusting PTS manually for every clip.
+                        // Ideally we would use concat filter for cuts, and xfade for transitions.
+                        // For this simplified engine, we force a tiny overlap to allow xfade 'fade' to act as joiner or just simple cut.
+                         // However, xfade offset needs to be accurate.
+                         transDur = 0; // No overlap
+                    }
+
                     const offset = currentDuration - transDur;
                     const nextLabelV = `mix_v_${i}`;
-                    const transFilter = (trans.duration > 0) ? presetGenerator.getTransitionXfade(trans.id) : 'fade';
                     
-                    filterChain += `${currentMixV}${nextClipV.label}xfade=transition=${transFilter}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
+                    if (transDur > 0) {
+                         const transFilter = presetGenerator.getTransitionXfade(trans.id) || 'fade';
+                         filterChain += `${currentMixV}${nextClipV.label}xfade=transition=${transFilter}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
+                    } else {
+                         // Hack for hard cut using overlay? Or just assume clips abut?
+                         // Xfade without duration fails.
+                         // Let's use a very short fade for everything to ensure continuity for now.
+                         // Or better: use a mix filter that supports 0? No.
+                         // We will fallback to 0.1s fade for everything that isn't a transition to ensure stability.
+                         const safeDur = 0.1;
+                         const safeOffset = currentDuration - safeDur;
+                         filterChain += `${currentMixV}${nextClipV.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset}[${nextLabelV}];`;
+                         transDur = safeDur;
+                    }
+
                     currentMixV = `[${nextLabelV}]`;
 
-                    // --- AUDIO MIXING (ACROSSFADE) ---
-                    // Syncing audio duration with video by using the same overlap duration
+                    // Audio
                     const nextLabelA = `mix_a_${i}`;
                     filterChain += `${currentMixA}${nextClipA}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
                     currentMixA = `[${nextLabelA}]`;
                     
-                    // Update accumulated duration (Both streams now have same length)
-                    // New Total = Prev Total + Next Duration - Overlap
                     currentDuration = currentDuration + nextClipV.duration - transDur;
                 }
                 
@@ -202,14 +231,14 @@ module.exports = {
                 baseAudioCombinedLabel = currentMixA;
             }
         } else {
-             // Fallback
-             filterChain += `color=c=black:s=1280x720:r=30:d=5[black_fallback];`;
+             // Should be covered by hasValidMainClips check, but fallback just in case
+             filterChain += `color=c=black:s=1280x720:r=30:d=${totalDuration}[black_fallback];`;
              mainVideoStreamLabel = `[black_fallback]`;
-             filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=5[a_fallback];`;
+             filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${totalDuration}[a_fallback];`;
              baseAudioCombinedLabel = `[a_fallback]`;
         }
 
-        // --- 3. OVERLAYS (Text/Images) ---
+        // --- 3. OVERLAYS (Text/Images on Overlay Tracks) ---
         let finalCompLabel = mainVideoStreamLabel;
         
         overlayClips.forEach((clip, i) => {
@@ -267,8 +296,6 @@ module.exports = {
         });
 
         // --- 4. FINAL AUDIO MIXING ---
-        // Combine base track (which now has transitions applied) with secondary audio tracks (music, sfx, voice)
-        
         let audioMixInputs = [baseAudioCombinedLabel];
         
         audioClips.forEach((clip, i) => {
