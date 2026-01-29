@@ -558,6 +558,7 @@ async function processSingleClipJob(jobId) {
 }
 
 
+
 // ROTA ESPECÍFICA PARA EXPORTAÇÃO
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
@@ -583,49 +584,21 @@ app.post('/api/export/start', uploadAny, (req, res) => {
         const outputPath = optimizedArgs[outputIndex];
         
         // Inject memory safety flags before output path
+        // -max_muxing_queue_size 1024 prevents OOM on heavy files
         optimizedArgs.splice(outputIndex, 1, 
-            '-max_muxing_queue_size', '4096', 
-            '-threads', '4', 
-            '-abort_on', 'empty_output',
+            '-max_muxing_queue_size', '1024', 
+            '-threads', '2', // Limit threads to reduce CPU/Memory spikes
             outputPath
         );
         
         createFFmpegJob(id, optimizedArgs, totalDuration);
+    }).catch(err => {
+        console.error("Export Startup Error:", err);
+        if (jobs[jobId]) {
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = err.message || "Falha ao iniciar exportação.";
+        }
     });
 });
 
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
-    const action = req.params.action;
-    const jobId = `${action}_${Date.now()}`;
-    jobs[jobId] = { status: 'pending', files: req.files, params: req.body, outputPath: null, startTime: Date.now() };
-    processSingleClipJob(jobId);
-    res.status(202).json({ jobId });
-});
-
-app.get('/api/process/status/:jobId', (req, res) => {
-    const job = jobs[req.params.jobId];
-    if (!job) return res.status(404).json({ status: 'not_found' });
-    res.json(job);
-});
-
-app.get('/api/process/download/:jobId', (req, res) => {
-    const job = jobs[req.params.jobId];
-    if (!job || job.status !== 'completed' || !job.outputPath || !fs.existsSync(job.outputPath)) {
-        return res.status(404).send("Arquivo não encontrado.");
-    }
-    res.download(job.outputPath);
-});
-
-app.get('/api/check-ffmpeg', (req, res) => res.send("FFmpeg is ready"));
-
-setInterval(() => {
-    const now = Date.now();
-    Object.keys(jobs).forEach(id => {
-        if (now - jobs[id].startTime > 3600000) {
-            if (jobs[id].outputPath && fs.existsSync(jobs[id].outputPath)) fs.unlinkSync(jobs[id].outputPath);
-            delete jobs[id];
-        }
-    });
-}, 600000);
-
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
