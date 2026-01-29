@@ -1,84 +1,65 @@
-const { spawn } = require('child_process');
+
+const fs = require('fs');
 const path = require('path');
-const presetGenerator = require('./video-engine/presetGenerator');
-const transitionBuilder = require('./video-engine/transitionBuilder');
+const transitionBuilder = require('./video-engine/transitionBuilder.js');
 
-module.exports = function exportVideo({ clips, fileMap, mediaLibrary, output }) {
-  return new Promise((resolve, reject) => {
-
-    // 🔒 DEFESAS
-    if (!Array.isArray(clips)) clips = [];
-    if (!fileMap) fileMap = {};
-    if (!mediaLibrary) mediaLibrary = {};
-
-    const outputPath = output || path.join('/tmp', `export_${Date.now()}.mp4`);
-
-    let timeline;
+module.exports = async (job, uploadDir, onStart) => {
     try {
-      timeline = transitionBuilder.buildTimeline(
-        clips,
-        fileMap,
-        mediaLibrary
-      );
-    } catch (err) {
-      return reject(new Error('Erro ao montar timeline: ' + err.message));
+        const { projectState } = job.params;
+        let state;
+        try {
+            state = JSON.parse(projectState);
+        } catch (e) {
+            throw new Error("Falha ao processar dados do projeto (JSON inválido).");
+        }
+        
+        const { clips, media, totalDuration } = state;
+
+        if (!clips || !Array.isArray(clips)) {
+            throw new Error("Dados do projeto inválidos: lista de clipes ausente.");
+        }
+
+        // 1. Map files
+        const fileMap = {};
+        
+        // Map uploaded files to clip filenames
+        if (job.files && Array.isArray(job.files)) {
+            job.files.forEach(f => {
+                fileMap[f.originalname] = f.path;
+            });
+        }
+
+        // 2. Build Timeline
+        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media);
+        
+        if (!buildResult || !buildResult.filterComplex) {
+            console.warn("Timeline vazia gerada. Verifique se os arquivos foram enviados corretamente.");
+        }
+
+        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
+        job.outputPath = outputPath;
+
+        // 3. Construct FFmpeg Args
+        // If filterComplex is used, we MUST use labels generated in it (e.g. [outv], [outa])
+        // transitionBuilder guarantees returning labels like [outv] or [v_final] in outputMapVideo
+        
+        const args = [
+            ...buildResult.inputs,
+            '-filter_complex', buildResult.filterComplex || 'nullsrc=s=1280x720:d=1[outv];anullsrc=d=1[outa]', 
+            '-map', buildResult.outputMapVideo || '[outv]',
+            '-map', buildResult.outputMapAudio || '[outa]',
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26', '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-b:a', '192k',
+            '-movflags', '+faststart',
+            '-t', String(totalDuration || 5), // Hard limit duration
+            outputPath
+        ];
+
+        // 4. Start Processing
+        onStart(job.id, args, totalDuration || 5);
+
+    } catch (e) {
+        console.error("Export Error:", e);
+        throw e; 
     }
-
-    if (
-      !timeline ||
-      !Array.isArray(timeline.inputs) ||
-      !timeline.outputMapVideo ||
-      !timeline.outputMapAudio
-    ) {
-      return reject(new Error('Timeline inválida gerada'));
-    }
-
-    // 🔒 PRESETS SEGUROS
-    const videoArgs = typeof presetGenerator.getVideoArgs === 'function'
-      ? presetGenerator.getVideoArgs()
-      : ['-c:v', 'libx264', '-pix_fmt', 'yuv420p'];
-
-    const audioArgs = typeof presetGenerator.getAudioArgs === 'function'
-      ? presetGenerator.getAudioArgs()
-      : ['-c:a', 'aac', '-b:a', '192k'];
-
-    const ffmpegArgs = [
-      ...timeline.inputs,
-
-      ...(timeline.filterComplex
-        ? ['-filter_complex', timeline.filterComplex]
-        : []),
-
-      '-map', timeline.outputMapVideo,
-      '-map', timeline.outputMapAudio,
-
-      '-shortest',
-
-      ...videoArgs,
-      ...audioArgs,
-
-      '-movflags', '+faststart',
-      '-y',
-      outputPath
-    ];
-
-    // 🔎 LOG PARA DEPURAÇÃO REAL
-    console.log('FFmpeg command:\nffmpeg ' + ffmpegArgs.join(' '));
-
-    const ff = spawn('ffmpeg', ffmpegArgs);
-
-    let stderr = '';
-
-    ff.stderr.on('data', d => {
-      stderr += d.toString();
-    });
-
-    ff.on('close', code => {
-      if (code !== 0) {
-        console.error(stderr);
-        return reject(new Error('FFmpeg falhou: ' + code));
-      }
-      resolve(outputPath);
-    });
-  });
 };
