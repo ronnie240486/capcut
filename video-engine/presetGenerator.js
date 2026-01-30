@@ -20,9 +20,9 @@ module.exports = {
 
     getAudioArgs: () => [
         '-c:a', 'aac',
-        '-b:a', '192k',
+        '-b:a', '320k', // Increased quality
         '-ar', '44100',
-        '-ac', '2'
+        '-ac', '2' // Force Stereo
     ],
 
     getAudioExtractArgs: () => [
@@ -51,11 +51,13 @@ module.exports = {
             'bw': 'hue=s=0',
             'mono': 'hue=s=0',
             'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2',
+            'sepia-max': 'colorbalance=rs=0.4:gs=0.2:bs=-0.4',
             'warm': 'colorbalance=rs=0.1:bs=-0.1',
             'cool': 'colorbalance=bs=0.1:rs=-0.1',
             'vivid': 'eq=saturation=1.5:contrast=1.1',
             'high-contrast': 'eq=contrast=1.5',
             'invert': 'negate',
+            'posterize': 'curves=posterize',
             'night-vision': 'hue=s=0,eq=contrast=1.2:brightness=0.1,colorbalance=gs=0.5',
             'pop-art': 'eq=saturation=2:contrast=1.3',
             
@@ -65,8 +67,22 @@ module.exports = {
             'vhs-distort': 'colorbalance=bm=0.1,noise=alls=10:allf=t',
             'old-film': 'noise=alls=20:allf=t+u,eq=contrast=1.2', 
             'grain': 'noise=alls=10:allf=t',
+            'noise': 'noise=alls=20:allf=t+u',
+            'vignette': 'vignette=PI/4',
+            
+            // Blur & Optics (New)
+            'blur': 'gblur=sigma=10',
+            'desfoque': 'gblur=sigma=10',
+            'soft-angel': 'gblur=sigma=2,colorbalance=rs=0.1:bs=0.1:gs=0.1',
+            'sharpen': 'unsharp=5:5:1.0:5:5:0.0',
+            'prism': 'geq=r=\'p(X+10,Y)\':g=\'p(X,Y)\':b=\'p(X-10,Y)\'',
+            'chromatic': 'geq=r=\'p(X+5,Y)\':g=\'p(X,Y)\':b=\'p(X-5,Y)\'',
+            'super8': 'noise=alls=20:allf=t+u,colorbalance=rs=0.2',
+            'light-leak-1': 'colorbalance=rs=0.3:gs=0.1:bs=-0.1,eq=brightness=0.1',
+            'strobe': 'eq=brightness=\'if(eq(mod(n,4),0),1.5,1)\''
         };
 
+        // Dynamic ID handlers
         if (effectId.startsWith('cg-pro-')) {
             const i = parseInt(effectId.split('-')[2]) || 1;
             return `contrast=${1 + (i%5)*0.1}:saturation=${1 + (i%3)*0.2}`;
@@ -75,13 +91,15 @@ module.exports = {
         if (effectId.startsWith('cyber-neon-')) return 'eq=contrast=1.3:saturation=1.5';
         if (effectId.startsWith('noir-style-')) return 'hue=s=0,eq=contrast=1.2';
         if (effectId.startsWith('film-stock-')) return 'eq=contrast=1.1:saturation=0.8';
+        if (effectId.startsWith('nature-fresh-')) return 'saturate=1.2';
+        if (effectId.startsWith('art-duo-')) return 'hue=s=0,colorbalance=rs=0.3';
+        if (effectId.includes('glitch')) return 'noise=alls=20:allf=t+u';
 
         return effects[effectId] || null;
     },
 
     getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
         const fps = 30;
-        // Ensure duration is at least 1s to avoid divide by zero
         const safeDur = Math.max(1, durationSec);
         const frames = Math.ceil(safeDur * fps);
         const progress = `(on/${frames})`; 
@@ -94,7 +112,6 @@ module.exports = {
         if (moveId === 'kenBurns') {
              const sS = config.startScale !== undefined ? Number(config.startScale) : 1.0;
              const eS = config.endScale !== undefined ? Number(config.endScale) : 1.3;
-             // Coordinates: Frontend sends -50 to 50, Normalize to 0.0-1.0 range
              const startXNorm = 0.5 + (config.startX || 0) / 100;
              const startYNorm = 0.5 + (config.startY || 0) / 100;
              const endXNorm = 0.5 + (config.endX || 0) / 100;
@@ -112,10 +129,8 @@ module.exports = {
         if (moveId === 'mov-pan-slow-r') return `${zp}:z=1.2:x='iw*(0.4-0.2*${progress})-(iw/zoom/2)':y='${cy}'`;
         if (moveId === 'mov-pan-slow-u') return `${zp}:z=1.2:x='${cx}':y='ih*(0.2+0.2*${progress})-(ih/zoom/2)'`;
         if (moveId === 'mov-pan-slow-d') return `${zp}:z=1.2:x='${cx}':y='ih*(0.4-0.2*${progress})-(ih/zoom/2)'`;
-        
         if (moveId === 'mov-pan-fast-l') return `${zp}:z=1.2:x='iw*(0.1+0.4*${progress})-(iw/zoom/2)':y='${cy}'`;
         if (moveId === 'mov-pan-fast-r') return `${zp}:z=1.2:x='iw*(0.5-0.4*${progress})-(iw/zoom/2)':y='${cy}'`;
-        
         if (moveId === 'mov-pan-diag-tl') return `${zp}:z=1.3:x='iw*(0.4-0.2*${progress})-(iw/zoom/2)':y='ih*(0.4-0.2*${progress})-(ih/zoom/2)'`;
         if (moveId === 'mov-pan-diag-br') return `${zp}:z=1.3:x='iw*(0.2+0.2*${progress})-(iw/zoom/2)':y='ih*(0.2+0.2*${progress})-(ih/zoom/2)'`;
 
@@ -123,126 +138,80 @@ module.exports = {
         if (moveId === 'zoom-in' || moveId === 'zoom-slow-in') return `${zp}:z='1.0+0.5*${progress}':x='${cx}':y='${cy}'`;
         if (moveId === 'zoom-out' || moveId === 'zoom-slow-out') return `${zp}:z='1.5-0.5*${progress}':x='${cx}':y='${cy}'`;
         if (moveId === 'zoom-fast-in') return `${zp}:z='1.0+1.5*${progress}':x='${cx}':y='${cy}'`;
-
-        // --- 4. DYNAMIC ZOOMS (Complex) ---
-        // Twist requires rotation. FFmpeg filter chain: rotate -> scale (to fit) -> zoompan
-        // Twist In (Spiral)
-        if (moveId === 'mov-zoom-twist-in') {
-            // Rotate 360 over duration, Zoom 1.0 -> 2.0
-            return `rotate=a='2*PI*t/${safeDur}':c=black@0:ow=rotw(2*PI*t/${safeDur}):oh=roth(2*PI*t/${safeDur}),${zp}:z='min(1.0+1.0*${progress},2.0)':x='${cx}':y='${cy}'`;
-        }
-        // Twist Out
-        if (moveId === 'mov-zoom-twist-out') {
-            return `rotate=a='-2*PI*t/${safeDur}':c=black@0:ow=rotw(-2*PI*t/${safeDur}):oh=roth(-2*PI*t/${safeDur}),${zp}:z='max(2.0-1.0*${progress},1.0)':x='${cx}':y='${cy}'`;
-        }
-
+        
+        // --- 4. DYNAMIC ZOOMS ---
+        if (moveId === 'mov-zoom-twist-in') return `rotate=a='2*PI*t/${safeDur}':c=black@0:ow=rotw(2*PI*t/${safeDur}):oh=roth(2*PI*t/${safeDur}),${zp}:z='min(1.0+1.0*${progress},2.0)':x='${cx}':y='${cy}'`;
+        if (moveId === 'mov-zoom-twist-out') return `rotate=a='-2*PI*t/${safeDur}':c=black@0:ow=rotw(-2*PI*t/${safeDur}):oh=roth(-2*PI*t/${safeDur}),${zp}:z='max(2.0-1.0*${progress},1.0)':x='${cx}':y='${cy}'`;
         if (moveId === 'mov-zoom-crash-in') return `${zp}:z='1.0+3.0*pow(${progress},3)':x='${cx}':y='${cy}'`;
         if (moveId === 'mov-zoom-crash-out') return `${zp}:z='4.0-3.0*pow(${progress},3)':x='${cx}':y='${cy}'`;
-        
-        if (moveId === 'mov-zoom-bounce-in' || moveId === 'zoom-bounce') 
-            return `${zp}:z='1.2+0.2*sin(on/30*3)':x='${cx}':y='${cy}'`;
-            
+        if (moveId === 'mov-zoom-bounce-in' || moveId === 'zoom-bounce') return `${zp}:z='1.2+0.2*sin(on/30*3)':x='${cx}':y='${cy}'`;
         if (moveId === 'mov-zoom-pulse-slow') return `${zp}:z='1.1+0.05*sin(on/15)':x='${cx}':y='${cy}'`;
         if (moveId === 'mov-zoom-pulse-fast') return `${zp}:z='1.1+0.1*sin(on/5)':x='${cx}':y='${cy}'`;
-        
-        if (moveId === 'mov-dolly-vertigo') 
-            return `${zp}:z='1.0+0.5*sin(on/30*2)':x='${cx}':y='${cy}'`;
+        if (moveId === 'mov-dolly-vertigo') return `${zp}:z='1.0+0.5*sin(on/30*2)':x='${cx}':y='${cy}'`;
 
         // --- 5. SHAKE & CHAOS ---
-        const shakeBase = `${zp}:z=1.1`; // Needs slight zoom to avoid black borders
-        if (moveId === 'shake-hard' || moveId === 'mov-zoom-shake') 
-            return `${shakeBase}:x='${cx}+random(1)*20-10':y='${cy}+random(1)*20-10'`;
-        if (moveId === 'earthquake' || moveId === 'mov-shake-violent') 
-            return `${shakeBase}:x='${cx}+random(1)*50-25':y='${cy}+random(1)*50-25'`;
-        if (moveId === 'handheld-1') 
-            return `${zp}:z=1.05:x='${cx}+sin(on/10)*5':y='${cy}+cos(on/15)*5'`;
-        if (moveId === 'handheld-2') 
-            return `${zp}:z=1.05:x='${cx}+sin(on/5)*10':y='${cy}+cos(on/7)*10'`;
+        const shakeBase = `${zp}:z=1.1`;
+        if (moveId === 'shake-hard' || moveId === 'mov-zoom-shake') return `${shakeBase}:x='${cx}+random(1)*20-10':y='${cy}+random(1)*20-10'`;
+        if (moveId === 'earthquake' || moveId === 'mov-shake-violent') return `${shakeBase}:x='${cx}+random(1)*50-25':y='${cy}+random(1)*50-25'`;
+        if (moveId === 'handheld-1') return `${zp}:z=1.05:x='${cx}+sin(on/10)*5':y='${cy}+cos(on/15)*5'`;
+        if (moveId === 'handheld-2') return `${zp}:z=1.05:x='${cx}+sin(on/5)*10':y='${cy}+cos(on/7)*10'`;
         if (moveId === 'mov-jitter-x') return `${shakeBase}:x='${cx}+random(1)*30-15':y='${cy}'`;
         if (moveId === 'mov-jitter-y') return `${shakeBase}:x='${cx}':y='${cy}+random(1)*30-15'`;
 
-        // --- 6. 3D TRANSFORMS (Simulated via Scale/Rotate/Shear) ---
-        // True 3D needs complex filter chains, we approximate with scale/rotate
-        if (moveId === 'mov-3d-flip-x') 
-            // Scale width from 1 to -1 (flip) - simulating rotation around Y axis
-            return `scale=w='iw*cos(2*PI*t/${safeDur})':h=ih`; 
-        
-        if (moveId === 'mov-3d-flip-y') 
-            return `scale=w=iw:h='ih*cos(2*PI*t/${safeDur})'`;
+        // --- 6. 3D TRANSFORMS ---
+        if (moveId === 'mov-3d-flip-x') return `scale=w='iw*cos(2*PI*t/${safeDur})':h=ih`;
+        if (moveId === 'mov-3d-flip-y') return `scale=w=iw:h='ih*cos(2*PI*t/${safeDur})'`;
+        if (moveId === 'mov-3d-tumble') return `rotate=a='2*PI*t/${safeDur}'`;
+        if (moveId === 'mov-3d-roll') return `rotate=a='4*PI*t/${safeDur}'`;
+        if (moveId === 'mov-3d-swing-l') return `rotate=a='sin(2*PI*t/${safeDur})*0.2'`;
 
-        if (moveId === 'mov-3d-tumble') 
-            return `rotate=a='2*PI*t/${safeDur}'`; // Full rotation
+        // --- 7. ELASTIC & GLITCH ---
+        if (moveId === 'mov-bounce-drop') return `${zp}:y='${cy}+50*abs(cos(on/10))*exp(-on/30)'`;
+        if (moveId === 'mov-jelly-wobble') return `scale=w='iw*(1+0.1*sin(t*10))':h='ih*(1-0.1*sin(t*10))'`;
+        if (moveId === 'mov-glitch-snap') return `colorchannelmixer=rr='1':rg='0.1*sin(t*20)':rb='0':gr='0':gg='1':gb='0':br='0':bg='0':bb='1',${shakeBase}:x='${cx}+step(sin(t*10))*20'`;
+        if (moveId === 'mov-rgb-shift-move') return `rgbashift=rh='20*sin(t*5)':bv='20*cos(t*5)'`;
 
-        if (moveId === 'mov-3d-roll') 
-            return `rotate=a='4*PI*t/${safeDur}'`; // Fast rotation
+        // --- 9. BLUR MOVEMENT ---
+        if (moveId === 'mov-blur-in') return `gblur=sigma='20*(1-${progress})':steps=2`;
+        if (moveId === 'mov-blur-out') return `gblur=sigma='20*${progress}':steps=2`;
+        if (moveId === 'mov-blur-zoom') return `gblur=sigma='10*${progress}':steps=2,${zp}:z='1+0.5*${progress}'`;
 
-        if (moveId === 'mov-3d-swing-l') 
-            return `rotate=a='sin(2*PI*t/${safeDur})*0.2'`; // Gentle swing
-            
-        // --- 7. ELASTIC & FUN ---
-        if (moveId === 'mov-bounce-drop') 
-            return `${zp}:y='${cy}+50*abs(cos(on/10))*exp(-on/30)'`; // Bouncing Y
-        
-        if (moveId === 'mov-jelly-wobble') 
-            // Simulating jelly with scaling x/y inversely
-            return `scale=w='iw*(1+0.1*sin(t*10))':h='ih*(1-0.1*sin(t*10))'`;
-
-        // --- 8. GLITCH / DIGITAL ---
-        if (moveId === 'mov-glitch-snap') 
-            return `colorchannelmixer=rr='1':rg='0.1*sin(t*20)':rb='0':gr='0':gg='1':gb='0':br='0':bg='0':bb='1',${shakeBase}:x='${cx}+step(sin(t*10))*20'`;
-
-        if (moveId === 'mov-rgb-shift-move')
-             return `rgbashift=rh='20*sin(t*5)':bv='20*cos(t*5)'`;
-
-        // --- 9. BLUR ---
-        if (moveId === 'mov-blur-in') 
-             return `gblur=sigma='20*(1-${progress})':steps=2`;
-        if (moveId === 'mov-blur-out') 
-             return `gblur=sigma='20*${progress}':steps=2`;
-        if (moveId === 'mov-blur-zoom') 
-             return `gblur=sigma='10*${progress}':steps=2,${zp}:z='1+0.5*${progress}'`;
-
-        // --- DEFAULT ---
         if (isImage) return `${zp}:z=1`;
         return null;
     },
 
     getTransitionXfade: (id) => {
-        // --- MAPPING TABLE FOR XFADE (Standard FFmpeg Transitions) ---
-        // Many frontend "creative" names are mapped to the visually closest available standard transition.
+        // --- XFADE MAPPINGS (APPROXIMATIONS) ---
         const map = {
-            // Basics
+            // Standard
             'fade': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'fade-classic': 'fade', 'luma-fade': 'fade',
-            'black': 'fadeblack', 'white': 'fadewhite', 'dissolve': 'dissolve',
-            
-            // Wipes & Slides
+            'black': 'fade', 'white': 'fade', 'dissolve': 'dissolve',
             'wipe-up': 'wipeup', 'wipe-down': 'wipedown', 'wipe-left': 'wipeleft', 'wipe-right': 'wiperight',
             'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
             'push-left': 'slideleft', 'push-right': 'slideright',
-            
-            // Shapes
-            'circle-open': 'circleopen', 'circle-close': 'circleclose', 
-            'rect-crop': 'rectcrop', 'iris-in': 'circleopen', 'iris-out': 'circleclose', 'radial': 'radial',
+            'circle-open': 'circleopen', 'circle-close': 'circleclose', 'rect-crop': 'rectcrop', 
+            'iris-in': 'circleopen', 'iris-out': 'circleclose', 'radial': 'radial',
             'diamond-in': 'diagtl', 'diamond-out': 'diagbr', 'diamond-zoom': 'diamond',
-            'plus-wipe': 'plus', 'checker-wipe': 'checkerboard', 'checkerboard': 'checkerboard',
-            'clock-wipe': 'clock', 'wipe-radial': 'radial',
+            'plus-wipe': 'plus', 'checker-wipe': 'checkerboard', 'checkerboard': 'checkerboard', 'clock-wipe': 'clock',
+            'wipe-radial': 'radial', 'pixelize': 'pixelize', 'hblur': 'hblur', 'wipetl': 'wipetl', 
+            'squeezeh': 'squeezeh', 'squeezev': 'squeezev', 'zoomin': 'zoomin',
             
-            // --- CAPCUT TRENDS & COMPLEX (Approximations) ---
-            'morph': 'pixelize', // Approximation
-            'swirl': 'hblur', // Motion blur approximation
-            'kaleidoscope': 'pixelize', // Approximation
+            // --- TRENDS & COMPLEX ---
+            // Mapping complex names to best available standard Xfade transition
+            'morph': 'pixelize',
+            'swirl': 'hblur', // Approx
+            'kaleidoscope': 'pixelize', // Approx
             'warp': 'wipetl',
             'glitch': 'pixelize',
             'glitch-scan': 'hblur',
-            'pixelize': 'pixelize',
             'pixel-sort': 'pixelize',
             'rgb-shake': 'hblur',
-            'color-glitch': 'distance',
+            'color-glitch': 'dissolve',
             'urban-glitch': 'squeezev',
-            'blood-mist': 'distance', // Simulates a distant/fade effect
-            'black-smoke': 'fadeblack',
-            'white-smoke': 'fadewhite',
-            'fire-burn': 'hlslice', // Looks like a slice/burn
+            'blood-mist': 'dissolve', // Visual approx
+            'black-smoke': 'fade',
+            'white-smoke': 'fade',
+            'fire-burn': 'hlslice',
             'visual-buzz': 'hblur',
             'digital-noise': 'pixelize',
             'hologram': 'fade',
@@ -255,74 +224,80 @@ module.exports = {
             'noise-jump': 'pixelize',
             'cyber-slice': 'hlslice',
             'glitch-chroma': 'hblur',
-            
-            // --- WARP & DISTORTION ---
-            'rip-diag': 'wipeleft',
+            'rip-diag': 'wipetl',
             'zoom-neg': 'distance',
             'infinity-1': 'distance',
             'digital-paint': 'dissolve',
             'brush-wind': 'wipeleft',
-            'dust-burst': 'fadewhite',
+            'dust-burst': 'fade',
             'filter-blur': 'hblur',
             'film-roll-v': 'slideup',
             'astral-project': 'zoomin',
-            'lens-flare': 'fadewhite',
-            'flash-bang': 'fadewhite',
-            'flash-white': 'fadewhite',
-            'flash-black': 'fadeblack',
-            'flashback': 'fadewhite',
+            'lens-flare': 'fade',
+            'flash-bang': 'fade',
+            'flash-white': 'fade',
+            'flash-black': 'fade',
+            'flashback': 'fade',
             'combine-overlay': 'fade',
             'combine-mix': 'fade',
-            'nightmare': 'fadeblack',
+            'nightmare': 'fade',
             'bubble-blur': 'hblur',
             'paper-unfold': 'circleopen',
             'corrupt-img': 'pixelize',
-            'glow-intense': 'fadewhite',
+            'glow-intense': 'fade',
             'dynamic-blur': 'hblur',
             'blur-dissolve': 'distance',
-            'burn': 'fadewhite',
-            'exposure': 'fadewhite',
+            'burn': 'fade',
+            'exposure': 'fade',
             'bokeh-blur': 'hblur',
-            'light-leak-tr': 'fadewhite',
+            'light-leak-tr': 'fade',
             'flare-pass': 'slideleft',
             'prism-split': 'hblur',
-            'god-rays': 'fadewhite',
-            
-            // --- LIQUID ---
+            'god-rays': 'fade',
             'liquid-melt': 'hlslice',
             'ink-splash': 'hrslice',
             'water-ripple': 'radial',
             'smoke-reveal': 'fade',
             'oil-paint': 'dissolve',
             'bubble-pop': 'circleopen',
-
-            // --- 3D & ROTATE ---
-            'cube-rotate-l': 'smoothleft', 'cube-rotate-r': 'smoothright', 'cube-rotate-u': 'smoothup', 'cube-rotate-d': 'smoothdown',
+            'cube-rotate-l': 'smoothleft',
+            'cube-rotate-r': 'smoothright',
+            'cube-rotate-u': 'smoothup',
+            'cube-rotate-d': 'smoothdown',
             'door-open': 'hblur',
             'flip-card': 'vblur',
             'room-fly': 'zoomin',
-            'spin-cw': 'radial', 'spin-ccw': 'radial',
-            'spin-zoom-in': 'zoomin', 'spin-zoom-out': 'distance',
-            'whip-left': 'slideleft', 'whip-right': 'slideright', 'whip-up': 'slideup', 'whip-down': 'slidedown',
-            'whip-diagonal-1': 'diagtl', 'whip-diagonal-2': 'diagbr',
-            'perspective-left': 'slideleft', 'perspective-right': 'slideright',
-            'zoom-blur-l': 'slideleft', 'zoom-blur-r': 'slideright',
+            'spin-cw': 'radial',
+            'spin-ccw': 'radial',
+            'spin-zoom-in': 'zoomin',
+            'spin-zoom-out': 'distance',
+            'whip-left': 'slideleft',
+            'whip-right': 'slideright',
+            'whip-up': 'slideup',
+            'whip-down': 'slidedown',
+            'whip-diagonal-1': 'diagtl',
+            'whip-diagonal-2': 'diagbr',
+            'perspective-left': 'slideleft',
+            'perspective-right': 'slideright',
+            'zoom-blur-l': 'slideleft',
+            'zoom-blur-r': 'slideright',
             'zoom-spin-fast': 'radial',
-            
-            // --- ELASTIC ---
-            'elastic-left': 'slideleft', 'elastic-right': 'slideright', 'elastic-up': 'slideup', 'elastic-down': 'slidedown',
+            'elastic-left': 'slideleft',
+            'elastic-right': 'slideright',
+            'elastic-up': 'slideup',
+            'elastic-down': 'slidedown',
             'bounce-scale': 'zoomin',
             'jelly': 'hblur'
         };
 
         if (map[id]) return map[id];
         
-        // Generic Fallbacks
+        // Final fallback heuristics
         if (id.includes('wipe')) return 'wipeleft';
         if (id.includes('slide')) return 'slideleft';
         if (id.includes('zoom')) return 'zoomin';
         if (id.includes('spin')) return 'radial';
-        if (id.includes('flash')) return 'fadewhite';
+        if (id.includes('flash')) return 'fade';
         
         return 'fade'; 
     },
