@@ -52,8 +52,6 @@ module.exports = {
         
         if (mainTrackClips.length === 0) {
             // Create a dummy black background if no video present
-            // Generate it inside filter complex to avoid input issues? No, main track usually needs an input to be robust.
-            // But we can use lavfi here for just one input.
             inputs.push('-f', 'lavfi', '-t', '5', '-i', 'color=c=black:s=1280x720:r=30');
             mainTrackLabels.push(`[${inputIndexCounter++}:v]`);
             // Dummy audio
@@ -85,8 +83,6 @@ module.exports = {
                 };
 
                 // PRE-PROCESS: Scale to 1280x720 (Standard HD) for consistency
-                // Using 1920x1080 -> 720p logic from previous step, but let's stick to 720p internal to match output for speed
-                // scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2
                 addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
 
                 // TRIM
@@ -151,8 +147,6 @@ module.exports = {
                 const nextClip = mainTrackLabels[i];
                 const prevClip = mainTrackLabels[i-1];
                 
-                // FIX: Use nextClip.transition because transitions are attached to the 'incoming' clip
-                // The transition object on Clip[i] represents the transition BETWEEN Clip[i-1] and Clip[i]
                 const trans = nextClip.transition || { id: 'fade', duration: 0.5 }; 
                 const hasExplicitTrans = !!nextClip.transition;
 
