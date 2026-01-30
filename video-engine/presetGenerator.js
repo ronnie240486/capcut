@@ -208,50 +208,122 @@ module.exports = {
     },
 
     getTransitionXfade: (id) => {
-        // ... (Same map as before)
+        // --- MAPPING TABLE FOR XFADE (Standard FFmpeg Transitions) ---
+        // Many frontend "creative" names are mapped to the visually closest available standard transition.
         const map = {
+            // Basics
+            'fade': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'fade-classic': 'fade', 'luma-fade': 'fade',
+            'black': 'fadeblack', 'white': 'fadewhite', 'dissolve': 'dissolve',
+            
+            // Wipes & Slides
             'wipe-up': 'wipeup', 'wipe-down': 'wipedown', 'wipe-left': 'wipeleft', 'wipe-right': 'wiperight',
             'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
             'push-left': 'slideleft', 'push-right': 'slideright',
-            'circle-open': 'circleopen', 'circle-close': 'circleclose', 'rect-crop': 'rectcrop',
+            
+            // Shapes
+            'circle-open': 'circleopen', 'circle-close': 'circleclose', 
+            'rect-crop': 'rectcrop', 'iris-in': 'circleopen', 'iris-out': 'circleclose', 'radial': 'radial',
             'diamond-in': 'diagtl', 'diamond-out': 'diagbr', 'diamond-zoom': 'diamond',
-            'checker-wipe': 'checkerboard', 'checkerboard': 'checkerboard', 'clock-wipe': 'clock',
-            'plus-wipe': 'plus', 'iris-in': 'circleopen', 'iris-out': 'circleclose', 'radial': 'radial',
-            'crossfade': 'fade', 'mix': 'fade', 'fade-classic': 'fade', 'fade': 'fade',
-            'black': 'fadeblack', 'white': 'fadewhite', 'dissolve': 'dissolve', 'luma-fade': 'fade',
-            'zoom-in': 'zoomin', 'zoomin': 'zoomin', 'zoom-out': 'circleclose', 'pull-away': 'distance',
-            'morph': 'pixelize', 'swirl': 'hblur', 'kaleidoscope': 'pixelize', 'warp': 'wipetl',
-            'glitch': 'pixelize', 'glitch-scan': 'hblur', 'pixelize': 'pixelize', 'pixel-sort': 'pixelize',
-            'rgb-shake': 'hblur', 'color-glitch': 'distance', 'urban-glitch': 'squeezev', 'blood-mist': 'distance',
-            'black-smoke': 'fadeblack', 'white-smoke': 'fadewhite', 'fire-burn': 'hlslice', 'visual-buzz': 'hblur',
-            'digital-noise': 'pixelize', 'hologram': 'fade', 'block-glitch': 'pixelize', 'cyber-zoom': 'zoomin',
-            'scan-line-v': 'vdissolve', 'color-tear': 'hblur', 'datamosh': 'pixelize', 'rgb-split': 'hblur',
-            'noise-jump': 'pixelize', 'cyber-slice': 'hlslice', 'glitch-chroma': 'hblur',
-            'rip-diag': 'wipeleft', 'zoom-neg': 'distance', 'infinity-1': 'distance', 'digital-paint': 'dissolve',
-            'brush-wind': 'wipeleft', 'dust-burst': 'fadewhite', 'filter-blur': 'hblur', 'film-roll-v': 'slideup',
-            'astral-project': 'zoomin', 'lens-flare': 'fadewhite', 'flash-bang': 'fadewhite', 'flash-white': 'fadewhite',
-            'flash-black': 'fadeblack', 'flashback': 'fadewhite', 'combine-overlay': 'fade', 'combine-mix': 'fade',
-            'nightmare': 'fadeblack', 'bubble-blur': 'hblur', 'paper-unfold': 'circleopen', 'corrupt-img': 'pixelize',
-            'glow-intense': 'fadewhite', 'dynamic-blur': 'hblur', 'blur-dissolve': 'distance', 'burn': 'fadewhite',
-            'exposure': 'fadewhite', 'bokeh-blur': 'hblur', 'light-leak-tr': 'fadewhite', 'flare-pass': 'slideleft',
-            'prism-split': 'hblur', 'god-rays': 'fadewhite',
-            'liquid-melt': 'hlslice', 'ink-splash': 'hrslice', 'water-ripple': 'radial', 'smoke-reveal': 'fade',
-            'oil-paint': 'dissolve', 'bubble-pop': 'circleopen',
-            'cube-rotate-l': 'smoothleft', 'cube-rotate-r': 'smoothright', 'cube-rotate-u': 'smoothup',
-            'cube-rotate-d': 'smoothdown', 'door-open': 'hblur', 'flip-card': 'vblur', 'room-fly': 'zoomin',
-            'spin-cw': 'radial', 'spin-ccw': 'radial', 'spin-zoom-in': 'zoomin', 'spin-zoom-out': 'distance',
+            'plus-wipe': 'plus', 'checker-wipe': 'checkerboard', 'checkerboard': 'checkerboard',
+            'clock-wipe': 'clock', 'wipe-radial': 'radial',
+            
+            // --- CAPCUT TRENDS & COMPLEX (Approximations) ---
+            'morph': 'pixelize', // Approximation
+            'swirl': 'hblur', // Motion blur approximation
+            'kaleidoscope': 'pixelize', // Approximation
+            'warp': 'wipetl',
+            'glitch': 'pixelize',
+            'glitch-scan': 'hblur',
+            'pixelize': 'pixelize',
+            'pixel-sort': 'pixelize',
+            'rgb-shake': 'hblur',
+            'color-glitch': 'distance',
+            'urban-glitch': 'squeezev',
+            'blood-mist': 'distance', // Simulates a distant/fade effect
+            'black-smoke': 'fadeblack',
+            'white-smoke': 'fadewhite',
+            'fire-burn': 'hlslice', // Looks like a slice/burn
+            'visual-buzz': 'hblur',
+            'digital-noise': 'pixelize',
+            'hologram': 'fade',
+            'block-glitch': 'pixelize',
+            'cyber-zoom': 'zoomin',
+            'scan-line-v': 'vdissolve',
+            'color-tear': 'hblur',
+            'datamosh': 'pixelize',
+            'rgb-split': 'hblur',
+            'noise-jump': 'pixelize',
+            'cyber-slice': 'hlslice',
+            'glitch-chroma': 'hblur',
+            
+            // --- WARP & DISTORTION ---
+            'rip-diag': 'wipeleft',
+            'zoom-neg': 'distance',
+            'infinity-1': 'distance',
+            'digital-paint': 'dissolve',
+            'brush-wind': 'wipeleft',
+            'dust-burst': 'fadewhite',
+            'filter-blur': 'hblur',
+            'film-roll-v': 'slideup',
+            'astral-project': 'zoomin',
+            'lens-flare': 'fadewhite',
+            'flash-bang': 'fadewhite',
+            'flash-white': 'fadewhite',
+            'flash-black': 'fadeblack',
+            'flashback': 'fadewhite',
+            'combine-overlay': 'fade',
+            'combine-mix': 'fade',
+            'nightmare': 'fadeblack',
+            'bubble-blur': 'hblur',
+            'paper-unfold': 'circleopen',
+            'corrupt-img': 'pixelize',
+            'glow-intense': 'fadewhite',
+            'dynamic-blur': 'hblur',
+            'blur-dissolve': 'distance',
+            'burn': 'fadewhite',
+            'exposure': 'fadewhite',
+            'bokeh-blur': 'hblur',
+            'light-leak-tr': 'fadewhite',
+            'flare-pass': 'slideleft',
+            'prism-split': 'hblur',
+            'god-rays': 'fadewhite',
+            
+            // --- LIQUID ---
+            'liquid-melt': 'hlslice',
+            'ink-splash': 'hrslice',
+            'water-ripple': 'radial',
+            'smoke-reveal': 'fade',
+            'oil-paint': 'dissolve',
+            'bubble-pop': 'circleopen',
+
+            // --- 3D & ROTATE ---
+            'cube-rotate-l': 'smoothleft', 'cube-rotate-r': 'smoothright', 'cube-rotate-u': 'smoothup', 'cube-rotate-d': 'smoothdown',
+            'door-open': 'hblur',
+            'flip-card': 'vblur',
+            'room-fly': 'zoomin',
+            'spin-cw': 'radial', 'spin-ccw': 'radial',
+            'spin-zoom-in': 'zoomin', 'spin-zoom-out': 'distance',
             'whip-left': 'slideleft', 'whip-right': 'slideright', 'whip-up': 'slideup', 'whip-down': 'slidedown',
-            'whip-diagonal-1': 'diagtl', 'whip-diagonal-2': 'diagbr', 'perspective-left': 'slideleft',
-            'perspective-right': 'slideright', 'zoom-blur-l': 'slideleft', 'zoom-blur-r': 'slideright',
+            'whip-diagonal-1': 'diagtl', 'whip-diagonal-2': 'diagbr',
+            'perspective-left': 'slideleft', 'perspective-right': 'slideright',
+            'zoom-blur-l': 'slideleft', 'zoom-blur-r': 'slideright',
             'zoom-spin-fast': 'radial',
+            
+            // --- ELASTIC ---
             'elastic-left': 'slideleft', 'elastic-right': 'slideright', 'elastic-up': 'slideup', 'elastic-down': 'slidedown',
-            'bounce-scale': 'zoomin', 'jelly': 'hblur'
+            'bounce-scale': 'zoomin',
+            'jelly': 'hblur'
         };
 
         if (map[id]) return map[id];
+        
+        // Generic Fallbacks
         if (id.includes('wipe')) return 'wipeleft';
         if (id.includes('slide')) return 'slideleft';
         if (id.includes('zoom')) return 'zoomin';
+        if (id.includes('spin')) return 'radial';
+        if (id.includes('flash')) return 'fadewhite';
+        
         return 'fade'; 
     },
 
