@@ -1,9 +1,9 @@
 
-import fs from 'fs';
-import path from 'path';
-import transitionBuilder from './video-engine/transitionBuilder.js';
+const fs = require('fs');
+const path = require('path');
+const transitionBuilder = require('./video-engine/transitionBuilder.js');
 
-export default async (job, uploadDir, onStart) => {
+module.exports = async (job, uploadDir, onStart) => {
     try {
         const { projectState } = job.params;
         const state = JSON.parse(projectState);
@@ -46,8 +46,5 @@ export default async (job, uploadDir, onStart) => {
 
     } catch (e) {
         console.error("Export Error:", e);
-        // We can't really report back easily here unless we modified the callback, 
-        // but the main server.js catches startup errors if synchronous.
-        // For async setup errors, we might need a way to mark job as failed.
     }
 };
