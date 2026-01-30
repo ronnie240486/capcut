@@ -1,42 +1,28 @@
 
-const fs = require('fs');
-const path = require('path');
-const transitionBuilder = require('./video-engine/transitionBuilder.js');
+import fs from 'fs';
+import path from 'path';
+import transitionBuilder from './video-engine/transitionBuilder.js';
 
-module.exports = async (job, uploadDir, onStart) => {
+export default async (job, uploadDir, onStart) => {
     try {
         const { projectState } = job.params;
-        let state;
-        try {
-            state = JSON.parse(projectState);
-        } catch (e) {
-            throw new Error("Falha ao processar dados do projeto (JSON inválido).");
-        }
-        
+        const state = JSON.parse(projectState);
         const { clips, media, totalDuration } = state;
-
-        if (!clips || !Array.isArray(clips)) {
-            throw new Error("Dados do projeto inválidos: lista de clipes ausente.");
-        }
 
         // 1. Map files
         const fileMap = {};
         
         // Map uploaded files to clip filenames
-        if (job.files && Array.isArray(job.files)) {
-            job.files.forEach(f => {
-                // console.log(`Mapped file: ${f.originalname} -> ${f.path}`);
-                fileMap[f.originalname] = f.path;
-            });
-        } else {
-            console.warn("No files uploaded for export job");
-        }
+        // job.files contains files uploaded via multer
+        job.files.forEach(f => {
+            fileMap[f.originalname] = f.path;
+        });
 
-        // 2. Build Timeline (Pass totalDuration)
-        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, totalDuration || 5);
+        // 2. Build Timeline
+        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media);
         
-        if (!buildResult || !buildResult.filterComplex) {
-            console.warn("Timeline vazia gerada. Verifique se os arquivos foram enviados corretamente.");
+        if (!buildResult.filterComplex) {
+            throw new Error("Timeline vazia ou inválida.");
         }
 
         const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
@@ -45,23 +31,23 @@ module.exports = async (job, uploadDir, onStart) => {
         // 3. Construct FFmpeg Args
         const args = [
             ...buildResult.inputs,
-            '-filter_complex', buildResult.filterComplex || `nullsrc=s=1280x720:d=${totalDuration||5}[outv];anullsrc=d=${totalDuration||5}[outa]`, 
-            '-map', buildResult.outputMapVideo || '[outv]',
-            '-map', buildResult.outputMapAudio || '[outa]',
+            '-filter_complex', buildResult.filterComplex,
+            '-map', buildResult.outputMapVideo,
+            '-map', buildResult.outputMapAudio,
             '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '26', '-pix_fmt', 'yuv420p',
             '-c:a', 'aac', '-b:a', '192k',
             '-movflags', '+faststart',
-            '-t', String(totalDuration || 5), 
-            '-f', 'mp4',
-            '-y', 
+            '-t', totalDuration.toString(), // Hard limit duration
             outputPath
         ];
 
         // 4. Start Processing
-        onStart(job.id, args, totalDuration || 5);
+        onStart(job.id, args, totalDuration);
 
     } catch (e) {
         console.error("Export Error:", e);
-        throw e; 
+        // We can't really report back easily here unless we modified the callback, 
+        // but the main server.js catches startup errors if synchronous.
+        // For async setup errors, we might need a way to mark job as failed.
     }
 };
