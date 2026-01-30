@@ -18,7 +18,7 @@ function getAtempoFilter(speed) {
     return filters.join(',');
 }
 
-export default {
+module.exports = {
     /**
      * Builds the filter graph based on the action type.
      */
