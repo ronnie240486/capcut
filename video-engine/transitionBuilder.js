@@ -122,8 +122,8 @@ module.exports = {
                 const audioLabel = `a_base_${i}`;
                 if (clip.type === 'video' && mediaInfo?.hasAudio) {
                     const start = clip.mediaStartOffset || 0;
-                    // Extract audio from same input index
-                    filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
+                    // FIX: Force stereo layout to avoid mixing mono/stereo issues
+                    filterChain += `[${idx}:a]aformat=channel_layouts=stereo,atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
                     baseAudioSegments.push(`[${audioLabel}]`);
                 } else {
                     // Generate silent audio of same duration
@@ -280,14 +280,16 @@ module.exports = {
             const delay = Math.round(clip.start * 1000); // ms
             
             // atrim -> volume -> adelay
-            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delay}|${delay}[${lbl}];`;
+            // FIX: Force stereo and use adelay|delay for stereo channels
+            filterChain += `[${idx}:a]aformat=channel_layouts=stereo,atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delay}|${delay}[${lbl}];`;
             audioMixInputs.push(`[${lbl}]`);
         });
 
         let finalAudio = '[final_audio_out]';
         if (audioMixInputs.length > 1) {
             // amix inputs
-            filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
+            // FIX: Use duration=longest to prevent silent base video from cutting off music
+            filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
             finalAudio = baseAudioCombined;
         }
