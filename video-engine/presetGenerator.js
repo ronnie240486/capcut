@@ -173,18 +173,13 @@ module.exports = {
         }
 
         // 5. Blurs & Flashes (Using filter chains, simplified for zoompan context where possible)
-        // Note: Actual blurring needs a complex filter chain, here we simulate movement associated with it or fallback.
-        // For 'mov-blur-*', we assume these are just movements in this preset generator.
-        // If specific blur is needed, it would be in getFFmpegFilterFromEffect, but these are "Movements".
-        // We will simulate the "Action" part (Zoom/Pan) here.
         if (moveId && moveId.startsWith('mov-blur-')) {
             if (moveId === 'mov-blur-zoom') return `${base}:z='1+0.5*${progress}':x='${centerX}':y='${centerY}'`;
         }
         
-        // 6. 3D Simulated (using zoompan to pan across large crop to simulate perspective pan)
+        // 6. 3D Simulated
         if (moveId && moveId.startsWith('mov-3d-')) {
              if (moveId.includes('float')) return `${base}:z=1.1:x='${centerX}':y='${centerY}+10*sin(on/30)'`;
-             // For tumble/roll we fallback to a dynamic zoom/pan as simple 2D proxy for stability
              return `${base}:z='1.1+0.1*sin(on/20)':x='${centerX}+10*cos(on/40)':y='${centerY}'`;
         }
         
@@ -193,7 +188,7 @@ module.exports = {
             return `${base}:z=1.0:x='${centerX}':y='${centerY}+50*abs(sin(on/10))*exp(-on/30)'`; // Bouncing effect on Y
         }
         
-        // 8. Photo Effects (Simulate motion)
+        // 8. Photo Effects
         if (moveId === 'mov-vhs-tracking') {
              return `${base}:z=1.0:y='${centerY}+5*sin(on*100)'`; // Vertical jitter
         }
@@ -219,8 +214,8 @@ module.exports = {
             'circle-open': 'circleopen',
             'circle-close': 'circleclose',
             'rect-crop': 'rectcrop',
-            'diamond-in': 'diagtl', // approximation
-            'diamond-out': 'diagbr', // approximation
+            'diamond-in': 'diagtl',
+            'diamond-out': 'diagbr',
             'diamond-zoom': 'diamond',
             'checker-wipe': 'checkerboard',
             'checkerboard': 'checkerboard',
@@ -234,13 +229,13 @@ module.exports = {
             'smooth-right': 'smoothright',
             'blind-h': 'hlslice',
             'blind-v': 'hrslice',
-            'barn-door-h': 'hrslice', // approx
-            'barn-door-v': 'hlslice', // approx
+            'barn-door-h': 'hrslice',
+            'barn-door-v': 'hlslice',
             'shutters': 'hlslice',
-            'hex-reveal': 'mosaic', // approx
+            'hex-reveal': 'mosaic',
             'stripes-h': 'hlslice',
             'stripes-v': 'hrslice',
-            'heart-wipe': 'circleopen', // No heart shape in xfade, fallback to circle
+            'heart-wipe': 'circleopen',
             
             // === BASICS ===
             'crossfade': 'fade',
@@ -255,11 +250,11 @@ module.exports = {
             // === ZOOM & WARP ===
             'zoom-in': 'zoomin',
             'zoomin': 'zoomin',
-            'zoom-out': 'circleclose', // fallback
+            'zoom-out': 'circleclose',
             'pull-away': 'distance',
-            'morph': 'pixelize', // fallback for morph
-            'swirl': 'hblur', // fallback
-            'kaleidoscope': 'pixelize', // fallback
+            'morph': 'pixelize',
+            'swirl': 'hblur',
+            'kaleidoscope': 'pixelize',
             'warp': 'wipetl',
             'water-drop': 'radial',
             'wave': 'hblur',
@@ -268,7 +263,7 @@ module.exports = {
             'turbulence': 'dissolve',
             'blur-warp': 'hblur',
             
-            // === GLITCH & SPECIAL (CAPCUT TRENDS) ===
+            // === GLITCH & SPECIAL ===
             'glitch': 'pixelize',
             'glitch-scan': 'hblur',
             'pixelize': 'pixelize',
@@ -276,10 +271,10 @@ module.exports = {
             'rgb-shake': 'hblur',
             'color-glitch': 'distance',
             'urban-glitch': 'squeezev',
-            'blood-mist': 'distance', // best approx
+            'blood-mist': 'distance',
             'black-smoke': 'fadeblack',
             'white-smoke': 'fadewhite',
-            'fire-burn': 'hlslice', // heat slice
+            'fire-burn': 'hlslice',
             'visual-buzz': 'hblur',
             'digital-noise': 'pixelize',
             'hologram': 'fade',
@@ -294,7 +289,7 @@ module.exports = {
             'glitch-chroma': 'hblur',
             
             // === SPECIFIC REQUESTS ===
-            'rip-diag': 'wipeleft', // *** RASGO DO DIA -> HORIZONTAL WIPE (Requested) ***
+            'rip-diag': 'wipeleft',
             'zoom-neg': 'distance',
             'infinity-1': 'distance',
             'digital-paint': 'dissolve',
@@ -366,7 +361,6 @@ module.exports = {
             'jelly': 'hblur'
         };
 
-        // Fuzzy matching if exact ID not found
         if (map[id]) return map[id];
         
         if (id.includes('wipe')) return 'wipeleft';
@@ -379,7 +373,7 @@ module.exports = {
         if (id.includes('cube')) return 'smoothleft';
         if (id.includes('glitch')) return 'pixelize';
         
-        return 'fade'; // Ultimate fallback
+        return 'fade'; 
     },
 
     getFinalVideoFilter: () => FINAL_FILTER
