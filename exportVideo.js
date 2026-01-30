@@ -1,7 +1,19 @@
 
 const fs = require('fs');
 const path = require('path');
+const { exec } = require('child_process');
 const transitionBuilder = require('./video-engine/transitionBuilder.js');
+
+function getMediaInfo(filePath) {
+    return new Promise((resolve) => {
+        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
+            if (err) return resolve({ hasAudio: false });
+            // stdout contains 'audio' if an audio stream exists
+            const hasAudio = stdout.includes('audio');
+            resolve({ hasAudio });
+        });
+    });
+}
 
 module.exports = async (job, uploadDir, onStart) => {
     try {
@@ -9,14 +21,23 @@ module.exports = async (job, uploadDir, onStart) => {
         const state = JSON.parse(projectState);
         const { clips, media, totalDuration } = state;
 
-        // 1. Map files
+        // 1. Map files & Detect Audio (Server-Side Source of Truth)
         const fileMap = {};
         
-        // Map uploaded files to clip filenames
-        // job.files contains files uploaded via multer
-        job.files.forEach(f => {
+        // Process all uploaded files to update audio status
+        const metadataPromises = job.files.map(async (f) => {
             fileMap[f.originalname] = f.path;
+            
+            // Re-verify audio existence on server side because frontend detection is unreliable
+            const info = await getMediaInfo(f.path);
+            
+            // Update media library state if the file exists there
+            if (media[f.originalname]) {
+                media[f.originalname].hasAudio = info.hasAudio;
+            }
         });
+
+        await Promise.all(metadataPromises);
 
         // 2. Build Timeline
         const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media);
