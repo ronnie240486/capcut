@@ -11,7 +11,8 @@ module.exports = {
         '-profile:v', 'high',
         '-level', '4.2',
         '-pix_fmt', 'yuv420p',
-        '-movflags', '+faststart'
+        '-movflags', '+faststart',
+        '-fps_mode', 'cfr' // FFmpeg 6+ replacement for -vsync 1 (Constant Frame Rate)
     ],
 
     getAudioArgs: () => [
@@ -52,7 +53,8 @@ module.exports = {
             'cool': 'colorbalance=bs=0.1:rs=-0.1',
             'vivid': 'eq=saturation=1.5:contrast=1.1',
             'high-contrast': 'eq=contrast=1.5',
-            'invert': 'negate',
+            'invert': 'negate', // Classic negative effect
+            'negative': 'negate',
             'night-vision': 'hue=s=0,eq=contrast=1.2:brightness=0.1,colorbalance=gs=0.5,noise=alls=20:allf=t',
             'pop-art': 'eq=saturation=2:contrast=1.3,curves=strong_contrast',
 
@@ -95,7 +97,6 @@ module.exports = {
         const frames = Math.max(1, Math.ceil(durationSec * fps));
         
         // Zoompan gera uma stream nova, precisamos garantir alta resolução interna para evitar pixelização
-        // FFmpeg zoompan padrão é 1280x720, aumentamos para garantir qualidade no 1080p/4k
         const procW = Math.ceil(targetRes.w * 1.5); // Oversample
         const procH = Math.ceil(targetRes.h * 1.5);
 
@@ -170,12 +171,7 @@ module.exports = {
                 else zExpr = `min(zoom+0.0015,1.5)`; // Default zoom in
             }
             
-            // Para zoom-out funcionar, precisamos começar com zoom alto, mas o x/y tem que ser consistente.
-            // O zoompan do ffmpeg preserva o estado 'zoom' do frame anterior.
             if (moveId.includes('out') && !moveId.includes('crash')) {
-                // A expressão 'zoom' usa o valor anterior. Para 'out', definimos o valor inicial no init? 
-                // Zoompan não tem init fácil via expressão direta. Usamos a fórmula baseada em 'on'.
-                // Recalculando:
                 if (moveId === 'zoom-out') zExpr = `1.5 - (0.5 * on/${frames})`;
                 if (moveId === 'zoom-slow-out') zExpr = `1.2 - (0.2 * on/${frames})`;
             }
@@ -208,7 +204,7 @@ module.exports = {
             // === TRANSITIONS PRO (FFmpeg 4.3+ xfade) ===
             
             // Zoom / Distortion
-            'zoom-neg': 'distance',
+            'zoom-neg': 'distance', // Mapped to distance, but needs manual negative filter in Builder
             'zoom-in': 'zoomin',
             'zoom-out': 'radial',
             'pull-away': 'distance',
@@ -263,7 +259,7 @@ module.exports = {
             'circle-close': 'circleclose',
             'iris-in': 'circleopen',
             'diamond-zoom': 'diamond',
-            'heart-wipe': 'circleopen', // xfade doesn't have heart, use circle
+            'heart-wipe': 'circleopen',
             'star-zoom': 'circleopen',
             'mosaic-small': 'mosaic',
             'checker-wipe': 'checkerboard',
