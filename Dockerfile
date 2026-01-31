@@ -1,20 +1,23 @@
 FROM node:18
 
-# diretório de trabalho dentro do container
+# Diretório de trabalho
 WORKDIR /app
 
-# instalar ffmpeg no sistema (fallback caso não use @ffmpeg-installer/ffmpeg)
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+# Instala FFmpeg 6.x via PPA moderna
+RUN apt-get update && apt-get install -y software-properties-common && \
+    add-apt-repository ppa:savoury1/ffmpeg6 -y && \
+    apt-get update && apt-get install -y ffmpeg && \
+    rm -rf /var/lib/apt/lists/*
 
-# copiar package.json e instalar dependências
+# Copia package.json e instala dependências
 COPY package*.json ./
 RUN npm install --omit=dev
 
-# copiar o restante dos arquivos
+# Copia o restante dos arquivos
 COPY . .
 
-# expor a porta
+# Expor porta
 EXPOSE 8080
 
-# comando padrão
+# Comando padrão
 CMD ["npm", "start"]
