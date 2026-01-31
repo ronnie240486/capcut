@@ -1,8 +1,6 @@
 
 /**
  * FFmpeg FULL PRESETS + MOVEMENTS ENGINE
- * High-Precision Math to eliminate jitter.
- * Comprehensive mapping of ALL frontend transitions and movements.
  */
 
 module.exports = {
@@ -166,163 +164,157 @@ module.exports = {
     },
 
     getTransitionXfade: (id) => {
+        if (!id) return 'fade';
+        const normId = id.toLowerCase();
+        
         const map = {
-            'cyber-zoom': 'zoomin',
-            'scan-line-v': 'glitchmem', 
-            'scan-v': 'glitchmem',
-            'scaline': 'glitchmem',
-            'rasgo-de': 'hblur', 
-            'rip-diag': 'wipeleft',
-            'color-tear': 'hblur',
-            'star-zoom': 'circleopen', 
-            'estrelas': 'circleopen',
-            'dots-reveal': 'circleopen', 
-            'pontos': 'circleopen',
-            'page-turn': 'wipeleft', 
-            'virar-paginas': 'wipeleft',
-            'burn-paper': 'wipetl', 
-            'queimar': 'wipetl',
-            'sketch-reveal': 'fade', 
-            'rascunho': 'fade',
-            'fold-up': 'slideup',
-            'dobrar': 'slideup',
-            'cube-rotate-u': 'smoothup',
-            'cubo-cima': 'smoothup',
-            'cube-rotate-d': 'smoothdown',
-            'cubo-baixo': 'smoothdown',
-            'door-open': 'hlslice', 
-            'porta': 'hlslice',
-            'flip-card': 'squeezev', 
-            'cartao': 'squeezev',
-            'room-fly': 'zoomin',
-            'quarto': 'zoomin',
-            'whip-diagonal-1': 'diagtl',
-            'whip-diagonal-2': 'diagbr',
-            'whip-diag-1': 'diagtl',
-            'whip-diag-2': 'diagbr',
-            'bokeh-blur': 'hblur',
-            'desfoque': 'hblur',
-            'light-leak-tr': 'fadewhite',
-            'vazamento': 'fadewhite',
-            'flare-pass': 'slideleft',
-            'flamepass': 'slideleft',
-            'prism-split': 'pixelize',
-            'prisma': 'pixelize',
-            'god-rays': 'fadewhite',
-            'raio': 'fadewhite',
-            'glitch-scan': 'hblur',
-            'rgb-split': 'hblur',
-            'cyber-slice': 'hlslice',
-            'swirl': 'radial',
-            'redemoinho': 'radial',
-            'kaleidoscope': 'pixelize',
-            'caledoscopio': 'pixelize',
-            'water-drop': 'circleopen',
-            'gota': 'circleopen',
-            'wave': 'hblur',
-            'onda': 'hblur',
-            'stretch-h': 'smoothleft',
-            'esticar-h': 'smoothleft',
-            'stretch-v': 'smoothup',
-            'esticar-v': 'smoothup',
-            'morph': 'dissolve',
-            'turbulence': 'dissolve',
-            'turbulencia': 'dissolve',
-            'wipe-radial': 'radial',
-            'radar': 'radial',
-            'checker-wipe': 'checkerboard',
-            'xadrez': 'checkerboard',
-            'stripes-v': 'hrslice',
-            'listra-v': 'hrslice',
-            'heart-wipe': 'circleopen',
-            'coracao': 'circleopen',
-            'film-roll-v': 'slideup',
-            'rolo-de-filme': 'slideup',
-            'blur-warp': 'hblur',
-            'blood-mist': 'distance',
-            'fire-burn': 'hlslice',
-            'black-smoke': 'fadeblack',
-            'white-smoke': 'fadewhite',
-            'visual-buzz': 'hblur',
-            'urban-glitch': 'squeezev',
-            'color-glitch': 'distance',
-            'digital-paint': 'fade',
-            'brush-wind': 'wipeleft',
-            'wipe-up': 'wipeup',
-            'wipe-down': 'wipedown',
-            'wipe-left': 'wipeleft',
-            'wipe-right': 'wiperight',
+            // BASIC
+            'crossfade': 'fade',
+            'fade': 'fade',
+            'mix': 'dissolve',
+            'dissolve': 'dissolve',
+            'black': 'fadeblack',
+            'white': 'fadewhite',
+            'fade-classic': 'fade',
+            'luma-fade': 'fade',
+
+            // MOTION
             'slide-left': 'slideleft',
             'slide-right': 'slideright',
             'slide-up': 'slideup',
             'slide-down': 'slidedown',
             'push-left': 'slideleft',
             'push-right': 'slideright',
-            'circle-open': 'circleopen',
-            'circle-close': 'circleclose',
-            'rect-crop': 'rectcrop',
-            'diamond-in': 'diagtl',
-            'diamond-out': 'diagbr',
-            'diamond-zoom': 'diamond',
-            'clock-wipe': 'clock',
-            'plus-wipe': 'plus',
-            'iris-in': 'circleopen',
-            'iris-out': 'circleclose',
-            'radial': 'radial',
-            'smooth-left': 'smoothleft',
-            'smooth-right': 'smoothright',
-            'blind-h': 'hlslice',
-            'blind-v': 'hrslice',
-            'barn-door-h': 'hrslice',
-            'barn-door-v': 'hlslice',
-            'shutters': 'hlslice',
-            'hex-reveal': 'mosaic',
-            'stripes-h': 'hlslice',
-            'crossfade': 'fade',
-            'mix': 'fade',
-            'fade-classic': 'fade',
-            'fade': 'fade',
-            'black': 'fadeblack',
-            'white': 'fadewhite',
-            'dissolve': 'dissolve',
-            'luma-fade': 'fade',
+            'whip-left': 'slideleft',
+            'whip-right': 'slideright',
+            'whip-up': 'slideup',
+            'whip-down': 'slidedown',
+            'whip-diagonal-1': 'diagtl',
+            'whip-diagonal-2': 'diagbr',
+            
+            // ZOOM
             'zoom-in': 'zoomin',
             'zoomin': 'zoomin',
-            'zoom-out': 'circleclose',
+            'zoom-out': 'radial', 
+            'zoom-neg': 'distance', 
+            'cyber-zoom': 'zoomin',
             'pull-away': 'distance',
+
+            // GLITCH & CYBER
             'glitch': 'pixelize',
             'pixelize': 'pixelize',
             'pixel-sort': 'pixelize',
+            'glitch-scan': 'hblur',
+            'scan-v': 'hblur',
+            'rgb-split': 'hblur',
             'rgb-shake': 'hblur',
-            'digital-noise': 'pixelize',
-            'hologram': 'fade',
+            'color-glitch': 'hblur',
+            'urban-glitch': 'hblur',
+            'visual-buzz': 'pixelize',
             'block-glitch': 'pixelize',
             'datamosh': 'pixelize',
             'noise-jump': 'pixelize',
+            'digital-noise': 'pixelize',
             'glitch-chroma': 'hblur',
+            'cyber-slice': 'rectcrop',
+            'hologram': 'dissolve',
+
+            // SHAPES
+            'circle-open': 'circleopen',
+            'circle-close': 'circleclose',
+            'diamond-in': 'diagtl',
+            'diamond-out': 'diagbr',
+            'diamond-zoom': 'diamond',
+            'star-zoom': 'circleopen',
+            'heart-wipe': 'circleopen', 
+            'triangle-wipe': 'diagtl',
+            'hex-reveal': 'mosaic',
+            'mosaic-small': 'mosaic',
+            'mosaic-large': 'mosaic',
+            'checker-wipe': 'checkerboard',
+            'checkerboard': 'checkerboard',
+            'clock-wipe': 'clock',
+            'plus-wipe': 'plus',
+            'wipe-radial': 'radial',
+            'radar': 'radial',
+            'iris-in': 'circleopen',
+            'iris-out': 'circleclose',
+
+            // WIPES
+            'wipe-left': 'wipeleft',
+            'wipe-right': 'wiperight',
+            'wipe-up': 'wipeup',
+            'wipe-down': 'wipedown',
+            'barn-door-h': 'hlslice',
+            'barn-door-v': 'hrslice',
+            'blind-h': 'hlslice',
+            'blind-v': 'hrslice',
+            'shutters': 'hlslice',
+            'stripes-h': 'hlslice',
+            'stripes-v': 'hrslice',
+
+            // 3D / FLIPS
+            'cube-rotate-l': 'slideleft', 
+            'cube-rotate-r': 'slideright',
+            'cube-rotate-u': 'slideup',
+            'cube-rotate-d': 'slidedown',
+            'flip-card': 'squeezev',
+            'door-open': 'hlslice',
+            'room-fly': 'zoomin',
+            
+            // ORGANIC / LIQUID
+            'liquid-melt': 'dissolve',
+            'ink-splash': 'circleopen', 
+            'water-drop': 'circleopen',
+            'water-ripple': 'hblur',
+            'wave': 'hblur',
+            'swirl': 'radial',
+            'morph': 'dissolve',
+            'turbulence': 'dissolve',
+            'blur-warp': 'hblur',
+
+            // PAPER
+            'page-turn': 'slideleft',
+            'paper-rip': 'slideleft',
+            'burn-paper': 'circleopen',
+            'sketch-reveal': 'dissolve',
+            'fold-up': 'slideup',
+
+            // LIGHT
+            'flash-white': 'fadewhite',
+            'flash-black': 'fadeblack',
+            'flash': 'fadewhite',
+            'flash-bang': 'fadewhite',
+            'exposure': 'fadewhite',
+            'burn': 'fadewhite',
+            'light-leak-tr': 'fadewhite',
+            'god-rays': 'fadewhite',
+            'flare-pass': 'wipeleft',
+            'bokeh-blur': 'hblur',
+            'prism-split': 'dissolve',
+
+            // ELASTIC
             'elastic-left': 'slideleft',
             'elastic-right': 'slideright',
             'elastic-up': 'slideup',
             'elastic-down': 'slidedown',
             'bounce-scale': 'zoomin',
-            'jelly': 'hblur',
-            'zoom-neg': 'circleclose' // ADDED MAPPING FOR ZOOM NEGATIVE
+            'jelly': 'hblur'
         };
 
-        if (map[id]) return map[id];
-        
-        if (id.includes('wipe')) return 'wipeleft';
-        if (id.includes('slide')) return 'slideleft';
-        if (id.includes('zoom')) return 'zoomin';
-        if (id.includes('blur')) return 'distance';
-        if (id.includes('flash')) return 'fadewhite';
-        if (id.includes('black')) return 'fadeblack';
-        if (id.includes('spin')) return 'radial';
-        if (id.includes('cube')) return 'smoothleft';
-        if (id.includes('glitch')) return 'pixelize';
-        if (id.includes('mist')) return 'distance';
-        if (id.includes('burn')) return 'hlslice';
-        if (id.includes('smoke')) return 'fadeblack';
+        if (map[normId]) return map[normId];
+
+        // Fallbacks
+        if (normId.includes('wipe')) return 'wipeleft';
+        if (normId.includes('slide')) return 'slideleft';
+        if (normId.includes('zoom')) return 'zoomin';
+        if (normId.includes('blur')) return 'hblur';
+        if (normId.includes('flash')) return 'fadewhite';
+        if (normId.includes('black')) return 'fadeblack';
+        if (normId.includes('white')) return 'fadewhite';
+        if (normId.includes('glitch')) return 'pixelize';
+        if (normId.includes('burn')) return 'hlslice';
+        if (normId.includes('smoke')) return 'fadeblack';
         
         return 'fade'; 
     }
