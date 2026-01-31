@@ -1,17 +1,24 @@
-FROM node:18
+# Use uma imagem leve com Node
+FROM node:22-slim
 
+# Atualiza pacotes
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Cria diretório da aplicação
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y software-properties-common && \
-    add-apt-repository ppa:savoury1/ffmpeg6 -y && \
-    apt-get update && apt-get install -y ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
-
+# Copia package.json e instala dependências
 COPY package*.json ./
-RUN npm install --omit=dev
 
+RUN npm install
+
+# Copia o resto do projeto
 COPY . .
 
-EXPOSE 8080
+# Porta que Railway vai expor automaticamente
+EXPOSE 3000
 
-CMD ["npm", "start"]
+# Inicia a aplicação
+CMD ["npm", "run", "start"]
