@@ -1,5 +1,4 @@
 
-
 /**
  * FFmpeg FULL PRESETS + MOVEMENTS ENGINE
  * High-Precision Math to eliminate jitter.
@@ -32,7 +31,7 @@ module.exports = {
     getFFmpegFilterFromEffect: (effectId) => {
         if (!effectId) return null;
         
-        // Massive Effect Mapping from constants.tsx
+        // Massive Effect Mapping
         const effects = {
             // Cinematic Pro
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.3',
@@ -62,11 +61,10 @@ module.exports = {
             'pixelate': 'scale=iw/10:-1,scale=iw*10:-1:flags=neighbor',
             'bad-signal': 'noise=alls=20:allf=t+u',
             'vhs-distort': 'colorbalance=bm=0.1,noise=alls=10:allf=t',
-            'old-film': 'noise=alls=20:allf=t+u,eq=contrast=1.2', // Simula ruído
+            'old-film': 'noise=alls=20:allf=t+u,eq=contrast=1.2', 
             'grain': 'noise=alls=10:allf=t',
         };
 
-        // Procedural Generated Effects Support
         if (effectId.startsWith('cg-pro-')) {
             const i = parseInt(effectId.split('-')[2]) || 1;
             return `contrast=${1 + (i%5)*0.1}:saturation=${1 + (i%3)*0.2}`;
@@ -90,23 +88,19 @@ module.exports = {
     getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}, targetRes = {w: 1280, h: 720}, targetFps = 30) => {
         const fps = targetFps;
         const frames = Math.max(1, Math.ceil(durationSec * fps));
-        const progress = `(on/${frames})`; // 0.0 to 1.0
+        const progress = `(on/${frames})`; 
         
-        // Processing Resolution: Use a bit higher than target to avoid aliasing during zoom
         const procW = Math.ceil(targetRes.w * 1.5);
         const procH = Math.ceil(targetRes.h * 1.5);
         
         const base = `zoompan=d=${isImage ? frames : 1}:s=${procW}x${procH}:fps=${fps}`; 
 
-        // Helper: Center viewport (iw/2 - viewport_w/2)
         const centerX = `(iw/2)-(iw/zoom/2)`;
         const centerY = `(ih/2)-(ih/zoom/2)`;
 
-        // 1. Ken Burns Custom (User Configured)
         if (moveId === 'kenBurns') {
              const sS = config.startScale !== undefined ? Number(config.startScale) : 1.0;
              const eS = config.endScale !== undefined ? Number(config.endScale) : 1.3;
-             
              const startXNorm = 0.5 + (config.startX !== undefined ? Number(config.startX) / 100 : 0);
              const startYNorm = 0.5 + (config.startY !== undefined ? Number(config.startY) / 100 : 0);
              const endXNorm = 0.5 + (config.endX !== undefined ? Number(config.endX) / 100 : 0);
@@ -119,7 +113,6 @@ module.exports = {
              return `${base}:z='${zExpr}':x='${xExpr}':y='${yExpr}'`;
         }
 
-        // 2. Cinematic Pans
         if (moveId && moveId.startsWith('mov-pan-')) {
             const panType = moveId.replace('mov-pan-', '');
             const z = 1.2; 
@@ -128,20 +121,16 @@ module.exports = {
             if (panType === 'slow-r' || panType === 'right') return `${base}:z=${z}:x='iw*(0.6-(0.2)*${progress})-(iw/zoom/2)':y='${centerY}'`;
             if (panType === 'slow-u' || panType === 'up') return `${base}:z=${z}:x='${centerX}':y='ih*(0.4+(0.2)*${progress})-(ih/zoom/2)'`;
             if (panType === 'slow-d' || panType === 'down') return `${base}:z=${z}:x='${centerX}':y='ih*(0.6-(0.2)*${progress})-(ih/zoom/2)'`;
-            
             if (panType === 'fast-l') return `${base}:z=${z}:x='iw*(0.3+(0.4)*${progress})-(iw/zoom/2)':y='${centerY}'`;
             if (panType === 'fast-r') return `${base}:z=${z}:x='iw*(0.7-(0.4)*${progress})-(iw/zoom/2)':y='${centerY}'`;
-            
             if (panType.includes('diag')) return `${base}:z=${z}:x='iw*(0.4+(0.2)*${progress})-(iw/zoom/2)':y='ih*(0.4+(0.2)*${progress})-(ih/zoom/2)'`;
         }
 
-        // 3. Dynamic Zooms
         if (moveId && (moveId.startsWith('mov-zoom-') || moveId.includes('zoom-'))) {
             if (moveId === 'zoom-in' || moveId === 'zoom-slow-in') return `${base}:z='1.0+(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId === 'zoom-out' || moveId === 'zoom-slow-out') return `${base}:z='1.5-(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId === 'zoom-fast-in') return `${base}:z='1.0+(1.0)*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId === 'dolly-zoom') return `${base}:z='1.0+(0.5)*sin(on/${fps}*3)':x='${centerX}':y='${centerY}'`;
-            
             if (moveId.includes('crash-in')) return `${base}:z='1.0+3.0*${progress}*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId.includes('crash-out')) return `${base}:z='4.0-3.0*${progress}*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId.includes('bounce') || moveId === 'zoom-bounce') return `${base}:z='1.2+0.1*sin(on/${fps}*3)':x='${centerX}':y='${centerY}'`;
@@ -150,29 +139,24 @@ module.exports = {
             if (moveId.includes('twist')) return `${base}:z='1.0+(0.5)*${progress}':x='${centerX}':y='${centerY}'`; 
         }
 
-        // 4. Shakes & Chaos
         if (['shake', 'earthquake', 'handheld-1', 'handheld-2', 'jitter', 'mov-shake-violent'].includes(moveId) || moveId?.includes('jitter') || moveId?.includes('shake')) {
             const intensity = moveId === 'earthquake' || moveId.includes('violent') ? 20 : 5;
             return `${base}:z=1.1:x='${centerX}+random(1)*${intensity}-${intensity/2}':y='${centerY}+random(1)*${intensity}-${intensity/2}'`;
         }
 
-        // 5. Blurs & Flashes
         if (moveId && moveId.startsWith('mov-blur-')) {
             if (moveId === 'mov-blur-zoom') return `${base}:z='1+0.5*${progress}':x='${centerX}':y='${centerY}'`;
         }
         
-        // 6. 3D Simulated
         if (moveId && moveId.startsWith('mov-3d-')) {
              if (moveId.includes('float')) return `${base}:z=1.1:x='${centerX}':y='${centerY}+10*sin(on/${fps})'`;
              return `${base}:z='1.1+0.1*sin(on/${fps/1.5})':x='${centerX}+10*cos(on/${fps/0.75})':y='${centerY}'`;
         }
         
-        // 7. Elastic/Bounce
         if (moveId && (moveId.includes('elastic') || moveId.includes('bounce') || moveId.includes('spring'))) {
             return `${base}:z=1.0:x='${centerX}':y='${centerY}+50*abs(sin(on/${fps/3}))*exp(-on/${fps})'`; 
         }
         
-        // 8. Photo Effects
         if (moveId === 'mov-vhs-tracking') {
              return `${base}:z=1.0:y='${centerY}+5*sin(on*100)'`; 
         }
@@ -183,7 +167,6 @@ module.exports = {
 
     getTransitionXfade: (id) => {
         const map = {
-            // === CAPCUT TRENDS & PRO ===
             'cyber-zoom': 'zoomin',
             'scan-line-v': 'glitchmem', 
             'scan-v': 'glitchmem',
@@ -256,8 +239,6 @@ module.exports = {
             'film-roll-v': 'slideup',
             'rolo-de-filme': 'slideup',
             'blur-warp': 'hblur',
-            
-            // CAPCUT TREND ID MATCHING
             'blood-mist': 'distance',
             'fire-burn': 'hlslice',
             'black-smoke': 'fadeblack',
@@ -267,8 +248,6 @@ module.exports = {
             'color-glitch': 'distance',
             'digital-paint': 'fade',
             'brush-wind': 'wipeleft',
-            
-            // === GEOMETRIC & WIPES ===
             'wipe-up': 'wipeup',
             'wipe-down': 'wipedown',
             'wipe-left': 'wipeleft',
@@ -285,7 +264,6 @@ module.exports = {
             'diamond-in': 'diagtl',
             'diamond-out': 'diagbr',
             'diamond-zoom': 'diamond',
-            'checkerboard': 'checkerboard',
             'clock-wipe': 'clock',
             'plus-wipe': 'plus',
             'iris-in': 'circleopen',
@@ -300,8 +278,6 @@ module.exports = {
             'shutters': 'hlslice',
             'hex-reveal': 'mosaic',
             'stripes-h': 'hlslice',
-            
-            // === BASICS ===
             'crossfade': 'fade',
             'mix': 'fade',
             'fade-classic': 'fade',
@@ -310,14 +286,10 @@ module.exports = {
             'white': 'fadewhite',
             'dissolve': 'dissolve',
             'luma-fade': 'fade',
-            
-            // === ZOOM & WARP ===
             'zoom-in': 'zoomin',
             'zoomin': 'zoomin',
             'zoom-out': 'circleclose',
             'pull-away': 'distance',
-            
-            // === GLITCH & SPECIAL ===
             'glitch': 'pixelize',
             'pixelize': 'pixelize',
             'pixel-sort': 'pixelize',
@@ -328,8 +300,6 @@ module.exports = {
             'datamosh': 'pixelize',
             'noise-jump': 'pixelize',
             'glitch-chroma': 'hblur',
-            
-            // === ELASTIC ===
             'elastic-left': 'slideleft',
             'elastic-right': 'slideright',
             'elastic-up': 'slideup',
@@ -338,7 +308,6 @@ module.exports = {
             'jelly': 'hblur'
         };
 
-        // Fuzzy matching se não encontrar exato
         if (map[id]) return map[id];
         
         if (id.includes('wipe')) return 'wipeleft';
@@ -354,6 +323,6 @@ module.exports = {
         if (id.includes('burn')) return 'hlslice';
         if (id.includes('smoke')) return 'fadeblack';
         
-        return 'fade'; // Ultimate fallback
+        return 'fade'; 
     }
 };
