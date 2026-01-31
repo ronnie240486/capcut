@@ -305,7 +305,8 @@ module.exports = {
             'elastic-up': 'slideup',
             'elastic-down': 'slidedown',
             'bounce-scale': 'zoomin',
-            'jelly': 'hblur'
+            'jelly': 'hblur',
+            'zoom-neg': 'circleclose' // ADDED MAPPING FOR ZOOM NEGATIVE
         };
 
         if (map[id]) return map[id];
