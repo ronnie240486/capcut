@@ -122,6 +122,14 @@ module.exports = {
                     // Para imagem, já limitamos no input, mas setpts garante timestamp zero
                     addFilter(`trim=duration=${duration},setpts=PTS-STARTPTS`);
                 }
+                
+                // --- SPECIAL TRANSITION PRE-PROCESSING (NEGATIVE EFFECT) ---
+                // If this clip is the 'incoming' clip of a zoom-neg transition, invert its colors for the transition duration.
+                if (clip.transition && clip.transition.id === 'zoom-neg') {
+                    const transDur = clip.transition.duration || 0.5;
+                    // Invert colors (negate) only during the transition entry period
+                    addFilter(`negate=enable='between(t,0,${transDur})'`);
+                }
 
                 // 3. EFEITOS DE COR (Filtros)
                 if (clip.effect) {
