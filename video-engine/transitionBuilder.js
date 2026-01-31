@@ -130,18 +130,19 @@ module.exports = {
                 const mediaInfo = mediaLibrary[clip.fileName];
                 const audioLabel = `a_base_${i}`;
                 
-                // IMPORTANT: Ensure audio format (sample rate 44100, stereo) for ALL segments to allow concat
+                // FORCE consistent audio format including sample_fmts=fltp for safe mixing
+                const audioFormatFilter = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
+
                 if (clip.type === 'video' && mediaInfo?.hasAudio) {
                     const start = clip.mediaStartOffset || 0;
                     // Force aformat and selection of stream 0:a
-                    filterChain += `[${idx}:a]aformat=sample_rates=44100:channel_layouts=stereo,atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
+                    filterChain += `[${idx}:a]${audioFormatFilter},atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
                     baseAudioSegments.push(`[${audioLabel}]`);
                 } else {
                     // Generate silent audio of exact duration for this clip
-                    // Using independent lavfi source for silence to guarantee it exists and matches
                     inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     const silenceIdx = inputIndexCounter++;
-                    filterChain += `[${silenceIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo[${audioLabel}];`;
+                    filterChain += `[${silenceIdx}:a]${audioFormatFilter}[${audioLabel}];`;
                     baseAudioSegments.push(`[${audioLabel}]`);
                 }
             });
@@ -272,15 +273,19 @@ module.exports = {
             const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
             const delay = Math.round(clip.start * 1000); // ms
             
+            // Force safe mixing format
+            const safeAudioFormat = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
+
             // atrim -> aformat -> volume -> adelay
-            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,aformat=sample_rates=44100:channel_layouts=stereo,volume=${volume},adelay=${delay}|${delay}[${lbl}];`;
+            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delay}|${delay}[${lbl}];`;
             audioMixInputs.push(`[${lbl}]`);
         });
 
         let finalAudio = '[final_audio_out]';
         if (audioMixInputs.length > 1) {
-            // amix inputs (normalize=0 to prevent volume drop)
-            filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
+            // amix inputs (normalize=0 to prevent volume drop). duration=longest ensures background music plays to the end if longer than video clips.
+            // The final export duration -t in exportVideo.js will cut it correctly at totalDuration.
+            filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
             finalAudio = baseAudioCombined;
         }
