@@ -37,6 +37,7 @@ module.exports = {
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
         const targetFps = exportConfig.fps || 30;
         
+        // Scale Filter: Force aspect ratio to avoid distortion, pad with black bars if needed
         const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // SEPARATE MAIN TRACK (Sequenced) FROM LAYERS (Overlay)
@@ -133,13 +134,11 @@ module.exports = {
                 if (clip.type === 'video' && mediaInfo?.hasAudio) {
                     const start = clip.mediaStartOffset || 0;
                     // Force aformat and selection of stream 0:a
-                    // If audio stream doesn't exist despite metadata, this might fail, so we blindly try to map.
-                    // Ideally check with ffprobe, but here we assume metadata is correct.
                     filterChain += `[${idx}:a]aformat=sample_rates=44100:channel_layouts=stereo,atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
                     baseAudioSegments.push(`[${audioLabel}]`);
                 } else {
                     // Generate silent audio of exact duration for this clip
-                    // Using independent lavfi source for silence to guarantee it exists
+                    // Using independent lavfi source for silence to guarantee it exists and matches
                     inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     const silenceIdx = inputIndexCounter++;
                     filterChain += `[${silenceIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo[${audioLabel}];`;
@@ -163,7 +162,7 @@ module.exports = {
                 
                 const trans = prevClip.transition || { id: 'fade', duration: 0.5 };
                 const hasExplicitTrans = !!prevClip.transition;
-                const transDur = hasExplicitTrans ? Math.min(trans.duration, prevClip.duration/2, nextClip.duration/2) : 0.05; // Small blend if no trans
+                const transDur = hasExplicitTrans ? Math.min(trans.duration, prevClip.duration/2, nextClip.duration/2) : 0.05; // Minimal blend if no transition
                 const transId = hasExplicitTrans ? presetGenerator.getTransitionXfade(trans.id) : 'fade';
                 
                 const offset = accumulatedDuration - transDur;
@@ -197,7 +196,7 @@ module.exports = {
                  let color = clip.properties.textDesign?.color || 'white';
                  if (color === 'transparent') color = 'white@0.0';
 
-                 // Scale font size based on resolution
+                 // Scale font size based on resolution (Base 80px for 720p)
                  const baseFontSize = 80;
                  const scaleFactor = targetRes.w / 1280;
                  const fontsize = Math.round(baseFontSize * scaleFactor);
