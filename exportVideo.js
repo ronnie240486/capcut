@@ -17,14 +17,13 @@ module.exports = async (job, uploadDir, onStart) => {
             throw new Error("JSON do projeto corrompido.");
         }
 
-        const { clips, media, totalDuration, exportConfig } = state;
+        // Extract Export Config
+        const exportConfig = state.exportConfig || { resolution: '720p', fps: 30, format: 'mp4' };
+        const { clips, media, totalDuration } = state;
 
         if (!clips || clips.length === 0) {
             throw new Error("Timeline vazia.");
         }
-
-        // Default Config if missing
-        const config = exportConfig || { resolution: '720p', fps: 30, format: 'mp4' };
 
         // 1. Map files
         const fileMap = {};
@@ -36,19 +35,19 @@ module.exports = async (job, uploadDir, onStart) => {
             });
         }
 
-        // 2. Build Timeline with Config
-        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, config);
+        // 2. Build Timeline with Config (Pass exportConfig)
+        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, exportConfig);
         
         if (!buildResult || !buildResult.filterComplex) {
             throw new Error("Falha ao gerar grafo de filtros. Verifique se as mídias são suportadas.");
         }
 
-        const ext = config.format === 'webm' ? 'webm' : config.format === 'mov' ? 'mov' : 'mp4';
+        const ext = exportConfig.format === 'webm' ? 'webm' : exportConfig.format === 'mov' ? 'mov' : 'mp4';
         const outputPath = path.join(uploadDir, `export_${Date.now()}.${ext}`);
         job.outputPath = outputPath;
 
         // 3. Construct FFmpeg Args (Optimized)
-        const fps = config.fps || 30;
+        const fps = exportConfig.fps || 30;
         
         const args = [
             ...buildResult.inputs,
@@ -57,7 +56,7 @@ module.exports = async (job, uploadDir, onStart) => {
             '-map', buildResult.outputMapAudio,
             
             // Video Encoding Settings
-            '-c:v', config.format === 'webm' ? 'libvpx-vp9' : 'libx264', 
+            '-c:v', exportConfig.format === 'webm' ? 'libvpx-vp9' : 'libx264', 
             '-preset', 'ultrafast', // Prioritize speed
             '-tune', 'fastdecode',  
             '-crf', '23',           // Better quality than 28
