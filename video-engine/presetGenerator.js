@@ -71,7 +71,7 @@ module.exports = {
             'grain': 'noise=alls=10:allf=t',
         };
 
-        // Procedural Generated Effects Support (Color Grade, Vintage, etc from constants)
+        // Procedural Generated Effects Support
         if (effectId.startsWith('cg-pro-')) {
             const i = parseInt(effectId.split('-')[2]) || 1;
             return `contrast=${1 + (i%5)*0.1}:saturation=${1 + (i%3)*0.2}`;
@@ -93,11 +93,6 @@ module.exports = {
     },
 
     getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
-        // --- ANTI-SHAKE ENGINE (Super-Sampling 1080p + Absolute Math) ---
-        // We calculate movement on a virtual 1920x1080 canvas.
-        // 'on' = current frame number. 'frames' = total duration in frames.
-        // Using `on` (absolute frame count) guarantees smooth interpolation unlike relative `zoom+x`.
-        
         const fps = 30;
         const frames = Math.max(1, Math.ceil(durationSec * fps));
         const progress = `(on/${frames})`; // 0.0 to 1.0
@@ -114,7 +109,6 @@ module.exports = {
              const sS = config.startScale !== undefined ? Number(config.startScale) : 1.0;
              const eS = config.endScale !== undefined ? Number(config.endScale) : 1.3;
              
-             // Convert percentage offsets (-50 to 50) to normalized (0.0 to 1.0)
              const startXNorm = 0.5 + (config.startX !== undefined ? Number(config.startX) / 100 : 0);
              const startYNorm = 0.5 + (config.startY !== undefined ? Number(config.startY) / 100 : 0);
              const endXNorm = 0.5 + (config.endX !== undefined ? Number(config.endX) / 100 : 0);
@@ -127,44 +121,35 @@ module.exports = {
              return `${base}:z='${zExpr}':x='${xExpr}':y='${yExpr}'`;
         }
 
-        // 2. Cinematic Pans (Generated IDs from constants)
+        // 2. Cinematic Pans
         if (moveId && moveId.startsWith('mov-pan-')) {
             const panType = moveId.replace('mov-pan-', '');
-            // Logic: Zoom 1.2 to give room to pan without black bars
             const z = 1.2; 
             
-            // Standard Pans (Slow)
-            if (panType === 'slow-l' || panType === 'left') return `${base}:z=${z}:x='iw*(0.4+(0.2)*${progress})-(iw/zoom/2)':y='${centerY}'`; // Right to Left
-            if (panType === 'slow-r' || panType === 'right') return `${base}:z=${z}:x='iw*(0.6-(0.2)*${progress})-(iw/zoom/2)':y='${centerY}'`; // Left to Right
+            if (panType === 'slow-l' || panType === 'left') return `${base}:z=${z}:x='iw*(0.4+(0.2)*${progress})-(iw/zoom/2)':y='${centerY}'`; 
+            if (panType === 'slow-r' || panType === 'right') return `${base}:z=${z}:x='iw*(0.6-(0.2)*${progress})-(iw/zoom/2)':y='${centerY}'`;
             if (panType === 'slow-u' || panType === 'up') return `${base}:z=${z}:x='${centerX}':y='ih*(0.4+(0.2)*${progress})-(ih/zoom/2)'`;
             if (panType === 'slow-d' || panType === 'down') return `${base}:z=${z}:x='${centerX}':y='ih*(0.6-(0.2)*${progress})-(ih/zoom/2)'`;
             
-            // Fast Pans
             if (panType === 'fast-l') return `${base}:z=${z}:x='iw*(0.3+(0.4)*${progress})-(iw/zoom/2)':y='${centerY}'`;
             if (panType === 'fast-r') return `${base}:z=${z}:x='iw*(0.7-(0.4)*${progress})-(iw/zoom/2)':y='${centerY}'`;
             
-            // Diagonal Pans
-            if (panType === 'diag-tl') return `${base}:z=${z}:x='iw*(0.6-(0.2)*${progress})-(iw/zoom/2)':y='ih*(0.6-(0.2)*${progress})-(ih/zoom/2)'`; // Bot-Right to Top-Left
-            if (panType === 'diag-br') return `${base}:z=${z}:x='iw*(0.4+(0.2)*${progress})-(iw/zoom/2)':y='ih*(0.4+(0.2)*${progress})-(ih/zoom/2)'`; // Top-Left to Bot-Right
-            // Fallbacks for other diags
             if (panType.includes('diag')) return `${base}:z=${z}:x='iw*(0.4+(0.2)*${progress})-(iw/zoom/2)':y='ih*(0.4+(0.2)*${progress})-(ih/zoom/2)'`;
         }
 
-        // 3. Dynamic Zooms (Generated IDs + Basic)
+        // 3. Dynamic Zooms
         if (moveId && (moveId.startsWith('mov-zoom-') || moveId.includes('zoom-'))) {
-            // Basic
             if (moveId === 'zoom-in' || moveId === 'zoom-slow-in') return `${base}:z='1.0+(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId === 'zoom-out' || moveId === 'zoom-slow-out') return `${base}:z='1.5-(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId === 'zoom-fast-in') return `${base}:z='1.0+(1.0)*${progress}':x='${centerX}':y='${centerY}'`;
-            if (moveId === 'dolly-zoom') return `${base}:z='1.0+(0.5)*sin(on/30*3)':x='${centerX}':y='${centerY}'`; // Simulate dolly effect with zoom
+            if (moveId === 'dolly-zoom') return `${base}:z='1.0+(0.5)*sin(on/30*3)':x='${centerX}':y='${centerY}'`;
             
-            // Complex (Generated)
-            if (moveId.includes('crash-in')) return `${base}:z='1.0+3.0*${progress}*${progress}':x='${centerX}':y='${centerY}'`; // Exponential Zoom
+            if (moveId.includes('crash-in')) return `${base}:z='1.0+3.0*${progress}*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId.includes('crash-out')) return `${base}:z='4.0-3.0*${progress}*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId.includes('bounce') || moveId === 'zoom-bounce') return `${base}:z='1.2+0.1*sin(on/30*3)':x='${centerX}':y='${centerY}'`;
             if (moveId.includes('pulse')) return `${base}:z='1.1+0.05*sin(on/30*10)':x='${centerX}':y='${centerY}'`;
             if (moveId.includes('wobble')) return `${base}:z='1.1+0.02*sin(on/10)':x='${centerX}+10*cos(on/15)':y='${centerY}'`;
-            if (moveId.includes('twist')) return `${base}:z='1.0+(0.5)*${progress}':x='${centerX}':y='${centerY}'`; // No rotation in zoompan, fallback to zoom
+            if (moveId.includes('twist')) return `${base}:z='1.0+(0.5)*${progress}':x='${centerX}':y='${centerY}'`; 
         }
 
         // 4. Shakes & Chaos
@@ -173,39 +158,107 @@ module.exports = {
             return `${base}:z=1.1:x='${centerX}+random(1)*${intensity}-${intensity/2}':y='${centerY}+random(1)*${intensity}-${intensity/2}'`;
         }
 
-        // 5. Blurs & Flashes (Using filter chains, simplified for zoompan context where possible)
-        // Note: Actual blurring needs a complex filter chain, here we simulate movement associated with it or fallback.
-        // For 'mov-blur-*', we assume these are just movements in this preset generator.
-        // If specific blur is needed, it would be in getFFmpegFilterFromEffect, but these are "Movements".
-        // We will simulate the "Action" part (Zoom/Pan) here.
+        // 5. Blurs & Flashes
         if (moveId && moveId.startsWith('mov-blur-')) {
             if (moveId === 'mov-blur-zoom') return `${base}:z='1+0.5*${progress}':x='${centerX}':y='${centerY}'`;
         }
         
-        // 6. 3D Simulated (using zoompan to pan across large crop to simulate perspective pan)
+        // 6. 3D Simulated
         if (moveId && moveId.startsWith('mov-3d-')) {
              if (moveId.includes('float')) return `${base}:z=1.1:x='${centerX}':y='${centerY}+10*sin(on/30)'`;
-             // For tumble/roll we fallback to a dynamic zoom/pan as simple 2D proxy for stability
              return `${base}:z='1.1+0.1*sin(on/20)':x='${centerX}+10*cos(on/40)':y='${centerY}'`;
         }
         
         // 7. Elastic/Bounce
         if (moveId && (moveId.includes('elastic') || moveId.includes('bounce') || moveId.includes('spring'))) {
-            return `${base}:z=1.0:x='${centerX}':y='${centerY}+50*abs(sin(on/10))*exp(-on/30)'`; // Bouncing effect on Y
+            return `${base}:z=1.0:x='${centerX}':y='${centerY}+50*abs(sin(on/10))*exp(-on/30)'`; 
         }
         
-        // 8. Photo Effects (Simulate motion)
+        // 8. Photo Effects
         if (moveId === 'mov-vhs-tracking') {
-             return `${base}:z=1.0:y='${centerY}+5*sin(on*100)'`; // Vertical jitter
+             return `${base}:z=1.0:y='${centerY}+5*sin(on*100)'`; 
         }
 
-        // Default: Static (but high res context to match pipeline)
         if (isImage) return `${base}:z=1`;
         return null;
     },
 
     getTransitionXfade: (id) => {
         const map = {
+            // === CAPCUT TRENDS & PRO ===
+            'cyber-zoom': 'zoomin',
+            'scan-line-v': 'glitchmem', 
+            'scan-v': 'glitchmem',
+            'scaline': 'glitchmem',
+            'rasgo-de': 'hblur', 
+            'rip-diag': 'wipeleft',
+            'color-tear': 'hblur',
+            'star-zoom': 'circleopen', 
+            'estrelas': 'circleopen',
+            'dots-reveal': 'circleopen', 
+            'pontos': 'circleopen',
+            'page-turn': 'wipeleft', 
+            'virar-paginas': 'wipeleft',
+            'burn-paper': 'wipetl', 
+            'queimar': 'wipetl',
+            'sketch-reveal': 'fade', 
+            'rascunho': 'fade',
+            'fold-up': 'slideup',
+            'dobrar': 'slideup',
+            'cube-rotate-u': 'smoothup',
+            'cubo-cima': 'smoothup',
+            'cube-rotate-d': 'smoothdown',
+            'cubo-baixo': 'smoothdown',
+            'door-open': 'hlslice', 
+            'porta': 'hlslice',
+            'flip-card': 'squeezev', 
+            'cartao': 'squeezev',
+            'room-fly': 'zoomin',
+            'quarto': 'zoomin',
+            'whip-diagonal-1': 'diagtl',
+            'whip-diagonal-2': 'diagbr',
+            'whip-diag-1': 'diagtl',
+            'whip-diag-2': 'diagbr',
+            'bokeh-blur': 'hblur',
+            'desfoque': 'hblur',
+            'light-leak-tr': 'fadewhite',
+            'vazamento': 'fadewhite',
+            'flare-pass': 'slideleft',
+            'flamepass': 'slideleft',
+            'prism-split': 'pixelize',
+            'prisma': 'pixelize',
+            'god-rays': 'fadewhite',
+            'raio': 'fadewhite',
+            'glitch-scan': 'hblur',
+            'rgb-split': 'hblur',
+            'cyber-slice': 'hlslice',
+            'swirl': 'radial',
+            'redemoinho': 'radial',
+            'kaleidoscope': 'pixelize',
+            'caledoscopio': 'pixelize',
+            'water-drop': 'circleopen',
+            'gota': 'circleopen',
+            'wave': 'hblur',
+            'onda': 'hblur',
+            'stretch-h': 'smoothleft',
+            'esticar-h': 'smoothleft',
+            'stretch-v': 'smoothup',
+            'esticar-v': 'smoothup',
+            'morph': 'dissolve',
+            'turbulence': 'dissolve',
+            'turbulencia': 'dissolve',
+            'wipe-radial': 'radial',
+            'radar': 'radial',
+            'checker-wipe': 'checkerboard',
+            'xadrez': 'checkerboard',
+            'stripes-v': 'hrslice',
+            'listra-v': 'hrslice',
+            'heart-wipe': 'circleopen',
+            'coracao': 'circleopen',
+            'film-roll-v': 'slideup',
+            'rolo-de-filme': 'slideup',
+            'blur-warp': 'hblur',
+            
             // === GEOMETRIC & WIPES ===
             'wipe-up': 'wipeup',
             'wipe-down': 'wipedown',
@@ -220,28 +273,24 @@ module.exports = {
             'circle-open': 'circleopen',
             'circle-close': 'circleclose',
             'rect-crop': 'rectcrop',
-            'diamond-in': 'diagtl', // approximation
-            'diamond-out': 'diagbr', // approximation
+            'diamond-in': 'diagtl',
+            'diamond-out': 'diagbr',
             'diamond-zoom': 'diamond',
-            'checker-wipe': 'checkerboard',
             'checkerboard': 'checkerboard',
             'clock-wipe': 'clock',
             'plus-wipe': 'plus',
             'iris-in': 'circleopen',
             'iris-out': 'circleclose',
             'radial': 'radial',
-            'wipe-radial': 'radial',
             'smooth-left': 'smoothleft',
             'smooth-right': 'smoothright',
             'blind-h': 'hlslice',
             'blind-v': 'hrslice',
-            'barn-door-h': 'hrslice', // approx
-            'barn-door-v': 'hlslice', // approx
+            'barn-door-h': 'hrslice',
+            'barn-door-v': 'hlslice',
             'shutters': 'hlslice',
-            'hex-reveal': 'mosaic', // approx
+            'hex-reveal': 'mosaic',
             'stripes-h': 'hlslice',
-            'stripes-v': 'hrslice',
-            'heart-wipe': 'circleopen', // No heart shape in xfade, fallback to circle
             
             // === BASICS ===
             'crossfade': 'fade',
@@ -256,107 +305,27 @@ module.exports = {
             // === ZOOM & WARP ===
             'zoom-in': 'zoomin',
             'zoomin': 'zoomin',
-            'zoom-out': 'circleclose', // fallback
+            'zoom-out': 'circleclose',
             'pull-away': 'distance',
-            'morph': 'pixelize', // fallback for morph
-            'swirl': 'hblur', // fallback
-            'kaleidoscope': 'pixelize', // fallback
-            'warp': 'wipetl',
-            'water-drop': 'radial',
-            'wave': 'hblur',
-            'stretch-h': 'smoothleft',
-            'stretch-v': 'smoothup',
-            'turbulence': 'dissolve',
-            'blur-warp': 'hblur',
             
-            // === GLITCH & SPECIAL (CAPCUT TRENDS) ===
+            // === GLITCH & SPECIAL ===
             'glitch': 'pixelize',
-            'glitch-scan': 'hblur',
             'pixelize': 'pixelize',
             'pixel-sort': 'pixelize',
             'rgb-shake': 'hblur',
             'color-glitch': 'distance',
             'urban-glitch': 'squeezev',
-            'blood-mist': 'distance', // best approx
+            'blood-mist': 'distance',
             'black-smoke': 'fadeblack',
             'white-smoke': 'fadewhite',
-            'fire-burn': 'hlslice', // heat slice
+            'fire-burn': 'hlslice',
             'visual-buzz': 'hblur',
             'digital-noise': 'pixelize',
             'hologram': 'fade',
             'block-glitch': 'pixelize',
-            'cyber-zoom': 'zoomin',
-            'scan-line-v': 'vdissolve',
-            'color-tear': 'hblur',
             'datamosh': 'pixelize',
-            'rgb-split': 'hblur',
             'noise-jump': 'pixelize',
-            'cyber-slice': 'hlslice',
             'glitch-chroma': 'hblur',
-            
-            // === SPECIFIC REQUESTS ===
-            'rip-diag': 'wipeleft', // *** RASGO DO DIA -> HORIZONTAL WIPE (Requested) ***
-            'zoom-neg': 'distance',
-            'infinity-1': 'distance',
-            'digital-paint': 'dissolve',
-            'brush-wind': 'wipeleft',
-            'dust-burst': 'fadewhite',
-            'filter-blur': 'hblur',
-            'film-roll-v': 'slideup',
-            'astral-project': 'zoomin',
-            'lens-flare': 'fadewhite',
-            'flash-bang': 'fadewhite',
-            'flash-white': 'fadewhite',
-            'flash-black': 'fadeblack',
-            'flashback': 'fadewhite',
-            'combine-overlay': 'fade',
-            'combine-mix': 'fade',
-            'nightmare': 'fadeblack',
-            'bubble-blur': 'hblur',
-            'paper-unfold': 'circleopen',
-            'corrupt-img': 'pixelize',
-            'glow-intense': 'fadewhite',
-            'dynamic-blur': 'hblur',
-            'blur-dissolve': 'distance',
-            'burn': 'fadewhite',
-            'exposure': 'fadewhite',
-            'bokeh-blur': 'hblur',
-            'light-leak-tr': 'fadewhite',
-            'flare-pass': 'slideleft',
-            'prism-split': 'hblur',
-            'god-rays': 'fadewhite',
-            
-            // === LIQUID & ORGANIC ===
-            'liquid-melt': 'hlslice',
-            'ink-splash': 'hrslice',
-            'water-ripple': 'radial',
-            'smoke-reveal': 'fade',
-            'oil-paint': 'dissolve',
-            'bubble-pop': 'circleopen',
-            
-            // === 3D & MOTION ===
-            'cube-rotate-l': 'smoothleft',
-            'cube-rotate-r': 'smoothright',
-            'cube-rotate-u': 'smoothup',
-            'cube-rotate-d': 'smoothdown',
-            'door-open': 'hblur',
-            'flip-card': 'vblur',
-            'room-fly': 'zoomin',
-            'spin-cw': 'radial',
-            'spin-ccw': 'radial',
-            'spin-zoom-in': 'zoomin',
-            'spin-zoom-out': 'distance',
-            'whip-left': 'slideleft',
-            'whip-right': 'slideright',
-            'whip-up': 'slideup',
-            'whip-down': 'slidedown',
-            'whip-diagonal-1': 'diagtl',
-            'whip-diagonal-2': 'diagbr',
-            'perspective-left': 'slideleft',
-            'perspective-right': 'slideright',
-            'zoom-blur-l': 'slideleft',
-            'zoom-blur-r': 'slideright',
-            'zoom-spin-fast': 'radial',
             
             // === ELASTIC ===
             'elastic-left': 'slideleft',
@@ -367,7 +336,7 @@ module.exports = {
             'jelly': 'hblur'
         };
 
-        // Fuzzy matching if exact ID not found
+        // Fuzzy matching se não encontrar exato
         if (map[id]) return map[id];
         
         if (id.includes('wipe')) return 'wipeleft';
