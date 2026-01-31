@@ -1,10 +1,13 @@
 
+
 /**
  * FFmpeg FULL PRESETS + MOVEMENTS ENGINE
- * High-Precision Math (720p/1080p Internal).
+ * High-Precision Math (1080p Internal) to eliminate jitter.
  * Comprehensive mapping of ALL frontend transitions and movements.
  */
 
+// We process movements at 1080p to allow for zooming without pixelation/jitter, then scale to 720p output.
+// This Super-Sampling approach eliminates the "shaking" effect on slow zooms.
 const FINAL_FILTER = 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p,fps=30';
 
 module.exports = {
@@ -20,9 +23,9 @@ module.exports = {
 
     getAudioArgs: () => [
         '-c:a', 'aac',
-        '-b:a', '320k', // Increased quality
+        '-b:a', '192k',
         '-ar', '44100',
-        '-ac', '2' // Force Stereo
+        '-ac', '2'
     ],
 
     getAudioExtractArgs: () => [
@@ -34,6 +37,7 @@ module.exports = {
     getFFmpegFilterFromEffect: (effectId) => {
         if (!effectId) return null;
         
+        // Massive Effect Mapping from constants.tsx
         const effects = {
             // Cinematic Pro
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2,eq=contrast=1.1:saturation=1.3',
@@ -51,13 +55,11 @@ module.exports = {
             'bw': 'hue=s=0',
             'mono': 'hue=s=0',
             'sepia': 'colorbalance=rs=0.3:gs=0.2:bs=-0.2',
-            'sepia-max': 'colorbalance=rs=0.4:gs=0.2:bs=-0.4',
             'warm': 'colorbalance=rs=0.1:bs=-0.1',
             'cool': 'colorbalance=bs=0.1:rs=-0.1',
             'vivid': 'eq=saturation=1.5:contrast=1.1',
             'high-contrast': 'eq=contrast=1.5',
             'invert': 'negate',
-            'posterize': 'curves=posterize',
             'night-vision': 'hue=s=0,eq=contrast=1.2:brightness=0.1,colorbalance=gs=0.5',
             'pop-art': 'eq=saturation=2:contrast=1.3',
             
@@ -65,153 +67,220 @@ module.exports = {
             'pixelate': 'scale=iw/10:-1,scale=iw*10:-1:flags=neighbor',
             'bad-signal': 'noise=alls=20:allf=t+u',
             'vhs-distort': 'colorbalance=bm=0.1,noise=alls=10:allf=t',
-            'old-film': 'noise=alls=20:allf=t+u,eq=contrast=1.2', 
+            'old-film': 'noise=alls=20:allf=t+u,eq=contrast=1.2', // Simula ruído
             'grain': 'noise=alls=10:allf=t',
-            'noise': 'noise=alls=20:allf=t+u',
-            'vignette': 'vignette=PI/4',
-            
-            // Blur & Optics (New)
-            'blur': 'gblur=sigma=10',
-            'desfoque': 'gblur=sigma=10',
-            'soft-angel': 'gblur=sigma=2,colorbalance=rs=0.1:bs=0.1:gs=0.1',
-            'sharpen': 'unsharp=5:5:1.0:5:5:0.0',
-            'prism': 'geq=r=\'p(X+10,Y)\':g=\'p(X,Y)\':b=\'p(X-10,Y)\'',
-            'chromatic': 'geq=r=\'p(X+5,Y)\':g=\'p(X,Y)\':b=\'p(X-5,Y)\'',
-            'super8': 'noise=alls=20:allf=t+u,colorbalance=rs=0.2',
-            'light-leak-1': 'colorbalance=rs=0.3:gs=0.1:bs=-0.1,eq=brightness=0.1',
-            'strobe': 'eq=brightness=\'if(eq(mod(n,4),0),1.5,1)\''
         };
 
-        // Dynamic ID handlers
+        // Procedural Generated Effects Support (Color Grade, Vintage, etc from constants)
         if (effectId.startsWith('cg-pro-')) {
             const i = parseInt(effectId.split('-')[2]) || 1;
             return `contrast=${1 + (i%5)*0.1}:saturation=${1 + (i%3)*0.2}`;
         }
-        if (effectId.startsWith('vintage-style-')) return 'colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.1';
-        if (effectId.startsWith('cyber-neon-')) return 'eq=contrast=1.3:saturation=1.5';
-        if (effectId.startsWith('noir-style-')) return 'hue=s=0,eq=contrast=1.2';
-        if (effectId.startsWith('film-stock-')) return 'eq=contrast=1.1:saturation=0.8';
-        if (effectId.startsWith('nature-fresh-')) return 'saturate=1.2';
-        if (effectId.startsWith('art-duo-')) return 'hue=s=0,colorbalance=rs=0.3';
-        if (effectId.includes('glitch')) return 'noise=alls=20:allf=t+u';
+        if (effectId.startsWith('vintage-style-')) {
+             return 'colorbalance=rs=0.2:bs=-0.2,eq=gamma=1.1';
+        }
+        if (effectId.startsWith('cyber-neon-')) {
+             return 'eq=contrast=1.3:saturation=1.5';
+        }
+        if (effectId.startsWith('noir-style-')) {
+            return 'hue=s=0,eq=contrast=1.2';
+        }
+        if (effectId.startsWith('film-stock-')) {
+            return 'eq=contrast=1.1:saturation=0.8';
+        }
 
         return effects[effectId] || null;
     },
 
     getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
+        // --- ANTI-SHAKE ENGINE (Super-Sampling 1080p + Absolute Math) ---
+        // We calculate movement on a virtual 1920x1080 canvas.
+        // 'on' = current frame number. 'frames' = total duration in frames.
+        // Using `on` (absolute frame count) guarantees smooth interpolation unlike relative `zoom+x`.
+        
         const fps = 30;
-        const safeDur = Math.max(1, durationSec);
-        const frames = Math.ceil(safeDur * fps);
-        const progress = `(on/${frames})`; 
-        // Base zoompan string
-        const zp = `zoompan=d=${isImage ? frames : 1}:s=1280x720:fps=${fps}`; 
-        const cx = `(iw/2)-(iw/zoom/2)`;
-        const cy = `(ih/2)-(ih/zoom/2)`;
+        const frames = Math.max(1, Math.ceil(durationSec * fps));
+        const progress = `(on/${frames})`; // 0.0 to 1.0
+        
+        // Base Zoompan: 1920x1080 internal resolution prevents sub-pixel jitter
+        const base = `zoompan=d=${isImage ? frames : 1}:s=1920x1080:fps=${fps}`; 
 
-        // --- 1. KEN BURNS (Configurable) ---
+        // Helper: Center viewport (iw/2 - viewport_w/2)
+        const centerX = `(iw/2)-(iw/zoom/2)`;
+        const centerY = `(ih/2)-(ih/zoom/2)`;
+
+        // 1. Ken Burns Custom (User Configured)
         if (moveId === 'kenBurns') {
              const sS = config.startScale !== undefined ? Number(config.startScale) : 1.0;
              const eS = config.endScale !== undefined ? Number(config.endScale) : 1.3;
-             const startXNorm = 0.5 + (config.startX || 0) / 100;
-             const startYNorm = 0.5 + (config.startY || 0) / 100;
-             const endXNorm = 0.5 + (config.endX || 0) / 100;
-             const endYNorm = 0.5 + (config.endY || 0) / 100;
-
+             
+             // Convert percentage offsets (-50 to 50) to normalized (0.0 to 1.0)
+             const startXNorm = 0.5 + (config.startX !== undefined ? Number(config.startX) / 100 : 0);
+             const startYNorm = 0.5 + (config.startY !== undefined ? Number(config.startY) / 100 : 0);
+             const endXNorm = 0.5 + (config.endX !== undefined ? Number(config.endX) / 100 : 0);
+             const endYNorm = 0.5 + (config.endY !== undefined ? Number(config.endY) / 100 : 0);
+             
              const zExpr = `${sS}+(${eS - sS})*${progress}`;
              const xExpr = `iw*(${startXNorm}+(${endXNorm - startXNorm})*${progress})-(iw/zoom/2)`;
              const yExpr = `ih*(${startYNorm}+(${endYNorm - startYNorm})*${progress})-(ih/zoom/2)`;
              
-             return `${zp}:z='${zExpr}':x='${xExpr}':y='${yExpr}'`;
+             return `${base}:z='${zExpr}':x='${xExpr}':y='${yExpr}'`;
         }
 
-        // --- 2. CINEMATIC PANS ---
-        if (moveId === 'mov-pan-slow-l') return `${zp}:z=1.2:x='iw*(0.2+0.2*${progress})-(iw/zoom/2)':y='${cy}'`;
-        if (moveId === 'mov-pan-slow-r') return `${zp}:z=1.2:x='iw*(0.4-0.2*${progress})-(iw/zoom/2)':y='${cy}'`;
-        if (moveId === 'mov-pan-slow-u') return `${zp}:z=1.2:x='${cx}':y='ih*(0.2+0.2*${progress})-(ih/zoom/2)'`;
-        if (moveId === 'mov-pan-slow-d') return `${zp}:z=1.2:x='${cx}':y='ih*(0.4-0.2*${progress})-(ih/zoom/2)'`;
-        if (moveId === 'mov-pan-fast-l') return `${zp}:z=1.2:x='iw*(0.1+0.4*${progress})-(iw/zoom/2)':y='${cy}'`;
-        if (moveId === 'mov-pan-fast-r') return `${zp}:z=1.2:x='iw*(0.5-0.4*${progress})-(iw/zoom/2)':y='${cy}'`;
-        if (moveId === 'mov-pan-diag-tl') return `${zp}:z=1.3:x='iw*(0.4-0.2*${progress})-(iw/zoom/2)':y='ih*(0.4-0.2*${progress})-(ih/zoom/2)'`;
-        if (moveId === 'mov-pan-diag-br') return `${zp}:z=1.3:x='iw*(0.2+0.2*${progress})-(iw/zoom/2)':y='ih*(0.2+0.2*${progress})-(ih/zoom/2)'`;
+        // 2. Cinematic Pans (Generated IDs from constants)
+        if (moveId && moveId.startsWith('mov-pan-')) {
+            const panType = moveId.replace('mov-pan-', '');
+            // Logic: Zoom 1.2 to give room to pan without black bars
+            const z = 1.2; 
+            
+            // Standard Pans (Slow)
+            if (panType === 'slow-l' || panType === 'left') return `${base}:z=${z}:x='iw*(0.4+(0.2)*${progress})-(iw/zoom/2)':y='${centerY}'`; // Right to Left
+            if (panType === 'slow-r' || panType === 'right') return `${base}:z=${z}:x='iw*(0.6-(0.2)*${progress})-(iw/zoom/2)':y='${centerY}'`; // Left to Right
+            if (panType === 'slow-u' || panType === 'up') return `${base}:z=${z}:x='${centerX}':y='ih*(0.4+(0.2)*${progress})-(ih/zoom/2)'`;
+            if (panType === 'slow-d' || panType === 'down') return `${base}:z=${z}:x='${centerX}':y='ih*(0.6-(0.2)*${progress})-(ih/zoom/2)'`;
+            
+            // Fast Pans
+            if (panType === 'fast-l') return `${base}:z=${z}:x='iw*(0.3+(0.4)*${progress})-(iw/zoom/2)':y='${centerY}'`;
+            if (panType === 'fast-r') return `${base}:z=${z}:x='iw*(0.7-(0.4)*${progress})-(iw/zoom/2)':y='${centerY}'`;
+            
+            // Diagonal Pans
+            if (panType === 'diag-tl') return `${base}:z=${z}:x='iw*(0.6-(0.2)*${progress})-(iw/zoom/2)':y='ih*(0.6-(0.2)*${progress})-(ih/zoom/2)'`; // Bot-Right to Top-Left
+            if (panType === 'diag-br') return `${base}:z=${z}:x='iw*(0.4+(0.2)*${progress})-(iw/zoom/2)':y='ih*(0.4+(0.2)*${progress})-(ih/zoom/2)'`; // Top-Left to Bot-Right
+            // Fallbacks for other diags
+            if (panType.includes('diag')) return `${base}:z=${z}:x='iw*(0.4+(0.2)*${progress})-(iw/zoom/2)':y='ih*(0.4+(0.2)*${progress})-(ih/zoom/2)'`;
+        }
 
-        // --- 3. BASIC ZOOMS ---
-        if (moveId === 'zoom-in' || moveId === 'zoom-slow-in') return `${zp}:z='1.0+0.5*${progress}':x='${cx}':y='${cy}'`;
-        if (moveId === 'zoom-out' || moveId === 'zoom-slow-out') return `${zp}:z='1.5-0.5*${progress}':x='${cx}':y='${cy}'`;
-        if (moveId === 'zoom-fast-in') return `${zp}:z='1.0+1.5*${progress}':x='${cx}':y='${cy}'`;
+        // 3. Dynamic Zooms (Generated IDs + Basic)
+        if (moveId && (moveId.startsWith('mov-zoom-') || moveId.includes('zoom-'))) {
+            // Basic
+            if (moveId === 'zoom-in' || moveId === 'zoom-slow-in') return `${base}:z='1.0+(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
+            if (moveId === 'zoom-out' || moveId === 'zoom-slow-out') return `${base}:z='1.5-(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
+            if (moveId === 'zoom-fast-in') return `${base}:z='1.0+(1.0)*${progress}':x='${centerX}':y='${centerY}'`;
+            if (moveId === 'dolly-zoom') return `${base}:z='1.0+(0.5)*sin(on/30*3)':x='${centerX}':y='${centerY}'`; // Simulate dolly effect with zoom
+            
+            // Complex (Generated)
+            if (moveId.includes('crash-in')) return `${base}:z='1.0+3.0*${progress}*${progress}':x='${centerX}':y='${centerY}'`; // Exponential Zoom
+            if (moveId.includes('crash-out')) return `${base}:z='4.0-3.0*${progress}*${progress}':x='${centerX}':y='${centerY}'`;
+            if (moveId.includes('bounce') || moveId === 'zoom-bounce') return `${base}:z='1.2+0.1*sin(on/30*3)':x='${centerX}':y='${centerY}'`;
+            if (moveId.includes('pulse')) return `${base}:z='1.1+0.05*sin(on/30*10)':x='${centerX}':y='${centerY}'`;
+            if (moveId.includes('wobble')) return `${base}:z='1.1+0.02*sin(on/10)':x='${centerX}+10*cos(on/15)':y='${centerY}'`;
+            if (moveId.includes('twist')) return `${base}:z='1.0+(0.5)*${progress}':x='${centerX}':y='${centerY}'`; // No rotation in zoompan, fallback to zoom
+        }
+
+        // 4. Shakes & Chaos
+        if (['shake', 'earthquake', 'handheld-1', 'handheld-2', 'jitter', 'mov-shake-violent'].includes(moveId) || moveId?.includes('jitter') || moveId?.includes('shake')) {
+            const intensity = moveId === 'earthquake' || moveId.includes('violent') ? 20 : 5;
+            return `${base}:z=1.1:x='${centerX}+random(1)*${intensity}-${intensity/2}':y='${centerY}+random(1)*${intensity}-${intensity/2}'`;
+        }
+
+        // 5. Blurs & Flashes (Using filter chains, simplified for zoompan context where possible)
+        // Note: Actual blurring needs a complex filter chain, here we simulate movement associated with it or fallback.
+        // For 'mov-blur-*', we assume these are just movements in this preset generator.
+        // If specific blur is needed, it would be in getFFmpegFilterFromEffect, but these are "Movements".
+        // We will simulate the "Action" part (Zoom/Pan) here.
+        if (moveId && moveId.startsWith('mov-blur-')) {
+            if (moveId === 'mov-blur-zoom') return `${base}:z='1+0.5*${progress}':x='${centerX}':y='${centerY}'`;
+        }
         
-        // --- 4. DYNAMIC ZOOMS ---
-        if (moveId === 'mov-zoom-twist-in') return `rotate=a='2*PI*t/${safeDur}':c=black@0:ow=rotw(2*PI*t/${safeDur}):oh=roth(2*PI*t/${safeDur}),${zp}:z='min(1.0+1.0*${progress},2.0)':x='${cx}':y='${cy}'`;
-        if (moveId === 'mov-zoom-twist-out') return `rotate=a='-2*PI*t/${safeDur}':c=black@0:ow=rotw(-2*PI*t/${safeDur}):oh=roth(-2*PI*t/${safeDur}),${zp}:z='max(2.0-1.0*${progress},1.0)':x='${cx}':y='${cy}'`;
-        if (moveId === 'mov-zoom-crash-in') return `${zp}:z='1.0+3.0*pow(${progress},3)':x='${cx}':y='${cy}'`;
-        if (moveId === 'mov-zoom-crash-out') return `${zp}:z='4.0-3.0*pow(${progress},3)':x='${cx}':y='${cy}'`;
-        if (moveId === 'mov-zoom-bounce-in' || moveId === 'zoom-bounce') return `${zp}:z='1.2+0.2*sin(on/30*3)':x='${cx}':y='${cy}'`;
-        if (moveId === 'mov-zoom-pulse-slow') return `${zp}:z='1.1+0.05*sin(on/15)':x='${cx}':y='${cy}'`;
-        if (moveId === 'mov-zoom-pulse-fast') return `${zp}:z='1.1+0.1*sin(on/5)':x='${cx}':y='${cy}'`;
-        if (moveId === 'mov-dolly-vertigo') return `${zp}:z='1.0+0.5*sin(on/30*2)':x='${cx}':y='${cy}'`;
+        // 6. 3D Simulated (using zoompan to pan across large crop to simulate perspective pan)
+        if (moveId && moveId.startsWith('mov-3d-')) {
+             if (moveId.includes('float')) return `${base}:z=1.1:x='${centerX}':y='${centerY}+10*sin(on/30)'`;
+             // For tumble/roll we fallback to a dynamic zoom/pan as simple 2D proxy for stability
+             return `${base}:z='1.1+0.1*sin(on/20)':x='${centerX}+10*cos(on/40)':y='${centerY}'`;
+        }
+        
+        // 7. Elastic/Bounce
+        if (moveId && (moveId.includes('elastic') || moveId.includes('bounce') || moveId.includes('spring'))) {
+            return `${base}:z=1.0:x='${centerX}':y='${centerY}+50*abs(sin(on/10))*exp(-on/30)'`; // Bouncing effect on Y
+        }
+        
+        // 8. Photo Effects (Simulate motion)
+        if (moveId === 'mov-vhs-tracking') {
+             return `${base}:z=1.0:y='${centerY}+5*sin(on*100)'`; // Vertical jitter
+        }
 
-        // --- 5. SHAKE & CHAOS ---
-        const shakeBase = `${zp}:z=1.1`;
-        if (moveId === 'shake-hard' || moveId === 'mov-zoom-shake') return `${shakeBase}:x='${cx}+random(1)*20-10':y='${cy}+random(1)*20-10'`;
-        if (moveId === 'earthquake' || moveId === 'mov-shake-violent') return `${shakeBase}:x='${cx}+random(1)*50-25':y='${cy}+random(1)*50-25'`;
-        if (moveId === 'handheld-1') return `${zp}:z=1.05:x='${cx}+sin(on/10)*5':y='${cy}+cos(on/15)*5'`;
-        if (moveId === 'handheld-2') return `${zp}:z=1.05:x='${cx}+sin(on/5)*10':y='${cy}+cos(on/7)*10'`;
-        if (moveId === 'mov-jitter-x') return `${shakeBase}:x='${cx}+random(1)*30-15':y='${cy}'`;
-        if (moveId === 'mov-jitter-y') return `${shakeBase}:x='${cx}':y='${cy}+random(1)*30-15'`;
-
-        // --- 6. 3D TRANSFORMS ---
-        if (moveId === 'mov-3d-flip-x') return `scale=w='iw*cos(2*PI*t/${safeDur})':h=ih`;
-        if (moveId === 'mov-3d-flip-y') return `scale=w=iw:h='ih*cos(2*PI*t/${safeDur})'`;
-        if (moveId === 'mov-3d-tumble') return `rotate=a='2*PI*t/${safeDur}'`;
-        if (moveId === 'mov-3d-roll') return `rotate=a='4*PI*t/${safeDur}'`;
-        if (moveId === 'mov-3d-swing-l') return `rotate=a='sin(2*PI*t/${safeDur})*0.2'`;
-
-        // --- 7. ELASTIC & GLITCH ---
-        if (moveId === 'mov-bounce-drop') return `${zp}:y='${cy}+50*abs(cos(on/10))*exp(-on/30)'`;
-        if (moveId === 'mov-jelly-wobble') return `scale=w='iw*(1+0.1*sin(t*10))':h='ih*(1-0.1*sin(t*10))'`;
-        if (moveId === 'mov-glitch-snap') return `colorchannelmixer=rr='1':rg='0.1*sin(t*20)':rb='0':gr='0':gg='1':gb='0':br='0':bg='0':bb='1',${shakeBase}:x='${cx}+step(sin(t*10))*20'`;
-        if (moveId === 'mov-rgb-shift-move') return `rgbashift=rh='20*sin(t*5)':bv='20*cos(t*5)'`;
-
-        // --- 9. BLUR MOVEMENT ---
-        if (moveId === 'mov-blur-in') return `gblur=sigma='20*(1-${progress})':steps=2`;
-        if (moveId === 'mov-blur-out') return `gblur=sigma='20*${progress}':steps=2`;
-        if (moveId === 'mov-blur-zoom') return `gblur=sigma='10*${progress}':steps=2,${zp}:z='1+0.5*${progress}'`;
-
-        if (isImage) return `${zp}:z=1`;
+        // Default: Static (but high res context to match pipeline)
+        if (isImage) return `${base}:z=1`;
         return null;
     },
 
     getTransitionXfade: (id) => {
-        // --- XFADE MAPPINGS (APPROXIMATIONS) ---
         const map = {
-            // Standard
-            'fade': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'fade-classic': 'fade', 'luma-fade': 'fade',
-            'black': 'fade', 'white': 'fade', 'dissolve': 'dissolve',
-            'wipe-up': 'wipeup', 'wipe-down': 'wipedown', 'wipe-left': 'wipeleft', 'wipe-right': 'wiperight',
-            'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
-            'push-left': 'slideleft', 'push-right': 'slideright',
-            'circle-open': 'circleopen', 'circle-close': 'circleclose', 'rect-crop': 'rectcrop', 
-            'iris-in': 'circleopen', 'iris-out': 'circleclose', 'radial': 'radial',
-            'diamond-in': 'diagtl', 'diamond-out': 'diagbr', 'diamond-zoom': 'diamond',
-            'plus-wipe': 'plus', 'checker-wipe': 'checkerboard', 'checkerboard': 'checkerboard', 'clock-wipe': 'clock',
-            'wipe-radial': 'radial', 'pixelize': 'pixelize', 'hblur': 'hblur', 'wipetl': 'wipetl', 
-            'squeezeh': 'squeezeh', 'squeezev': 'squeezev', 'zoomin': 'zoomin',
+            // === GEOMETRIC & WIPES ===
+            'wipe-up': 'wipeup',
+            'wipe-down': 'wipedown',
+            'wipe-left': 'wipeleft',
+            'wipe-right': 'wiperight',
+            'slide-left': 'slideleft',
+            'slide-right': 'slideright',
+            'slide-up': 'slideup',
+            'slide-down': 'slidedown',
+            'push-left': 'slideleft',
+            'push-right': 'slideright',
+            'circle-open': 'circleopen',
+            'circle-close': 'circleclose',
+            'rect-crop': 'rectcrop',
+            'diamond-in': 'diagtl', // approximation
+            'diamond-out': 'diagbr', // approximation
+            'diamond-zoom': 'diamond',
+            'checker-wipe': 'checkerboard',
+            'checkerboard': 'checkerboard',
+            'clock-wipe': 'clock',
+            'plus-wipe': 'plus',
+            'iris-in': 'circleopen',
+            'iris-out': 'circleclose',
+            'radial': 'radial',
+            'wipe-radial': 'radial',
+            'smooth-left': 'smoothleft',
+            'smooth-right': 'smoothright',
+            'blind-h': 'hlslice',
+            'blind-v': 'hrslice',
+            'barn-door-h': 'hrslice', // approx
+            'barn-door-v': 'hlslice', // approx
+            'shutters': 'hlslice',
+            'hex-reveal': 'mosaic', // approx
+            'stripes-h': 'hlslice',
+            'stripes-v': 'hrslice',
+            'heart-wipe': 'circleopen', // No heart shape in xfade, fallback to circle
             
-            // --- TRENDS & COMPLEX ---
-            // Mapping complex names to best available standard Xfade transition
-            'morph': 'pixelize',
-            'swirl': 'hblur', // Approx
-            'kaleidoscope': 'pixelize', // Approx
+            // === BASICS ===
+            'crossfade': 'fade',
+            'mix': 'fade',
+            'fade-classic': 'fade',
+            'fade': 'fade',
+            'black': 'fadeblack',
+            'white': 'fadewhite',
+            'dissolve': 'dissolve',
+            'luma-fade': 'fade',
+            
+            // === ZOOM & WARP ===
+            'zoom-in': 'zoomin',
+            'zoomin': 'zoomin',
+            'zoom-out': 'circleclose', // fallback
+            'pull-away': 'distance',
+            'morph': 'pixelize', // fallback for morph
+            'swirl': 'hblur', // fallback
+            'kaleidoscope': 'pixelize', // fallback
             'warp': 'wipetl',
+            'water-drop': 'radial',
+            'wave': 'hblur',
+            'stretch-h': 'smoothleft',
+            'stretch-v': 'smoothup',
+            'turbulence': 'dissolve',
+            'blur-warp': 'hblur',
+            
+            // === GLITCH & SPECIAL (CAPCUT TRENDS) ===
             'glitch': 'pixelize',
             'glitch-scan': 'hblur',
+            'pixelize': 'pixelize',
             'pixel-sort': 'pixelize',
             'rgb-shake': 'hblur',
-            'color-glitch': 'dissolve',
+            'color-glitch': 'distance',
             'urban-glitch': 'squeezev',
-            'blood-mist': 'dissolve', // Visual approx
-            'black-smoke': 'fade',
-            'white-smoke': 'fade',
-            'fire-burn': 'hlslice',
+            'blood-mist': 'distance', // best approx
+            'black-smoke': 'fadeblack',
+            'white-smoke': 'fadewhite',
+            'fire-burn': 'hlslice', // heat slice
             'visual-buzz': 'hblur',
             'digital-noise': 'pixelize',
             'hologram': 'fade',
@@ -224,42 +293,48 @@ module.exports = {
             'noise-jump': 'pixelize',
             'cyber-slice': 'hlslice',
             'glitch-chroma': 'hblur',
-            'rip-diag': 'wipetl',
+            
+            // === SPECIFIC REQUESTS ===
+            'rip-diag': 'wipeleft', // *** RASGO DO DIA -> HORIZONTAL WIPE (Requested) ***
             'zoom-neg': 'distance',
             'infinity-1': 'distance',
             'digital-paint': 'dissolve',
             'brush-wind': 'wipeleft',
-            'dust-burst': 'fade',
+            'dust-burst': 'fadewhite',
             'filter-blur': 'hblur',
             'film-roll-v': 'slideup',
             'astral-project': 'zoomin',
-            'lens-flare': 'fade',
-            'flash-bang': 'fade',
-            'flash-white': 'fade',
-            'flash-black': 'fade',
-            'flashback': 'fade',
+            'lens-flare': 'fadewhite',
+            'flash-bang': 'fadewhite',
+            'flash-white': 'fadewhite',
+            'flash-black': 'fadeblack',
+            'flashback': 'fadewhite',
             'combine-overlay': 'fade',
             'combine-mix': 'fade',
-            'nightmare': 'fade',
+            'nightmare': 'fadeblack',
             'bubble-blur': 'hblur',
             'paper-unfold': 'circleopen',
             'corrupt-img': 'pixelize',
-            'glow-intense': 'fade',
+            'glow-intense': 'fadewhite',
             'dynamic-blur': 'hblur',
             'blur-dissolve': 'distance',
-            'burn': 'fade',
-            'exposure': 'fade',
+            'burn': 'fadewhite',
+            'exposure': 'fadewhite',
             'bokeh-blur': 'hblur',
-            'light-leak-tr': 'fade',
+            'light-leak-tr': 'fadewhite',
             'flare-pass': 'slideleft',
             'prism-split': 'hblur',
-            'god-rays': 'fade',
+            'god-rays': 'fadewhite',
+            
+            // === LIQUID & ORGANIC ===
             'liquid-melt': 'hlslice',
             'ink-splash': 'hrslice',
             'water-ripple': 'radial',
             'smoke-reveal': 'fade',
             'oil-paint': 'dissolve',
             'bubble-pop': 'circleopen',
+            
+            // === 3D & MOTION ===
             'cube-rotate-l': 'smoothleft',
             'cube-rotate-r': 'smoothright',
             'cube-rotate-u': 'smoothup',
@@ -282,6 +357,8 @@ module.exports = {
             'zoom-blur-l': 'slideleft',
             'zoom-blur-r': 'slideright',
             'zoom-spin-fast': 'radial',
+            
+            // === ELASTIC ===
             'elastic-left': 'slideleft',
             'elastic-right': 'slideright',
             'elastic-up': 'slideup',
@@ -290,16 +367,20 @@ module.exports = {
             'jelly': 'hblur'
         };
 
+        // Fuzzy matching if exact ID not found
         if (map[id]) return map[id];
         
-        // Final fallback heuristics
         if (id.includes('wipe')) return 'wipeleft';
         if (id.includes('slide')) return 'slideleft';
         if (id.includes('zoom')) return 'zoomin';
+        if (id.includes('blur')) return 'distance';
+        if (id.includes('flash')) return 'fadewhite';
+        if (id.includes('black')) return 'fadeblack';
         if (id.includes('spin')) return 'radial';
-        if (id.includes('flash')) return 'fade';
+        if (id.includes('cube')) return 'smoothleft';
+        if (id.includes('glitch')) return 'pixelize';
         
-        return 'fade'; 
+        return 'fade'; // Ultimate fallback
     },
 
     getFinalVideoFilter: () => FINAL_FILTER
