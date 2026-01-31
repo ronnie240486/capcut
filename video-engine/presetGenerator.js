@@ -1,6 +1,7 @@
 
 /**
  * FFmpeg FULL PRESETS + MOVEMENTS ENGINE
+ * Professional Grade Mapping for XFADE
  */
 
 module.exports = {
@@ -168,154 +169,91 @@ module.exports = {
         const normId = id.toLowerCase();
         
         const map = {
-            // BASIC
-            'crossfade': 'fade',
-            'fade': 'fade',
-            'mix': 'dissolve',
-            'dissolve': 'dissolve',
-            'black': 'fadeblack',
-            'white': 'fadewhite',
-            'fade-classic': 'fade',
-            'luma-fade': 'fade',
-
-            // MOTION
-            'slide-left': 'slideleft',
-            'slide-right': 'slideright',
-            'slide-up': 'slideup',
-            'slide-down': 'slidedown',
-            'push-left': 'slideleft',
-            'push-right': 'slideright',
-            'whip-left': 'slideleft',
-            'whip-right': 'slideright',
-            'whip-up': 'slideup',
-            'whip-down': 'slidedown',
-            'whip-diagonal-1': 'diagtl',
-            'whip-diagonal-2': 'diagbr',
+            // === TRANSITIONS PRO ===
             
-            // ZOOM
+            // ZOOM & DISTORTION (Impactful)
+            'zoom-neg': 'distance', // The "Zoom Negative" effect in FFmpeg xfade
             'zoom-in': 'zoomin',
-            'zoomin': 'zoomin',
-            'zoom-out': 'radial', 
-            'zoom-neg': 'distance', 
-            'cyber-zoom': 'zoomin',
+            'zoom-out': 'radial',
             'pull-away': 'distance',
-
-            // GLITCH & CYBER
+            'cyber-zoom': 'zoomin',
+            'infinity-1': 'circleopen',
+            
+            // GLITCH & DIGITAL (Modern)
             'glitch': 'pixelize',
-            'pixelize': 'pixelize',
+            'glitch-chroma': 'hblur',
             'pixel-sort': 'pixelize',
-            'glitch-scan': 'hblur',
-            'scan-v': 'hblur',
+            'color-glitch': 'hblur', // Maps to horizontal blur to simulate color streak
             'rgb-split': 'hblur',
             'rgb-shake': 'hblur',
-            'color-glitch': 'hblur',
-            'urban-glitch': 'hblur',
+            'datamosh': 'pixelize',
+            'digital-noise': 'pixelize',
             'visual-buzz': 'pixelize',
             'block-glitch': 'pixelize',
-            'datamosh': 'pixelize',
-            'noise-jump': 'pixelize',
-            'digital-noise': 'pixelize',
-            'glitch-chroma': 'hblur',
-            'cyber-slice': 'rectcrop',
-            'hologram': 'dissolve',
-
-            // SHAPES
-            'circle-open': 'circleopen',
-            'circle-close': 'circleclose',
-            'diamond-in': 'diagtl',
-            'diamond-out': 'diagbr',
-            'diamond-zoom': 'diamond',
-            'star-zoom': 'circleopen',
-            'heart-wipe': 'circleopen', 
-            'triangle-wipe': 'diagtl',
-            'hex-reveal': 'mosaic',
-            'mosaic-small': 'mosaic',
-            'mosaic-large': 'mosaic',
-            'checker-wipe': 'checkerboard',
-            'checkerboard': 'checkerboard',
-            'clock-wipe': 'clock',
-            'plus-wipe': 'plus',
-            'wipe-radial': 'radial',
-            'radar': 'radial',
-            'iris-in': 'circleopen',
-            'iris-out': 'circleclose',
-
-            // WIPES
-            'wipe-left': 'wipeleft',
-            'wipe-right': 'wiperight',
-            'wipe-up': 'wipeup',
-            'wipe-down': 'wipedown',
-            'barn-door-h': 'hlslice',
-            'barn-door-v': 'hrslice',
-            'blind-h': 'hlslice',
-            'blind-v': 'hrslice',
-            'shutters': 'hlslice',
-            'stripes-h': 'hlslice',
-            'stripes-v': 'hrslice',
-
-            // 3D / FLIPS
-            'cube-rotate-l': 'slideleft', 
-            'cube-rotate-r': 'slideright',
-            'cube-rotate-u': 'slideup',
-            'cube-rotate-d': 'slidedown',
-            'flip-card': 'squeezev',
-            'door-open': 'hlslice',
-            'room-fly': 'zoomin',
             
-            // ORGANIC / LIQUID
-            'liquid-melt': 'dissolve',
-            'ink-splash': 'circleopen', 
-            'water-drop': 'circleopen',
-            'water-ripple': 'hblur',
-            'wave': 'hblur',
-            'swirl': 'radial',
-            'morph': 'dissolve',
-            'turbulence': 'dissolve',
-            'blur-warp': 'hblur',
-
-            // PAPER
-            'page-turn': 'slideleft',
-            'paper-rip': 'slideleft',
-            'burn-paper': 'circleopen',
-            'sketch-reveal': 'dissolve',
-            'fold-up': 'slideup',
-
-            // LIGHT
+            // LIGHT & FLASH (Energy)
             'flash-white': 'fadewhite',
             'flash-black': 'fadeblack',
             'flash': 'fadewhite',
             'flash-bang': 'fadewhite',
             'exposure': 'fadewhite',
-            'burn': 'fadewhite',
+            'burn': 'fadewhite', // Simulates burn-out
             'light-leak-tr': 'fadewhite',
-            'god-rays': 'fadewhite',
             'flare-pass': 'wipeleft',
-            'bokeh-blur': 'hblur',
-            'prism-split': 'dissolve',
+            'god-rays': 'fadewhite',
 
-            // ELASTIC
-            'elastic-left': 'slideleft',
-            'elastic-right': 'slideright',
-            'elastic-up': 'slideup',
-            'elastic-down': 'slidedown',
-            'bounce-scale': 'zoomin',
-            'jelly': 'hblur'
+            // COLOR & ATMOSPHERE (The "Real" feel)
+            'crossfade': 'fade',
+            'fade-classic': 'fade',
+            'luma-fade': 'fade',
+            'mix': 'dissolve',
+            'dissolve': 'dissolve',
+            'black': 'fadeblack',
+            'white': 'fadewhite',
+            
+            // MOTION SWIPES (Smooth)
+            'slide-left': 'slideleft',
+            'slide-right': 'slideright',
+            'slide-up': 'slideup',
+            'slide-down': 'slidedown',
+            'whip-left': 'slideleft',
+            'whip-right': 'slideright',
+            'whip-diagonal-1': 'diagtl',
+            'whip-diagonal-2': 'diagbr',
+            'push-left': 'slideleft',
+
+            // SHAPES & GEOMETRY (Classic)
+            'circle-open': 'circleopen',
+            'circle-close': 'circleclose',
+            'iris-in': 'circleopen',
+            'diamond-zoom': 'diamond',
+            'heart-wipe': 'circleopen', // FFmpeg doesn't have heart, use circle
+            'star-zoom': 'circleopen',
+            'mosaic-small': 'mosaic',
+            'checker-wipe': 'checkerboard',
+            'clock-wipe': 'clock',
+            'wipe-radial': 'radial',
+            
+            // TEXTURE & ORGANIC
+            'ink-splash': 'circleopen',
+            'water-drop': 'circleopen',
+            'liquid-melt': 'dissolve',
+            'swirl': 'radial',
+            'paper-turn': 'slideleft',
+            'burn-paper': 'circleopen',
+            'blur-warp': 'hblur'
         };
 
         if (map[normId]) return map[normId];
 
-        // Fallbacks
-        if (normId.includes('wipe')) return 'wipeleft';
-        if (normId.includes('slide')) return 'slideleft';
+        // Advanced Fallback Logic
         if (normId.includes('zoom')) return 'zoomin';
         if (normId.includes('blur')) return 'hblur';
         if (normId.includes('flash')) return 'fadewhite';
-        if (normId.includes('black')) return 'fadeblack';
-        if (normId.includes('white')) return 'fadewhite';
         if (normId.includes('glitch')) return 'pixelize';
-        if (normId.includes('burn')) return 'hlslice';
-        if (normId.includes('smoke')) return 'fadeblack';
+        if (normId.includes('wipe')) return 'wipeleft';
+        if (normId.includes('slide')) return 'slideleft';
         
-        return 'fade'; 
+        return 'fade'; // Ultimate fallback
     }
 };
