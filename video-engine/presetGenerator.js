@@ -2,13 +2,9 @@
 
 /**
  * FFmpeg FULL PRESETS + MOVEMENTS ENGINE
- * High-Precision Math (1080p Internal) to eliminate jitter.
+ * High-Precision Math to eliminate jitter.
  * Comprehensive mapping of ALL frontend transitions and movements.
  */
-
-// We process movements at 1080p to allow for zooming without pixelation/jitter, then scale to 720p output.
-// This Super-Sampling approach eliminates the "shaking" effect on slow zooms.
-const FINAL_FILTER = 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p,fps=30';
 
 module.exports = {
     getVideoArgs: () => [
@@ -17,8 +13,7 @@ module.exports = {
         '-profile:v', 'high',
         '-level', '4.1',
         '-pix_fmt', 'yuv420p',
-        '-movflags', '+faststart',
-        '-r', '30'
+        '-movflags', '+faststart'
     ],
 
     getAudioArgs: () => [
@@ -92,13 +87,16 @@ module.exports = {
         return effects[effectId] || null;
     },
 
-    getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}) => {
-        const fps = 30;
+    getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}, targetRes = {w: 1280, h: 720}, targetFps = 30) => {
+        const fps = targetFps;
         const frames = Math.max(1, Math.ceil(durationSec * fps));
         const progress = `(on/${frames})`; // 0.0 to 1.0
         
-        // Base Zoompan: 1920x1080 internal resolution prevents sub-pixel jitter
-        const base = `zoompan=d=${isImage ? frames : 1}:s=1920x1080:fps=${fps}`; 
+        // Processing Resolution: Use a bit higher than target to avoid aliasing during zoom
+        const procW = Math.ceil(targetRes.w * 1.5);
+        const procH = Math.ceil(targetRes.h * 1.5);
+        
+        const base = `zoompan=d=${isImage ? frames : 1}:s=${procW}x${procH}:fps=${fps}`; 
 
         // Helper: Center viewport (iw/2 - viewport_w/2)
         const centerX = `(iw/2)-(iw/zoom/2)`;
@@ -142,12 +140,12 @@ module.exports = {
             if (moveId === 'zoom-in' || moveId === 'zoom-slow-in') return `${base}:z='1.0+(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId === 'zoom-out' || moveId === 'zoom-slow-out') return `${base}:z='1.5-(0.5)*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId === 'zoom-fast-in') return `${base}:z='1.0+(1.0)*${progress}':x='${centerX}':y='${centerY}'`;
-            if (moveId === 'dolly-zoom') return `${base}:z='1.0+(0.5)*sin(on/30*3)':x='${centerX}':y='${centerY}'`;
+            if (moveId === 'dolly-zoom') return `${base}:z='1.0+(0.5)*sin(on/${fps}*3)':x='${centerX}':y='${centerY}'`;
             
             if (moveId.includes('crash-in')) return `${base}:z='1.0+3.0*${progress}*${progress}':x='${centerX}':y='${centerY}'`;
             if (moveId.includes('crash-out')) return `${base}:z='4.0-3.0*${progress}*${progress}':x='${centerX}':y='${centerY}'`;
-            if (moveId.includes('bounce') || moveId === 'zoom-bounce') return `${base}:z='1.2+0.1*sin(on/30*3)':x='${centerX}':y='${centerY}'`;
-            if (moveId.includes('pulse')) return `${base}:z='1.1+0.05*sin(on/30*10)':x='${centerX}':y='${centerY}'`;
+            if (moveId.includes('bounce') || moveId === 'zoom-bounce') return `${base}:z='1.2+0.1*sin(on/${fps}*3)':x='${centerX}':y='${centerY}'`;
+            if (moveId.includes('pulse')) return `${base}:z='1.1+0.05*sin(on/${fps}*10)':x='${centerX}':y='${centerY}'`;
             if (moveId.includes('wobble')) return `${base}:z='1.1+0.02*sin(on/10)':x='${centerX}+10*cos(on/15)':y='${centerY}'`;
             if (moveId.includes('twist')) return `${base}:z='1.0+(0.5)*${progress}':x='${centerX}':y='${centerY}'`; 
         }
@@ -165,13 +163,13 @@ module.exports = {
         
         // 6. 3D Simulated
         if (moveId && moveId.startsWith('mov-3d-')) {
-             if (moveId.includes('float')) return `${base}:z=1.1:x='${centerX}':y='${centerY}+10*sin(on/30)'`;
-             return `${base}:z='1.1+0.1*sin(on/20)':x='${centerX}+10*cos(on/40)':y='${centerY}'`;
+             if (moveId.includes('float')) return `${base}:z=1.1:x='${centerX}':y='${centerY}+10*sin(on/${fps})'`;
+             return `${base}:z='1.1+0.1*sin(on/${fps/1.5})':x='${centerX}+10*cos(on/${fps/0.75})':y='${centerY}'`;
         }
         
         // 7. Elastic/Bounce
         if (moveId && (moveId.includes('elastic') || moveId.includes('bounce') || moveId.includes('spring'))) {
-            return `${base}:z=1.0:x='${centerX}':y='${centerY}+50*abs(sin(on/10))*exp(-on/30)'`; 
+            return `${base}:z=1.0:x='${centerX}':y='${centerY}+50*abs(sin(on/${fps/3}))*exp(-on/${fps})'`; 
         }
         
         // 8. Photo Effects
@@ -259,6 +257,17 @@ module.exports = {
             'rolo-de-filme': 'slideup',
             'blur-warp': 'hblur',
             
+            // CAPCUT TREND ID MATCHING
+            'blood-mist': 'distance',
+            'fire-burn': 'hlslice',
+            'black-smoke': 'fadeblack',
+            'white-smoke': 'fadewhite',
+            'visual-buzz': 'hblur',
+            'urban-glitch': 'squeezev',
+            'color-glitch': 'distance',
+            'digital-paint': 'fade',
+            'brush-wind': 'wipeleft',
+            
             // === GEOMETRIC & WIPES ===
             'wipe-up': 'wipeup',
             'wipe-down': 'wipedown',
@@ -313,13 +322,6 @@ module.exports = {
             'pixelize': 'pixelize',
             'pixel-sort': 'pixelize',
             'rgb-shake': 'hblur',
-            'color-glitch': 'distance',
-            'urban-glitch': 'squeezev',
-            'blood-mist': 'distance',
-            'black-smoke': 'fadeblack',
-            'white-smoke': 'fadewhite',
-            'fire-burn': 'hlslice',
-            'visual-buzz': 'hblur',
             'digital-noise': 'pixelize',
             'hologram': 'fade',
             'block-glitch': 'pixelize',
@@ -348,9 +350,10 @@ module.exports = {
         if (id.includes('spin')) return 'radial';
         if (id.includes('cube')) return 'smoothleft';
         if (id.includes('glitch')) return 'pixelize';
+        if (id.includes('mist')) return 'distance';
+        if (id.includes('burn')) return 'hlslice';
+        if (id.includes('smoke')) return 'fadeblack';
         
         return 'fade'; // Ultimate fallback
-    },
-
-    getFinalVideoFilter: () => FINAL_FILTER
+    }
 };
