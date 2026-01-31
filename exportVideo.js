@@ -1,7 +1,19 @@
 
 const fs = require('fs');
 const path = require('path');
+const { exec } = require('child_process');
 const transitionBuilder = require('./video-engine/transitionBuilder.js');
+
+function getMediaInfo(filePath) {
+    return new Promise((resolve) => {
+        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
+            if (err) return resolve({ hasAudio: false });
+            // Check if any line in output indicates 'audio' stream
+            const hasAudio = stdout.includes('audio');
+            resolve({ hasAudio });
+        });
+    });
+}
 
 module.exports = async (job, uploadDir, onStart) => {
     try {
@@ -25,14 +37,25 @@ module.exports = async (job, uploadDir, onStart) => {
             throw new Error("Timeline vazia.");
         }
 
-        // 1. Map files
+        // 1. Map files & Verify Audio
         const fileMap = {};
         
         // Map uploaded files to clip filenames
         if (job.files) {
-            job.files.forEach(f => {
+            for (const f of job.files) {
                 fileMap[f.originalname] = f.path;
-            });
+                
+                // Server-side Audio Verification
+                // Update the media state if the file physically has audio
+                // This fixes issues where browser reported no audio for MKV/AVI/Some MP4s
+                if (media[f.originalname]) {
+                    const info = await getMediaInfo(f.path);
+                    // Force update hasAudio to true if server detects it
+                    if (info.hasAudio) {
+                        media[f.originalname].hasAudio = true;
+                    }
+                }
+            }
         }
 
         // 2. Build Timeline with Config (Pass exportConfig)
