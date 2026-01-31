@@ -123,7 +123,7 @@ module.exports = {
                 mainTrackLabels.push({
                     label: currentV,
                     duration: duration,
-                    transition: clip.transition
+                    transition: clip.transition // This clip's INTRO transition
                 });
 
                 // AUDIO for video clips
@@ -148,7 +148,7 @@ module.exports = {
             });
         }
 
-        // --- COMPOSE MAIN TRACK (XFADE & ACROSSFADE) ---
+        // --- 2. COMPOSE MAIN TRACK (XFADE & ACROSSFADE) ---
         let mainVideoStream = '[black_bg]';
         let mainAudioStream = '[base_audio_seq]';
         
@@ -165,13 +165,14 @@ module.exports = {
                 const nextClip = mainTrackLabels[i];
                 const prevClip = mainTrackLabels[i-1];
                 
-                const trans = prevClip.transition || { id: 'fade', duration: 0.5 };
-                const hasExplicitTrans = !!prevClip.transition;
-                const transDur = hasExplicitTrans ? Math.min(trans.duration, prevClip.duration/2, nextClip.duration/2) : 0; // 0 if no transition for seamless cut
+                // CRITICAL FIX: Use nextClip.transition because transitions are applied to the START (Intro) of clips in UI
+                const trans = nextClip.transition || { id: 'fade', duration: 0.5 };
+                const hasExplicitTrans = !!nextClip.transition;
                 
+                const transDur = hasExplicitTrans ? Math.min(trans.duration, prevClip.duration/2, nextClip.duration/2) : 0; 
                 const nextAudioLabel = baseAudioSegments[i];
                 
-                if (hasExplicitTrans) {
+                if (hasExplicitTrans && transDur > 0.05) {
                      const transId = presetGenerator.getTransitionXfade(trans.id);
                      const offset = accumulatedDuration - transDur;
                      
@@ -180,26 +181,14 @@ module.exports = {
                      
                      // xfade for video
                      filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
-                     // acrossfade for audio (approximation using crossfade logic or simple mix if not supported, but ffmpeg has acrossfade)
-                     // acrossfade doesn't take offset, it takes overlapping streams. 
-                     // IMPORTANT: acrossfade consumes streams. The audio chain assumes inputs are sequential.
-                     // However, xfade math relies on timestamps. `acrossfade` relies on stream end/start.
-                     // Since we trimmed audio segments exactly to video length, acrossfade should work naturally if we chain them.
-                     
+                     // acrossfade for audio
                      filterChain += `${currentMixA}${nextAudioLabel}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
                      
                      currentMixV = `[${nextLabelV}]`;
                      currentMixA = `[${nextLabelA}]`;
                      accumulatedDuration = offset + transDur + (nextClip.duration - transDur);
                 } else {
-                     // No transition: Simple concat or chained concat filter?
-                     // Actually, if we mix xfade and non-xfade, it gets complex.
-                     // Strategy: Treat "no transition" as a 0s xfade or use concat filter for the whole chain if NO clips have transitions.
-                     // But here we might have mixed. 
-                     // A robust way for mixed is using xfade with duration=0 (cut).
-                     // However, duration=0 in xfade might be buggy in old ffmpeg. 
-                     // Safe approach: Use xfade=transition=fade:duration=0.01:offset=... for almost-cut.
-                     
+                     // HARD CUT (simulated with tiny fade to prevent timestamp gaps)
                      const transId = 'fade';
                      const minimalDur = 0.04; // 1 frame approx
                      const offset = accumulatedDuration - minimalDur;
@@ -224,7 +213,7 @@ module.exports = {
              mainAudioStream = `[${inputIndexCounter++}:a]`;
         }
 
-        // --- 2. APPLY OVERLAYS (Text/Image Layers) ---
+        // --- 3. APPLY OVERLAYS (Text/Image Layers) ---
         let finalComp = mainVideoStream;
         
         overlayClips.forEach((clip, i) => {
@@ -288,7 +277,7 @@ module.exports = {
             finalComp = `[${nextCompLabel}]`;
         });
 
-        // --- 3. AUDIO MIXING (Background Music / SFX) ---
+        // --- 4. AUDIO MIXING (Background Music / SFX) ---
         let audioMixInputs = [mainAudioStream];
         
         audioClips.forEach((clip, i) => {
@@ -313,9 +302,6 @@ module.exports = {
 
         let finalAudio = '[final_audio_out]';
         if (audioMixInputs.length > 1) {
-            // amix inputs (normalize=0 to prevent volume drop). duration=first (main track) matches video length better than longest usually, but longest is safer for trailing audio.
-            // Let's use 'first' to match video duration typically, or handle explicitly.
-            // Using 'longest' ensures background music isn't cut if it extends slightly, but `exportVideo.js` `-t` handles the hard cut.
             filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
             finalAudio = mainAudioStream;
