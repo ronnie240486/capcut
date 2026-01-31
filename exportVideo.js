@@ -17,11 +17,14 @@ module.exports = async (job, uploadDir, onStart) => {
             throw new Error("JSON do projeto corrompido.");
         }
 
-        const { clips, media, totalDuration } = state;
+        const { clips, media, totalDuration, exportConfig } = state;
 
         if (!clips || clips.length === 0) {
             throw new Error("Timeline vazia.");
         }
+
+        // Default Config if missing
+        const config = exportConfig || { resolution: '720p', fps: 30, format: 'mp4' };
 
         // 1. Map files
         const fileMap = {};
@@ -33,39 +36,43 @@ module.exports = async (job, uploadDir, onStart) => {
             });
         }
 
-        // 2. Build Timeline
-        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media);
+        // 2. Build Timeline with Config
+        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, config);
         
         if (!buildResult || !buildResult.filterComplex) {
             throw new Error("Falha ao gerar grafo de filtros. Verifique se as mídias são suportadas.");
         }
 
-        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
+        const ext = config.format === 'webm' ? 'webm' : config.format === 'mov' ? 'mov' : 'mp4';
+        const outputPath = path.join(uploadDir, `export_${Date.now()}.${ext}`);
         job.outputPath = outputPath;
 
-        // 3. Construct FFmpeg Args (Ultra Fast Optimization)
+        // 3. Construct FFmpeg Args (Optimized)
+        const fps = config.fps || 30;
+        
         const args = [
             ...buildResult.inputs,
             '-filter_complex', buildResult.filterComplex,
             '-map', buildResult.outputMapVideo,
             '-map', buildResult.outputMapAudio,
             
-            // Video Encoding Settings (Ultra Fast)
-            '-c:v', 'libx264', 
-            '-preset', 'ultrafast', // Prioritize speed over compression
-            '-tune', 'fastdecode',  // Optimize for fast decoding/encoding
-            '-crf', '28',           // Lower quality slightly for speed (Standard is 23, 28 is faster/smaller)
+            // Video Encoding Settings
+            '-c:v', config.format === 'webm' ? 'libvpx-vp9' : 'libx264', 
+            '-preset', 'ultrafast', // Prioritize speed
+            '-tune', 'fastdecode',  
+            '-crf', '23',           // Better quality than 28
             '-pix_fmt', 'yuv420p',
-            '-shortest',            // Finish when shortest stream ends
+            '-r', String(fps),      // Force Output FPS
             
             // Audio Encoding Settings
             '-c:a', 'aac', 
-            '-b:a', '128k',         // 128k is sufficient and faster
+            '-b:a', '192k',         // Higher bitrate for audio
+            '-ar', '44100',
             '-ac', '2',
             
             // Container Settings
             '-movflags', '+faststart',
-            '-t', String(totalDuration || 60), // Safety duration limit
+            '-t', String(totalDuration + 1), // Safety duration limit
             outputPath
         ];
 
