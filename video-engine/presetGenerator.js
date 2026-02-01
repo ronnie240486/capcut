@@ -1,11 +1,4 @@
 
-/**
- * FFmpeg PRESETS ENGINE
- * Maps Frontend IDs (CapCut Trends, Geometric, etc) to FFmpeg Filters
- */
-
-const FINAL_FILTER = 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p,fps=30';
-
 export default {
     getVideoArgs: () => [
         '-c:v', 'libx264',
@@ -58,7 +51,7 @@ export default {
         if(effectId === 'high-contrast') return 'eq=contrast=2.0';
         if(effectId === 'deep-fried') return 'eq=saturation=3:contrast=2,unsharp=5:5:2.0:5:5:2.0';
         if(effectId === 'sketch-sim') return 'edgedetect=low=0.1:high=0.4,negate';
-        if(effectId === 'glitch-pro-1') return 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131'; // Simulated via color
+        if(effectId === 'glitch-pro-1') return 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131'; 
         
         // Retro
         if(effectId === 'old-film') return 'noise=alls=20:allf=t+u,eq=saturation=0.7';
@@ -82,8 +75,6 @@ export default {
         const fps = 30;
         const frames = Math.max(1, Math.ceil(durationSec * fps));
         const progress = `(on/${frames})`; 
-        // zoompan default: 5s if not specified, but we use actual clip duration
-        // d=duration in frames
         const base = `zoompan=d=${isImage ? frames : 1}:s=1280x720:fps=${fps}`; 
         const centerX = `(iw/2)-(iw/zoom/2)`;
         const centerY = `(ih/2)-(ih/zoom/2)`;
@@ -92,7 +83,6 @@ export default {
         if (moveId === 'kenBurns') {
             const startScale = config.startScale || 1.0;
             const endScale = config.endScale || 1.3;
-            // Simple center zoom for ken burns default, can be enhanced with x/y config
             return `${base}:z='${startScale}+(${endScale}-${startScale})*${progress}':x='${centerX}':y='${centerY}'`;
         }
         
@@ -112,19 +102,17 @@ export default {
         if (moveId === 'mov-zoom-crash-out') return `${base}:z='3.0-(2.0)*${progress}':x='${centerX}':y='${centerY}'`;
         if (moveId === 'mov-zoom-wobble') return `${base}:z='1.2+0.1*sin(${progress}*10)':x='${centerX}':y='${centerY}'`;
         
-        // Shakes & Chaos (Earthquake / Jitter)
+        // Shakes
         if (moveId && (moveId.includes('shake') || moveId.includes('earthquake') || moveId.includes('jitter') || moveId.includes('handheld') || moveId.includes('violent'))) {
             const intensity = (moveId.includes('violent') || moveId.includes('earthquake')) ? 40 : 10;
-            // Uses crop to simulate shake
             return `crop=w=iw*0.9:h=ih*0.9:x='(iw-ow)/2+((random(1)-0.5)*${intensity})':y='(ih-oh)/2+((random(2)-0.5)*${intensity})',scale=1280:720`;
         }
 
-        // Pulse / Bounce (Zoom oscilante)
+        // Pulse
         if (moveId && (moveId.includes('bounce') || moveId.includes('pulse') || moveId.includes('heartbeat'))) {
              return `${base}:z='if(lt(${progress},0.5), 1.0+0.1*sin(${progress}*2*3.14), 1.1-0.1*sin((${progress}-0.5)*2*3.14))':x='${centerX}':y='${centerY}'`;
         }
 
-        // Default Micro-Zoom for static images to avoid dead stillness
         if (isImage) return `${base}:z='1.0+(0.05)*${progress}':x='${centerX}':y='${centerY}'`;
         
         return null;
@@ -133,7 +121,6 @@ export default {
     // --- 3. TRANSITIONS (XFADE) ---
     getTransitionXfade: (id) => {
         const map = {
-            // === CAPCUT TRENDS & GLITCH (Proxy mappings to closest Xfade) ===
             'blood-mist': 'dissolve',
             'black-smoke': 'fadeblack', 
             'white-smoke': 'fadewhite', 
@@ -167,8 +154,6 @@ export default {
             'block-glitch': 'pixelize',
             'cyber-zoom': 'zoomin',
             'color-tear': 'hblur',
-
-            // === GEOMETRIC & WIPES ===
             'wipe-left': 'wipeleft',
             'wipe-right': 'wiperight',
             'wipe-up': 'wipeup',
@@ -177,115 +162,8 @@ export default {
             'slide-right': 'slideright',
             'slide-up': 'slideup',
             'slide-down': 'slidedown',
-            'push-left': 'slideleft',
-            'push-right': 'slideright',
-            'push-up': 'slideup',
-            'push-down': 'slidedown',
-            'cover-left': 'slideleft',
-            
-            // === SHAPES ===
             'circle-open': 'circleopen',
             'circle-close': 'circleclose',
-            'iris-in': 'circleopen',
-            'iris-out': 'circleclose',
-            'diamond-in': 'diagtl', 
-            'diamond-out': 'diagbr', 
-            'diamond-zoom': 'circleopen',
-            'triangle-wipe': 'wipetl', 
-            'heart-wipe': 'circleopen', 
-            'star-zoom': 'circleopen', 
-            'hex-reveal': 'circleopen', 
-            'plus-wipe': 'zoomin', 
-            
-            // === RADIAL & CLOCK ===
-            'clock-wipe': 'radial',
-            'wipe-radial': 'radial',
-            'spiral-wipe': 'radial',
-            'swirl': 'radial',
-            
-            // === BLINDS & GRIDS ===
-            'blind-h': 'horzopen',
-            'blind-v': 'vertopen',
-            'stripes-h': 'horzopen',
-            'stripes-v': 'vertopen',
-            'barn-door-h': 'horzopen',
-            'barn-door-v': 'vertopen',
-            'shutters': 'horzclose',
-            'checker-wipe': 'pixelize', 
-            'checkerboard': 'pixelize',
-            'grid-flip': 'pixelize',
-            'mosaic-small': 'pixelize',
-            'mosaic-large': 'pixelize',
-            'dots-reveal': 'pixelize',
-            
-            // === PAPER & TEXTURE ===
-            'page-turn': 'slideleft',
-            'paper-unfold': 'horzopen',
-            'burn-paper': 'circleopen',
-            'sketch-reveal': 'fade',
-            'fold-up': 'slideup',
-            
-            // === 3D TRANSFORMS ===
-            'cube-rotate-l': 'slideleft', 
-            'cube-rotate-r': 'slideright',
-            'cube-rotate-u': 'slideup',
-            'cube-rotate-d': 'slidedown',
-            'door-open': 'horzopen',
-            'flip-card': 'hlslice', 
-            'room-fly': 'zoomin',
-            'perspective-left': 'slideleft',
-            'perspective-right': 'slideright',
-            
-            // === ZOOM & SPIN ===
-            'zoom-in': 'zoomin',
-            'zoom-out': 'zoomout',
-            'pull-away': 'zoomout',
-            'zoom-blur-l': 'hblur',
-            'zoom-blur-r': 'hblur',
-            'spin-zoom-in': 'radial',
-            'spin-zoom-out': 'radial',
-            'spin-cw': 'radial',
-            'spin-ccw': 'radial',
-            'whip-left': 'slideleft',
-            'whip-right': 'slideright',
-            'whip-up': 'slideup',
-            'whip-down': 'slidedown',
-            'zoom-spin-fast': 'radial',
-            
-            // === LIGHT & OPTICAL ===
-            'flash-bang': 'fadewhite',
-            'exposure': 'fadewhite',
-            'glow-intense': 'fadewhite',
-            'flare-pass': 'fadewhite',
-            'god-rays': 'fadewhite',
-            'light-leak-tr': 'fadewhite',
-            'bokeh-blur': 'hblur',
-            'prism-split': 'dissolve',
-            
-            // === LIQUID & ORGANIC ===
-            'liquid-melt': 'hblur', 
-            'ink-splash': 'circleopen', 
-            'oil-paint': 'dissolve',
-            'water-ripple': 'radial',
-            'water-drop': 'circleopen',
-            'bubble-pop': 'circleopen',
-            'smoke-reveal': 'dissolve',
-            
-            // === ELASTIC & WARP ===
-            'elastic-left': 'slideleft',
-            'elastic-right': 'slideright',
-            'elastic-up': 'slideup',
-            'elastic-down': 'slidedown',
-            'bounce-scale': 'zoomin',
-            'jelly': 'hblur',
-            'morph': 'dissolve',
-            'turbulence': 'hblur',
-            'stretch-h': 'hblur',
-            'stretch-v': 'hblur',
-            'kaleidoscope': 'radial',
-            'wave': 'hblur',
-            
-            // === BASIC ===
             'crossfade': 'fade',
             'fade': 'fade',
             'mix': 'fade',
@@ -297,34 +175,18 @@ export default {
             'blur-warp': 'hblur'
         };
 
-        // Exact Match
         if (map[id]) return map[id];
         
-        // Smart Keyword Fallback
         if (id.includes('wipe-up')) return 'wipeup';
         if (id.includes('wipe-down')) return 'wipedown';
-        if (id.includes('wipe-left')) return 'wipeleft';
-        if (id.includes('wipe-right')) return 'wiperight';
-        if (id.includes('slide-up') || id.includes('push-up')) return 'slideup';
-        if (id.includes('slide-down') || id.includes('push-down')) return 'slidedown';
-        if (id.includes('slide-left') || id.includes('push-left')) return 'slideleft';
-        if (id.includes('slide-right') || id.includes('push-right')) return 'slideright';
+        if (id.includes('slide')) return 'slideleft';
         if (id.includes('zoom')) return 'zoomin';
         if (id.includes('spin')) return 'radial';
         if (id.includes('circle')) return 'circleopen';
         if (id.includes('blur')) return 'hblur';
         if (id.includes('glitch')) return 'pixelize'; 
         if (id.includes('flash')) return 'fadewhite';
-        if (id.includes('burn')) return 'fadewhite';
-        if (id.includes('blind')) return 'horzopen';
-        if (id.includes('clock')) return 'radial';
-        if (id.includes('mosaic')) return 'pixelize';
-        if (id.includes('pixel')) return 'pixelize';
-        if (id.includes('dissolve')) return 'dissolve';
         
-        // Final Default
         return 'fade'; 
-    },
-
-    getFinalVideoFilter: () => FINAL_FILTER
+    }
 };
