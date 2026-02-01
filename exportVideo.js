@@ -1,6 +1,18 @@
 
 import path from 'path';
+import { exec } from 'child_process';
 import transitionBuilder from './video-engine/transitionBuilder.js';
+
+function getMediaInfo(filePath) {
+    return new Promise((resolve) => {
+        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
+            if (err) return resolve({ hasAudio: false });
+            // Check if any line in output indicates 'audio' stream
+            const hasAudio = stdout.includes('audio');
+            resolve({ hasAudio });
+        });
+    });
+}
 
 export const handleExportVideo = async (job, uploadDir, onStart) => {
     try {
@@ -26,9 +38,21 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
 
         const fileMap = {};
         if (job.files && job.files.length > 0) {
-            job.files.forEach(f => {
+            // Process files sequentially to allow async ffprobe
+            for (const f of job.files) {
                 fileMap[f.originalname] = f.path;
-            });
+                
+                // Server-side Audio Verification
+                // Update the media state if the file physically has audio
+                // This fixes issues where browser reported no audio for MKV/AVI/Some MP4s
+                if (media[f.originalname]) {
+                    const info = await getMediaInfo(f.path);
+                    if (info.hasAudio) {
+                        console.log(`[Export] Audio detected in ${f.originalname}`);
+                        media[f.originalname].hasAudio = true;
+                    }
+                }
+            }
         }
 
         // Use the builder
