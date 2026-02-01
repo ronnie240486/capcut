@@ -123,41 +123,16 @@ export default {
     },
 
     // --- 3. TRANSITIONS (XFADE) ---
+    // Maps App Transition IDs to valid FFmpeg xfade names
     getTransitionXfade: (id) => {
         const map = {
-            'blood-mist': 'dissolve',
-            'black-smoke': 'fadeblack', 
-            'white-smoke': 'fadewhite', 
-            'fire-burn': 'circleopen', 
-            'burn': 'circleopen',
-            'color-glitch': 'pixelize',
-            'glitch-chroma': 'pixelize',
-            'urban-glitch': 'hblur', 
-            'visual-buzz': 'pixelize',
-            'rip-diag': 'wipetl', 
-            'paper-rip': 'wipetl',
-            'zoom-neg': 'zoomin', // Default map
-            'infinity-1': 'distance', 
-            'digital-paint': 'hblur',
-            'brush-wind': 'slideleft',
-            'dust-burst': 'dissolve',
-            'lens-flare': 'fadewhite', 
-            'flash-white': 'fadewhite',
-            'flash-black': 'fadeblack',
-            'flashback': 'fadewhite',
-            'glitch': 'pixelize',
-            'pixel-sort': 'pixelize',
-            'datamosh': 'hblur',
-            'rgb-shake': 'pixelize',
-            'hologram': 'fade',
-            'digital-noise': 'pixelize',
-            'noise-jump': 'pixelize',
-            'cyber-slice': 'rectcrop', 
-            'scan-line-v': 'vuslice',
-            'glitch-scan': 'vuslice',
-            'block-glitch': 'pixelize',
-            'cyber-zoom': 'zoomin',
-            'color-tear': 'hblur',
+            // Standard
+            'fade': 'fade',
+            'crossfade': 'fade',
+            'mix': 'fade',
+            'dissolve': 'dissolve',
+            'black': 'fadeblack', 
+            'white': 'fadewhite',
             'wipe-left': 'wipeleft',
             'wipe-right': 'wiperight',
             'wipe-up': 'wipeup',
@@ -168,21 +143,58 @@ export default {
             'slide-down': 'slidedown',
             'circle-open': 'circleopen',
             'circle-close': 'circleclose',
-            'crossfade': 'fade',
-            'fade': 'fade',
-            'mix': 'fade',
-            'dissolve': 'dissolve',
-            'black': 'fadeblack',
-            'white': 'fadewhite',
-            'luma-fade': 'fade',
-            'film-roll': 'slideup',
-            'blur-warp': 'hblur'
+            
+            // Geometric Fixes (Mapped to valid xfade names)
+            'clock-wipe': 'radial',
+            'wipe-radial': 'radial',
+            'spiral-wipe': 'radial',
+            'plus-wipe': 'circleopen', // Fallback as no 'plus' in standard xfade
+            'checker-wipe': 'pixelize', // Fallback for geometric feel
+            'checkerboard': 'pixelize',
+            'diamond-in': 'circleopen',
+            'diamond-out': 'circleclose',
+            'diamond-zoom': 'circleopen',
+            'star-zoom': 'circleopen',
+            'hex-reveal': 'pixelize',
+            'dots-reveal': 'pixelize',
+            'mosaic-small': 'pixelize',
+            'mosaic-large': 'pixelize',
+            'blind-h': 'horzopen',
+            'blind-v': 'vertopen',
+            'shutters': 'horzclose',
+            'stripes-h': 'horzopen',
+            'stripes-v': 'vertopen',
+            'barn-door-h': 'horzopen',
+            'barn-door-v': 'vertopen',
+            'triangle-wipe': 'diagtl',
+            'heart-wipe': 'circleopen',
+            'iris-in': 'circleopen',
+            'iris-out': 'circleclose',
+            
+            // 3D / Transforms
+            'cube-rotate-l': 'slideleft', // Fallback
+            'cube-rotate-r': 'slideright',
+            'door-open': 'horzopen',
+            'page-turn': 'slideleft',
+            
+            // Effects
+            'glitch': 'pixelize',
+            'pixel-sort': 'pixelize',
+            'datamosh': 'hblur',
+            'rgb-shake': 'pixelize',
+            'zoom-neg': 'zoomin',
+            'flash-white': 'fadewhite',
+            'flash-black': 'fadeblack',
+            'flash-bang': 'fadewhite',
+            'burn': 'circleopen',
+            'blur-warp': 'hblur',
+            'luma-fade': 'fade'
         };
 
         if (map[id]) return map[id];
         
-        if (id.includes('wipe-up')) return 'wipeup';
-        if (id.includes('wipe-down')) return 'wipedown';
+        // Heuristic Fallbacks for unknown IDs
+        if (id.includes('wipe')) return 'wipeleft';
         if (id.includes('slide')) return 'slideleft';
         if (id.includes('zoom')) return 'zoomin';
         if (id.includes('spin')) return 'radial';
