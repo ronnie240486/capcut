@@ -1,18 +1,22 @@
 {
-  "name": "proedit-backend",
-  "version": "1.0.0",
-  "description": "Servidor para o Editor de Vídeo ProEdit",
-  "main": "server.js",
+  "name": "proedit-react",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "prepare-ffmpeg": "cp node_modules/@ffmpeg/ffmpeg/dist/ffmpeg.min.js public/ffmpeg/ && cp node_modules/@ffmpeg/core/dist/* public/ffmpeg/",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
   },
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "multer": "^1.4.5-lts.1"
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "@google/genai": "^1.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
   }
 }
