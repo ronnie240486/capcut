@@ -148,8 +148,8 @@ export default {
             'clock-wipe': 'radial',
             'wipe-radial': 'radial',
             'spiral-wipe': 'radial',
-            'plus-wipe': 'circleopen', // Fallback as no 'plus' in standard xfade
-            'checker-wipe': 'pixelize', // Fallback for geometric feel
+            'plus-wipe': 'circleopen',
+            'checker-wipe': 'pixelize',
             'checkerboard': 'pixelize',
             'diamond-in': 'circleopen',
             'diamond-out': 'circleclose',
@@ -172,23 +172,26 @@ export default {
             'iris-out': 'circleclose',
             
             // 3D / Transforms
-            'cube-rotate-l': 'slideleft', // Fallback
+            'cube-rotate-l': 'slideleft',
             'cube-rotate-r': 'slideright',
             'door-open': 'horzopen',
             'page-turn': 'slideleft',
             
-            // Effects
-            'glitch': 'pixelize',
-            'pixel-sort': 'pixelize',
-            'datamosh': 'hblur',
-            'rgb-shake': 'pixelize',
+            // Special Effects (Mapping to base xfade, detail handled in transitionBuilder)
+            'pixelize': 'pixelize', // Crucial: Explicitly map pixelize to pixelize
+            'glitch': 'slideleft', // Glitch uses slide as base
+            'pixel-sort': 'wipedown',
+            'datamosh': 'dissolve',
+            'rgb-shake': 'hblur',
             'zoom-neg': 'zoomin',
             'flash-white': 'fadewhite',
             'flash-black': 'fadeblack',
             'flash-bang': 'fadewhite',
             'burn': 'circleopen',
             'blur-warp': 'hblur',
-            'luma-fade': 'fade'
+            'luma-fade': 'fade',
+            'scan-line': 'zoomin',
+            'cyber-slice': 'rectcrop'
         };
 
         if (map[id]) return map[id];
