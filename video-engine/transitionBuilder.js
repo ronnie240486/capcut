@@ -139,14 +139,39 @@ export default {
                 const hasExplicitTrans = !!prevClip.transition;
                 const transDur = hasExplicitTrans ? Math.min(trans.duration, 2.0) : 0.5;
                 
-                const transId = (presetGenerator.getTransitionXfade && hasExplicitTrans) 
-                    ? presetGenerator.getTransitionXfade(trans.id) 
-                    : 'fade';
+                // Default mapping using presetGenerator
+                let transId = 'fade';
+                if (presetGenerator.getTransitionXfade && hasExplicitTrans) {
+                    transId = presetGenerator.getTransitionXfade(trans.id);
+                }
                 
                 const offset = accumulatedDuration - transDur;
                 const nextLabel = `mix_${i}`;
                 
-                filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
+                // --- CUSTOM TRANSITION LOGIC (Negative & Rotation) ---
+                if (trans.id === 'zoom-neg') {
+                    // Negative Zoom: Zoom In + Negate (Invert Colors)
+                    // We apply 'negate' filter enabled ONLY during the transition window
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},negate=enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                } 
+                else if (trans.id === 'spin-cw') {
+                    // Real Clockwise Spin (360 degrees)
+                    // Uses rotate filter with time-based angle during the transition
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},rotate=a='2*PI*(t-${offset})/${transDur}':enable='between(t,${offset},${offset+transDur})':fillcolor=black[${nextLabel}];`;
+                } 
+                else if (trans.id === 'spin-ccw') {
+                    // Real Counter-Clockwise Spin (-360 degrees)
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},rotate=a='-2*PI*(t-${offset})/${transDur}':enable='between(t,${offset},${offset+transDur})':fillcolor=black[${nextLabel}];`;
+                }
+                else if (trans.id === 'zoom-spin-fast') {
+                    // Fast Spin with Zoom
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},rotate=a='4*PI*(t-${offset})/${transDur}':enable='between(t,${offset},${offset+transDur})':fillcolor=black[${nextLabel}];`;
+                }
+                else {
+                    // Standard XFade
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
+                }
+                
                 currentMix = `[${nextLabel}]`;
                 
                 accumulatedDuration = offset + transDur + (nextClip.duration - transDur);
