@@ -87,7 +87,7 @@ export default {
                 const mediaInfo = mediaLibrary[clip.fileName];
                 const audioLabel = `a_base_${i}`;
                 
-                // CRITICAL: Check both metadata AND if file path exists
+                // CRITICAL: Check both metadata AND if file path exists. Server-side check ensures hasAudio is reliable.
                 if (clip.type === 'video' && mediaInfo?.hasAudio) {
                     const start = clip.mediaStartOffset || 0;
                     // Safely trim audio from video source AND NORMALIZE FORMAT to avoid concat issues
@@ -168,6 +168,7 @@ export default {
         
         // Always create a base audio stream, even if silent
         if (baseAudioSegments.length > 0) {
+             // Concatenate all base segments (video audio + silence fillers)
              filterChain += `${baseAudioSegments.join('')}concat=n=${baseAudioSegments.length}:v=0:a=1[base_audio_seq];`;
         } else {
              inputs.push('-f', 'lavfi', '-t', '0.1', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
@@ -196,6 +197,7 @@ export default {
         let finalAudio = '[final_audio_out]';
         // Always mix if we have more than just the base (or if we want to normalize base)
         if (audioMixInputs.length > 1) {
+            // Mix normalized inputs
             filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
             finalAudio = baseAudioCombined;
