@@ -175,12 +175,12 @@ export default {
                 // 4. Flash / Glow / Burn (Brightness Spike)
                 else if (['flash-white', 'flash-bang', 'glow-intense', 'exposure', 'burn', 'lens-flare', 'god-rays', 'flashback'].some(t => trans.id.includes(t))) {
                     // Using normal fade but boosting brightness to 1.0 (white) during transition
-                    // eq=brightness=0 is neutral. 1 is full white.
-                    // We use a sine wave to peak brightness at the middle of the transition
-                    filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},eq=brightness='if(between(t,${offset},${offset+transDur}),0.8*sin((t-${offset})/${transDur}*3.1415),0)':${enableBetween}[${nextLabel}];`;
+                    // IMPORTANT: Added :eval=frame to ensure dynamic brightness evaluation
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},eq=brightness='if(between(t,${offset},${offset+transDur}),0.8*sin((t-${offset})/${transDur}*3.1415),0)':eval=frame:${enableBetween}[${nextLabel}];`;
                 }
-                // 5. Standard XFade (Fallback)
+                // 5. Standard XFade (Fallback & Geometric)
                 else {
+                    // This handles all geometric transitions mapped correctly in presetGenerator (e.g. clock -> radial)
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
                 }
                 
