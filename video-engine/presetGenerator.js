@@ -171,7 +171,20 @@ export default {
             'iris-in': 'circleopen',
             'iris-out': 'circleclose',
             
-            // 3D / Transforms
+            // 3D / Camera Fixes (Updated for request)
+            'whip-left': 'slideleft',
+            'whip-right': 'slideright',
+            'whip-up': 'slideup',
+            'whip-down': 'slidedown',
+            'perspective-left': 'squeezeh',
+            'perspective-right': 'squeezeh',
+            'zoom-in': 'zoomin',
+            'zoom-out': 'zoomout',
+            'zoom-spin-fast': 'zoomin', // Will combine with rotate
+            'spin-cw': 'dissolve', // Will combine with rotate
+            'spin-ccw': 'dissolve',
+            
+            // 3D Transforms
             'cube-rotate-l': 'slideleft',
             'cube-rotate-r': 'slideright',
             'door-open': 'horzopen',
@@ -189,9 +202,9 @@ export default {
             'flash-bang': 'fadewhite',
             'burn': 'circleopen',
             'luma-fade': 'dissolve', 
-            'film-roll': 'slideup', // Forced to slideup to prevent rotation
+            'film-roll': 'slideup', 
             'film-roll-v': 'slideup',
-            'blur-warp': 'dissolve', // Mapped to dissolve so custom warp filter can apply
+            'blur-warp': 'dissolve', 
             'warp': 'dissolve',
             'swirl': 'circleopen', 
             'filter-blur': 'hblur',
