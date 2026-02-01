@@ -8,11 +8,8 @@ export default {
         let inputIndexCounter = 0;
 
         // Tracks
-        // Filter main video tracks and ensure sorting
         const mainTrackClips = clips.filter(c => c.track === 'video' || (c.track === 'camada' && c.type === 'video')).sort((a, b) => a.start - b.start);
-        // Overlay tracks
         const overlayClips = clips.filter(c => (['text', 'subtitle'].includes(c.track) || (c.track === 'camada' && c.type === 'image'))).sort((a,b) => a.start - b.start);
-        // Audio tracks
         const audioClips = clips.filter(c => ['audio', 'narration', 'music', 'sfx'].includes(c.track) || (c.type === 'audio' && !['video', 'camada', 'text'].includes(c.track))).sort((a,b) => a.start - b.start);
 
         let mainTrackLabels = [];
@@ -111,14 +108,12 @@ export default {
 
             for (let i = 1; i < mainTrackLabels.length; i++) {
                 const nextClip = mainTrackLabels[i];
-                const prevClip = mainTrackLabels[i-1]; // Note: logic simplifies here, assume sequential
+                const prevClip = mainTrackLabels[i-1]; 
                 
-                // Get Transition ID safely
                 const trans = prevClip.transition || { id: 'fade', duration: 0.5 };
                 const hasExplicitTrans = !!prevClip.transition;
-                const transDur = hasExplicitTrans ? Math.min(trans.duration, 2.0) : 0.5; // Cap transition duration
+                const transDur = hasExplicitTrans ? Math.min(trans.duration, 2.0) : 0.5;
                 
-                // Ensure the function exists before calling
                 const transId = (presetGenerator.getTransitionXfade && hasExplicitTrans) 
                     ? presetGenerator.getTransitionXfade(trans.id) 
                     : 'fade';
@@ -138,16 +133,13 @@ export default {
         let finalComp = mainVideoStream;
         
         overlayClips.forEach((clip, i) => {
-            // Simplified overlay logic for image/video layers
-            // Text is complex with drawtext, using placeholders or simple implementation
             const filePath = fileMap[clip.fileName];
             if (!filePath && clip.type !== 'text') return;
 
             let overlayLabel = '';
             
             if (clip.type === 'text') {
-                 // Placeholder for text logic (requires fonts file mapping which is complex in this scope)
-                 // Skipping drawtext to prevent errors, or use simple color box
+                 // Placeholder: Text overlay skipped due to complexity without fonts file map
                  return;
             } else {
                  inputs.push('-loop', '1', '-t', clip.duration.toString(), '-i', filePath);
@@ -162,9 +154,7 @@ export default {
             const startTime = clip.start;
             const shiftedLabel = `shift_${i}`;
             
-            // Set start time
             filterChain += `${overlayLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            // Overlay
             filterChain += `${finalComp}[${shiftedLabel}]overlay=enable='between(t,${startTime},${startTime + clip.duration})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
