@@ -1,7 +1,6 @@
 
 /**
  * Helper to generate 'atempo' filters for speed adjustment.
- * FFmpeg atempo filter is limited between 0.5 and 2.0, so we chain them.
  */
 function getAtempoFilter(speed) {
     let s = speed;
@@ -18,7 +17,7 @@ function getAtempoFilter(speed) {
     return filters.join(',');
 }
 
-module.exports = {
+export default {
     /**
      * Builds the filter graph based on the action type.
      */
@@ -34,7 +33,6 @@ module.exports = {
                 // Mininterpolate + Scale to safe dimensions (1280 width, height divisible by 2)
                 filterComplex = `[0:v]scale='min(1280,iw)':-2,pad=ceil(iw/2)*2:ceil(ih/2)*2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
                 mapArgs = ['-map', '[v]'];
-                // We ignore audio for slow motion interpolation usually, or we'd need to stretch it too
                 break;
 
             case 'upscale-real':
@@ -60,12 +58,6 @@ module.exports = {
                 const thresh = params.threshold || -30;
                 filterComplex = `[0:a]silenceremove=stop_periods=-1:stop_duration=${stopDur}:stop_threshold=${thresh}dB[a]`;
                 mapArgs = ['-map', '0:v', '-map', '[a]'];
-                // Video sync is tricky with silenceremove on audio only. 
-                // Usually this requires complex syncing or dropping video frames which ffmpeg does automatically if V is mapped but A is shortened?
-                // For safety in this MVP, we might desync if we don't trim video. 
-                // A safer 'jump cut' requires analyzing timestamps first. 
-                // For now, we apply to audio and let FFmpeg try to match or just process audio.
-                // Assuming this is mostly for audio clips based on the app usage.
                 outputOptions = ['-c:v', 'copy'];
                 break;
 
@@ -81,11 +73,11 @@ module.exports = {
                 const p = params.preset;
                 let af = '';
                 if(p === 'robot') af = "asetrate=44100*0.9,atempo=1.1,chorus=0.5:0.9:50|60|40:0.4|0.32|0.3:0.25|0.4|0.3:2|2.3|1.3";
-                else if(p === 'squirrel') af = "asetrate=44100*1.4,atempo=0.7"; // Chipmunk
-                else if(p === 'monster') af = "asetrate=44100*0.6,atempo=1.6"; // Deep
+                else if(p === 'squirrel') af = "asetrate=44100*1.4,atempo=0.7"; 
+                else if(p === 'monster') af = "asetrate=44100*0.6,atempo=1.6";
                 else if(p === 'echo') af = "aecho=0.8:0.9:1000:0.3";
                 else if(p === 'radio') af = "highpass=f=500,lowpass=f=3000,afftdn";
-                else af = "anull"; // Default
+                else af = "anull"; 
                 
                 filterComplex = `[0:a]${af}[a]`;
                 mapArgs = ['-map', '0:v?', '-map', '[a]'];
