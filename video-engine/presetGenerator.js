@@ -27,6 +27,10 @@ export default {
     getFFmpegFilterFromEffect: (effectId) => {
         if (!effectId) return null;
         
+        // Requested Special Effects
+        if(effectId === 'zoom-neg' || effectId === 'negative') return 'negate'; // Invert colors
+        if(effectId === 'flash-chroma' || effectId === 'flash-c' || effectId === 'color-glitch') return 'hue=h=90:s=2'; // Color shift
+        
         // Cinematic & Pro
         if(effectId === 'teal-orange') return 'curves=r=0/0 0.25/0.15 0.5/0.5 0.75/0.85 1/1:b=0/0 0.25/0.35 0.5/0.5 0.75/0.65 1/1';
         if(effectId === 'noir' || effectId === 'mono' || effectId === 'b-and-w-low') return 'hue=s=0,contrast=1.2';
@@ -132,7 +136,7 @@ export default {
             'visual-buzz': 'pixelize',
             'rip-diag': 'wipetl', 
             'paper-rip': 'wipetl',
-            'zoom-neg': 'zoomin',
+            'zoom-neg': 'zoomin', // Default map
             'infinity-1': 'distance', 
             'digital-paint': 'hblur',
             'brush-wind': 'slideleft',
