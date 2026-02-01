@@ -1,7 +1,6 @@
 
 import path from 'path';
 import transitionBuilder from './video-engine/transitionBuilder.js';
-import presetGenerator from './video-engine/presetGenerator.js';
 
 export const handleExportVideo = async (job, uploadDir, onStart) => {
     try {
@@ -47,8 +46,15 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             '-filter_complex', buildResult.filterComplex,
             '-map', buildResult.outputMapVideo,
             '-map', buildResult.outputMapAudio,
-            ...presetGenerator.getVideoArgs(),
-            ...presetGenerator.getAudioArgs(),
+            // Explicit Video Args
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-pix_fmt', 'yuv420p',
+            // Explicit Audio Args to ensure export has sound
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-ac', '2',
+            '-ar', '44100',
             '-t', String(totalDuration || 30),
             outputPath
         ];
