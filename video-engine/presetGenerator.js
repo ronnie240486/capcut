@@ -144,6 +144,12 @@ export default {
             'circle-open': 'circleopen',
             'circle-close': 'circleclose',
             
+            // Motion / Slide Fixes
+            'push-left': 'slideleft',
+            'push-right': 'slideright',
+            'push-up': 'slideup',
+            'push-down': 'slidedown',
+            
             // Geometric Fixes (Mapped to valid xfade names)
             'clock-wipe': 'radial',
             'wipe-radial': 'radial',
@@ -171,7 +177,7 @@ export default {
             'iris-in': 'circleopen',
             'iris-out': 'circleclose',
             
-            // 3D / Camera Fixes (Updated for request)
+            // 3D / Camera Fixes
             'whip-left': 'slideleft',
             'whip-right': 'slideright',
             'whip-up': 'slideup',
@@ -188,7 +194,21 @@ export default {
             'cube-rotate-l': 'slideleft',
             'cube-rotate-r': 'slideright',
             'door-open': 'horzopen',
+            
+            // Paper & Texture Fixes (Explicit Mappings)
             'page-turn': 'slideleft',
+            'paper-rip': 'horzopen',
+            'burn-paper': 'circleopen',
+            'sketch-reveal': 'dissolve',
+            'fold-up': 'slideup',
+            
+            // Liquid & Organic (Mapped to base xfade types, builder adds filters)
+            'liquid-melt': 'wipedown',
+            'ink-splash': 'circleopen',
+            'oil-paint': 'dissolve',
+            'water-ripple': 'radial',
+            'smoke-reveal': 'dissolve',
+            'bubble-pop': 'circleopen',
             
             // Special Effects (Mapping to base xfade, detail handled in transitionBuilder)
             'pixelize': 'pixelize', 
