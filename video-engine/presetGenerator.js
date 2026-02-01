@@ -190,10 +190,14 @@ export default {
             'spin-cw': 'dissolve', // Will combine with rotate
             'spin-ccw': 'dissolve',
             
-            // 3D Transforms
-            'cube-rotate-l': 'slideleft',
+            // 3D Transforms (Fixed Mappings)
+            'cube-rotate-l': 'slideleft', // Will add blur in builder
             'cube-rotate-r': 'slideright',
             'door-open': 'horzopen',
+            'flip-card': 'squeezev',
+            'room-fly': 'zoomin',
+            'cube-rotate-u': 'slideup',
+            'cube-rotate-d': 'slidedown',
             
             // Paper & Texture Fixes (Explicit Mappings)
             'page-turn': 'slideleft',
