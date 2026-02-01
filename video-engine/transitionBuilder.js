@@ -180,7 +180,6 @@ export default {
 
                 // 5. RGB SPLIT / SHAKE (Smear Blur + Chromatic Shift)
                 else if (trans.id === 'rgb-split' || trans.id === 'rgb-shake' || trans.id === 'glitch-chroma') {
-                    // Uses hblur xfade + chromashift (offset Cb/Cr planes)
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=hblur:duration=${transDur}:offset=${offset},chromashift=cbh=20:crh=-20:cbv=20:crv=-20:${enableBetween}[${nextLabel}];`;
                 }
 
@@ -205,25 +204,30 @@ export default {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},eq=brightness='if(between(t,${offset},${offset+transDur}),0.8*sin((t-${offset})/${transDur}*3.1415),0)':eval=frame:${enableBetween}[${nextLabel}];`;
                 }
 
-                // 10. Film Roll (Slide Up + Vertical Blur)
-                else if (trans.id === 'film-roll' || trans.id === 'film-roll-v' || trans.id === 'roll-up') {
-                    // Vertical blur simulation using gblur (sigmaV=50)
-                    filterChain += `${currentMix}${nextClip.label}xfade=transition=slideup:duration=${transDur}:offset=${offset},gblur=sigma=0:sigmaV=50:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                // 10. Film Roll (Slide Up + Vertical Blur) - FORCED VERTICAL SLIDE
+                else if (['film-roll', 'film-roll-v', 'roll-up'].some(t => trans.id.includes(t))) {
+                    // Explicitly uses slideup + strong vertical blur to simulate film roll
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=slideup:duration=${transDur}:offset=${offset},gblur=sigma=0:sigmaV=20:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
                 }
 
-                // 11. Blur Warp / Filter Blur (Zoom + Blur)
-                else if (trans.id === 'blur-warp' || trans.id === 'filter-blur') {
-                    // Zoomin + Gaussian Blur
-                    filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},gblur=sigma=50:steps=2:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                // 11. Warp / Swirl / Twist (Lens Correction) - REPLACES ROTATION WITH DISTORTION
+                else if (['swirl', 'warp', 'morph', 'kaleidoscope'].some(t => trans.id.includes(t))) {
+                    // Dissolve + Fish Eye distortion
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},lenscorrection=k1=-0.2:k2=-0.2:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
                 }
 
-                // 12. Luma Fade (Dissolve + Contrast)
+                // 12. Distortion / Turbulence (Blur + RGB Shift)
+                else if (['turbulence', 'distortion', 'wave', 'water-drop'].some(t => trans.id.includes(t))) {
+                    // Dissolve + Heavy Blur + RGB Shift
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},gblur=sigma=20:enable='between(t,${offset},${offset+transDur})',chromashift=cbh=20:crh=-20:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                }
+
+                // 13. Luma Fade (Dissolve + Contrast)
                 else if (trans.id === 'luma-fade') {
-                    // Dissolve is a random pixel dissolve. Adding contrast makes it look more "luma-key" like.
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},eq=contrast=1.5:brightness=0.05:eval=frame:${enableBetween}[${nextLabel}];`;
                 }
                 
-                // 13. Standard XFade (Fallback)
+                // 14. Standard XFade (Fallback)
                 else {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
                 }
