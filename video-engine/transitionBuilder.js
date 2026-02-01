@@ -147,21 +147,19 @@ export default {
                 
                 const offset = accumulatedDuration - transDur;
                 const nextLabel = `mix_${i}`;
-                let finalEffects = '';
-
-                // --- CUSTOM TRANSITION LOGIC ---
+                
                 // Helper for time-based enable
                 const enableBetween = `enable='between(t,${offset},${offset+transDur})'`;
+
+                // --- CUSTOM TRANSITION LOGIC ---
 
                 // 1. Negative Zoom (Invert Color + Zoom)
                 if (trans.id === 'zoom-neg') {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},negate=${enableBetween}[${nextLabel}];`;
                 } 
                 
-                // 2. Whip Pan (Slide + Directional Blur) - NEW
+                // 2. Whip Pan (Slide + Directional Blur)
                 else if (trans.id.includes('whip')) {
-                    // Slide + Motion Blur
-                    // Note: 'slideleft' etc are mapped in presetGenerator. Here we add the blur.
                     const isVertical = trans.id.includes('up') || trans.id.includes('down');
                     const blurFilter = isVertical ? 'gblur=sigma=0:sigmaV=40' : 'gblur=sigma=40:sigmaV=0';
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset},${blurFilter}:${enableBetween}[${nextLabel}];`;
@@ -169,73 +167,105 @@ export default {
 
                 // 3. Spin / Rotation
                 else if (trans.id.includes('spin') && !trans.id.includes('zoom-spin')) {
-                     // Standard spin (cw/ccw) mapped to dissolve in preset, we add rotation here
                      const direction = trans.id.includes('ccw') ? -1 : 1;
                      filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},rotate=a='${direction}*2*PI*(t-${offset})/${transDur}':${enableBetween}:fillcolor=black[${nextLabel}];`;
                 }
                 
                 // 4. Zoom Spin
                 else if (trans.id === 'zoom-spin-fast') {
-                    // Zoomin + Rotate
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},rotate=a='4*PI*(t-${offset})/${transDur}':${enableBetween}:fillcolor=black[${nextLabel}];`;
                 }
                 
-                // 5. PURE PIXELIZE (Standard xfade pixelize)
+                // 5. Slide / Push (Enhanced with Blur)
+                else if (trans.id.includes('slide') || trans.id.includes('push')) {
+                    // Simple motion blur approximation
+                    const blurFilter = 'gblur=sigma=5'; 
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset},${blurFilter}:${enableBetween}[${nextLabel}];`;
+                }
+                
+                // 6. PURE PIXELIZE
                 else if (trans.id === 'pixelize' || trans.id === 'mosaic-small' || trans.id === 'mosaic-large' || trans.id === 'checker-wipe') {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=pixelize:duration=${transDur}:offset=${offset}[${nextLabel}];`;
                 }
 
-                // 6. DATAMOSH (Dissolve + Lag/Trails)
+                // 7. DATAMOSH
                 else if (trans.id === 'datamosh') {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},lagfun=decay=0.95:planes=1:${enableBetween}[${nextLabel}];`;
                 }
 
-                // 7. RGB SPLIT / SHAKE (Smear Blur + Chromatic Shift)
+                // 8. RGB SPLIT / SHAKE
                 else if (trans.id === 'rgb-split' || trans.id === 'rgb-shake' || trans.id === 'glitch-chroma') {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=hblur:duration=${transDur}:offset=${offset},chromashift=cbh=20:crh=-20:cbv=20:crv=-20:${enableBetween}[${nextLabel}];`;
                 }
 
-                // 8. SCANLINE / CYBER SLICE (Zoom + Grid Overlay)
+                // 9. SCANLINE / CYBER SLICE
                 else if (trans.id === 'scan-line-v' || trans.id === 'scan-line' || trans.id === 'cyber-slice' || trans.id === 'scan-line-v') {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},drawgrid=y=0:h=8:t=4:c=black@0.5:${enableBetween}[${nextLabel}];`;
                 }
 
-                // 9. NOISE / STATIC (Pure Noise Overlay)
+                // 10. NOISE / STATIC
                 else if (trans.id === 'noise' || trans.id === 'digital-noise' || trans.id === 'noise-jump') {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},noise=alls=100:allf=t+u:${enableBetween}[${nextLabel}];`;
                 }
 
-                // 10. GLITCH (Generic - Distortion)
+                // 11. GLITCH
                 else if (trans.id.includes('glitch') || trans.id === 'cyber-zoom') {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=slideleft:duration=${transDur}:offset=${offset},noise=alls=40:allf=t+u:${enableBetween},hue=s=0:${enableBetween}[${nextLabel}];`;
                 }
 
-                // 11. Flash / Glow / Burn (Brightness Spike)
+                // 12. Flash / Glow / Burn
                 else if (['flash-white', 'flash-bang', 'glow-intense', 'exposure', 'burn', 'lens-flare', 'god-rays', 'flashback'].some(t => trans.id.includes(t))) {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},eq=brightness='if(between(t,${offset},${offset+transDur}),0.8*sin((t-${offset})/${transDur}*3.1415),0)':eval=frame:${enableBetween}[${nextLabel}];`;
                 }
 
-                // 12. Film Roll (Slide Up + Vertical Blur) - FORCED VERTICAL SLIDE
+                // 13. Film Roll
                 else if (['film-roll', 'film-roll-v', 'roll-up'].some(t => trans.id.includes(t))) {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=slideup:duration=${transDur}:offset=${offset},gblur=sigma=0:sigmaV=20:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
                 }
 
-                // 13. Warp / Swirl / Twist (Lens Correction) - REPLACES ROTATION WITH DISTORTION
+                // 14. Warp / Swirl / Twist
                 else if (['swirl', 'warp', 'morph', 'kaleidoscope'].some(t => trans.id.includes(t))) {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},lenscorrection=k1=-0.2:k2=-0.2:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
                 }
 
-                // 14. Distortion / Turbulence (Blur + RGB Shift)
-                else if (['turbulence', 'distortion', 'wave', 'water-drop'].some(t => trans.id.includes(t))) {
-                    filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},gblur=sigma=20:enable='between(t,${offset},${offset+transDur})',chromashift=cbh=20:crh=-20:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                // 15. Distortion / Turbulence / Liquid / Organic
+                else if (['turbulence', 'distortion', 'wave', 'water-drop', 'liquid-melt', 'ink-splash', 'oil-paint', 'smoke-reveal', 'water-ripple', 'bubble-pop'].some(t => trans.id.includes(t))) {
+                    let effectFilter = 'gblur=sigma=20'; // Default organic blur
+                    
+                    if (trans.id.includes('smoke')) {
+                        effectFilter = 'noise=alls=50:allf=t+u,gblur=sigma=10';
+                    } else if (trans.id.includes('bubble') || trans.id.includes('ripple') || trans.id.includes('water')) {
+                        effectFilter = 'lenscorrection=k1=-0.2:k2=-0.2';
+                    } else if (trans.id.includes('liquid') || trans.id.includes('ink') || trans.id.includes('oil')) {
+                        // "Gooey" effect: Blur then high contrast
+                        effectFilter = 'gblur=sigma=20,eq=contrast=2.0';
+                    } else if (trans.id.includes('distortion') || trans.id.includes('turbulence')) {
+                         effectFilter = 'chromashift=cbh=20:crh=-20';
+                    }
+
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset},${effectFilter}:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                }
+                
+                // 16. Paper & Texture Effects (Sketch, Rip, Burn, Fold)
+                else if (trans.id === 'sketch-reveal') {
+                    // Apply edge detection during the dissolve
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},edgedetect=low=0.1:high=0.4:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                }
+                else if (trans.id === 'burn-paper') {
+                    // Apply burn look (high contrast, warm colors) during circle open
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=circleopen:duration=${transDur}:offset=${offset},curves=r=0/0 0.5/0.8 1/1:g=0/0 0.5/0.5 1/1:b=0/0 0.5/0.2 1/1:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                }
+                else if (trans.id === 'paper-rip') {
+                    // Apply noise for texture
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=horzopen:duration=${transDur}:offset=${offset},noise=alls=40:allf=t+u:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
                 }
 
-                // 15. Luma Fade (Dissolve + Contrast)
+                // 17. Luma Fade
                 else if (trans.id === 'luma-fade') {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},eq=contrast=1.5:brightness=0.05:eval=frame:${enableBetween}[${nextLabel}];`;
                 }
                 
-                // 16. Standard XFade (Fallback)
+                // 18. Standard XFade (Fallback)
                 else {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
                 }
