@@ -248,24 +248,39 @@ export default {
                 
                 // 16. Paper & Texture Effects (Sketch, Rip, Burn, Fold)
                 else if (trans.id === 'sketch-reveal') {
-                    // Apply edge detection during the dissolve
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},edgedetect=low=0.1:high=0.4:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
                 }
                 else if (trans.id === 'burn-paper') {
-                    // Apply burn look (high contrast, warm colors) during circle open
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=circleopen:duration=${transDur}:offset=${offset},curves=r=0/0 0.5/0.8 1/1:g=0/0 0.5/0.5 1/1:b=0/0 0.5/0.2 1/1:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
                 }
                 else if (trans.id === 'paper-rip') {
-                    // Apply noise for texture
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=horzopen:duration=${transDur}:offset=${offset},noise=alls=40:allf=t+u:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
                 }
+                
+                // 17. 3D Transforms (Fixed)
+                else if (['cube-rotate-l', 'cube-rotate-r', 'flip-card', 'room-fly', 'door-open'].includes(trans.id)) {
+                    let effectFilter = 'gblur=sigma=0';
+                    
+                    if (trans.id.includes('cube')) {
+                        // Simulate cube spin with horizontal motion blur
+                        effectFilter = 'gblur=sigma=20:sigmaV=0'; 
+                    } else if (trans.id === 'room-fly') {
+                        // Simulate entering room with lens distortion
+                        effectFilter = 'lenscorrection=k1=-0.1:k2=-0.1';
+                    } else if (trans.id === 'flip-card') {
+                        // Simulate flip with slight vertical squeeze/blur
+                        effectFilter = 'gblur=sigma=0:sigmaV=10';
+                    }
+                    
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset},${effectFilter}:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                }
 
-                // 17. Luma Fade
+                // 18. Luma Fade
                 else if (trans.id === 'luma-fade') {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},eq=contrast=1.5:brightness=0.05:eval=frame:${enableBetween}[${nextLabel}];`;
                 }
                 
-                // 18. Standard XFade (Fallback)
+                // 19. Standard XFade (Fallback)
                 else {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
                 }
