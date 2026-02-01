@@ -5,10 +5,15 @@ import transitionBuilder from './video-engine/transitionBuilder.js';
 
 function getMediaInfo(filePath) {
     return new Promise((resolve) => {
-        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
-            if (err) return resolve({ hasAudio: false });
-            // Check if any line in output indicates 'audio' stream
-            const hasAudio = stdout.includes('audio');
+        // Run ffprobe to check for audio streams
+        exec(`ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
+            if (err) {
+                console.warn(`[Export] FFprobe error for ${filePath}:`, err.message);
+                return resolve({ hasAudio: false });
+            }
+            // If stdout contains 'audio', it has an audio stream
+            const hasAudio = stdout && stdout.includes('audio');
+            console.log(`[Export] Checked audio for ${path.basename(filePath)}: ${hasAudio}`);
             resolve({ hasAudio });
         });
     });
@@ -31,6 +36,11 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
         }
 
         const { clips, media, totalDuration } = state;
+        
+        // Config defaults
+        const exportConfig = state.exportConfig || {};
+        const fps = parseInt(exportConfig.fps) || 30;
+        const resolution = exportConfig.resolution || '1080p';
 
         if (!clips || !media) {
              throw new Error("Invalid project state: missing clips or media");
@@ -43,20 +53,20 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
                 fileMap[f.originalname] = f.path;
                 
                 // Server-side Audio Verification
-                // Update the media state if the file physically has audio
-                // This fixes issues where browser reported no audio for MKV/AVI/Some MP4s
                 if (media[f.originalname]) {
                     const info = await getMediaInfo(f.path);
                     if (info.hasAudio) {
-                        console.log(`[Export] Audio detected in ${f.originalname}`);
                         media[f.originalname].hasAudio = true;
+                    } else {
+                        // Explicitly set to false if ffprobe finds none
+                        media[f.originalname].hasAudio = false;
                     }
                 }
             }
         }
 
-        // Use the builder
-        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media);
+        // Use the builder with Export Config
+        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, exportConfig);
 
         if (!buildResult.filterComplex) {
             throw new Error("Empty timeline generated");
@@ -70,16 +80,20 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             '-filter_complex', buildResult.filterComplex,
             '-map', buildResult.outputMapVideo,
             '-map', buildResult.outputMapAudio,
+            
             // Explicit Video Args
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
             '-pix_fmt', 'yuv420p',
+            '-crf', resolution === '4k' ? '18' : '23', // Higher quality for 4K
+            '-r', String(fps), // Enforce output FPS
+            
             // Explicit Audio Args to ensure export has sound
             '-c:a', 'aac',
             '-b:a', '192k',
             '-ac', '2',
             '-ar', '44100',
-            '-t', String(totalDuration || 30),
+            '-t', String(totalDuration + 0.1), // Allow slight buffer
             outputPath
         ];
 
