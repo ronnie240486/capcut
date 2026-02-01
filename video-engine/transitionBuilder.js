@@ -90,8 +90,8 @@ export default {
                 // CRITICAL: Check both metadata AND if file path exists
                 if (clip.type === 'video' && mediaInfo?.hasAudio) {
                     const start = clip.mediaStartOffset || 0;
-                    // Safely trim audio from video source
-                    filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
+                    // Safely trim audio from video source AND NORMALIZE FORMAT to avoid concat issues
+                    filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,aformat=sample_rates=44100:channel_layouts=stereo[${audioLabel}];`;
                     baseAudioSegments.push(`[${audioLabel}]`);
                 } else {
                     // Generate silence for this segment
@@ -188,13 +188,13 @@ export default {
             const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
             const delay = Math.round(clip.start * 1000); 
             
-            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delay}|${delay}[${lbl}];`;
+            // Format NORMALIZE added to ensure mixing works
+            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delay}|${delay},aformat=sample_rates=44100:channel_layouts=stereo[${lbl}];`;
             audioMixInputs.push(`[${lbl}]`);
         });
 
         let finalAudio = '[final_audio_out]';
         // Always mix if we have more than just the base (or if we want to normalize base)
-        // Note: amix with 1 input is valid but redundant, here we strictly use it for multiples
         if (audioMixInputs.length > 1) {
             filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
