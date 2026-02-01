@@ -178,8 +178,8 @@ export default {
             'page-turn': 'slideleft',
             
             // Special Effects (Mapping to base xfade, detail handled in transitionBuilder)
-            'pixelize': 'pixelize', // Crucial: Explicitly map pixelize to pixelize
-            'glitch': 'slideleft', // Glitch uses slide as base
+            'pixelize': 'pixelize', 
+            'glitch': 'slideleft',
             'pixel-sort': 'wipedown',
             'datamosh': 'dissolve',
             'rgb-shake': 'hblur',
@@ -188,8 +188,11 @@ export default {
             'flash-black': 'fadeblack',
             'flash-bang': 'fadewhite',
             'burn': 'circleopen',
-            'blur-warp': 'hblur',
-            'luma-fade': 'fade',
+            'luma-fade': 'dissolve', // Mapped to dissolve
+            'film-roll': 'slideup',  // Mapped to slideup
+            'film-roll-v': 'slideup',
+            'blur-warp': 'zoomin',   // Mapped to zoomin (warp)
+            'filter-blur': 'hblur',
             'scan-line': 'zoomin',
             'cyber-slice': 'rectcrop'
         };
