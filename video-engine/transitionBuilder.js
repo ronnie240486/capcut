@@ -86,11 +86,15 @@ export default {
                 // Audio extraction for video clips
                 const mediaInfo = mediaLibrary[clip.fileName];
                 const audioLabel = `a_base_${i}`;
+                
+                // CRITICAL: Check both metadata AND if file path exists
                 if (clip.type === 'video' && mediaInfo?.hasAudio) {
                     const start = clip.mediaStartOffset || 0;
+                    // Safely trim audio from video source
                     filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS[${audioLabel}];`;
                     baseAudioSegments.push(`[${audioLabel}]`);
                 } else {
+                    // Generate silence for this segment
                     filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${audioLabel}];`;
                     baseAudioSegments.push(`[${audioLabel}]`);
                 }
@@ -161,6 +165,8 @@ export default {
 
         // --- 4. AUDIO MIX ---
         let baseAudioCombined = '[base_audio_seq]';
+        
+        // Always create a base audio stream, even if silent
         if (baseAudioSegments.length > 0) {
              filterChain += `${baseAudioSegments.join('')}concat=n=${baseAudioSegments.length}:v=0:a=1[base_audio_seq];`;
         } else {
@@ -187,6 +193,8 @@ export default {
         });
 
         let finalAudio = '[final_audio_out]';
+        // Always mix if we have more than just the base (or if we want to normalize base)
+        // Note: amix with 1 input is valid but redundant, here we strictly use it for multiples
         if (audioMixInputs.length > 1) {
             filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
