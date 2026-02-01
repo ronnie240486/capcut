@@ -2,10 +2,23 @@
 import presetGenerator from './presetGenerator.js';
 
 export default {
-    buildTimeline: (clips, fileMap, mediaLibrary) => {
+    buildTimeline: (clips, fileMap, mediaLibrary, exportConfig = {}) => {
         let inputs = [];
         let filterChain = '';
         let inputIndexCounter = 0;
+
+        // 1. RESOLUTION & FPS CONFIGURATION
+        const resMap = {
+            '720p': { w: 1280, h: 720 },
+            '1080p': { w: 1920, h: 1080 },
+            '4k': { w: 3840, h: 2160 } // True 4K UHD
+        };
+        
+        // Default to 1080p if not specified or invalid
+        const targetRes = resMap[exportConfig.resolution] || resMap['1080p']; 
+        const targetFps = parseInt(exportConfig.fps) || 30;
+        
+        console.log(`[Builder] Configuring Export: ${targetRes.w}x${targetRes.h} @ ${targetFps}fps`);
 
         // Tracks
         const mainTrackClips = clips.filter(c => c.track === 'video' || (c.track === 'camada' && c.type === 'video')).sort((a, b) => a.start - b.start);
@@ -14,13 +27,16 @@ export default {
 
         let mainTrackLabels = [];
         let baseAudioSegments = [];
+        let totalVideoDuration = 0;
 
         // --- 1. PROCESS MAIN VIDEO TRACK ---
         if (mainTrackClips.length === 0) {
             // Dummy black background if no video
-            inputs.push('-f', 'lavfi', '-t', '5', '-i', 'color=c=black:s=1280x720:r=30');
+            inputs.push('-f', 'lavfi', '-t', '5', '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
             mainTrackLabels.push({ label: `[${inputIndexCounter++}:v]`, duration: 5 });
+            totalVideoDuration = 5;
             
+            // Generate matching silence
             inputs.push('-f', 'lavfi', '-t', '5', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
             baseAudioSegments.push(`[${inputIndexCounter++}:a]`);
         } else {
@@ -28,11 +44,13 @@ export default {
                 const filePath = fileMap[clip.fileName];
                 if (!filePath && clip.type !== 'text') return; 
 
-                const duration = Math.max(1.0, parseFloat(clip.duration) || 5);
+                const duration = Math.max(0.1, parseFloat(clip.duration));
+                totalVideoDuration += duration;
 
                 // Input
                 if (clip.type === 'image') {
-                    inputs.push('-loop', '1', '-t', (duration + 3).toString(), '-i', filePath); 
+                    // Loop image for duration + buffer
+                    inputs.push('-loop', '1', '-t', (duration + 2).toString(), '-i', filePath); 
                 } else {
                     inputs.push('-i', filePath);
                 }
@@ -47,10 +65,11 @@ export default {
                     currentV = `[${nextLabel}]`;
                 };
 
-                // Standardize
-                addFilter(`scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p`);
+                // Standardize Resolution & FPS (CRITICAL STEP)
+                // Scales to fit target box, pads with black, sets correct pixel format and frame rate
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${targetFps},format=yuv420p`);
 
-                // Trim
+                // Trim Content
                 if (clip.type !== 'image') {
                     const start = clip.mediaStartOffset || 0;
                     addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
@@ -64,18 +83,21 @@ export default {
                     if (fx) addFilter(fx);
                 }
 
-                // Movement (ZoomPan/Crop)
+                // Movement (ZoomPan) - Adjusted for target resolution
                 if (clip.properties && clip.properties.movement) {
                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config);
-                    if (moveFilter) addFilter(moveFilter);
+                    // Movement generators often default to 1280x720, we need to ensure they output targetRes or we rescale after
+                    if (moveFilter) {
+                        // Patch the zoompan size if it's hardcoded in presetGenerator, otherwise rescale after
+                        addFilter(moveFilter); 
+                        addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:black`);
+                    }
                 } else if (clip.type === 'image') {
                     // Default subtle zoom for images
                     const staticMove = presetGenerator.getMovementFilter(null, duration, true);
                     addFilter(staticMove);
+                    addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:black`);
                 }
-
-                // Strict Scaling
-                addFilter(`scale=1280:720,setsar=1`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -87,14 +109,13 @@ export default {
                 const mediaInfo = mediaLibrary[clip.fileName];
                 const audioLabel = `a_base_${i}`;
                 
-                // CRITICAL: Check both metadata AND if file path exists. Server-side check ensures hasAudio is reliable.
+                // Audio Handling: If video has audio, trim and use it. If not, generate EXACT duration silence.
                 if (clip.type === 'video' && mediaInfo?.hasAudio) {
                     const start = clip.mediaStartOffset || 0;
-                    // Safely trim audio from video source AND NORMALIZE FORMAT to avoid concat issues
                     filterChain += `[${idx}:a]atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,aformat=sample_rates=44100:channel_layouts=stereo[${audioLabel}];`;
                     baseAudioSegments.push(`[${audioLabel}]`);
                 } else {
-                    // Generate silence for this segment
+                    // Generate silence for this segment to maintain sync
                     filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[${audioLabel}];`;
                     baseAudioSegments.push(`[${audioLabel}]`);
                 }
@@ -143,14 +164,16 @@ export default {
             let overlayLabel = '';
             
             if (clip.type === 'text') {
-                 // Placeholder: Text overlay skipped due to complexity without fonts file map
+                 // Skip complex text for now
                  return;
             } else {
                  inputs.push('-loop', '1', '-t', clip.duration.toString(), '-i', filePath);
                  const idx = inputIndexCounter++;
                  const imgLabel = `img_ov_${i}`;
-                 // Scale overlay to reasonable size (e.g. 50% width)
-                 filterChain += `[${idx}:v]scale=640:-1[${imgLabel}];`;
+                 
+                 // Scale overlay proportionally (e.g., 50% width of target resolution)
+                 const ovW = Math.round(targetRes.w * 0.5);
+                 filterChain += `[${idx}:v]scale=${ovW}:-1[${imgLabel}];`;
                  overlayLabel = `[${imgLabel}]`;
             }
 
@@ -158,20 +181,26 @@ export default {
             const startTime = clip.start;
             const shiftedLabel = `shift_${i}`;
             
+            // Handle position (transform properties) if available, else center
+            // Simple center overlay for now
+            const x = `(W-w)/2`;
+            const y = `(H-h)/2`;
+
             filterChain += `${overlayLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            filterChain += `${finalComp}[${shiftedLabel}]overlay=enable='between(t,${startTime},${startTime + clip.duration})':eof_action=pass[${nextCompLabel}];`;
+            filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${x}:y=${y}:enable='between(t,${startTime},${startTime + clip.duration})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
 
-        // --- 4. AUDIO MIX ---
+        // --- 4. AUDIO MIXING (ROBUST) ---
         let baseAudioCombined = '[base_audio_seq]';
         
-        // Always create a base audio stream, even if silent
         if (baseAudioSegments.length > 0) {
              // Concatenate all base segments (video audio + silence fillers)
+             // This creates a solid "base track" that is exactly the length of the video
              filterChain += `${baseAudioSegments.join('')}concat=n=${baseAudioSegments.length}:v=0:a=1[base_audio_seq];`;
         } else {
-             inputs.push('-f', 'lavfi', '-t', '0.1', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+             // Fallback: Generate full duration silence if something went wrong
+             inputs.push('-f', 'lavfi', '-t', Math.max(1, totalVideoDuration).toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
              baseAudioCombined = `[${inputIndexCounter++}:a]`;
         }
         
@@ -195,9 +224,9 @@ export default {
         });
 
         let finalAudio = '[final_audio_out]';
-        // Always mix if we have more than just the base (or if we want to normalize base)
         if (audioMixInputs.length > 1) {
-            // Mix normalized inputs
+            // Mix normalized inputs with 'first' duration (base track determines length)
+            // This ensures background music doesn't extend the video endlessly
             filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
             finalAudio = baseAudioCombined;
