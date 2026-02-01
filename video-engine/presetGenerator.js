@@ -188,13 +188,17 @@ export default {
             'flash-black': 'fadeblack',
             'flash-bang': 'fadewhite',
             'burn': 'circleopen',
-            'luma-fade': 'dissolve', // Mapped to dissolve
-            'film-roll': 'slideup',  // Mapped to slideup
+            'luma-fade': 'dissolve', 
+            'film-roll': 'slideup', // Forced to slideup to prevent rotation
             'film-roll-v': 'slideup',
-            'blur-warp': 'zoomin',   // Mapped to zoomin (warp)
+            'blur-warp': 'dissolve', // Mapped to dissolve so custom warp filter can apply
+            'warp': 'dissolve',
+            'swirl': 'circleopen', 
             'filter-blur': 'hblur',
             'scan-line': 'zoomin',
-            'cyber-slice': 'rectcrop'
+            'cyber-slice': 'rectcrop',
+            'turbulence': 'dissolve',
+            'distortion': 'dissolve'
         };
 
         if (map[id]) return map[id];
