@@ -11,7 +11,7 @@ export default {
         const resMap = {
             '720p': { w: 1280, h: 720 },
             '1080p': { w: 1920, h: 1080 },
-            '4k': { w: 3840, h: 2160 } // True 4K UHD
+            '4k': { w: 3840, h: 2160 }
         };
         
         // Default to 1080p if not specified or invalid
@@ -88,8 +88,8 @@ export default {
                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config);
                     // Movement generators often default to 1280x720, we need to ensure they output targetRes or we rescale after
                     if (moveFilter) {
-                        // Patch the zoompan size if it's hardcoded in presetGenerator, otherwise rescale after
                         addFilter(moveFilter); 
+                        // Re-enforce resolution after zoompan (which might default to 720p)
                         addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:black`);
                     }
                 } else if (clip.type === 'image') {
@@ -181,8 +181,6 @@ export default {
             const startTime = clip.start;
             const shiftedLabel = `shift_${i}`;
             
-            // Handle position (transform properties) if available, else center
-            // Simple center overlay for now
             const x = `(W-w)/2`;
             const y = `(H-h)/2`;
 
