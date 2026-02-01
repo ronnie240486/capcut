@@ -204,8 +204,26 @@ export default {
                 else if (['flash-white', 'flash-bang', 'glow-intense', 'exposure', 'burn', 'lens-flare', 'god-rays', 'flashback'].some(t => trans.id.includes(t))) {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},eq=brightness='if(between(t,${offset},${offset+transDur}),0.8*sin((t-${offset})/${transDur}*3.1415),0)':eval=frame:${enableBetween}[${nextLabel}];`;
                 }
+
+                // 10. Film Roll (Slide Up + Vertical Blur)
+                else if (trans.id === 'film-roll' || trans.id === 'film-roll-v' || trans.id === 'roll-up') {
+                    // Vertical blur simulation using gblur (sigmaV=50)
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=slideup:duration=${transDur}:offset=${offset},gblur=sigma=0:sigmaV=50:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                }
+
+                // 11. Blur Warp / Filter Blur (Zoom + Blur)
+                else if (trans.id === 'blur-warp' || trans.id === 'filter-blur') {
+                    // Zoomin + Gaussian Blur
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},gblur=sigma=50:steps=2:enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                }
+
+                // 12. Luma Fade (Dissolve + Contrast)
+                else if (trans.id === 'luma-fade') {
+                    // Dissolve is a random pixel dissolve. Adding contrast makes it look more "luma-key" like.
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},eq=contrast=1.5:brightness=0.05:eval=frame:${enableBetween}[${nextLabel}];`;
+                }
                 
-                // 10. Standard XFade (Fallback)
+                // 13. Standard XFade (Fallback)
                 else {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
                 }
