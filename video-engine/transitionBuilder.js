@@ -167,20 +167,46 @@ export default {
                 else if (trans.id === 'zoom-spin-fast') {
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},rotate=a='4*PI*(t-${offset})/${transDur}':${enableBetween}:fillcolor=black[${nextLabel}];`;
                 }
-                // 3. Glitch / Cyber / Digital Noise (Visual Distortion)
-                else if (['glitch', 'color-glitch', 'visual-buzz', 'digital-noise', 'noise-jump', 'pixel-sort', 'rgb-shake', 'datamosh', 'block-glitch', 'corrupt-img', 'glitch-chroma', 'cyber-zoom'].some(t => trans.id.includes(t))) {
-                    // Base transition + heavy noise + slight hue shift
-                    filterChain += `${currentMix}${nextClip.label}xfade=transition=pixelize:duration=${transDur}:offset=${offset},noise=alls=40:allf=t+u:${enableBetween},hue=h=90:s=2:${enableBetween}[${nextLabel}];`;
+                
+                // 3. PURE PIXELIZE (Standard xfade pixelize)
+                else if (trans.id === 'pixelize' || trans.id === 'mosaic-small' || trans.id === 'mosaic-large' || trans.id === 'checker-wipe') {
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=pixelize:duration=${transDur}:offset=${offset}[${nextLabel}];`;
                 }
-                // 4. Flash / Glow / Burn (Brightness Spike)
+
+                // 4. DATAMOSH (Dissolve + Lag/Trails)
+                else if (trans.id === 'datamosh') {
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},lagfun=decay=0.95:planes=1:${enableBetween}[${nextLabel}];`;
+                }
+
+                // 5. RGB SPLIT / SHAKE (Smear Blur + Chromatic Shift)
+                else if (trans.id === 'rgb-split' || trans.id === 'rgb-shake' || trans.id === 'glitch-chroma') {
+                    // Uses hblur xfade + chromashift (offset Cb/Cr planes)
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=hblur:duration=${transDur}:offset=${offset},chromashift=cbh=20:crh=-20:cbv=20:crv=-20:${enableBetween}[${nextLabel}];`;
+                }
+
+                // 6. SCANLINE / CYBER SLICE (Zoom + Grid Overlay)
+                else if (trans.id === 'scan-line-v' || trans.id === 'scan-line' || trans.id === 'cyber-slice' || trans.id === 'scan-line-v') {
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},drawgrid=y=0:h=8:t=4:c=black@0.5:${enableBetween}[${nextLabel}];`;
+                }
+
+                // 7. NOISE / STATIC (Pure Noise Overlay)
+                else if (trans.id === 'noise' || trans.id === 'digital-noise' || trans.id === 'noise-jump') {
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=dissolve:duration=${transDur}:offset=${offset},noise=alls=100:allf=t+u:${enableBetween}[${nextLabel}];`;
+                }
+
+                // 8. GLITCH (Generic - Distortion)
+                else if (trans.id.includes('glitch') || trans.id === 'cyber-zoom') {
+                    // Slide + Noise + Saturation Loss
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=slideleft:duration=${transDur}:offset=${offset},noise=alls=40:allf=t+u:${enableBetween},hue=s=0:${enableBetween}[${nextLabel}];`;
+                }
+
+                // 9. Flash / Glow / Burn (Brightness Spike)
                 else if (['flash-white', 'flash-bang', 'glow-intense', 'exposure', 'burn', 'lens-flare', 'god-rays', 'flashback'].some(t => trans.id.includes(t))) {
-                    // Using normal fade but boosting brightness to 1.0 (white) during transition
-                    // IMPORTANT: Added :eval=frame to ensure dynamic brightness evaluation
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},eq=brightness='if(between(t,${offset},${offset+transDur}),0.8*sin((t-${offset})/${transDur}*3.1415),0)':eval=frame:${enableBetween}[${nextLabel}];`;
                 }
-                // 5. Standard XFade (Fallback & Geometric)
+                
+                // 10. Standard XFade (Fallback)
                 else {
-                    // This handles all geometric transitions mapped correctly in presetGenerator (e.g. clock -> radial)
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
                 }
                 
