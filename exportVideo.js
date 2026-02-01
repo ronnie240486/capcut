@@ -1,110 +1,61 @@
 
-const fs = require('fs');
-const path = require('path');
-const { exec } = require('child_process');
-const transitionBuilder = require('./video-engine/transitionBuilder.js');
+import path from 'path';
+import transitionBuilder from './video-engine/transitionBuilder.js';
+import presetGenerator from './video-engine/presetGenerator.js';
 
-function getMediaInfo(filePath) {
-    return new Promise((resolve) => {
-        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
-            if (err) return resolve({ hasAudio: false });
-            // Check if any line in output indicates 'audio' stream
-            const hasAudio = stdout.includes('audio');
-            resolve({ hasAudio });
-        });
-    });
-}
-
-module.exports = async (job, uploadDir, onStart) => {
+export const handleExportVideo = async (job, uploadDir, onStart) => {
     try {
-        if (!job || !job.params || !job.params.projectState) {
-            throw new Error("Estado do projeto ausente ou inválido.");
+        console.log(`[Export] Starting job ${job.id}`);
+        const { projectState } = job.params;
+        
+        if (!projectState) {
+            throw new Error("Missing projectState in export params");
         }
 
-        const { projectState } = job.params;
         let state;
         try {
             state = JSON.parse(projectState);
         } catch (e) {
-            throw new Error("JSON do projeto corrompido.");
+            throw new Error("Invalid JSON in projectState");
         }
 
-        // Extract Export Config
-        const exportConfig = state.exportConfig || { resolution: '720p', fps: 30, format: 'mp4' };
         const { clips, media, totalDuration } = state;
 
-        if (!clips || clips.length === 0) {
-            throw new Error("Timeline vazia.");
+        if (!clips || !media) {
+             throw new Error("Invalid project state: missing clips or media");
         }
 
-        // 1. Map files & Verify Audio
         const fileMap = {};
-        
-        // Map uploaded files to clip filenames
-        if (job.files) {
-            for (const f of job.files) {
+        if (job.files && job.files.length > 0) {
+            job.files.forEach(f => {
                 fileMap[f.originalname] = f.path;
-                
-                // Server-side Audio Verification
-                // Update the media state if the file physically has audio
-                // This fixes issues where browser reported no audio for MKV/AVI/Some MP4s
-                if (media[f.originalname]) {
-                    const info = await getMediaInfo(f.path);
-                    // Force update hasAudio to true if server detects it
-                    if (info.hasAudio) {
-                        media[f.originalname].hasAudio = true;
-                    }
-                }
-            }
+            });
         }
 
-        // 2. Build Timeline with Config (Pass exportConfig)
-        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, exportConfig);
-        
-        if (!buildResult || !buildResult.filterComplex) {
-            throw new Error("Falha ao gerar grafo de filtros. Verifique se as mídias são suportadas.");
+        // Use the builder
+        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media);
+
+        if (!buildResult.filterComplex) {
+            throw new Error("Empty timeline generated");
         }
 
-        const ext = exportConfig.format === 'webm' ? 'webm' : exportConfig.format === 'mov' ? 'mov' : 'mp4';
-        const outputPath = path.join(uploadDir, `export_${Date.now()}.${ext}`);
+        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
         job.outputPath = outputPath;
 
-        // 3. Construct FFmpeg Args (Optimized)
-        const fps = exportConfig.fps || 30;
-        
         const args = [
             ...buildResult.inputs,
             '-filter_complex', buildResult.filterComplex,
             '-map', buildResult.outputMapVideo,
             '-map', buildResult.outputMapAudio,
-            
-            // Video Encoding Settings
-            '-c:v', exportConfig.format === 'webm' ? 'libvpx-vp9' : 'libx264', 
-            '-preset', 'ultrafast', // Prioritize speed
-            '-tune', 'fastdecode',  
-            '-crf', '23',           // Better quality than 28
-            '-pix_fmt', 'yuv420p',
-            '-r', String(fps),      // Force Output FPS
-            
-            // Audio Encoding Settings
-            '-c:a', 'aac', 
-            '-b:a', '192k',         // Higher bitrate for audio
-            '-ar', '44100',
-            '-ac', '2',
-            
-            // Container Settings
-            '-movflags', '+faststart',
-            '-t', String(totalDuration + 1), // Safety duration limit
+            ...presetGenerator.getVideoArgs(),
+            ...presetGenerator.getAudioArgs(),
+            '-t', String(totalDuration || 30),
             outputPath
         ];
 
-        // 4. Start Processing
-        onStart(job.id, args, totalDuration);
+        onStart(job.id, args, totalDuration || 30);
 
     } catch (e) {
-        console.error("Export Error:", e);
-        // Critical: Update job status so frontend stops loading
-        job.status = 'failed';
-        job.error = e.message || "Erro interno na exportação.";
+        console.error("Export Logic Error:", e);
     }
 };
