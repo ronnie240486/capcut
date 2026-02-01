@@ -147,33 +147,44 @@ export default {
                 
                 const offset = accumulatedDuration - transDur;
                 const nextLabel = `mix_${i}`;
-                
-                // --- CUSTOM TRANSITION LOGIC (Negative & Rotation) ---
+                let finalEffects = '';
+
+                // --- CUSTOM TRANSITION LOGIC ---
+                // Helper for time-based enable
+                const enableBetween = `enable='between(t,${offset},${offset+transDur})'`;
+
+                // 1. Negative Zoom (Invert Color + Zoom)
                 if (trans.id === 'zoom-neg') {
-                    // Negative Zoom: Zoom In + Negate (Invert Colors)
-                    // We apply 'negate' filter enabled ONLY during the transition window
-                    filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},negate=enable='between(t,${offset},${offset+transDur})'[${nextLabel}];`;
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},negate=${enableBetween}[${nextLabel}];`;
                 } 
+                // 2. Real Rotation (Clockwise / Counter-Clockwise)
                 else if (trans.id === 'spin-cw') {
-                    // Real Clockwise Spin (360 degrees)
-                    // Uses rotate filter with time-based angle during the transition
-                    filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},rotate=a='2*PI*(t-${offset})/${transDur}':enable='between(t,${offset},${offset+transDur})':fillcolor=black[${nextLabel}];`;
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},rotate=a='2*PI*(t-${offset})/${transDur}':${enableBetween}:fillcolor=black[${nextLabel}];`;
                 } 
                 else if (trans.id === 'spin-ccw') {
-                    // Real Counter-Clockwise Spin (-360 degrees)
-                    filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},rotate=a='-2*PI*(t-${offset})/${transDur}':enable='between(t,${offset},${offset+transDur})':fillcolor=black[${nextLabel}];`;
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},rotate=a='-2*PI*(t-${offset})/${transDur}':${enableBetween}:fillcolor=black[${nextLabel}];`;
                 }
                 else if (trans.id === 'zoom-spin-fast') {
-                    // Fast Spin with Zoom
-                    filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},rotate=a='4*PI*(t-${offset})/${transDur}':enable='between(t,${offset},${offset+transDur})':fillcolor=black[${nextLabel}];`;
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=zoomin:duration=${transDur}:offset=${offset},rotate=a='4*PI*(t-${offset})/${transDur}':${enableBetween}:fillcolor=black[${nextLabel}];`;
                 }
+                // 3. Glitch / Cyber / Digital Noise (Visual Distortion)
+                else if (['glitch', 'color-glitch', 'visual-buzz', 'digital-noise', 'noise-jump', 'pixel-sort', 'rgb-shake', 'datamosh', 'block-glitch', 'corrupt-img', 'glitch-chroma', 'cyber-zoom'].some(t => trans.id.includes(t))) {
+                    // Base transition + heavy noise + slight hue shift
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=pixelize:duration=${transDur}:offset=${offset},noise=alls=40:allf=t+u:${enableBetween},hue=h=90:s=2:${enableBetween}[${nextLabel}];`;
+                }
+                // 4. Flash / Glow / Burn (Brightness Spike)
+                else if (['flash-white', 'flash-bang', 'glow-intense', 'exposure', 'burn', 'lens-flare', 'god-rays', 'flashback'].some(t => trans.id.includes(t))) {
+                    // Using normal fade but boosting brightness to 1.0 (white) during transition
+                    // eq=brightness=0 is neutral. 1 is full white.
+                    // We use a sine wave to peak brightness at the middle of the transition
+                    filterChain += `${currentMix}${nextClip.label}xfade=transition=fade:duration=${transDur}:offset=${offset},eq=brightness='if(between(t,${offset},${offset+transDur}),0.8*sin((t-${offset})/${transDur}*3.1415),0)':${enableBetween}[${nextLabel}];`;
+                }
+                // 5. Standard XFade (Fallback)
                 else {
-                    // Standard XFade
                     filterChain += `${currentMix}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabel}];`;
                 }
                 
                 currentMix = `[${nextLabel}]`;
-                
                 accumulatedDuration = offset + transDur + (nextClip.duration - transDur);
             }
             mainVideoStream = currentMix;
