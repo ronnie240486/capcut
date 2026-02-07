@@ -222,9 +222,12 @@ export default {
             // amix mistura tudo. duration=first garante que o áudio final tenha a duração do mainAudioStream (vídeo)
             // (Se a música for maior que o vídeo, corta a música. Se vídeo for maior, silêncio no final)
             // normalize=0 evita que o volume flutue
-            filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
+            filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[amix_tmp];`;
+            // Aplicar aresample final AQUI para garantir sync sem conflito de args
+            filterChain += `[amix_tmp]aresample=44100:async=1[final_audio_out];`;
         } else {
-            finalAudio = mainAudioStream;
+            // Aplicar aresample final AQUI também para consistência
+            filterChain += `${mainAudioStream}aresample=44100:async=1[final_audio_out];`;
         }
 
         if (filterChain.endsWith(';')) filterChain = filterChain.slice(0, -1);
