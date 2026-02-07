@@ -39,35 +39,33 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
         const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
         job.outputPath = outputPath;
 
-        // --- EXPORTAÇÃO DE ALTA PERFORMANCE & SINCRONIA ---
         const args = [
             ...buildResult.inputs,
             '-filter_complex', buildResult.filterComplex,
             '-map', buildResult.outputMapVideo,
             '-map', buildResult.outputMapAudio,
             
-            // Codec de Vídeo
+            // Codec de Vídeo Otimizado
             '-c:v', 'libx264',
-            '-preset', 'ultrafast', // Mantido ultrafast para mobile, mas compensado com flags de sync
-            '-tune', 'zerolatency',
-            '-crf', '26', // Qualidade balanceada
-            '-pix_fmt', 'yuv420p',
-            '-r', String(fps),
+            '-preset', 'ultrafast', // Rápido para UX, mas seguro
+            '-crf', '23', // Boa qualidade visual
+            '-pix_fmt', 'yuv420p', // Compatibilidade máxima
             
-            // SINCRONIA DE VÍDEO (CRÍTICO)
-            '-vsync', '1', // CFR: Constant Frame Rate (força quadros a baterem com o timestamp)
+            // FORÇAR SINCRONIA DE VÍDEO
+            '-r', String(fps), // Força output FPS constante
+            '-vsync', '1',     // CFR (Constant Frame Rate) - vital para evitar drift
             
-            // Codec de Áudio
+            // Codec de Áudio Otimizado
             '-c:a', 'aac',
-            '-b:a', '192k', // Alta qualidade de áudio
+            '-b:a', '192k',
             '-ac', '2',
             '-ar', '44100',
             
-            // SINCRONIA DE ÁUDIO (CRÍTICO)
-            '-af', 'aresample=async=1', // Compensa drift de timestamp de áudio
+            // FORÇAR SINCRONIA DE ÁUDIO
+            '-af', 'aresample=async=1', // Compensa drift de timestamp se houver
             
-            // Duração e Metadados
-            '-t', String(totalDuration + 0.1), // Pequena margem de segurança
+            // Duração e Container
+            '-t', String(totalDuration + 0.1), // Garante que não corte o último frame
             '-movflags', '+faststart',
             '-y',
             outputPath
