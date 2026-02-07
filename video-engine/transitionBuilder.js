@@ -1,5 +1,5 @@
 
-const presetGenerator = require('./presetGenerator.js');
+import presetGenerator from './presetGenerator.js';
 
 // Helper to escape text for drawtext filter
 function escapeDrawText(text) {
@@ -33,7 +33,7 @@ function wrapText(text, maxCharsPerLine) {
     return lines.join('\n');
 }
 
-module.exports = {
+export default {
     buildTimeline: (clips, fileMap, mediaLibrary, exportConfig = {}) => {
         let inputs = [];
         let filterChain = '';
@@ -48,7 +48,7 @@ module.exports = {
         };
         
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
-        const targetFps = exportConfig.fps || 30;
+        const targetFps = parseInt(exportConfig.fps) || 30;
         
         // Filtro de Escala Seguro: Força resolução par e preenche com barras pretas se necessário (Letterbox)
         const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${targetFps},format=yuv420p`;
@@ -81,7 +81,7 @@ module.exports = {
         if (mainTrackClips.length === 0) {
             // Fundo preto padrão se não houver vídeo
             inputs.push('-f', 'lavfi', '-t', '5', '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
-            mainTrackLabels.push(`[${inputIndexCounter++}:v]`);
+            mainTrackLabels.push({ label: `[${inputIndexCounter++}:v]`, duration: 5 });
             // Áudio mudo padrão
              inputs.push('-f', 'lavfi', '-t', '5', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
              baseAudioSegments.push(`[${inputIndexCounter++}:a]`);
@@ -177,8 +177,8 @@ module.exports = {
                 const mediaInfo = mediaLibrary[clip.fileName];
                 const audioLabel = `a_base_${i}`;
                 
-                // Formato seguro para mixagem
-                const audioFormatFilter = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
+                // Formato seguro para mixagem + Correção de drift (aresample=async=1)
+                const audioFormatFilter = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp,aresample=async=1';
 
                 if (clip.type === 'video' && mediaInfo?.hasAudio) {
                     const start = clip.mediaStartOffset || 0;
@@ -201,9 +201,9 @@ module.exports = {
         let mainVideoStream = '[black_bg]';
         let mainAudioStream = '[base_audio_seq]';
         
-        if (mainTrackLabels.length > 0 && typeof mainTrackLabels[0] === 'string') {
+        if (mainTrackLabels.length > 0 && typeof mainTrackLabels[0].label !== 'string') {
              // Caso dummy
-             mainVideoStream = mainTrackLabels[0];
+             mainVideoStream = mainTrackLabels[0].label;
              mainAudioStream = baseAudioSegments[0];
         } else if (mainTrackLabels.length > 0) {
             let currentMixV = mainTrackLabels[0].label;
@@ -379,11 +379,6 @@ module.exports = {
             }
 
             // Precisamos ajustar o PTS do overlay para começar do 0 relativo ao vídeo principal, mas ser exibido no tempo certo
-            // A abordagem 'enable' mostra o frame atual do overlay no tempo T do main.
-            // Para imagens estáticas/texto (geradas com duração X), elas começam em PTS 0.
-            // Se usarmos enable between T1 e T2, o overlay stream deve estar sincronizado ou ser estático.
-            // Como geramos os overlays com duração exata do clipe, precisamos atrasar o inicio deles (PTS offset)
-            // OU usar 'eof_action=pass' se for stream infinito.
             
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
@@ -418,7 +413,6 @@ module.exports = {
             // amix mistura todas as entradas. 
             // dropout_transition=0 evita fades estranhos. 
             // normalize=0 evita que o volume flutue dependendo do número de inputs ativos.
-            // weights pode ser usado se quisermos priorizar o mainAudio, mas volume filter já cuida disso.
             filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
             finalAudio = mainAudioStream;
