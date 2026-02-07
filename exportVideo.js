@@ -61,8 +61,8 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             '-ac', '2',
             '-ar', '44100',
             
-            // FORÇAR SINCRONIA DE ÁUDIO
-            '-af', 'aresample=async=1', // Compensa drift de timestamp se houver
+            // NOTA: '-af aresample=async=1' removido daqui pois causava erro de conflito com filter_complex.
+            // Foi movido para dentro do transitionBuilder.js
             
             // Duração e Container
             '-t', String(totalDuration + 0.1), // Garante que não corte o último frame
