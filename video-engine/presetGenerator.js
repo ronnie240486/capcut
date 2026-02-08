@@ -30,23 +30,15 @@ export default {
         // Mapeamento de efeitos visuais "Reais" usando filtros complexos do FFmpeg
         const effects = {
             // --- GLITCH & DISTORÇÃO ---
-            // Scanline: Linhas horizontais + Ciclo de cor (Hue Shift dinâmico no tempo)
             'glitch-scan': 'drawgrid=y=0:h=4:t=1:c=black@0.5,hue=H=2*PI*t:s=1.5',
             'scan-line-v': 'drawgrid=x=0:w=4:t=1:c=black@0.5',
-            
-            // Chromatic Aberration (RGB Split Real usando GEQ para deslocar pixels)
-            // Desloca o canal Red 5px para direita e Blue 5px para esquerda
             'chromatic': "geq=r='p(X+5,Y)':g='p(X,Y)':b='p(X-5,Y)'",
             'rgb-split': "geq=r='p(X+10,Y)':g='p(X,Y)':b='p(X-10,Y)'",
-            
-            // Pixelate: Downscale drástico -> Upscale com 'nearest neighbor' para ficar quadriculado
             'pixelate': 'scale=iw/20:ih/20:flags=nearest,scale=iw*20:ih*20:flags=neighbor',
             'block-glitch': 'scale=iw/10:ih/10:flags=nearest,scale=iw*10:ih*10:flags=neighbor',
-
-            // TV Ruim / VHS
             'bad-signal': 'noise=alls=20:allf=t+u,eq=contrast=1.5:brightness=0.1',
             'vhs-distort': 'curves=r=0/0.1 0.5/0.5 1/1:g=0/0 0.5/0.5 1/1:b=0/0 0.5/0.5 1/0.9,noise=alls=10:allf=t+u,eq=saturation=1.3',
-            'glitch-pro-1': "geq=r='p(X+10*sin(T*10),Y)':g='p(X,Y)':b='p(X,Y)'", // Wobbly Red channel
+            'glitch-pro-1': "geq=r='p(X+10*sin(T*10),Y)':g='p(X,Y)':b='p(X,Y)'",
 
             // --- CORES & CINEMA ---
             'zoom-neg': 'negate',
@@ -54,19 +46,16 @@ export default {
             'invert': 'negate',
             'flash-chroma': 'hue=h=90:s=2',
             'flash-c': 'hue=h=90:s=2',
-            'color-glitch': 'hue=h=180:s=2', // Inverte matiz drasticamente
-            
+            'color-glitch': 'hue=h=180:s=2',
             'teal-orange': 'curves=r=0/0 0.25/0.15 0.5/0.5 0.75/0.85 1/1:b=0/0 0.25/0.35 0.5/0.5 0.75/0.65 1/1',
             'noir': 'hue=s=0,contrast=1.5,eq=brightness=-0.1',
             'mono': 'hue=s=0,contrast=1.2',
             'b-and-w-low': 'hue=s=0,contrast=1.2',
             'vintage-warm': 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131',
             'sepia': 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131',
-            
             'cool-morning': 'curves=r=0/0 1/0.8:g=0/0 1/0.8:b=0/0 1/1',
             'cool': 'eq=saturation=0.8,colorbalance=rs=-0.1:gs=0:bs=0.1',
             'cold-blue': 'hue=h=10,eq=saturation=0.5,colorbalance=bs=0.3',
-            
             'cyberpunk': 'eq=contrast=1.2:saturation=1.5,colorbalance=rs=0.2:gs=-0.1:bs=0.3',
             'radioactive': 'hue=h=90:s=2,eq=contrast=1.5',
             'night-vision': 'hue=s=0,colorbalance=gs=0.5,noise=alls=30:allf=t+u',
@@ -80,11 +69,9 @@ export default {
 
             // --- ARTÍSTICO ---
             'pop-art': 'eq=saturation=3:contrast=1.5',
-            'sketch-sim': 'edgedetect=low=0.1:high=0.4,negate,hue=s=0', // Simula desenho
-            'dreamy': 'gblur=sigma=5,eq=brightness=0.1:saturation=1.2', // Bloom fake
+            'sketch-sim': 'edgedetect=low=0.1:high=0.4,negate,hue=s=0',
+            'dreamy': 'gblur=sigma=5,eq=brightness=0.1:saturation=1.2',
             'soft-angel': 'gblur=sigma=2,eq=brightness=0.2:contrast=0.9',
-            
-            // --- ATMOSFERA ---
             'underwater': 'eq=saturation=0.8,colorbalance=rs=-0.2:gs=0.1:bs=0.3,gblur=sigma=2'
         };
         return effects[effectId] || null;
@@ -94,7 +81,6 @@ export default {
         const fps = targetFps || 30;
         const frames = Math.max(1, Math.ceil(durationSec * fps));
         const progress = `(on/${frames})`; 
-        // Force output size to targetRes to prevent downscaling during zoompan
         const base = `zoompan=d=${isImage ? frames : 1}:s=${targetRes.w}x${targetRes.h}:fps=${fps}`; 
         const centerX = `(iw/2)-(iw/zoom/2)`;
         const centerY = `(ih/2)-(ih/zoom/2)`;
@@ -105,7 +91,7 @@ export default {
             return `${base}:z='${startScale}+(${endScale}-${startScale})*${progress}':x='${centerX}':y='${centerY}'`;
         }
         
-        // Simple Zoom In
+        // Zoom In Simples
         if (moveId === 'zoom-in' || (isImage && !moveId)) {
              return `${base}:z='1.0+(0.05)*${progress}':x='${centerX}':y='${centerY}'`;
         }
@@ -114,6 +100,8 @@ export default {
     },
 
     getTransitionXfade: (id) => {
+        // TABELA OFICIAL DE XFADE DO FFMPEG
+        // Mapeamos os nomes "bonitos" da UI para os nomes técnicos do FFmpeg
         const map = {
             // Básicos
             'fade': 'fade',
@@ -123,7 +111,7 @@ export default {
             'black': 'fadeblack', 
             'white': 'fadewhite',
             
-            // Geometria
+            // Geometria / Wipe
             'wipe-left': 'wipeleft',
             'wipe-right': 'wiperight',
             'wipe-up': 'wipeup',
@@ -131,9 +119,11 @@ export default {
             'circle-open': 'circleopen',
             'circle-close': 'circleclose',
             'rect-crop': 'rectcrop',
-            'radial': 'radial',
+            'radial': 'radial', // ESPIRAL/CLOCK USAM ESSE
+            'clock-wipe': 'radial',
+            'spiral-wipe': 'radial',
             
-            // Movimento
+            // Movimento / Slide
             'slide-left': 'slideleft',
             'slide-right': 'slideright',
             'slide-up': 'slideup',
@@ -144,23 +134,25 @@ export default {
             'squeeze-v': 'squeezev',
             'zoom-in': 'zoomin',
             
-            // Aproximações para efeitos complexos
-            'page-turn': 'wipetl', // "Virar Página" simulado via wipe diagonal
+            // Mapeamentos Especiais (Aproximações Visuais)
+            'page-turn': 'wipetl', // "Virar Página" (simulado via wipe diagonal superior esquerdo)
             'cube-rotate-l': 'slideleft', 
             'cube-rotate-r': 'slideright',
-            'spin-cw': 'radial',
+            'spin-cw': 'radial', // Spin visualmente parece radial no fade
             'spin-ccw': 'radial',
-            'whip-left': 'slideleft',
+            'whip-left': 'slideleft', // Whip é um slide rápido
             'whip-right': 'slideright',
             'whip-up': 'slideup',
             'whip-down': 'slidedown',
             
             // Glitch e Pixel
             'pixelize': 'pixelize',
-            'glitch': 'slideleft',
-            'pixel-sort': 'pixelize'
+            'glitch': 'slideleft', // Glitch geralmente envolve movimento lateral
+            'pixel-sort': 'pixelize',
+            'hologram': 'pixelize'
         };
-        // Se não encontrar, fallback seguro para fade
+        
+        // Se não encontrar, fallback seguro para 'fade' para evitar erro no FFmpeg
         return map[id] || 'fade';
     }
 };
