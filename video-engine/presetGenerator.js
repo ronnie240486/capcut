@@ -115,26 +115,52 @@ export default {
 
     getTransitionXfade: (id) => {
         const map = {
+            // Básicos
             'fade': 'fade',
             'crossfade': 'fade',
             'mix': 'fade',
             'dissolve': 'dissolve',
             'black': 'fadeblack', 
             'white': 'fadewhite',
+            
+            // Geometria
             'wipe-left': 'wipeleft',
             'wipe-right': 'wiperight',
             'wipe-up': 'wipeup',
             'wipe-down': 'wipedown',
+            'circle-open': 'circleopen',
+            'circle-close': 'circleclose',
+            'rect-crop': 'rectcrop',
+            'radial': 'radial',
+            
+            // Movimento
             'slide-left': 'slideleft',
             'slide-right': 'slideright',
             'slide-up': 'slideup',
             'slide-down': 'slidedown',
-            'circle-open': 'circleopen',
-            'circle-close': 'circleclose',
-            'pixelize': 'pixelize', 
-            'glitch': 'slideleft', // Fallback for complex glitch transition in xfade
-            'zoom-in': 'zoomin'
+            'smooth-left': 'smoothleft',
+            'smooth-right': 'smoothright',
+            'squeeze-h': 'squeezeh',
+            'squeeze-v': 'squeezev',
+            'zoom-in': 'zoomin',
+            
+            // Aproximações para efeitos complexos
+            'page-turn': 'wipetl', // "Virar Página" simulado via wipe diagonal
+            'cube-rotate-l': 'slideleft', 
+            'cube-rotate-r': 'slideright',
+            'spin-cw': 'radial',
+            'spin-ccw': 'radial',
+            'whip-left': 'slideleft',
+            'whip-right': 'slideright',
+            'whip-up': 'slideup',
+            'whip-down': 'slidedown',
+            
+            // Glitch e Pixel
+            'pixelize': 'pixelize',
+            'glitch': 'slideleft',
+            'pixel-sort': 'pixelize'
         };
+        // Se não encontrar, fallback seguro para fade
         return map[id] || 'fade';
     }
 };
