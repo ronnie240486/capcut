@@ -131,7 +131,7 @@ export default {
                     addFilter(`negate=enable='between(t,0,${transDur})'`);
                 }
 
-                // 3. EFEITOS DE COR (Filtros)
+                // 3. EFEITOS DE COR E ESTILO (Filtros Reais)
                 if (clip.effect) {
                     const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                     if (fx) addFilter(fx);
@@ -212,7 +212,7 @@ export default {
 
             for (let i = 1; i < mainTrackLabels.length; i++) {
                 const nextClip = mainTrackLabels[i];
-                const prevClip = mainTrackLabels[i-1]; // Note: duration here is theoretical original duration
+                const prevClip = mainTrackLabels[i-1]; 
                 
                 // Pega a transição definida no clipe atual (que representa a transição entre Anterior -> Este)
                 const trans = nextClip.transition || { id: 'fade', duration: 0.5 };
@@ -223,24 +223,17 @@ export default {
                 let transDur = hasExplicitTrans ? trans.duration : 0;
                 
                 // Safe clamps
-                // Precisamos saber a duração "restante" do clipe anterior no fluxo... 
-                // Xfade usa offset. O offset é onde a transição COMEÇA.
-                // O clipe A termina visualmente em Offset + TransDur.
-                
-                // Ajuste para cortes secos (Hard Cuts)
                 if (!hasExplicitTrans) {
-                     // Simulamos um corte seco usando concat simples?
-                     // Para simplicidade e consistência de código, usamos um xfade ultra-rápido (0.04s ~ 1 frame)
+                     // Hard Cut simulado via xfade ultra-rápido para manter a pipeline consistente
                      transDur = 0.04;
                 }
 
                 // Calcular Offset
-                // Offset = (Duração Acumulada do Mix Atual) - Duração da Transição
                 const offset = accumulatedDuration - transDur;
                 
                 if (offset < 0) {
                     console.warn(`Transição ${i} impossível: offset negativo. Clip muito curto.`);
-                    transDur = 0.04; // fallback to hard cut logic
+                    transDur = 0.04; 
                 }
 
                 const transId = presetGenerator.getTransitionXfade(trans.id);
@@ -253,8 +246,6 @@ export default {
                 filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
                 
                 // Montar Filtro ACROSSFADE
-                // Acrossfade não usa offset absoluto, ele consome o final do stream A e inicio do B.
-                // Mas como estamos construindo iterativamente, stream A é o resultado acumulado.
                 filterChain += `${currentMixA}${baseAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
                 
                 // Atualizar ponteiros
@@ -262,22 +253,12 @@ export default {
                 currentMixA = `[${nextLabelA}]`;
                 
                 // Atualizar duração acumulada
-                // Nova Duração = Offset + Duração do Clipe B
                 accumulatedDuration = offset + nextClip.duration;
             }
             mainVideoStream = currentMixV;
             mainAudioStream = currentMixA;
         } 
         
-        // --- FILTROS PÓS-TRANSIÇÃO GLOBAIS ---
-        // (Ex: Se quiséssemos aplicar um look global)
-        if (globalPostFilters.length > 0) {
-            const postFxLabel = `v_post_fx`;
-            const combinedFilters = globalPostFilters.join(',');
-            filterChain += `${mainVideoStream}${combinedFilters}[${postFxLabel}];`;
-            mainVideoStream = `[${postFxLabel}]`;
-        }
-
         // --- 3. APLICAR OVERLAYS (Texto, Imagens, Legendas) ---
         let finalComp = mainVideoStream;
         
@@ -330,8 +311,6 @@ export default {
                      }
                  }
                  
-                 // Font file (Tenta usar fonte padrão do sistema ou uma fonte segura se a customizada não existir no servidor)
-                 // No ambiente server-side real, você deve mapear nomes de fontes para caminhos de arquivos .ttf
                  const fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"; // Caminho comum Linux
                  const fontArg = `:fontfile='${fontFile}'`;
 
@@ -352,18 +331,22 @@ export default {
                  const scale = clip.properties.transform?.scale || 0.5;
                  const w = Math.floor(targetRes.w * scale / 2) * 2; // Força par
                  
-                 // Aplicar rotação se necessário (rotate filter)
                  let transformFilters = `scale=${w}:-1`;
                  if (clip.properties.transform?.rotation) {
-                     // Note: rotate preenche com preto por padrão, idealmente usaríamos fundo transparente c=none se disponível
                      transformFilters += `,rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`;
                  }
                  
+                 // Se o overlay tiver efeito aplicado (ex: glitch no overlay)
+                 if (clip.effect) {
+                     const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
+                     if (fx) transformFilters += `,${fx}`;
+                 }
+
                  filterChain += `[${idx}:v]${transformFilters}[${imgLabel}];`;
                  overlayInputLabel = `[${imgLabel}]`;
             }
 
-            // Aplicar Overlay com Timing (enable='between(...)')
+            // Aplicar Overlay com Timing
             const nextCompLabel = `comp_${i}`;
             const startTime = clip.start;
             const endTime = startTime + clip.duration;
@@ -378,8 +361,6 @@ export default {
                  if (t.y) overlayY += `+(${t.y}*${scaleFactor})`;
             }
 
-            // Precisamos ajustar o PTS do overlay para começar do 0 relativo ao vídeo principal, mas ser exibido no tempo certo
-            
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
             
@@ -403,22 +384,17 @@ export default {
             const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
             const delayMs = Math.round(clip.start * 1000); 
             
-            // Processamento: Trim -> Format -> Volume -> Delay
             filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
             audioMixInputs.push(`[${lbl}]`);
         });
 
         let finalAudio = '[final_audio_out]';
         if (audioMixInputs.length > 1) {
-            // amix mistura todas as entradas. 
-            // dropout_transition=0 evita fades estranhos. 
-            // normalize=0 evita que o volume flutue dependendo do número de inputs ativos.
             filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
             finalAudio = mainAudioStream;
         }
 
-        // Limpeza final da string (remover ; extra se houver)
         if (filterChain.endsWith(';')) {
             filterChain = filterChain.slice(0, -1);
         }
