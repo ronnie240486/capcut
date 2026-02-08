@@ -1,433 +1,461 @@
 
-import presetGenerator from './presetGenerator.js';
+import express from 'express';
+import cors from 'cors';
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { spawn, execFile } from 'child_process';
+import ffmpegPath from 'ffmpeg-static';
+import ffprobePath from 'ffprobe-static';
+import * as esbuild from 'esbuild';
 
-// Helper to escape text for drawtext filter
-function escapeDrawText(text) {
-    if (!text) return '';
-    return text
-        .replace(/\\/g, '\\\\')
-        .replace(/:/g, '\\:')
-        .replace(/'/g, "\\'")
-        .replace(/\(/g, '\\(')
-        .replace(/\)/g, '\\)')
-        .replace(/\[/g, '\\[')
-        .replace(/\]/g, '\\]');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 8080;
+const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
+
+// ==============================
+//      DIR SETUP
+// ==============================
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const OUTPUT_DIR = path.join(__dirname, 'outputs');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+[UPLOAD_DIR, OUTPUT_DIR, PUBLIC_DIR].forEach(dir => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+});
+
+// ==============================
+//      AUDIO CHECK
+// ==============================
+async function fileHasAudio(file) {
+    return new Promise(resolve => {
+        execFile(ffprobePath.path, [
+            "-v","error",
+            "-select_streams","a",
+            "-show_entries","stream=codec_type",
+            "-of","csv=p=0",
+            file
+        ], (err, stdout) => {
+            resolve(stdout && stdout.toString().trim().length > 0);
+        });
+    });
 }
 
-// Helper to wrap text manually since drawtext wrapping can be finicky
-function wrapText(text, maxCharsPerLine) {
-    if (!text) return '';
-    const words = text.split(' ');
-    let lines = [];
-    let currentLine = words[0];
+// ==============================
+//      DURATION
+// ==============================
+function getExactDuration(filePath) {
+    return new Promise(resolve => {
+        execFile(ffprobePath.path, [
+            '-v','error',
+            '-show_entries','format=duration',
+            '-of','default=noprint_wrappers=1:nokey=1',
+            filePath
+        ], (err, stdout) => {
+            const d = parseFloat(stdout);
+            resolve(isNaN(d) ? 0 : d);
+        });
+    });
+}
 
-    for (let i = 1; i < words.length; i++) {
-        if (currentLine.length + 1 + words[i].length <= maxCharsPerLine) {
-            currentLine += ' ' + words[i];
-        } else {
-            lines.push(currentLine);
-            currentLine = words[i];
-        }
+// ==============================
+//      MOVEMENT FILTERS
+// ==============================
+function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
+    const d = parseFloat(durationSec) || 5;
+    const fps = 24;
+    const totalFrames = Math.ceil(d * fps);
+    const zdur = `:d=${totalFrames}:s=${targetW}x${targetH}`;
+    const t = `(on/${totalFrames})`;
+
+    const moves = {
+        'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'kenburns': `zoompan=z='1.0+(0.3*${t})':x='(iw/2-(iw/zoom/2))*(1-0.2*${t})':y='(ih/2-(ih/zoom/2))*(1-0.2*${t})'${zdur}`,
+        'zoom-in': `zoompan=z='1.0+(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'zoom-out': `zoompan=z='1.5-(0.5*${t})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-pan-slow-l': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${t})':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'mov-pan-slow-r': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${t})':y='ih/2-(ih/zoom/2)'${zdur}`,
+        'handheld-1': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+10*sin(on/10)':y='ih/2-(ih/zoom/2)+10*cos(on/15)'${zdur}`
+    };
+
+    const selected = moves[moveId] || moves['kenburns'];
+
+    const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
+    const post = `scale=${targetW}:${targetH},pad=ceil(iw/2)*2:ceil(ih/2)*2,fps=24,format=yuv420p`;
+
+    return `${pre},${selected},${post}`;
+}
+
+// ==============================
+//      TRANSIÇÕES
+// ==============================
+function getTransitionXfade(t) {
+    const map = {
+        'cut': 'cut',
+        'fade':'fade',
+        'mix':'dissolve',
+        'black':'fadeblack',
+        'white':'fadewhite',
+        'slide-left':'slideleft',
+        'slide-right':'slideright'
+    };
+    return map[t] || 'fade';
+}
+
+// ==============================
+//      ARGS PADRÃO
+// ==============================
+const getVideoArgs = () => [
+    '-c:v','libx264',
+    '-preset','ultrafast',
+    '-pix_fmt','yuv420p',
+    '-movflags','+faststart',
+    '-r','24'
+];
+
+const getAudioArgs = () => [
+    '-c:a','aac',
+    '-b:a','192k',
+    '-ar','44100',
+    '-ac','2'
+];
+
+// ==============================
+//  FRONTEND BUILD
+// ==============================
+async function buildFrontend() {
+    try {
+        if (fs.existsSync('index.html')) fs.copyFileSync('index.html', path.join(PUBLIC_DIR,'index.html'));
+        if (fs.existsSync('index.css')) fs.copyFileSync('index.css', path.join(PUBLIC_DIR,'index.css'));
+
+        await esbuild.build({
+            entryPoints:['index.tsx'],
+            outfile:path.join(PUBLIC_DIR,'bundle.js'),
+            bundle:true,
+            format:'esm',
+            minify:true,
+            external: ['fs', 'path', 'child_process', 'url', 'https', 'ffmpeg-static', 'ffprobe-static'],
+            define: { 'process.env.API_KEY': JSON.stringify(GEMINI_KEY), 'global': 'window' },
+            loader: { '.tsx': 'tsx', '.ts': 'ts', '.css': 'css' },
+        });
+
+    } catch(e) {
+        console.error("Frontend error:", e);
     }
-    lines.push(currentLine);
-    return lines.join('\n');
 }
 
-export default {
-    buildTimeline: (clips, fileMap, mediaLibrary, exportConfig = {}) => {
-        let inputs = [];
-        let filterChain = '';
+await buildFrontend();
+
+// ==============================
+//  SERVER PREFS
+// ==============================
+app.use(cors());
+app.use(express.json({limit:'900mb'}));
+app.use(express.urlencoded({extended:true, limit:'900mb'}));
+app.use(express.static(PUBLIC_DIR));
+app.use('/outputs', express.static(OUTPUT_DIR));
+
+// multer
+const storage = multer.diskStorage({
+    destination:(req,file,cb)=>cb(null,UPLOAD_DIR),
+    filename:(req,file,cb)=>cb(null, Date.now()+"-"+file.originalname.replace(/[^a-zA-Z0-9_.-]/g,"_"))
+});
+
+const uploadAny = multer({storage}).any();
+
+// JOBS
+const jobs = {};
+
+// ============================================================================
+//                           RENDER ENGINE
+// ============================================================================
+
+async function renderVideoProject(project, jobId) {
+    const sessionDir = path.join(OUTPUT_DIR, `job_${jobId}`);
+    if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+
+    const tempClips = [];
+    const durations = [];
+
+    // -----------------------------------------------
+    // 1. PROCESSA CADA CLIP (VIDEO + AUDIO)
+    // -----------------------------------------------
+    for (let i = 0; i < project.clips.length; i++) {
+        const clip = project.clips[i];
+        const inputPath = path.join(UPLOAD_DIR, clip.file);
         
-        let inputIndexCounter = 0;
+        let duration = clip.duration || 5;
+        if (duration <= 0) duration = 5;
+        durations.push(duration);
 
-        // --- CONFIGURAÇÃO DE RESOLUÇÃO E FPS ---
-        const resMap = {
-            '720p': { w: 1280, h: 720 },
-            '1080p': { w: 1920, h: 1080 },
-            '4k': { w: 3840, h: 2160 }
-        };
+        const movementFilter = getMovementFilter(clip.movement || "kenburns", duration);
+        const outFile = path.join(sessionDir, `clip_${i}.mp4`);
+        tempClips.push(outFile);
+
+        const args = ["-y"];
         
-        const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
-        const targetFps = parseInt(exportConfig.fps) || 30;
-        
-        // Filtro de Escala Seguro: Força resolução par e preenche com barras pretas se necessário (Letterbox)
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${targetFps},format=yuv420p`;
-
-        // SEPARAR TRILHAS
-        // Video Principal (Base para transições xfade)
-        const mainTrackClips = clips.filter(c => 
-            c.track === 'video' || (c.track === 'camada' && c.type === 'video') 
-        ).sort((a, b) => a.start - b.start);
-
-        // Overlays (Texto, Imagens Sobrepostas, Legendas)
-        const overlayClips = clips.filter(c => 
-            ['text', 'subtitle'].includes(c.track) || (c.track === 'camada' && c.type === 'image')
-        );
-
-        // Audio Clips
-        const audioClips = clips.filter(c => 
-            ['audio', 'narration', 'music', 'sfx'].includes(c.track) ||
-            (c.type === 'audio' && !['video', 'camada', 'text'].includes(c.track))
-        );
-
-        let mainTrackLabels = [];
-        let baseAudioSegments = [];
-        
-        // Filtros globais pós-mixagem (ex: glitch global durante transição)
-        let globalPostFilters = [];
-
-        // --- 1. CONSTRUIR TRILHA DE VÍDEO PRINCIPAL (Sequência com Transições) ---
-        
-        if (mainTrackClips.length === 0) {
-            // Fundo preto padrão se não houver vídeo
-            inputs.push('-f', 'lavfi', '-t', '5', '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
-            mainTrackLabels.push({ label: `[${inputIndexCounter++}:v]`, duration: 5 });
-            // Áudio mudo padrão
-             inputs.push('-f', 'lavfi', '-t', '5', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-             baseAudioSegments.push(`[${inputIndexCounter++}:a]`);
+        // Video Input [0]
+        if (clip.file.match(/\.(mp4|mov|webm)$/i)) {
+             args.push("-stream_loop", "-1", "-i", inputPath);
         } else {
-             mainTrackClips.forEach((clip, i) => {
-                const filePath = fileMap[clip.fileName];
-                if (!filePath && clip.type !== 'text') return; 
+             args.push("-loop", "1", "-i", inputPath);
+        }
 
-                // Garantir duração mínima para xfade não falhar
-                const duration = Math.max(0.5, parseFloat(clip.duration) || 5);
+        // Audio Input Logic
+        // Priority: 1. External Audio File, 2. Internal Video Audio, 3. Silence
+        let hasExternalAudio = false;
+        let hasInternalAudio = false;
 
-                // --- INPUT ---
-                if (clip.type === 'image') {
-                    // Imagens precisam de loop e duração explícita no input para performance
-                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath); 
-                } else {
-                    inputs.push('-i', filePath);
-                }
+        if (clip.audio) {
+            const aPath = path.join(UPLOAD_DIR, clip.audio);
+            if (fs.existsSync(aPath)) {
+                args.push("-i", aPath);
+                hasExternalAudio = true;
+            }
+        }
 
-                const idx = inputIndexCounter++;
-                let currentV = `[${idx}:v]`;
-                
-                const addFilter = (filterText) => {
-                    if (!filterText) return;
-                    const nextLabel = `vtmp${i}_${Math.random().toString(36).substr(2, 5)}`;
-                    filterChain += `${currentV}${filterText}[${nextLabel}];`;
-                    currentV = `[${nextLabel}]`;
-                };
+        if (!hasExternalAudio) {
+            hasInternalAudio = await fileHasAudio(inputPath);
+        }
 
-                // 1. ESCALA INICIAL (Padronizar tamanho)
-                addFilter(SCALE_FILTER);
+        // Build Filter Complex
+        let filterComplex = `[0:v]${movementFilter}[v_out];`;
+        
+        if (hasExternalAudio) {
+            // Use external audio (Input 1), pad to duration
+            filterComplex += `[1:a]apad,atrim=0:${duration}[a_out]`;
+        } else if (hasInternalAudio) {
+            // Use internal audio (Input 0), pad to duration
+            filterComplex += `[0:a]apad,atrim=0:${duration}[a_out]`;
+        } else {
+            // Generate silence
+            filterComplex += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration}[a_out]`;
+        }
 
-                // 2. CORTE (TRIM)
-                if (clip.type !== 'image') {
-                    const start = clip.mediaStartOffset || 0;
-                    addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
-                } else {
-                    // Para imagem, já limitamos no input, mas setpts garante timestamp zero
-                    addFilter(`trim=duration=${duration},setpts=PTS-STARTPTS`);
-                }
-                
-                // --- SPECIAL TRANSITION PRE-PROCESSING (NEGATIVE EFFECT) ---
-                // If this clip is the 'incoming' clip of a zoom-neg transition, invert its colors for the transition duration.
-                if (clip.transition && clip.transition.id === 'zoom-neg') {
-                    const transDur = clip.transition.duration || 0.5;
-                    // Invert colors (negate) only during the transition entry period
-                    addFilter(`negate=enable='between(t,0,${transDur})'`);
-                }
+        args.push(
+            "-filter_complex", filterComplex,
+            "-map", "[v_out]",
+            "-map", "[a_out]",
+            "-t", duration.toString(),
+            ...getVideoArgs(),
+            ...getAudioArgs(),
+            outFile
+        );
 
-                // 3. EFEITOS DE COR (Filtros)
-                if (clip.effect) {
-                    const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                    if (fx) addFilter(fx);
-                }
-                
-                // Ajustes Manuais de Cor (Brightness, Contrast, etc.)
-                if (clip.properties && clip.properties.adjustments) {
-                    const adj = clip.properties.adjustments;
-                    let eqParts = [];
-                    if (adj.brightness !== 1) eqParts.push(`brightness=${(adj.brightness - 1).toFixed(2)}`);
-                    if (adj.contrast !== 1) eqParts.push(`contrast=${adj.contrast.toFixed(2)}`);
-                    if (adj.saturate !== 1) eqParts.push(`saturation=${adj.saturate.toFixed(2)}`);
-                    
-                    let eqFilter = eqParts.length > 0 ? `eq=${eqParts.join(':')}` : '';
-                    if (adj.hue !== 0) {
-                         eqFilter = eqFilter ? `${eqFilter},hue=h=${adj.hue}` : `hue=h=${adj.hue}`;
-                    }
-                    if (eqFilter) addFilter(eqFilter);
-                }
+        await runFFmpeg(args);
+        jobs[jobId].progress = Math.floor((i / project.clips.length) * 45);
+    }
 
-                // 4. MOVIMENTO (Zoom/Pan/KenBurns)
-                // Passa a resolução alvo para o presetGenerator para evitar downscaling acidental
-                if (clip.properties && clip.properties.movement) {
-                    const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
-                    if (moveFilter) addFilter(moveFilter);
-                } else if (clip.type === 'image') {
-                    // Aplica um filtro zoompan neutro para imagens para garantir compatibilidade de pixel format e buffer
-                    const staticMove = presetGenerator.getMovementFilter(null, duration, true, {}, targetRes, targetFps);
-                    addFilter(staticMove);
-                }
+    // -----------------------------------------------
+    // 2. CONCATENAÇÃO (CUT ou XFADE)
+    // -----------------------------------------------
+    const concatOut = path.join(sessionDir, "video_final.mp4");
+    const trType = getTransitionXfade(project.transition || "fade");
 
-                // 5. ESCALA FINAL (Garantia pós-movimento)
-                // Alguns filtros de movimento podem alterar SAR/Dimensões
-                addFilter(`scale=${targetRes.w}:${targetRes.h},setsar=1`);
+    if (tempClips.length === 1) {
+        fs.copyFileSync(tempClips[0], concatOut);
+        jobs[jobId].progress = 70;
+    } else if (trType === 'cut') {
+        // === MODO CORTE SECO (CONCAT DEMUXER) ===
+        // Cria arquivo de lista para concatenação perfeita sem recodificação complexa
+        const listPath = path.join(sessionDir, "concat_list.txt");
+        const listContent = tempClips.map(p => `file '${p}'`).join('\n');
+        fs.writeFileSync(listPath, listContent);
 
-                mainTrackLabels.push({
-                    label: currentV,
-                    duration: duration,
-                    transition: clip.transition // Transição de ENTRADA deste clipe (na UI visualmente é entre o anterior e este)
+        await runFFmpeg([
+            "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", listPath,
+            "-c", "copy", // Tenta copiar stream primeiro (muito rápido)
+            concatOut
+        ]).catch(async () => {
+            // Fallback se copy falhar (codecs diferentes)
+            await runFFmpeg([
+                "-y", "-f", "concat", "-safe", "0", "-i", listPath,
+                ...getVideoArgs(), ...getAudioArgs(),
+                concatOut
+            ]);
+        });
+        
+        jobs[jobId].progress = 70;
+    } else {
+        // === MODO TRANSIÇÃO (XFADE) ===
+        const inputArgs = [];
+        tempClips.forEach(path => inputArgs.push("-i", path));
+        
+        let filterGraph = "";
+        let prevLabelV = "[0:v]";
+        let prevLabelA = "[0:a]";
+        let outIndex = 0;
+        const trDur = project.transitionDuration || 1.0;
+        let timeCursor = durations[0];
+
+        for (let i = 1; i < tempClips.length; i++) {
+            const offset = timeCursor - trDur;
+            const outLabelV = `[v${outIndex + 1}]`;
+            const outLabelA = `[a${outIndex + 1}]`;
+
+            // Video Xfade
+            filterGraph += `${prevLabelV}[${i}:v]xfade=transition=${trType}:duration=${trDur}:offset=${offset}${outLabelV};`;
+            // Audio Acrossfade
+            filterGraph += `${prevLabelA}[${i}:a]acrossfade=d=${trDur}:c1=tri:c2=tri${outLabelA};`;
+
+            prevLabelV = outLabelV;
+            prevLabelA = outLabelA;
+            outIndex++;
+            timeCursor += (durations[i] - trDur);
+        }
+
+        await runFFmpeg([
+            "-y", ...inputArgs,
+            "-filter_complex", filterGraph,
+            "-map", prevLabelV, "-map", prevLabelA,
+            ...getVideoArgs(), ...getAudioArgs(),
+            concatOut
+        ]);
+        jobs[jobId].progress = 70;
+    }
+
+    // -----------------------------------------------
+    // 3. MIXAGEM GLOBAL (BGM)
+    // -----------------------------------------------
+    const bgm = project.audio?.bgm ? path.join(UPLOAD_DIR, project.audio.bgm) : null;
+    let finalOutput = path.join(OUTPUT_DIR, `video_${jobId}.mp4`);
+
+    if (bgm && fs.existsSync(bgm)) {
+        // Mixa música de fundo com o áudio do vídeo concatenado
+        const mixGraph = `[1:a]aloop=loop=-1:size=2e+09,volume=${project.audio.bgmVolume ?? 0.2}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=0[a_final]`;
+        
+        await runFFmpeg([
+            "-y",
+            "-i", concatOut,
+            "-i", bgm,
+            "-filter_complex", mixGraph,
+            "-map", "0:v",
+            "-map", "[a_final]",
+            ...getVideoArgs(),
+            ...getAudioArgs(),
+            finalOutput
+        ]);
+    } else {
+        fs.copyFileSync(concatOut, finalOutput);
+    }
+
+    jobs[jobId].progress = 100;
+    return finalOutput;
+}
+
+// ============================================================================
+//   FFmpeg CALL
+// ============================================================================
+function runFFmpeg(args) {
+    return new Promise((resolve, reject) => {
+        const ff = spawn(ffmpegPath, args);
+        ff.on("close", code => {
+            if (code === 0) resolve();
+            else reject("FFmpeg error " + code);
+        });
+    });
+}
+
+// ============================================================================
+//                               ROUTES
+// ============================================================================
+
+// UPLOAD
+app.post("/api/upload", (req, res) => {
+    uploadAny(req, res, (err) => {
+        if (err) return res.status(500).json({ error: "Falha no upload", details: err });
+        res.json({ files: req.files });
+    });
+});
+
+// RENDER
+app.post("/api/render", async (req, res) => {
+    uploadAny(req, res, async (err) => {
+        if (err) return res.status(500).json({ error: "Upload failed" });
+
+        try {
+            const jobId = Date.now().toString();
+            jobs[jobId] = { progress: 1, status: "processing" };
+
+            // Parse Config
+            let config = {};
+            if (req.body.config) {
+                try { config = JSON.parse(req.body.config); } catch(e) {}
+            }
+
+            const project = {
+                clips: [],
+                audio: {
+                    bgm: null,
+                    bgmVolume: config.musicVolume || 0.2,
+                    sfxVolume: config.sfxVolume || 0.5
+                },
+                transition: config.transition || 'cut', 
+                transitionDuration: 1.0
+            };
+
+            const visuals = req.files.filter(f => f.fieldname === 'visualFiles');
+            const audios = req.files.filter(f => f.fieldname === 'audioFiles');
+            const extras = req.files.filter(f => f.fieldname === 'additionalFiles');
+
+            const bgmFile = extras.find(f => f.originalname.includes('background_music'));
+            if (bgmFile) project.audio.bgm = bgmFile.filename;
+
+            for (let i = 0; i < visuals.length; i++) {
+                const vFile = visuals[i];
+                const aFile = audios[i]; 
+                const meta = config.sceneData ? config.sceneData[i] : {};
+
+                project.clips.push({
+                    file: vFile.filename,
+                    audio: aFile ? aFile.filename : null,
+                    duration: parseFloat(meta.duration) || 5,
+                    movement: config.movement || 'kenburns'
+                });
+            }
+
+            renderVideoProject(project, jobId)
+                .then(outputPath => {
+                    jobs[jobId].status = "completed";
+                    jobs[jobId].downloadUrl = `/outputs/${path.basename(outputPath)}`;
+                })
+                .catch(err => {
+                    console.error("Render error:", err);
+                    jobs[jobId].status = "failed";
+                    jobs[jobId].error = err.toString();
                 });
 
-                // --- PROCESSAMENTO DE ÁUDIO DO CLIPE DE VÍDEO ---
-                const mediaInfo = mediaLibrary[clip.fileName];
-                const audioLabel = `a_base_${i}`;
-                
-                // Formato seguro para mixagem + Correção de drift (aresample=async=1)
-                const audioFormatFilter = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp,aresample=async=1';
+            res.json({ jobId });
 
-                if (clip.type === 'video' && mediaInfo?.hasAudio) {
-                    const start = clip.mediaStartOffset || 0;
-                    // Volume
-                    const vol = clip.properties.volume !== undefined ? clip.properties.volume : 1;
-                    filterChain += `[${idx}:a]${audioFormatFilter},atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${vol}[${audioLabel}];`;
-                    baseAudioSegments.push(`[${audioLabel}]`);
-                } else {
-                    // Gera silêncio se não tiver áudio, para manter a sincronia na concatenação
-                    // É mais seguro usar uma fonte anullsrc nova para cada clipe para evitar problemas de timestamp
-                    const silenceIdx = inputIndexCounter++;
-                    inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-                    filterChain += `[${silenceIdx}:a]${audioFormatFilter}[${audioLabel}];`;
-                    baseAudioSegments.push(`[${audioLabel}]`);
-                }
-            });
+        } catch (err) {
+            console.error("API render error:", err);
+            res.status(500).json({ error: "Erro ao iniciar renderização" });
         }
+    });
+});
 
-        // --- 2. COMPOSIÇÃO DA TRILHA PRINCIPAL (XFADE & ACROSSFADE) ---
-        let mainVideoStream = '[black_bg]';
-        let mainAudioStream = '[base_audio_seq]';
-        
-        if (mainTrackLabels.length > 0 && typeof mainTrackLabels[0].label !== 'string') {
-             // Caso dummy
-             mainVideoStream = mainTrackLabels[0].label;
-             mainAudioStream = baseAudioSegments[0];
-        } else if (mainTrackLabels.length > 0) {
-            let currentMixV = mainTrackLabels[0].label;
-            let currentMixA = baseAudioSegments[0];
-            let accumulatedDuration = mainTrackLabels[0].duration;
+// STATUS
+app.get("/api/process/status/:id", (req, res) => {
+    const job = jobs[req.params.id];
+    if (!job) return res.status(404).json({ status: "not_found" });
+    res.json(job);
+});
 
-            for (let i = 1; i < mainTrackLabels.length; i++) {
-                const nextClip = mainTrackLabels[i];
-                const prevClip = mainTrackLabels[i-1]; // Note: duration here is theoretical original duration
-                
-                // Pega a transição definida no clipe atual (que representa a transição entre Anterior -> Este)
-                const trans = nextClip.transition || { id: 'fade', duration: 0.5 };
-                const hasExplicitTrans = !!nextClip.transition;
-                
-                // Duração da transição não pode exceder metade da duração dos clipes adjacentes
-                // E não pode ser maior que a duração acumulada atual (offset)
-                let transDur = hasExplicitTrans ? trans.duration : 0;
-                
-                // Safe clamps
-                // Precisamos saber a duração "restante" do clipe anterior no fluxo... 
-                // Xfade usa offset. O offset é onde a transição COMEÇA.
-                // O clipe A termina visualmente em Offset + TransDur.
-                
-                // Ajuste para cortes secos (Hard Cuts)
-                if (!hasExplicitTrans) {
-                     // Simulamos um corte seco usando concat simples?
-                     // Para simplicidade e consistência de código, usamos um xfade ultra-rápido (0.04s ~ 1 frame)
-                     transDur = 0.04;
-                }
+// DOWNLOAD
+app.get("/api/download/:file", (req, res) => {
+    const filePath = path.join(OUTPUT_DIR, req.params.file);
+    if (!fs.existsSync(filePath)) return res.status(404).send("Arquivo não encontrado.");
+    res.download(filePath);
+});
 
-                // Calcular Offset
-                // Offset = (Duração Acumulada do Mix Atual) - Duração da Transição
-                const offset = accumulatedDuration - transDur;
-                
-                if (offset < 0) {
-                    console.warn(`Transição ${i} impossível: offset negativo. Clip muito curto.`);
-                    transDur = 0.04; // fallback to hard cut logic
-                }
-
-                const transId = presetGenerator.getTransitionXfade(trans.id);
-                
-                // Labels para o resultado desta iteração
-                const nextLabelV = `mix_v_${i}`;
-                const nextLabelA = `mix_a_${i}`;
-                
-                // Montar Filtro XFADE
-                filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
-                
-                // Montar Filtro ACROSSFADE
-                // Acrossfade não usa offset absoluto, ele consome o final do stream A e inicio do B.
-                // Mas como estamos construindo iterativamente, stream A é o resultado acumulado.
-                filterChain += `${currentMixA}${baseAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
-                
-                // Atualizar ponteiros
-                currentMixV = `[${nextLabelV}]`;
-                currentMixA = `[${nextLabelA}]`;
-                
-                // Atualizar duração acumulada
-                // Nova Duração = Offset + Duração do Clipe B
-                accumulatedDuration = offset + nextClip.duration;
-            }
-            mainVideoStream = currentMixV;
-            mainAudioStream = currentMixA;
-        } 
-        
-        // --- FILTROS PÓS-TRANSIÇÃO GLOBAIS ---
-        // (Ex: Se quiséssemos aplicar um look global)
-        if (globalPostFilters.length > 0) {
-            const postFxLabel = `v_post_fx`;
-            const combinedFilters = globalPostFilters.join(',');
-            filterChain += `${mainVideoStream}${combinedFilters}[${postFxLabel}];`;
-            mainVideoStream = `[${postFxLabel}]`;
-        }
-
-        // --- 3. APLICAR OVERLAYS (Texto, Imagens, Legendas) ---
-        let finalComp = mainVideoStream;
-        
-        overlayClips.forEach((clip, i) => {
-            let overlayInputLabel = '';
-            
-            if (clip.type === 'text') {
-                 // GERADOR DE TEXTO (DRAWTEXT)
-                 // Criamos um fundo transparente do tamanho do vídeo para desenhar o texto
-                 const bgLabel = `txtbg_${i}`;
-                 filterChain += `color=c=black@0.0:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${clip.duration}[${bgLabel}];`;
-
-                 let txt = (clip.properties.text || '');
-                 const maxChars = targetRes.w > 1280 ? 50 : 30; // Mais caracteres em 4k
-                 txt = wrapText(txt, maxChars);
-                 const escapedTxt = escapeDrawText(txt);
-                 
-                 let color = clip.properties.textDesign?.color || 'white';
-                 if (color === 'transparent') color = 'white@0.0';
-
-                 // Tamanho da fonte relativo à resolução (Base 80px para 720p)
-                 const baseFontSize = 80;
-                 const scaleFactor = targetRes.w / 1280;
-                 const fontsize = Math.round(baseFontSize * scaleFactor * (clip.properties.transform?.scale || 1));
-                 
-                 // Posição
-                 let x = '(w-text_w)/2';
-                 let y = '(h-text_h)/2';
-                 
-                 if (clip.properties.transform) {
-                     const t = clip.properties.transform;
-                     // Ajuste fino de posição relativo
-                     if (t.x) x += `+(${t.x}*${scaleFactor})`;
-                     if (t.y) y += `+(${t.y}*${scaleFactor})`;
-                 }
-                 
-                 let styles = '';
-                 // Stroke
-                 if (clip.properties.textDesign?.stroke) {
-                     const s = clip.properties.textDesign.stroke;
-                     if (s.width > 0) {
-                        styles += `:borderw=${s.width * scaleFactor}:bordercolor=${s.color || 'black'}`;
-                     }
-                 }
-                 // Shadow
-                 if (clip.properties.textDesign?.shadow) {
-                     const sh = clip.properties.textDesign.shadow;
-                     if (sh.x || sh.y) {
-                         styles += `:shadowx=${(sh.x || 2) * scaleFactor}:shadowy=${(sh.y || 2) * scaleFactor}:shadowcolor=${sh.color || 'black@0.5'}`;
-                     }
-                 }
-                 
-                 // Font file (Tenta usar fonte padrão do sistema ou uma fonte segura se a customizada não existir no servidor)
-                 // No ambiente server-side real, você deve mapear nomes de fontes para caminhos de arquivos .ttf
-                 const fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"; // Caminho comum Linux
-                 const fontArg = `:fontfile='${fontFile}'`;
-
-                 const txtLabel = `txt_${i}`;
-                 filterChain += `[${bgLabel}]drawtext=text='${escapedTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}[${txtLabel}];`;
-                 overlayInputLabel = `[${txtLabel}]`;
-
-            } else {
-                 // IMAGEM SOBREPOSTA (PIP)
-                 const filePath = fileMap[clip.fileName];
-                 if (!filePath) return;
-                 
-                 inputs.push('-loop', '1', '-t', clip.duration.toString(), '-i', filePath);
-                 const idx = inputIndexCounter++;
-                 const imgLabel = `img_ov_${i}`;
-                 
-                 // Escala da imagem PIP
-                 const scale = clip.properties.transform?.scale || 0.5;
-                 const w = Math.floor(targetRes.w * scale / 2) * 2; // Força par
-                 
-                 // Aplicar rotação se necessário (rotate filter)
-                 let transformFilters = `scale=${w}:-1`;
-                 if (clip.properties.transform?.rotation) {
-                     // Note: rotate preenche com preto por padrão, idealmente usaríamos fundo transparente c=none se disponível
-                     transformFilters += `,rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`;
-                 }
-                 
-                 filterChain += `[${idx}:v]${transformFilters}[${imgLabel}];`;
-                 overlayInputLabel = `[${imgLabel}]`;
-            }
-
-            // Aplicar Overlay com Timing (enable='between(...)')
-            const nextCompLabel = `comp_${i}`;
-            const startTime = clip.start;
-            const endTime = startTime + clip.duration;
-            
-            // Calculo de posição do overlay
-            let overlayX = '(W-w)/2';
-            let overlayY = '(H-h)/2';
-            if (clip.type !== 'text' && clip.properties.transform) {
-                 const t = clip.properties.transform;
-                 const scaleFactor = targetRes.w / 1280;
-                 if (t.x) overlayX += `+(${t.x}*${scaleFactor})`;
-                 if (t.y) overlayY += `+(${t.y}*${scaleFactor})`;
-            }
-
-            // Precisamos ajustar o PTS do overlay para começar do 0 relativo ao vídeo principal, mas ser exibido no tempo certo
-            
-            const shiftedLabel = `shift_${i}`;
-            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            
-            filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
-            finalComp = `[${nextCompLabel}]`;
-        });
-
-        // --- 4. MIXAGEM DE ÁUDIO (Trilhas Extras) ---
-        let audioMixInputs = [mainAudioStream];
-        const safeAudioFormat = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
-        
-        audioClips.forEach((clip, i) => {
-            const filePath = fileMap[clip.fileName];
-            if (!filePath) return;
-            
-            inputs.push('-i', filePath);
-            const idx = inputIndexCounter++;
-            const lbl = `sfx_${i}`;
-            
-            const startTrim = clip.mediaStartOffset || 0;
-            const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
-            const delayMs = Math.round(clip.start * 1000); 
-            
-            // Processamento: Trim -> Format -> Volume -> Delay
-            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
-            audioMixInputs.push(`[${lbl}]`);
-        });
-
-        let finalAudio = '[final_audio_out]';
-        if (audioMixInputs.length > 1) {
-            // amix mistura todas as entradas. 
-            // dropout_transition=0 evita fades estranhos. 
-            // normalize=0 evita que o volume flutue dependendo do número de inputs ativos.
-            filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
-        } else {
-            finalAudio = mainAudioStream;
-        }
-
-        // Limpeza final da string (remover ; extra se houver)
-        if (filterChain.endsWith(';')) {
-            filterChain = filterChain.slice(0, -1);
-        }
-
-        return {
-            inputs,
-            filterComplex: filterChain,
-            outputMapVideo: finalComp,
-            outputMapAudio: finalAudio
-        };
-    }
-};
+// SERVER START
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Turbo Server Running on Port ${PORT}`);
+});
