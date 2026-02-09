@@ -1,100 +1,158 @@
 
-export function getMovementFilter(moveId, durationSec = 5, targetW = 1280, targetH = 720) {
-    const d = parseFloat(durationSec) || 5;
-    const fps = 24; 
-    const totalFrames = Math.ceil(d * fps);
-    // Pré-processamento: Aumenta a escala para permitir movimentos sem bordas pretas (zoom out/pan)
-    const pre = `scale=${targetW*2}:${targetH*2}:force_original_aspect_ratio=increase,crop=${targetW*2}:${targetH*2},setsar=1`;
-    const post = `scale=${targetW}:${targetH}:flags=lanczos,fps=${fps},format=yuv420p`;
-    
-    // VARIÁVEIS DE CONTROLE
-    // 'on' (Output Number Frame) é suportado pelo Zoompan
-    // 't' (Time in seconds) é suportado pelo Boxblur
-    
-    const zdur = `:d=${totalFrames}:s=${targetW}x${targetH}`;
-    
-    // Expressões baseadas em FRAMES (para Zoompan)
-    const onNorm = `(on/${totalFrames})`; 
-    
-    // Expressões baseadas em TEMPO (para Boxblur)
-    const tNorm = `(t/${d})`;
+export default {
+    getVideoArgs: () => [
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast', 
+        '-profile:v', 'high',
+        '-level', '4.1',
+        '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart',
+        '-vsync', '1', // CFR: Sincronia de vídeo
+        '-r', '30'
+    ],
 
-    const zp = `zoompan`;
-    const center = `:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'`;
+    getAudioArgs: () => [
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-ar', '44100',
+        '-ac', '2'
+    ],
 
-    const moves = {
-        // --- Estático & Suave ---
-        'static': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'kenburns': `zoompan=z='1.0+(0.3*${onNorm})':x='(iw/2-(iw/zoom/2))*(1-0.2*${onNorm})':y='(ih/2-(ih/zoom/2))*(1-0.2*${onNorm})'${zdur}`,
-        'mov-3d-float': `zoompan=z='1.1+0.05*sin(on/24)':x='iw/2-(iw/zoom/2)+10*sin(on/40)':y='ih/2-(ih/zoom/2)+10*sin(on/50)'${zdur}`,
-        'mov-tilt-up-slow': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))+(ih/4*${onNorm})'${zdur}`,
-        'mov-tilt-down-slow': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))-(ih/4*${onNorm})'${zdur}`,
+    getAudioExtractArgs: () => [
+        '-vn',
+        '-acodec', 'libmp3lame',
+        '-q:a', '2'
+    ],
 
-        // --- Zoom Dinâmico ---
-        'zoom-in': `zoompan=z='1.0+(0.5*${onNorm})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'zoom-out': `zoompan=z='1.5-(0.5*${onNorm})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-zoom-crash-in': `zoompan=z='1.0+3*${onNorm}*${onNorm}*${onNorm}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-zoom-crash-out': `zoompan=z='4-3*${onNorm}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-zoom-bounce-in': `zoompan=z='if(lt(${onNorm},0.8), 1.0+0.5*${onNorm}, 1.5-0.1*sin((${onNorm}-0.8)*20))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-zoom-pulse-slow': `zoompan=z='1.1+0.1*sin(on/24)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-dolly-vertigo': `zoompan=z='1.0+(1.0*${onNorm})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-zoom-twist-in': `rotate=angle='(PI/12)*${tNorm}':fillcolor=black,zoompan=z='1.0+(0.5*${onNorm})'${zdur}`,
-        'mov-zoom-wobble': `zoompan=z='1.1':x='iw/2-(iw/zoom/2)+20*sin(on/10)':y='ih/2-(ih/zoom/2)+20*cos(on/10)'${zdur}`,
-        'mov-scale-pulse': `zoompan=z='1.0+0.2*sin(on/10)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-
-        // --- Panorâmicas ---
-        'mov-pan-slow-l': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${onNorm})':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-pan-slow-r': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${onNorm})':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-pan-slow-u': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))*(1+0.5*${onNorm})'${zdur}`,
-        'mov-pan-slow-d': `zoompan=z=1.4:x='iw/2-(iw/zoom/2)':y='(ih/2-(ih/zoom/2))*(1-0.5*${onNorm})'${zdur}`,
-        'mov-pan-fast-l': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1+1.0*${onNorm})':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-pan-fast-r': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1-1.0*${onNorm})':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-pan-diag-tl': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1+0.5*${onNorm})':y='(ih/2-(ih/zoom/2))*(1+0.5*${onNorm})'${zdur}`,
-        'mov-pan-diag-br': `zoompan=z=1.4:x='(iw/2-(iw/zoom/2))*(1-0.5*${onNorm})':y='(ih/2-(ih/zoom/2))*(1-0.5*${onNorm})'${zdur}`,
-
-        // --- Câmera na Mão & Realismo ---
-        'handheld-1': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+10*sin(on/10)':y='ih/2-(ih/zoom/2)+10*cos(on/15)'${zdur}`,
-        'handheld-2': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+20*sin(on/6)':y='ih/2-(ih/zoom/2)+20*cos(on/9)'${zdur}`,
-        'earthquake': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+40*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+40*(random(1)-0.5)'${zdur}`,
-        'mov-jitter-x': `zoompan=z=1.05:x='iw/2-(iw/zoom/2)+10*sin(on*10)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-walk': `zoompan=z=1.1:x='iw/2-(iw/zoom/2)+15*sin(on/15)':y='ih/2-(ih/zoom/2)+10*abs(sin(on/7))'${zdur}`,
-
-        // --- 3D & Rotação ---
-        'mov-3d-spin-axis': `rotate=angle='2*PI*${tNorm}':fillcolor=black,zoompan=z=1.2${zdur}`,
-        'mov-3d-flip-x': `zoompan=z=1${zdur}`, // Simulação simplificada
-        'mov-3d-flip-y': `zoompan=z=1${zdur}`,
-        'mov-3d-swing-l': `rotate=angle='(PI/8)*sin(on/24)':fillcolor=black,zoompan=z=1.2${zdur}`,
-        'mov-3d-roll': `rotate=angle='2*PI*${tNorm}':fillcolor=black,zoompan=z=1.5${zdur}`,
-
-        // --- Glitch & Caos ---
-        'mov-glitch-snap': `zoompan=z='if(mod(on,20)<2, 1.3, 1.0)':x='iw/2-(iw/zoom/2)+if(mod(on,20)<2, 50, 0)':y='ih/2-(ih/zoom/2)'${zdur},noise=alls=20:allf=t`,
-        'mov-glitch-skid': `zoompan=z=1.0:x='iw/2-(iw/zoom/2)+if(mod(on,10)<2, 100, 0)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-shake-violent': `zoompan=z=1.2:x='iw/2-(iw/zoom/2)+60*(random(1)-0.5)':y='ih/2-(ih/zoom/2)+60*(random(1)-0.5)'${zdur}`,
-        'mov-rgb-shift-move': `rgbashift=rh=20:bv=20,zoompan=z=1.05${zdur}`,
-        'mov-vibrate': `zoompan=z=1.02:x='iw/2-(iw/zoom/2)+5*sin(on*50)':y='ih/2-(ih/zoom/2)+5*cos(on*50)'${zdur}`,
-
-        // --- Foco & Blur (Dynamic/Gradual) ---
-        // CORREÇÃO: Usar 'tNorm' (baseado em tempo) para boxblur, pois boxblur não suporta 'on'.
-        // Clamping para evitar valores negativos
+    getFFmpegFilterFromEffect: (effectId) => {
+        if (!effectId) return null;
         
-        // Focar (Blur In): Começa desfocado (20) e termina focado (0) gradualmente
-        'mov-blur-in': `boxblur=luma_radius='20*max(0,1-${tNorm})':luma_power=1,${zp}:z=1${zdur}`,
-        
-        // Desfocar (Blur Out): Começa focado (0) e termina desfocado (20) gradualmente
-        'mov-blur-out': `boxblur=luma_radius='min(20,20*${tNorm})':luma_power=1,${zp}:z=1${zdur}`,
-        
-        'mov-blur-pulse': `boxblur=luma_radius='10*abs(sin(t*2))':luma_power=1,zoompan=z=1${zdur}`,
-        
-        // Tilt Shift Safe: Replaced faulty spatial mask with a Vivid Zoom to avoid crashes
-        'mov-tilt-shift': `eq=saturation=1.4:contrast=1.1,${zp}:z=1.1${zdur}`,
+        // Mapeamento de efeitos visuais "Reais" usando filtros complexos do FFmpeg
+        const effects = {
+            // --- GLITCH & DISTORÇÃO ---
+            'glitch-scan': 'drawgrid=y=0:h=4:t=1:c=black@0.5,hue=H=2*PI*t:s=1.5',
+            'scan-line-v': 'drawgrid=x=0:w=4:t=1:c=black@0.5',
+            'chromatic': "geq=r='p(X+5,Y)':g='p(X,Y)':b='p(X-5,Y)'",
+            'rgb-split': "geq=r='p(X+10,Y)':g='p(X,Y)':b='p(X-10,Y)'",
+            'pixelate': 'scale=iw/20:ih/20:flags=nearest,scale=iw*20:ih*20:flags=neighbor',
+            'block-glitch': 'scale=iw/10:ih/10:flags=nearest,scale=iw*10:ih*10:flags=neighbor',
+            'bad-signal': 'noise=alls=20:allf=t+u,eq=contrast=1.5:brightness=0.1',
+            'vhs-distort': 'curves=r=0/0.1 0.5/0.5 1/1:g=0/0 0.5/0.5 1/1:b=0/0 0.5/0.5 1/0.9,noise=alls=10:allf=t+u,eq=saturation=1.3',
+            'glitch-pro-1': "geq=r='p(X+10*sin(T*10),Y)':g='p(X,Y)':b='p(X,Y)'",
 
-        // --- Elástico & Divertido ---
-        'mov-rubber-band': `zoompan=z='1.0+0.3*abs(sin(on/10))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-jelly-wobble': `zoompan=z='1.0+0.1*sin(on/5)':x='iw/2-(iw/zoom/2)+10*sin(on/4)':y='ih/2-(ih/zoom/2)+10*cos(on/4)'${zdur}`,
-        'mov-pop-up': `zoompan=z='min(1.0 + ${onNorm}*5, 1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'${zdur}`,
-        'mov-bounce-drop': `zoompan=z='1.0':y='(ih/2-(ih/zoom/2)) + (ih/2 * abs(cos(${onNorm}*5*PI)) * (1-${onNorm}))'${zdur}`
-    };
+            // --- CORES & CINEMA ---
+            'zoom-neg': 'negate',
+            'negative': 'negate',
+            'invert': 'negate',
+            'flash-chroma': 'hue=h=90:s=2',
+            'flash-c': 'hue=h=90:s=2',
+            'color-glitch': 'hue=h=180:s=2',
+            'teal-orange': 'curves=r=0/0 0.25/0.15 0.5/0.5 0.75/0.85 1/1:b=0/0 0.25/0.35 0.5/0.5 0.75/0.65 1/1',
+            'noir': 'hue=s=0,contrast=1.5,eq=brightness=-0.1',
+            'mono': 'hue=s=0,contrast=1.2',
+            'b-and-w-low': 'hue=s=0,contrast=1.2',
+            'vintage-warm': 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131',
+            'sepia': 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131',
+            'cool-morning': 'curves=r=0/0 1/0.8:g=0/0 1/0.8:b=0/0 1/1',
+            'cool': 'eq=saturation=0.8,colorbalance=rs=-0.1:gs=0:bs=0.1',
+            'cold-blue': 'hue=h=10,eq=saturation=0.5,colorbalance=bs=0.3',
+            'cyberpunk': 'eq=contrast=1.2:saturation=1.5,colorbalance=rs=0.2:gs=-0.1:bs=0.3',
+            'radioactive': 'hue=h=90:s=2,eq=contrast=1.5',
+            'night-vision': 'hue=s=0,colorbalance=gs=0.5,noise=alls=30:allf=t+u',
+            
+            // --- RETRO ---
+            'old-film': 'noise=alls=20:allf=t+u,vignette=PI/4,hue=s=0.5',
+            'grain': 'noise=alls=30:allf=t+u',
+            'noise': 'noise=alls=50:allf=t+u',
+            'vignette': 'vignette=PI/3',
+            'super8': 'vignette=PI/4,hue=s=0.7,curves=r=0/0 0.5/0.6 1/1:b=0/0 0.5/0.4 1/1',
 
-    const selectedFilter = moves[moveId] || moves['kenburns'];
-    return `${pre},${selectedFilter},${post}`;
-}
+            // --- ARTÍSTICO ---
+            'pop-art': 'eq=saturation=3:contrast=1.5',
+            'sketch-sim': 'edgedetect=low=0.1:high=0.4,negate,hue=s=0',
+            'dreamy': 'gblur=sigma=5,eq=brightness=0.1:saturation=1.2',
+            'soft-angel': 'gblur=sigma=2,eq=brightness=0.2:contrast=0.9',
+            'underwater': 'eq=saturation=0.8,colorbalance=rs=-0.2:gs=0.1:bs=0.3,gblur=sigma=2'
+        };
+        return effects[effectId] || null;
+    },
+
+    getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}, targetRes = {w:1280, h:720}, targetFps = 30) => {
+        const fps = targetFps || 30;
+        const frames = Math.max(1, Math.ceil(durationSec * fps));
+        const progress = `(on/${frames})`; 
+        const base = `zoompan=d=${isImage ? frames : 1}:s=${targetRes.w}x${targetRes.h}:fps=${fps}`; 
+        const centerX = `(iw/2)-(iw/zoom/2)`;
+        const centerY = `(ih/2)-(ih/zoom/2)`;
+
+        if (moveId === 'kenBurns') {
+            const startScale = config.startScale || 1.0;
+            const endScale = config.endScale || 1.3;
+            return `${base}:z='${startScale}+(${endScale}-${startScale})*${progress}':x='${centerX}':y='${centerY}'`;
+        }
+        
+        // Zoom In Simples
+        if (moveId === 'zoom-in' || (isImage && !moveId)) {
+             return `${base}:z='1.0+(0.05)*${progress}':x='${centerX}':y='${centerY}'`;
+        }
+
+        return null;
+    },
+
+    getTransitionXfade: (id) => {
+        // TABELA OFICIAL DE XFADE DO FFMPEG
+        // Mapeamos os nomes "bonitos" da UI para os nomes técnicos do FFmpeg
+        const map = {
+            // Básicos
+            'fade': 'fade',
+            'crossfade': 'fade',
+            'mix': 'fade',
+            'dissolve': 'dissolve',
+            'black': 'fadeblack', 
+            'white': 'fadewhite',
+            
+            // Geometria / Wipe
+            'wipe-left': 'wipeleft',
+            'wipe-right': 'wiperight',
+            'wipe-up': 'wipeup',
+            'wipe-down': 'wipedown',
+            'circle-open': 'circleopen',
+            'circle-close': 'circleclose',
+            'rect-crop': 'rectcrop',
+            'radial': 'radial', // ESPIRAL/CLOCK USAM ESSE
+            'clock-wipe': 'radial',
+            'spiral-wipe': 'radial',
+            
+            // Movimento / Slide
+            'slide-left': 'slideleft',
+            'slide-right': 'slideright',
+            'slide-up': 'slideup',
+            'slide-down': 'slidedown',
+            'smooth-left': 'smoothleft',
+            'smooth-right': 'smoothright',
+            'squeeze-h': 'squeezeh',
+            'squeeze-v': 'squeezev',
+            'zoom-in': 'zoomin',
+            
+            // Mapeamentos Especiais (Aproximações Visuais)
+            'page-turn': 'wipetl', // "Virar Página" (simulado via wipe diagonal superior esquerdo)
+            'cube-rotate-l': 'slideleft', 
+            'cube-rotate-r': 'slideright',
+            'spin-cw': 'radial', // Spin visualmente parece radial no fade
+            'spin-ccw': 'radial',
+            'whip-left': 'slideleft', // Whip é um slide rápido
+            'whip-right': 'slideright',
+            'whip-up': 'slideup',
+            'whip-down': 'slidedown',
+            
+            // Glitch e Pixel
+            'pixelize': 'pixelize',
+            'glitch': 'slideleft', // Glitch geralmente envolve movimento lateral
+            'pixel-sort': 'pixelize',
+            'hologram': 'pixelize'
+        };
+        
+        // Se não encontrar, fallback seguro para 'fade' para evitar erro no FFmpeg
+        return map[id] || 'fade';
+    }
+};
