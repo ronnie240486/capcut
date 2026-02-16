@@ -51,7 +51,8 @@ export default {
         const targetFps = parseInt(exportConfig.fps) || 30;
         
         // Filtro de Escala Seguro: Força resolução par e preenche com barras pretas se necessário (Letterbox)
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${targetFps},format=yuv420p`;
+        // Uso de -1:-1 no pad para centralização automática e evitar erros de arredondamento
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // SEPARAR TRILHAS
         // Video Principal (Base para transições xfade)
@@ -73,9 +74,6 @@ export default {
         let mainTrackLabels = [];
         let baseAudioSegments = [];
         
-        // Filtros globais pós-mixagem (ex: glitch global durante transição)
-        let globalPostFilters = [];
-
         // --- 1. CONSTRUIR TRILHA DE VÍDEO PRINCIPAL (Sequência com Transições) ---
         
         if (mainTrackClips.length === 0) {
@@ -165,7 +163,7 @@ export default {
 
                 // 5. ESCALA FINAL (Garantia pós-movimento)
                 // Alguns filtros de movimento podem alterar SAR/Dimensões
-                addFilter(`scale=${targetRes.w}:${targetRes.h},setsar=1`);
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:flags=lanczos,setsar=1`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -212,7 +210,7 @@ export default {
 
             for (let i = 1; i < mainTrackLabels.length; i++) {
                 const nextClip = mainTrackLabels[i];
-                const prevClip = mainTrackLabels[i-1]; 
+                // const prevClip = mainTrackLabels[i-1]; 
                 
                 // Pega a transição definida no clipe atual (que representa a transição entre Anterior -> Este)
                 const trans = nextClip.transition || { id: 'fade', duration: 0.5 };
