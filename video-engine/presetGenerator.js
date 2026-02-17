@@ -34,9 +34,9 @@ export default {
             'scan-line-v': 'drawgrid=x=0:w=4:t=1:c=black@0.5',
             'chromatic': "geq=r='p(X+5,Y)':g='p(X,Y)':b='p(X-5,Y)'",
             'rgb-split': "geq=r='p(X+10,Y)':g='p(X,Y)':b='p(X-10,Y)'",
-            // Use max(1, ...) to prevent 0 dimensions and trunc to ensure integers
-            'pixelate': 'scale=max(1,trunc(iw/20)):max(1,trunc(ih/20)):flags=nearest,scale=iw*20:ih*20:flags=neighbor',
-            'block-glitch': 'scale=max(1,trunc(iw/10)):max(1,trunc(ih/10)):flags=nearest,scale=iw*10:ih*10:flags=neighbor',
+            // Ensure min dim of 2 for pixelate steps
+            'pixelate': 'scale=max(2,trunc(iw/20)):max(2,trunc(ih/20)):flags=nearest,scale=iw*20:ih*20:flags=neighbor',
+            'block-glitch': 'scale=max(2,trunc(iw/10)):max(2,trunc(ih/10)):flags=nearest,scale=iw*10:ih*10:flags=neighbor',
             'bad-signal': 'noise=alls=20:allf=t+u,eq=contrast=1.5:brightness=0.1',
             'vhs-distort': 'curves=r=0/0.1 0.5/0.5 1/1:g=0/0 0.5/0.5 1/1:b=0/0 0.5/0.5 1/0.9,noise=alls=10:allf=t+u,eq=saturation=1.3',
             'glitch-pro-1': "geq=r='p(X+10*sin(T*10),Y)':g='p(X,Y)':b='p(X,Y)'",
