@@ -196,9 +196,10 @@ if (clip.properties && clip.properties.movement) {
 
                 // 5. ESCALA FINAL (Garantia pós-movimento)
                 // Alguns filtros de movimento podem alterar SAR/Dimensões
-                scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,
-pad=1920:1080:(1920-iw)/2:(1080-ih)/2:color=black,
-setsar=1
+                `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+`pad=${targetRes.w}:${targetRes.h}:(${targetRes.w}-iw)/2:(${targetRes.h}-ih)/2:color=black,` +
+`setsar=1`
+
 
 
                 mainTrackLabels.push({
