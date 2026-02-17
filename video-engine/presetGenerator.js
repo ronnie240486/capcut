@@ -1,4 +1,4 @@
-export default {
+module.exports = {
     getVideoArgs: () => [
         '-c:v', 'libx264',
         '-preset', 'ultrafast',
@@ -23,9 +23,6 @@ export default {
         '-q:a', '2'
     ],
 
-    // -------------------------------------------
-    // ✔️ VERSÃO CORRETA DO getFinalScaleFilter
-    // -------------------------------------------
     getFinalScaleFilter: (targetRes, targetFps) => {
         return [
             `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos`,
