@@ -51,8 +51,8 @@ export default {
         const targetFps = parseInt(exportConfig.fps) || 30;
         
         // Filtro de Escala Seguro: Força resolução par e preenche com barras pretas se necessário (Letterbox)
-        // Alterado de -1:-1 para (ow-iw)/2:(oh-ih)/2 para compatibilidade robusta
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
+        // Alterado para -1:-1 no pad para garantir centralização robusta mesmo com dimensões ímpares do scale
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // SEPARAR TRILHAS
         // Video Principal (Base para transições xfade)
@@ -157,6 +157,7 @@ export default {
                     if (moveFilter) addFilter(moveFilter);
                 } else if (clip.type === 'image') {
                     // Aplica um filtro zoompan neutro para imagens para garantir compatibilidade de pixel format e buffer
+                    // Agora passando targetRes corretamente
                     const staticMove = presetGenerator.getMovementFilter(null, duration, true, {}, targetRes, targetFps);
                     addFilter(staticMove);
                 }
