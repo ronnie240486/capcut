@@ -90,61 +90,60 @@ export default {
         let y = centerY;
 
         // =========================================================================
-        // 1. SPECIFIC REQUESTED MOVEMENTS (High Priority)
+        // 1. CHAOS & GLITCH MOVEMENTS (Requested Fixes)
         // =========================================================================
         
         if (id === 'mov-flash-pulse') {
             z = '1.0';
-            // Flash Brightness: Pulse between 0.0 and 0.4 every ~0.6s
-            postFilters.push("eq=brightness='0.2+0.2*sin(10*t)'");
+            // Brightness oscillation: 0.2 base + 0.3 swing
+            postFilters.push("eq=brightness='0.2+0.3*sin(12*t)'");
         
         } else if (id === 'mov-strobe-move') {
             z = '1.05'; 
-            // Strobe: Hard cuts between brightness 0.4 and -0.2
-            postFilters.push("eq=brightness='if(lt(mod(t,0.15),0.075),0.4,-0.2)'");
+            // Strobe: Hard cuts using modulo
+            postFilters.push("eq=brightness='if(lt(mod(t,0.1),0.05),0.5,-0.3)'");
         
         } else if (id === 'mov-frame-skip') {
             z = '1.0';
-            // Frame Skip: Hold position periodically
-            // We use zoompan for position control. floor(sin) creates stepped movement
-            x = `${centerX} + 30*floor(sin(8*time))`;
+            // Simulate low FPS stop-motion by stepping X position
+            x = `${centerX} + 40*floor(sin(8*time))`;
         
         } else if (id === 'mov-vhs-tracking') {
             z = '1.1';
-            // VHS Tracking: Slow vertical drift with jitter + noise
-            y = `${centerY} + 15*sin(2*time) + 5*sin(50*time)`;
+            // Vertical drift + noise
+            y = `${centerY} + 20*sin(2*time) + 5*sin(50*time)`;
             postFilters.push("noise=alls=20:allf=t+u,eq=saturation=1.4");
             
         } else if (id === 'mov-jitter-y') {
             z = '1.1';
-            // Rapid vertical jitter (Frequency ~50 rad/s is visible at 30fps)
-            y = `${centerY} + 20*sin(50*time)`;
+            // Fast vertical shake (Frequency ~40 rad/s is safe for 30fps)
+            y = `${centerY} + 20*sin(40*time)`;
             
         } else if (id === 'mov-jitter-x') {
             z = '1.1';
-            // Rapid horizontal jitter
-            x = `${centerX} + 20*sin(50*time)`;
+            // Fast horizontal shake
+            x = `${centerX} + 20*sin(40*time)`;
             
         } else if (id === 'mov-rgb-shift-move') {
             z = '1.05';
-            // RGB Shift: Using GEQ (Generic Equation) because rgbashift doesn't animate well
-            // Shift Red and Blue channels based on time
-            // r(x,y) = p(x+shift, y), g(x,y) = p(x,y), b(x,y) = p(x-shift, y)
-            // T is time in seconds
-            const shiftExpr = "20*sin(5*T)";
-            postFilters.push(`geq=r='p(X+(${shiftExpr}),Y)':g='p(X,Y)':b='p(X-(${shiftExpr}),Y)'`);
+            // RGB Shift using GEQ (Generic Equation)
+            // Shift Red left/right based on sine wave
+            const shiftAmount = "20*sin(6*T)";
+            // r(x,y) = p(x+shift, y), g(x,y) = p(x, y), b(x,y) = p(x-shift, y)
+            postFilters.push(`geq=r='p(X+(${shiftAmount}),Y)':g='p(X,Y)':b='p(X-(${shiftAmount}),Y)'`);
             
         } else if (id === 'mov-shake-violent') {
             z = '1.2'; 
-            // Violent Shake: Chaotic movement on both axes
-            // Frequencies around 40-70 are fast but visible. 
+            // Chaotic movement on X and Y
             x = `${centerX} + 40*sin(45*time)`;
             y = `${centerY} + 40*cos(65*time)`;
+            // Add some blur for "violent" feel
+            postFilters.push("boxblur=2:1");
             
         } else if (id === 'mov-glitch-skid') {
             z = '1.1';
-            // Skid: Fast horizontal slide with a reset
-            x = `${centerX} + (iw/8)*sin(4*time)`;
+            // Fast slide back and forth
+            x = `${centerX} + (iw/6)*sin(4*time)`;
         
         }
         
@@ -209,49 +208,53 @@ export default {
             }
             else if (id.includes('float')) {
                  z = '1.05';
-                 x = `(iw-ow)/2 + 20*sin(time)`;
-                 y = `(ih-oh)/2 + 20*cos(time)`;
+                 x = `${centerX} + 20*sin(time)`;
+                 y = `${centerY} + 20*cos(time)`;
             }
-            else if (id.includes('perspective')) {
-                z = '1.2';
-                if (id.includes('u')) y = `${centerY} - (on*2)`;
+            else if (id.includes('spin-axis')) {
+                 z = '1.2';
+                 postFilters.push(`rotate=a='2*PI*t/5':c=none`); 
+            }
+            else if (id.includes('swing-l')) {
+                 z = '1.2';
+                 x = `${centerX} - 40*sin(time)`;
+            }
+            else if (id.includes('swing-r')) {
+                 z = '1.2';
+                 x = `${centerX} + 40*sin(time)`;
+            }
+            else if (id.includes('perspective-u')) {
+                 z = '1.2';
+                 y = `${centerY} - 40*sin(time)`;
+            }
+            else if (id.includes('perspective-d')) {
+                 z = '1.2';
+                 y = `${centerY} + 40*sin(time)`;
             }
 
         // =========================================================================
-        // 5. GLITCH E CAOS GENERIC
+        // 5. GENERIC FALLBACKS
         // =========================================================================
-        } else if (id.includes('glitch') || id.includes('chaos') || id.includes('tear') || id.includes('vhs') || id.includes('frame-skip') || id.includes('strobe') || id.includes('jitter')) {
-            // Already handled specifically above, generic fallbacks here
-             if (id.includes('snap')) {
-                // simple horizontal snap
-                x = `${centerX} + if(lt(mod(time,1),0.1), 50, 0)`;
-             } else {
-                 postFilters.push(`noise=alls=20:allf=t+u`);
-             }
-
-        // =========================================================================
-        // 6. ELASTIC & FUN
-        // =========================================================================
-        } else if (id.includes('elastic') || id.includes('bounce') || id.includes('jelly') || id.includes('flash-pulse') || id.includes('spring') || id.includes('rubber') || id.includes('pendulum') || id.includes('pop-up') || id.includes('squash') || id.includes('tada')) {
-            
+        } else if (id.includes('glitch') || id.includes('chaos')) {
+             postFilters.push(`noise=alls=20:allf=t+u`);
+        } else if (id.includes('elastic') || id.includes('bounce') || id.includes('jelly')) {
             z = '1.4'; 
-            
             if (id === 'mov-bounce-drop') {
                 const amp = '200';
                 y = `${centerY} - ${amp}*exp(-3*time)*cos(15*time)`; 
             } 
-            else if (id === 'mov-elastic-snap-l' || id === 'mov-elastic-band') {
+            else if (id === 'mov-elastic-snap-l') {
                 const amp = '300';
                 x = `${centerX} - ${amp}*exp(-3*time)*cos(12*time)`;
             }
-            else if (id === 'mov-elastic-snap-r' || id === 'mov-elastic-right') {
+            else if (id === 'mov-elastic-snap-r') {
                 const amp = '300';
                 x = `${centerX} + ${amp}*exp(-3*time)*cos(12*time)`;
             }
             else if (id === 'mov-rubber-band') {
                 z = '1.2 + 0.15*sin(10*time)';
             }
-            else if (id.includes('jelly') || id === 'mov-jelly-wobble') {
+            else if (id.includes('jelly')) {
                  x = `${centerX} + 10*sin(15*time)`;
                  y = `${centerY} + 10*cos(15*time)`;
             }
@@ -263,25 +266,29 @@ export default {
                  const amp = '200';
                  y = `${centerY} - ${amp}*exp(-3*time)*cos(12*time)`;
             }
-            else if (id === 'mov-pendulum-swing' || id === 'mov-pendulun') {
+            else if (id === 'mov-pendulum-swing') {
                  z = '1.3';
                  postFilters.push(`rotate=a='0.2*sin(3*t)*exp(-0.2*t)':c=none:ow=rotw(iw):oh=roth(ih)`);
             }
-            else if (id === 'mov-pop-up' || id === 'mov-popup') {
+            else if (id === 'mov-pop-up') {
                  z = '1.0 + 0.5*sin(PI*min(time,0.5))'; 
             }
-            else if (id === 'mov-squash-stretch' || id === 'mov-squash') {
+            else if (id === 'mov-squash-stretch') {
                  z = '1.2 + 0.1*sin(8*time)';
             }
-            else if (id === 'mov-tada' || id === 'mov-tadal') {
+            else if (id === 'mov-tada') {
                  z = '1.2';
                  postFilters.push(`rotate=a='0.1*sin(10*t)*min(1,t)':c=none`);
             }
-
+            else if (id === 'mov-flash-pulse') { // Fallback if exact ID not matched above
+                 postFilters.push("eq=brightness='0.2+0.2*sin(10*t)'");
+            }
+        } 
+        
         // =========================================================================
         // 7. ANIMAÇÃO DE ENTRADA
         // =========================================================================
-        } else if (id.includes('slide-in') || id === 'pop-in' || id === 'fade-in' || id.includes('swing-in')) {
+        else if (id.includes('slide-in') || id === 'pop-in' || id === 'fade-in' || id.includes('swing-in')) {
             if (id === 'slide-in-left') {
                  x = `(iw-ow)/2 - (iw)*(1-min(time*2,1))`;
                  y = `(ih-oh)/2`;
@@ -301,10 +308,7 @@ export default {
             } else if (id === 'swing-in') {
                  postFilters.push(`rotate=a='if(lt(t,1), -10*(1-t)*PI/180, 0)':c=none:ow=rotw(iw):oh=roth(ih)`);
             }
-
-        // =========================================================================
-        // 8. BLUR & SHAKE & LOOP
-        // =========================================================================
+        
         } else if (id.includes('blur')) {
             if (id.includes('in')) postFilters.push(`boxblur=20:1:enable='between(t,0,0.5)'`);
             else if (id.includes('out')) postFilters.push(`boxblur=20:1:enable='between(t,${Math.max(0, durationSec-0.5)},${durationSec})'`);
