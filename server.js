@@ -257,22 +257,18 @@ app.post('/api/export/start', uploadAny, (req, res) => {
                 .filter(f => f.mimetype.startsWith('audio'))
                 .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
 
-            handleExportVideo(videoInputs, audioInputs, uploadDir, (id, args, dur) => {
-                const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
-                createFFmpegJob(id, safeArgs, dur);
-            }).catch(err => {
-                console.error(`Export Job Failed [${jobId}]:`, err);
-                job.status = 'failed';
-                job.error = "Export Initialization Failed: " + err.message;
-            });
-
-        } catch (e) {
-            console.error(`Failed to init export job [${jobId}]:`, e);
+           setTimeout(() => {
+    handleExportVideo(jobs[jobId], uploadDir, (id, args, dur) => {
+        const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
+        createFFmpegJob(id, safeArgs, dur);
+    }).catch(err => {
+        console.error(`Export Job Failed [${jobId}]:`, err);
+        if (jobs[jobId]) {
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = e.message;
+            jobs[jobId].error = "Export Initialization Failed: " + err.message;
         }
-    }, 100);
-});
+    });
+}, 100);
 
 app.get('/api/process/status/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
