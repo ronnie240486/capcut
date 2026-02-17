@@ -79,9 +79,11 @@ export default {
 
     getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}, targetRes = {w:1280, h:720}, targetFps = 30) => {
         const fps = targetFps || 30;
+        const w = targetRes.w;
+        const h = targetRes.h;
         const frames = Math.max(1, Math.ceil(durationSec * fps));
         const progress = `(on/${frames})`; 
-        const base = `zoompan=d=${isImage ? frames : 1}:s=${targetRes.w}x${targetRes.h}:fps=${fps}`; 
+        const base = `zoompan=d=${isImage ? frames : 1}:s=${w}x${h}:fps=${fps}`; 
         const centerX = `(iw/2)-(iw/zoom/2)`;
         const centerY = `(ih/2)-(ih/zoom/2)`;
 
