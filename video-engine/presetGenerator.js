@@ -118,6 +118,7 @@ export default {
         let z = '1.0';
         let x = '(iw-ow)/2';
         let y = '(ih-oh)/2';
+        let extra = ''; // For filters like blur
         
         // --- 1. PROCEDURAL PARSING (mov- prefix) ---
         if (moveId && moveId.startsWith('mov-pan-')) {
@@ -133,6 +134,7 @@ export default {
             else if (moveId.includes('diag-bl')) { x = `(iw-ow)*(on/${frames})`; y = `(ih-oh)*(1-on/${frames})`; }
             else if (moveId.includes('diag-br')) { x = `(iw-ow)*(1-on/${frames})`; y = `(ih-oh)*(1-on/${frames})`; }
         }
+        // --- ZOOMS ---
         else if (moveId && moveId.startsWith('mov-zoom-')) {
             if (moveId.includes('crash-in')) {
                 z = `min(zoom+0.05,2.0)`;
@@ -154,6 +156,41 @@ export default {
                 z = `1.05+0.05*sin(2*PI*on/(${frames}/${freq}))`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
             }
+        }
+        // --- BLURS ---
+        else if (moveId && moveId.startsWith('mov-blur-')) {
+            // Apply blur via gblur filter chained after zoompan in the filter builder logic, 
+            // OR return a complex filter chain string if possible.
+            // Simplified: Use simple zoom + gblur logic.
+            if (moveId.includes('in')) extra = `,gblur=sigma='20*(1-t/1)':enable='between(t,0,1)'`;
+            else if (moveId.includes('out')) extra = `,gblur=sigma='20*(t/${durationSec-1}-1)':enable='between(t,${durationSec-1},${durationSec})'`;
+            else if (moveId.includes('pulse')) extra = `,gblur=sigma='5*sin(2*PI*t)':enable='between(t,0,${durationSec})'`;
+            else if (moveId.includes('zoom')) {
+                z = `min(zoom+0.01,1.5)`; // Add slight zoom to blur zoom
+                extra = `,gblur=sigma='2*sin(2*PI*t)':enable='between(t,0,${durationSec})'`;
+            }
+        }
+        // --- ELASTIC / FUN / ENTRY (Simulated) ---
+        else if (moveId && (moveId.startsWith('mov-elastic-') || moveId.startsWith('slide-in-') || moveId.startsWith('pop-'))) {
+            // Entry animations usually involve starting off-screen or at scale 0.
+            // Zoompan can simulate this by zooming from very small (or large crop) to normal.
+            if (moveId.includes('slide-in-left')) {
+                // Pan from right (content moves left? No, frame moves).
+                // x moves from 0 to center.
+                x = `(iw-ow)/2 * (t/1)`; // Move frame from left edge to center over 1s
+                z = '1.0';
+            } else if (moveId.includes('pop-in')) {
+                // Zoom from 0.1 to 1.0 quickly with bounce
+                z = `if(lt(t,0.5), 0.1 + (1.2-0.1)*(t/0.5), max(1.0, 1.2 - 0.2*((t-0.5)/0.5)))`;
+            } else if (moveId.includes('elastic')) {
+                // Bouncy zoom
+                z = `1.0 + 0.1*sin(3*PI*t)*exp(-2*t)`;
+            }
+        }
+        // --- LOOPS ---
+        else if (moveId && (moveId === 'pulse' || moveId === 'float' || moveId === 'heartbeat')) {
+            z = `1.0 + 0.05*sin(2*PI*t)`; // Pulse
+            if (moveId === 'float') y = `(ih-oh)/2 + 20*sin(2*PI*t/3)`;
         }
         // SHAKES (Simulated via crop/position jitter)
         else if (moveId && (moveId.includes('shake') || moveId.includes('jitter') || moveId.includes('earthquake') || moveId.includes('glitch'))) {
@@ -181,7 +218,7 @@ export default {
              z = '1.0'; x = '0'; y = '0';
         }
         
-        return `zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`;
+        return `zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}${extra}`;
     },
 
     getTransitionXfade: (id) => {
