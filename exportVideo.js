@@ -1,57 +1,62 @@
-import fs from 'fs';
+// exportVideo.js
 import path from 'path';
-import { spawn } from 'child_process';
+import fs from 'fs/promises';
 
-/**
- * Normaliza os inputs garantindo que sejam arrays de objetos { path, duration }
- */
-function normalizeInputs(inputs, type) {
-    if (!Array.isArray(inputs)) throw new Error(`${type} deve ser um array`);
-    return inputs.map((item, index) => {
-        if (!item.path) throw new Error(`Todos os ${type} devem ter { path, duration }`);
-        return {
-            path: item.path,
-            duration: typeof item.duration === 'number' ? item.duration : 5 // default 5s
-        };
-    });
-}
-
-/**
- * handleExportVideo
- * @param {Array} videoInputs Array de vídeos { path, duration }
- * @param {Array} audioInputs Array de áudios { path, duration }
- * @param {String} outputDir Diretório de saída
- * @param {Function} callback Recebe (jobId, ffmpegArgs, totalDuration)
- */
-export async function handleExportVideo(videoInputs, audioInputs, outputDir, callback) {
+export async function handleExportVideo(job, uploadDir, ffmpegCallback) {
     try {
-        // Normaliza os inputs
-        const videos = normalizeInputs(videoInputs, 'videoInputs');
-        const audios = normalizeInputs(audioInputs, 'audioInputs');
+        // Garantir que videoInputs e audioInputs sejam arrays
+        const videoInputs = Array.isArray(job.params.videoInputs) ? job.params.videoInputs : [];
+        const audioInputs = Array.isArray(job.params.audioInputs) ? job.params.audioInputs : [];
 
-        // Cria jobId
-        const jobId = `export_${Date.now()}`;
+        if (videoInputs.length === 0 || audioInputs.length === 0) {
+            throw new Error("Todos os videoInputs e audioInputs devem ser arrays não vazios");
+        }
 
-        // Paths de saída
-        const outputPath = path.join(outputDir, `export_${Date.now()}.mp4`);
+        // Validar cada item
+        videoInputs.forEach((v, i) => {
+            if (!v.path || !v.duration) {
+                throw new Error(`videoInput[${i}] deve ter { path, duration }`);
+            }
+        });
+        audioInputs.forEach((a, i) => {
+            if (!a.path || !a.duration) {
+                throw new Error(`audioInput[${i}] deve ter { path, duration }`);
+            }
+        });
 
-        // FFmpeg args básicos
+        // Montar argumentos do FFmpeg
         const args = [];
+        const filterParts = [];
+        let inputCount = 0;
 
-        // Adiciona vídeos
-        videos.forEach(v => {
-            args.push('-i', v.path);
-        });
+        for (let i = 0; i < videoInputs.length; i++) {
+            const v = videoInputs[i];
+            const a = audioInputs[i];
 
-        // Adiciona áudios
-        audios.forEach(a => {
+            // Loop 1 imagem para durar o tempo do áudio
+            args.push('-loop', '1', '-t', a.duration, '-i', v.path);
+
+            // Adicionar áudio
             args.push('-i', a.path);
-        });
 
-        // Combinar vídeos e áudios (simples crossfade/concat)
-        // Aqui você pode personalizar filtros complexos
-        // Para teste inicial, vamos apenas copiar streams
-        args.push(
+            // Para filter_complex: mapear cada par para concatenação final
+            filterParts.push(`[${inputCount}:v][${inputCount + 1}:a]`);
+            inputCount += 2;
+        }
+
+        // Criar filter_complex para concatenar todos
+        const concatCount = videoInputs.length;
+        const filterComplex = `${filterParts.join('')}concat=n=${concatCount}:v=1:a=1[outv][outa]`;
+
+        // Caminho final
+        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
+
+        // Chamar callback para spawn FFmpeg
+        ffmpegCallback(job.id, [
+            ...args,
+            '-filter_complex', filterComplex,
+            '-map', '[outv]',
+            '-map', '[outa]',
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
             '-c:a', 'aac',
@@ -59,15 +64,7 @@ export async function handleExportVideo(videoInputs, audioInputs, outputDir, cal
             '-shortest',
             '-y',
             outputPath
-        );
-
-        // Calcula duração total estimada (soma dos vídeos)
-        const totalDuration = videos.reduce((sum, v) => sum + v.duration, 0);
-
-        // Retorna para o server criar o processo FFmpeg
-        callback(jobId, args, totalDuration);
-
-        return outputPath;
+        ], videoInputs.reduce((sum, v) => sum + parseFloat(v.duration), 0));
 
     } catch (err) {
         console.error("Erro em handleExportVideo:", err);
