@@ -97,61 +97,40 @@ function timeToSeconds(timeStr) {
     return (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
 }
 
-function createFFmpegJob(jobId, args, expectedDuration, res) {
+function createFFmpegJob(jobId, args, expectedDuration, outputPath) {
     if (!jobs[jobId]) jobs[jobId] = { id: jobId, startTime: Date.now() };
     jobs[jobId].status = 'processing';
     jobs[jobId].progress = 0;
-    
-    if (res && !res.headersSent) res.status(202).json({ jobId });
 
-    const finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', ...args];
-    console.log(`[Job ${jobId}] Spawning FFmpeg:`, finalArgs.join(' '));
-    
-    try {
-        const ffmpeg = spawn('ffmpeg', finalArgs);
-        
-        let stderr = '';
-        ffmpeg.stderr.on('data', d => {
-            const line = d.toString();
-            stderr += line;
-            // Parse duration
-            const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
-            if (timeMatch && expectedDuration > 0) {
-                const t = timeToSeconds(timeMatch[1]);
-                const p = Math.round((t / expectedDuration) * 100);
-                if (jobs[jobId]) jobs[jobId].progress = Math.min(99, Math.max(0, p));
-            }
-        });
+    // Registra outputPath
+    jobs[jobId].outputPath = outputPath;
 
-        ffmpeg.on('error', (err) => {
-            console.error(`[Job ${jobId}] Spawn Error:`, err);
-            if (jobs[jobId]) {
-                jobs[jobId].status = 'failed';
-                jobs[jobId].error = err.message;
-            }
-        });
+    console.log(`[Job ${jobId}] Spawning FFmpeg:`, args.join(' '));
 
-        ffmpeg.on('close', (code) => {
-            if (!jobs[jobId]) return;
-            if (code === 0) {
-                console.log(`[Job ${jobId}] Completed`);
-                jobs[jobId].status = 'completed';
-                jobs[jobId].progress = 100;
-                jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
-            } else {
-                console.error(`[Job ${jobId}] Failed code ${code}`, stderr);
-                jobs[jobId].status = 'failed';
-                jobs[jobId].error = stderr.includes('memory') ? "Out of Memory (Server)" : "Processing Failed";
-            }
-        });
-    } catch (e) {
-        console.error(`[Job ${jobId}] Exception:`, e);
-        if(jobs[jobId]) {
+    const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-stats', ...args]);
+
+    let stderr = '';
+    ffmpeg.stderr.on('data', d => { stderr += d.toString(); });
+
+    ffmpeg.on('error', (err) => {
+        console.error(`[Job ${jobId}] FFmpeg Error:`, err);
+        jobs[jobId].status = 'failed';
+        jobs[jobId].error = err.message;
+    });
+
+    ffmpeg.on('close', (code) => {
+        if (code === 0) {
+            console.log(`[Job ${jobId}] Completed. Output: ${outputPath}`);
+            jobs[jobId].status = 'completed';
+            jobs[jobId].progress = 100;
+        } else {
+            console.error(`[Job ${jobId}] Failed with code ${code}`, stderr);
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = "Internal Server Error";
+            jobs[jobId].error = "Processing Failed";
         }
-    }
+    });
 }
+
 
 // Routes
 app.get('/api/proxy/pixabay', (req, res) => {
