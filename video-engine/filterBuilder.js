@@ -18,7 +18,7 @@ function getAtempoFilter(speed) {
     return filters.join(',');
 }
 
-export default {
+module.exports = {
     /**
      * Builds the filter graph based on the action type.
      */
@@ -32,7 +32,8 @@ export default {
                 const speed = parseFloat(params.speed) || 0.5;
                 const factor = 1 / speed;
                 // Mininterpolate + Scale to safe dimensions (1280 width, height divisible by 2)
-                filterComplex = `[0:v]scale='min(1280,iw)':-2,pad=ceil(iw/2)*2:ceil(ih/2)*2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
+                // Use strict trunc/2*2 to guarantee even dimensions for minterpolate
+                filterComplex = `[0:v]scale=trunc(min(1280,iw)/2)*2:-2,pad=ceil(iw/2)*2:ceil(ih/2)*2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
                 mapArgs = ['-map', '[v]'];
                 // We ignore audio for slow motion interpolation usually, or we'd need to stretch it too
                 break;
