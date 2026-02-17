@@ -263,19 +263,23 @@ app.post('/api/export/start', uploadAny, (req, res) => {
 
     // Chama handleExportVideo após 100ms
     setTimeout(() => {
-        handleExportVideo(job, uploadDir, (id, args, dur) => {
-            // Adiciona max_muxing_queue_size para evitar erros de FFmpeg
-            const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
-            createFFmpegJob(id, safeArgs, dur);
-        }).catch(err => {
-            console.error(`Export Job Failed [${jobId}]:`, err);
-            if (job) {
-                job.status = 'failed';
-                job.error = "Export Initialization Failed: " + err.message;
-            }
-        });
-    }, 100);
-});
+    handleExportVideo(jobs[jobId], uploadDir, (id, args, dur, outputPath) => {
+        const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
+
+        // Atualiza o job com o caminho do arquivo de saída
+        if (!jobs[id]) jobs[id] = {};
+        jobs[id].outputPath = outputPath;
+
+        createFFmpegJob(id, safeArgs, dur, outputPath);
+    }).catch(err => {
+        console.error(`Export Job Failed [${jobId}]:`, err);
+        if (jobs[jobId]) {
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = "Export Initialization Failed: " + err.message;
+        }
+    });
+}, 100);
+
 
 
 
