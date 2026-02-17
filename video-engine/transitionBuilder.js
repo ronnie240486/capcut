@@ -51,8 +51,6 @@ export default {
         const targetFps = parseInt(exportConfig.fps) || 30;
         
         // Filtro de Escala Seguro
-        // Simplified double-scale to prevent parsing errors and ensure even dimensions for yuv420p.
-        // Step 1: Scale to fit inside target box. Step 2: Round to nearest even number. Step 3: Pad to target.
         const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // CALCULAR DURAÇÃO TOTAL DO PROJETO
@@ -60,54 +58,52 @@ export default {
         const projectDuration = Math.max(explicitTotalDuration, maxClipEnd, 1);
 
         // SEPARAR TRILHAS
-        // Video Principal (A-Roll) - Apenas trilha 'video'
         const mainTrackClips = clips.filter(c => c.track === 'video').sort((a, b) => a.start - b.start);
-
-        // Overlays (Texto, Legendas, e TUDO da trilha 'camada')
+        
         const overlayClips = clips.filter(c => 
             ['text', 'subtitle', 'camada'].includes(c.track)
         ).sort((a, b) => a.start - b.start);
 
-        // Audio Clips
         const audioClips = clips.filter(c => 
             ['audio', 'narration', 'music', 'sfx'].includes(c.track) ||
             (c.type === 'audio' && !['video', 'camada', 'text'].includes(c.track))
         );
 
-        // --- 0. GERAR BACKGROUND BASE ---
-        let baseStream = '[bg_base]';
+        // --- 0. GERAR BACKGROUND BASE (VIDEO & AUDIO) ---
         
+        // Video Base (Black or Image)
+        let baseVideoStream = '[bg_base]';
         const bgFile = fileMap['background']; 
         if (bgFile) {
              inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', bgFile);
              const bgIdx = inputIndexCounter++;
-             // Ensure safe scaling for background crop
              filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale=trunc(iw/2)*2:trunc(ih/2)*2,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
         } else {
              inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
-             baseStream = `[${inputIndexCounter++}:v]`;
+             baseVideoStream = `[${inputIndexCounter++}:v]`;
         }
 
-        // Placeholder de áudio base (silêncio)
-        let baseAudioSegments = [];
-        inputs.push('-f', 'lavfi', '-t', '0.1', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-        const silenceSrcIdx = inputIndexCounter++;
-        let mainAudioStream = `[${silenceSrcIdx}:a]`; 
+        // Audio Base (Full Duration Silence) - Critical for AMIX stability
+        let baseAudioStream = '[base_audio_silence]';
+        inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+        const silenceIdx = inputIndexCounter++;
+        filterChain += `[${silenceIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[base_audio_silence];`;
 
         // --- 1. PROCESSAR TRILHA PRINCIPAL (VIDEO) ---
-        let mainTrackStream = null;
+        let mainTrackVideoStream = null;
+        let mainTrackAudioStream = null;
         
         if (mainTrackClips.length > 0) {
              let mainTrackLabels = [];
+             let mainTrackAudioSegments = [];
              
              mainTrackClips.forEach((clip, i) => {
                 const filePath = fileMap[clip.fileName];
                 if (!filePath) return;
 
-                const duration = Math.max(0.5, parseFloat(clip.duration) || 5);
+                const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
 
                 if (clip.type === 'image') {
-                    // Loop for slightly longer than needed to prevent zoompan running out of frames
                     inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath); 
                 } else {
                     inputs.push('-i', filePath);
@@ -123,32 +119,26 @@ export default {
                     currentV = `[${nextLabel}]`;
                 };
 
-                // Standardize Resolution FIRST
+                // Standardize Resolution
                 addFilter(SCALE_FILTER);
 
                 if (clip.type !== 'image') {
                     const start = clip.mediaStartOffset || 0;
                     addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
                 } else {
-                    // For images, we DO NOT trim here if we are going to use zoompan.
-                    // Zoompan (d=...) sets the duration. Trimming beforehand to exact duration can cause off-by-one frame errors.
-                    // Just reset PTS.
                     addFilter(`setpts=PTS-STARTPTS`);
                 }
                 
-                // Transitions logic (Zoom Neg, etc)
                 if (clip.transition && clip.transition.id === 'zoom-neg') {
                     const transDur = clip.transition.duration || 0.5;
                     addFilter(`negate=enable='between(t,0,${transDur})'`);
                 }
 
-                // Effects
                 if (clip.effect) {
                     const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                     if (fx) addFilter(fx);
                 }
                 
-                // Color Adjustments
                 if (clip.properties && clip.properties.adjustments) {
                     const adj = clip.properties.adjustments;
                     let eqParts = [];
@@ -161,7 +151,6 @@ export default {
                     if (eqFilter) addFilter(eqFilter);
                 }
 
-                // Movement
                 let moveApplied = false;
                 if (clip.properties && clip.properties.movement) {
                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
@@ -171,13 +160,11 @@ export default {
                     }
                 } 
                 
-                // If no movement was applied AND it's an image, apply static zoompan to fix duration and ensure consistency
                 if (!moveApplied && clip.type === 'image') {
                     const staticMove = presetGenerator.getMovementFilter(null, duration, true, {}, targetRes, targetFps);
                     addFilter(staticMove);
                 }
 
-                // Final scale ensure to handle any zoompan resolution changes AND force pixel format
                 addFilter(`scale=${targetRes.w}:${targetRes.h}:flags=lanczos,setsar=1,format=yuv420p`);
 
                 mainTrackLabels.push({
@@ -195,28 +182,29 @@ export default {
                     const audioFormatFilter = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp,aresample=async=1';
                     
                     filterChain += `[${idx}:a]${audioFormatFilter},atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${vol}[${audioLabel}];`;
-                    baseAudioSegments.push(`[${audioLabel}]`);
+                    mainTrackAudioSegments.push(`[${audioLabel}]`);
                 } else {
-                    // Padding Audio
-                    const audioLabel = `a_silence_${i}`;
-                    const silenceIdx = inputIndexCounter++;
+                    // Padding Audio (Silence for this clip duration)
+                    const audioLabel = `a_pad_${i}`;
+                    // Re-use the main silence source if possible, but trimming it is safer for concatenation
+                    const padIdx = inputIndexCounter++;
                     inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-                    filterChain += `[${silenceIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${audioLabel}];`;
-                    baseAudioSegments.push(`[${audioLabel}]`);
+                    filterChain += `[${padIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${audioLabel}];`;
+                    mainTrackAudioSegments.push(`[${audioLabel}]`);
                 }
              });
 
-             // Compor Trilha Principal com XFADE
+             // Compor Trilha Principal (Video & Audio Concat/Xfade)
              if (mainTrackLabels.length > 0) {
                 let currentMixV = mainTrackLabels[0].label;
-                let currentMixA = baseAudioSegments[0];
+                let currentMixA = mainTrackAudioSegments[0];
                 let accumulatedDuration = mainTrackLabels[0].duration;
 
                 for (let i = 1; i < mainTrackLabels.length; i++) {
                     const nextClip = mainTrackLabels[i];
                     const trans = nextClip.transition || { id: 'fade', duration: 0.5 };
                     const hasExplicitTrans = !!nextClip.transition;
-                    let transDur = hasExplicitTrans ? trans.duration : 0.04; // 0.04 = hard cut safety
+                    let transDur = hasExplicitTrans ? trans.duration : 0.04; 
                     const offset = accumulatedDuration - transDur;
                     
                     if (offset < 0) transDur = 0.04; 
@@ -226,31 +214,27 @@ export default {
                     const nextLabelA = `mix_a_${i}`;
                     
                     filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
-                    filterChain += `${currentMixA}${baseAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
+                    filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
                     
                     currentMixV = `[${nextLabelV}]`;
                     currentMixA = `[${nextLabelA}]`;
                     accumulatedDuration = offset + nextClip.duration;
                 }
-                mainTrackStream = currentMixV;
-                mainAudioStream = currentMixA;
+                mainTrackVideoStream = currentMixV;
+                mainTrackAudioStream = currentMixA;
              }
         }
 
         // --- 2. JUNTAR BACKGROUND COM MAIN TRACK ---
-        let finalComp = baseStream;
+        let finalComp = baseVideoStream;
         
-        // Se temos trilha principal, sobrepomos ao fundo. 
-        if (mainTrackStream) {
+        if (mainTrackVideoStream) {
             const compLabel = `comp_base`;
-            // overlay=eof_action=pass garante que o fundo continue se o video acabar antes
-            filterChain += `${baseStream}${mainTrackStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
+            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
             finalComp = `[${compLabel}]`;
         }
 
-        // --- 3. APLICAR OVERLAYS (Camadas, Texto, etc) ---
-        // Overlay Clips são posicionados pelo timestamp absoluto (clip.start)
-        
+        // --- 3. APLICAR OVERLAYS ---
         overlayClips.forEach((clip, i) => {
             let overlayInputLabel = '';
             
@@ -297,7 +281,6 @@ export default {
                  overlayInputLabel = `[${txtLabel}]`;
 
             } else {
-                 // IMAGE OR VIDEO OVERLAY (PIP)
                  const filePath = fileMap[clip.fileName];
                  if (!filePath) return;
                  
@@ -317,8 +300,6 @@ export default {
                      const start = clip.mediaStartOffset || 0;
                      filters.push(`trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS`);
                  } else {
-                     // For image overlays, we also rely on trim here because we might not apply zoompan.
-                     // But if we apply effects that require time (like glitch), we need stream duration.
                      filters.push(`trim=duration=${clip.duration},setpts=PTS-STARTPTS`);
                  }
                  
@@ -327,25 +308,20 @@ export default {
                      if (fx) filters.push(fx);
                  }
                  
-                 // Transform (Scale & Rotate)
                  const scale = clip.properties.transform?.scale || 0.5;
-                 // Force even width calculation
                  const w = Math.max(2, Math.floor(targetRes.w * scale / 2) * 2);
-                 // Scale with explicit -2 height logic to preserve aspect but enforce even dimensions
                  filters.push(`scale=${w}:-2`);
                  
                  if (clip.properties.transform?.rotation) {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
                  }
                  
-                 // Ensure pixel format matches main composition to avoid "Failed to configure output pad" errors
                  filters.push('format=yuv420p');
 
                  filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
                  overlayInputLabel = `[${processedLabel}]`;
             }
 
-            // Aplicar Overlay com Timing
             const nextCompLabel = `comp_${i}`;
             const startTime = clip.start;
             const endTime = startTime + clip.duration;
@@ -361,15 +337,21 @@ export default {
 
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            
             filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
 
-        // --- 4. MIXAGEM DE ÁUDIO (Trilhas Extras) ---
-        let audioMixInputs = [mainAudioStream];
+        // --- 4. MIXAGEM DE ÁUDIO (ROBUSTA) ---
+        // Start with the full duration silence
+        let audioMixInputs = [baseAudioStream];
         const safeAudioFormat = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
         
+        // Add Main Track Audio if exists
+        if (mainTrackAudioStream) {
+            audioMixInputs.push(mainTrackAudioStream);
+        }
+
+        // Add Extra Audio Clips
         audioClips.forEach((clip, i) => {
             const filePath = fileMap[clip.fileName];
             if (!filePath) return;
@@ -386,7 +368,7 @@ export default {
             audioMixInputs.push(`[${lbl}]`);
         });
 
-        // Também adicionar áudio de clipes da CAMADA se forem videos
+        // Add Layer Audio Clips
         overlayClips.forEach((clip, i) => {
             if (clip.type === 'video') {
                 const filePath = fileMap[clip.fileName];
@@ -407,11 +389,8 @@ export default {
         });
 
         let finalAudio = '[final_audio_out]';
-        if (audioMixInputs.length > 1) {
-            filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
-        } else {
-            finalAudio = mainAudioStream;
-        }
+        // Use amix with duration=first because the first input is our full-length silence track
+        filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
 
         if (filterChain.endsWith(';')) {
             filterChain = filterChain.slice(0, -1);
