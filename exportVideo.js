@@ -1,97 +1,85 @@
-
+// exportVideo.js
 import path from 'path';
-import fs from 'fs';
-import { exec } from 'child_process';
-import transitionBuilder from './video-engine/transitionBuilder.js';
+import fs from 'fs/promises';
 
-function validateAndProbe(filePath) {
-    return new Promise((resolve) => {
-        // 1. Basic Size Check
-        try {
-            const stats = fs.statSync(filePath);
-            if (stats.size < 100) { 
-                 console.warn(`[Export] Skipping empty/tiny file: ${filePath} (${stats.size} bytes)`);
-                 return resolve({ isValid: false });
-            }
-        } catch(e) {
-            console.warn(`[Export] File not found: ${filePath}`);
-            return resolve({ isValid: false });
+// Normaliza inputs e garante que são arrays válidos
+function normalizeInputs(inputs, type = 'video') {
+    if (!Array.isArray(inputs)) {
+        throw new Error(`Inputs devem ser um array (${type})`);
+    }
+    inputs.forEach((i, idx) => {
+        if (!i.path || typeof i.path !== 'string') {
+            throw new Error(`Cada input precisa ter { path } (${type} index ${idx})`);
         }
-
-        // 2. FFprobe Check
-        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
-            if (err) {
-                console.warn(`[Export] Probe failed for ${filePath}: ${err.message}`);
-                return resolve({ isValid: false });
-            }
-            const hasAudio = stdout && stdout.includes('audio');
-            resolve({ isValid: true, hasAudio });
-        });
+        if (!i.duration) i.duration = 5; // fallback duration
     });
+    return inputs;
 }
 
-export const handleExportVideo = async (job, uploadDir, onStart) => {
+export async function handleExportVideo(job, uploadDir, ffmpegCallback) {
     try {
-        const { projectState } = job.params;
-        if (!projectState) throw new Error("Missing projectState");
+        if (!job || !job.files) throw new Error("Job inválido");
 
-        const state = JSON.parse(projectState);
-        const { clips, media, totalDuration } = state;
-        const exportConfig = state.exportConfig || {};
-        const fps = parseInt(exportConfig.fps) || 30;
-        
-        // Mapeamento de arquivos
-        const fileMap = {};
-        if (job.files && job.files.length > 0) {
-            for (const f of job.files) {
-                const info = await validateAndProbe(f.path);
-                
-                if (info.isValid) {
-                    fileMap[f.originalname] = f.path;
-                    if (media[f.originalname]) {
-                        media[f.originalname].hasAudio = info.hasAudio;
-                    }
-                }
-            }
+        // Separar vídeos e áudios
+        const videoInputs = normalizeInputs(
+            job.files.filter(f => f.mimetype.startsWith('video')).map(f => ({
+                path: f.path,
+                duration: parseFloat(job.params.duration) || 5
+            })), 'video'
+        );
+
+        const audioInputs = normalizeInputs(
+            job.files.filter(f => f.mimetype.startsWith('audio')).map(f => ({
+                path: f.path,
+                duration: parseFloat(job.params.duration) || 5
+            })), 'audio'
+        );
+
+        if (videoInputs.length === 0) {
+            throw new Error("Nenhum vídeo enviado");
         }
 
-        // Pass totalDuration to buildTimeline
-        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, exportConfig, totalDuration);
+        // Cria filter_complex dinamicamente
+        let filterComplex = '';
+        const mapArgs = [];
+        let lastVideoLabel = null;
+
+        videoInputs.forEach((v, i) => {
+            const label = `v${i}`;
+            // Aplica movimento básico: zoom de 1x a 1.05x
+            filterComplex += `[${i}:v]scale=1280:720,zoompan=z='if(lte(zoom,1.05),zoom+0.001,1.0)':d=1:fps=30[${label}];`;
+
+            if (lastVideoLabel !== null) {
+                const outLabel = `v${i}out`;
+                filterComplex += `[${lastVideoLabel}][${label}]xfade=transition=fade:duration=1:offset=${i * v.duration}[${outLabel}];`;
+                lastVideoLabel = outLabel;
+            } else {
+                lastVideoLabel = label;
+            }
+        });
+
+        mapArgs.push('-map', `[${lastVideoLabel}]`);
+
+        // Mapeia todos os áudios enviados (ou do primeiro vídeo se não houver)
+        if (audioInputs.length > 0) {
+            audioInputs.forEach((a, i) => mapArgs.push('-i', a.path));
+            mapArgs.push('-map', `${videoInputs.length}:a?`); // primeiro audio como exemplo
+        } else {
+            mapArgs.push('-map', '0:a?'); // fallback: áudio do primeiro vídeo
+        }
+
+        // Define caminho final do arquivo
         const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
         job.outputPath = outputPath;
 
-        const args = [
-            ...buildResult.inputs,
-            '-filter_complex', buildResult.filterComplex,
-            '-map', buildResult.outputMapVideo,
-            '-map', buildResult.outputMapAudio,
-            
-            // Codec de Vídeo Otimizado
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast', // Rápido para UX, mas seguro
-            '-crf', '23', // Boa qualidade visual
-            '-pix_fmt', 'yuv420p', // Compatibilidade máxima
-            
-            // FORÇAR SINCRONIA DE VÍDEO
-            '-r', String(fps), // Força output FPS constante
-            '-vsync', '1',     // CFR (Constant Frame Rate) - vital para evitar drift
-            
-            // Codec de Áudio Otimizado
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-ac', '2',
-            '-ar', '44100',
-            
-            // Duração e Container
-            '-t', String(totalDuration + 0.1), // Garante que não corte o último frame
-            '-movflags', '+faststart',
-            '-y',
-            outputPath
-        ];
+        // Argumentos finais do FFmpeg
+        const args = ['-i', videoInputs.map(v => v.path).join(' -i '), '-filter_complex', filterComplex, ...mapArgs, '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-y', outputPath];
 
-        onStart(job.id, args, totalDuration || 30);
-    } catch (e) {
-        console.error("Export Build Error:", e);
-        throw e;
+        // Chama callback para criar o job FFmpeg
+        ffmpegCallback(job.id, args, videoInputs.reduce((sum, v) => sum + v.duration, 0));
+
+    } catch (err) {
+        console.error("Erro em handleExportVideo:", err);
+        throw err;
     }
-};
+}
