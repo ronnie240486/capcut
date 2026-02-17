@@ -153,6 +153,7 @@ export default {
 
                 let moveApplied = false;
                 if (clip.properties && clip.properties.movement) {
+                    // Update: Pass targetRes and targetFps to movement generator to avoid aspect ratio issues
                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
                     if (moveFilter) {
                         addFilter(moveFilter);
@@ -165,6 +166,7 @@ export default {
                     addFilter(staticMove);
                 }
 
+                // Force scale again after movement to ensure even dimensions for xfade
                 addFilter(`scale=${targetRes.w}:${targetRes.h}:flags=lanczos,setsar=1,format=yuv420p`);
 
                 mainTrackLabels.push({
