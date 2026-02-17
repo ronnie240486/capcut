@@ -165,7 +165,10 @@ export default {
 
                 // 5. ESCALA FINAL (Garantia pós-movimento)
                 // Alguns filtros de movimento podem alterar SAR/Dimensões
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:flags=lanczos,setsar=1`);
+                scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,
+pad=1920:1080:(1920-iw)/2:(1080-ih)/2:color=black,
+setsar=1
+
 
                 mainTrackLabels.push({
                     label: currentV,
