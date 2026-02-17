@@ -50,7 +50,7 @@ export default {
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
         const targetFps = parseInt(exportConfig.fps) || 30;
         
-        // Filtro de Escala Seguro - CRITICAL FIX
+        // Filtro de Escala Seguro
         // Simplified double-scale to prevent parsing errors and ensure even dimensions for yuv420p.
         // Step 1: Scale to fit inside target box. Step 2: Round to nearest even number. Step 3: Pad to target.
         const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=${targetFps},format=yuv420p`;
@@ -107,6 +107,7 @@ export default {
                 const duration = Math.max(0.5, parseFloat(clip.duration) || 5);
 
                 if (clip.type === 'image') {
+                    // Loop for slightly longer than needed to prevent zoompan running out of frames
                     inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath); 
                 } else {
                     inputs.push('-i', filePath);
@@ -129,7 +130,10 @@ export default {
                     const start = clip.mediaStartOffset || 0;
                     addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
                 } else {
-                    addFilter(`trim=duration=${duration},setpts=PTS-STARTPTS`);
+                    // For images, we DO NOT trim here if we are going to use zoompan.
+                    // Zoompan (d=...) sets the duration. Trimming beforehand to exact duration can cause off-by-one frame errors.
+                    // Just reset PTS.
+                    addFilter(`setpts=PTS-STARTPTS`);
                 }
                 
                 // Transitions logic (Zoom Neg, etc)
@@ -158,10 +162,17 @@ export default {
                 }
 
                 // Movement
+                let moveApplied = false;
                 if (clip.properties && clip.properties.movement) {
                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
-                    if (moveFilter) addFilter(moveFilter);
-                } else if (clip.type === 'image') {
+                    if (moveFilter) {
+                        addFilter(moveFilter);
+                        moveApplied = true;
+                    }
+                } 
+                
+                // If no movement was applied AND it's an image, apply static zoompan to fix duration and ensure consistency
+                if (!moveApplied && clip.type === 'image') {
                     const staticMove = presetGenerator.getMovementFilter(null, duration, true, {}, targetRes, targetFps);
                     addFilter(staticMove);
                 }
@@ -306,6 +317,8 @@ export default {
                      const start = clip.mediaStartOffset || 0;
                      filters.push(`trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS`);
                  } else {
+                     // For image overlays, we also rely on trim here because we might not apply zoompan.
+                     // But if we apply effects that require time (like glitch), we need stream duration.
                      filters.push(`trim=duration=${clip.duration},setpts=PTS-STARTPTS`);
                  }
                  
