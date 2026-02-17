@@ -50,8 +50,9 @@ export default {
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
         const targetFps = parseInt(exportConfig.fps) || 30;
         
-        // Filtro de Escala Seguro
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=${targetFps},format=yuv420p`;
+        // Filtro de Escala Seguro - CRITICAL FIX for "Failed to configure output pad"
+        // We inject 'scale=trunc(iw/2)*2:trunc(ih/2)*2' to force even dimensions before padding.
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // CALCULAR DURAÇÃO TOTAL DO PROJETO
         const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0);
@@ -62,7 +63,6 @@ export default {
         const mainTrackClips = clips.filter(c => c.track === 'video').sort((a, b) => a.start - b.start);
 
         // Overlays (Texto, Legendas, e TUDO da trilha 'camada')
-        // Correção: Agora incluímos videos da 'camada' como overlays para suportar PIP e efeitos corretamente
         const overlayClips = clips.filter(c => 
             ['text', 'subtitle', 'camada'].includes(c.track)
         ).sort((a, b) => a.start - b.start);
@@ -74,16 +74,14 @@ export default {
         );
 
         // --- 0. GERAR BACKGROUND BASE ---
-        // Se houver imagem de fundo no projeto, usa. Se não, usa preto (ou cor do projeto se implementado).
-        // Isso garante que se a trilha principal tiver buracos, o fundo apareça.
         let baseStream = '[bg_base]';
         
         const bgFile = fileMap['background']; // Assume 'background' name convention from frontend
         if (bgFile) {
              inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', bgFile);
              const bgIdx = inputIndexCounter++;
-             // Scale bg to cover
-             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps}[bg_base];`;
+             // Fix crop error by ensuring even dimensions before crop
+             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale=trunc(iw/2)*2:trunc(ih/2)*2,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps}[bg_base];`;
         } else {
              inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
              baseStream = `[${inputIndexCounter++}:v]`;
@@ -93,7 +91,7 @@ export default {
         let baseAudioSegments = [];
         inputs.push('-f', 'lavfi', '-t', '0.1', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
         const silenceSrcIdx = inputIndexCounter++;
-        let mainAudioStream = `[${silenceSrcIdx}:a]`; // Será substituído se houver áudio
+        let mainAudioStream = `[${silenceSrcIdx}:a]`; 
 
         // --- 1. PROCESSAR TRILHA PRINCIPAL (VIDEO) ---
         let mainTrackStream = null;
@@ -123,6 +121,7 @@ export default {
                     currentV = `[${nextLabel}]`;
                 };
 
+                // Standardize Resolution FIRST
                 addFilter(SCALE_FILTER);
 
                 if (clip.type !== 'image') {
@@ -244,7 +243,6 @@ export default {
             let overlayInputLabel = '';
             
             if (clip.type === 'text') {
-                 // ... TEXT GENERATION LOGIC ...
                  const bgLabel = `txtbg_${i}`;
                  filterChain += `color=c=black@0.0:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${clip.duration}[${bgLabel}];`;
 
@@ -291,7 +289,6 @@ export default {
                  const filePath = fileMap[clip.fileName];
                  if (!filePath) return;
                  
-                 // If Image, loop. If Video, normal input.
                  if (clip.type === 'image') {
                      inputs.push('-loop', '1', '-t', (clip.duration + 1).toString(), '-i', filePath);
                  } else {
@@ -302,10 +299,8 @@ export default {
                  const rawLabel = `[${idx}:v]`;
                  const processedLabel = `ov_proc_${i}`;
                  
-                 // Chain filters for Overlay Input
                  let filters = [];
                  
-                 // Trim
                  if (clip.type === 'video') {
                      const start = clip.mediaStartOffset || 0;
                      filters.push(`trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS`);
@@ -313,17 +308,15 @@ export default {
                      filters.push(`trim=duration=${clip.duration},setpts=PTS-STARTPTS`);
                  }
                  
-                 // Effects (Glitch, Color, etc) - AGORA APLICADO EM CAMADAS
                  if (clip.effect) {
                      const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                      if (fx) filters.push(fx);
                  }
                  
                  // Transform (Scale & Rotate)
-                 const scale = clip.properties.transform?.scale || 0.5; // Default overlay smaller
+                 const scale = clip.properties.transform?.scale || 0.5;
                  // Ensure width is even and at least 2 pixels to avoid ffmpeg errors
                  const w = Math.max(2, Math.floor(targetRes.w * scale / 2) * 2);
-                 // Use -2 to maintain aspect ratio and ensure height is divisible by 2
                  filters.push(`scale=${w}:-2`);
                  
                  if (clip.properties.transform?.rotation) {
@@ -339,7 +332,6 @@ export default {
             const startTime = clip.start;
             const endTime = startTime + clip.duration;
             
-            // Calculo de posição do overlay
             let overlayX = '(W-w)/2';
             let overlayY = '(H-h)/2';
             if (clip.type !== 'text' && clip.properties.transform) {
@@ -350,7 +342,6 @@ export default {
             }
 
             const shiftedLabel = `shift_${i}`;
-            // Shift timestamps to match timeline position
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
             
             filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
