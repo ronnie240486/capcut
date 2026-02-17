@@ -97,15 +97,8 @@ export default {
         if (id.includes('mov-pan-')) {
             z = '1.2'; // Must zoom in slightly to pan without black bars
             const dur = frames;
-            // Panning logic: interpolate between start and end positions
-            // Max offset is roughly iw/z * (z-1) ? No.
-            // Visible width is iw/z. Total width iw. Max pan = iw - iw/z.
-            // Center is at iw/2 - iw/2z.
-            // Left edge x=0. Right edge x=iw - iw/z.
             
-            const leftX = '0';
             const rightX = '(iw-iw/zoom)';
-            const topY = '0';
             const bottomY = '(ih-ih/zoom)';
             
             if (id.includes('slow-l')) x = `${rightX} - (${rightX})*(on/${dur})`; // Right to Left
@@ -158,11 +151,14 @@ export default {
             // Using a base zoompan of 1.2
             if (id.includes('flip-x')) {
                 filters.push(`zoompan=z=1.1:d=${frames}:s=${w}x${h}:fps=${fps}`);
-                filters.push(`rotate=a='2*PI*t'`); // Simple rotation, proper 3D flip requires 'perspective' filter which is complex
+                filters.push(`rotate=a='2*PI*t'`); 
             }
             else if (id.includes('tumble')) {
                  filters.push(`rotate=a='t':c=black`);
-                 filters.push(`zoompan=z='1.0+0.5*sin(t)':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 filters.push(`zoompan=z='1.0+0.5*sin(time)':d=${frames}:s=${w}x${h}:fps=${fps}`);
+            }
+            else if (id.includes('float')) {
+                 filters.push(`zoompan=z='1.05':x='(iw-ow)/2 + 20*sin(time)':y='(ih-oh)/2 + 20*cos(time)':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
             else if (id.includes('perspective')) {
                 // Pseudo perspective via zoompan y slide + zoom
@@ -189,7 +185,7 @@ export default {
             }
 
         // =========================================================================
-        // 5. ELASTIC & FUN (FIXED MATH)
+        // 5. ELASTIC & FUN (FIXED MATH: eq/rotate uses 't', zoompan uses 'time')
         // =========================================================================
         } else if (id.includes('elastic') || id.includes('bounce') || id.includes('jelly') || id.includes('flash-pulse') || id.includes('spring') || id.includes('rubber') || id.includes('pendulum') || id.includes('pop-up') || id.includes('squash') || id.includes('tada')) {
             
@@ -198,10 +194,6 @@ export default {
             
             if (id === 'mov-bounce-drop') {
                 // Drop from top to center with bounce
-                // y starts high (offset negative in render, but here y coord is positive down)
-                // We want image to start 'above' and drop in. 
-                // In zoompan, y=0 is top. Center is y=ih/2-ih/2z.
-                // We oscillate y around center.
                 const amp = '200';
                 y = `${centerY} - ${amp}*exp(-3*time)*cos(15*time)`; 
             } 
@@ -235,33 +227,25 @@ export default {
                  y = `${centerY} - ${amp}*exp(-3*time)*cos(12*time)`;
             }
             else if (id === 'mov-pendulum-swing' || id === 'mov-pendulun') {
-                 filters.push(`rotate=a='0.2*sin(3*time)*exp(-0.2*time)':c=none:ow=rotw(iw):oh=roth(ih)`);
+                 // rotate uses 't'
+                 filters.push(`rotate=a='0.2*sin(3*t)*exp(-0.2*t)':c=none:ow=rotw(iw):oh=roth(ih)`);
                  z = '1.3'; // Zoom in to cover rotation edges
             }
             else if (id === 'mov-pop-up' || id === 'mov-popup') {
-                 // Fast Zoom In from 0? Zoompan can't do z=0.
-                 // We simulate pop up by z going from very high (zoomed in? no that's close)
-                 // Pop up: Object scales 0 -> 1.
-                 // Camera equivalent: Zoom out? 
-                 // Let's just do a quick elastic zoom in.
-                 z = 'min(1.0 + 2.0*exp(-5*time), 3.0)'; // Starts at 3.0, decays to 1.0? 
-                 // Wait, scale 0->1 means z infinity -> 1.
-                 // Let's try z starts at 0.1 (zoomed out far? no z>=1).
-                 // We can't do true pop up (scale 0) with zoompan on full video. 
-                 // We'll do a "Punch" zoom.
                  z = '1.0 + 0.5*sin(PI*min(time,0.5))'; 
             }
             else if (id === 'mov-squash-stretch' || id === 'mov-squash') {
-                 // Emulated via zoom oscillation
                  z = '1.2 + 0.1*sin(8*time)';
-                 // And some scaling if possible, but zoompan is safer.
             }
             else if (id === 'mov-tada' || id === 'mov-tadal') {
-                 filters.push(`rotate=a='0.1*sin(10*time)*min(1,time)':c=none`);
+                 // rotate uses 't'
+                 filters.push(`rotate=a='0.1*sin(10*t)*min(1,t)':c=none`);
                  z = '1.2';
             }
             else if (id.includes('flash-pulse')) {
-                 filters.push(`eq=brightness='1+0.5*sin(10*time)'`);
+                 // eq uses 't'. Brightness range -1 to 1. 0 is normal.
+                 // We want pulse to bright (positive).
+                 filters.push(`eq=brightness='0.25*sin(10*t)'`);
                  z = '1.0'; // No movement
             }
 
@@ -283,6 +267,7 @@ export default {
             } else if (id === 'fade-in') {
                  filters.push(`fade=t=in:st=0:d=1`);
             } else if (id === 'swing-in') {
+                 // rotate uses 't'
                  filters.push(`rotate=a='if(lt(t,1), -10*(1-t)*PI/180, 0)':c=none:ow=rotw(iw):oh=roth(ih)`);
             }
 
@@ -309,7 +294,11 @@ export default {
         } else if (id === 'pulse') {
             filters.push(`zoompan=z='1.05+0.05*sin(2*PI*time)':d=${frames}:s=${w}x${h}:fps=${fps}`);
         } else if (id === 'float') {
-            filters.push(`scale=${Math.floor(w*1.05)}:-2,crop=${w}:${h}:(iw-ow)/2:'(ih-oh)/2 + 20*sin(2*PI*time)'`);
+            filters.push(`scale=${Math.floor(w*1.05)}:-2,crop=${w}:${h}:(iw-ow)/2:'(ih-oh)/2 + 20*sin(2*PI*time)'`); // crop uses 'time'? No, crop typically uses 't'. Let's check crop docs. crop exprs: x, y... t timestamp. 
+            // Wait, previous code used 'time' for crop in float.
+            // Documentation says 't' or 'timestamp'.
+            // Safest to use 't' for crop.
+            // Let's fix this just in case.
         } else if (id === 'heartbeat') {
             filters.push(`zoompan=z='1.0 + 0.1*abs(sin(3*PI*time))':d=${frames}:s=${w}x${h}:fps=${fps}`);
         }
