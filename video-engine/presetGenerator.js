@@ -120,97 +120,112 @@ export default {
         let y = '(ih-oh)/2';
         let extra = ''; // For filters like blur
         
-        // --- 1. PROCEDURAL PARSING (mov- prefix) ---
-        if (moveId && moveId.startsWith('mov-pan-')) {
+        // Normalize moveId: some might have 'mov-' prefix, some might not.
+        // We ensure we check against the core name.
+        const id = moveId || '';
+        
+        // --- 1. PROCEDURAL PANS (mov-pan-) ---
+        if (id.includes('pan-')) {
             z = '1.2';
-            if (moveId.includes('slow-l')) x = `(iw-ow)*(on/${frames})`;
-            else if (moveId.includes('slow-r')) x = `(iw-ow)*(1-on/${frames})`;
-            else if (moveId.includes('slow-u')) y = `(ih-oh)*(on/${frames})`;
-            else if (moveId.includes('slow-d')) y = `(ih-oh)*(1-on/${frames})`;
-            else if (moveId.includes('fast-l')) x = `(iw-ow)*((on*2)/${frames})`;
-            else if (moveId.includes('fast-r')) x = `(iw-ow)*(1-(on*2)/${frames})`;
-            else if (moveId.includes('diag-tl')) { x = `(iw-ow)*(on/${frames})`; y = `(ih-oh)*(on/${frames})`; }
-            else if (moveId.includes('diag-tr')) { x = `(iw-ow)*(1-on/${frames})`; y = `(ih-oh)*(on/${frames})`; }
-            else if (moveId.includes('diag-bl')) { x = `(iw-ow)*(on/${frames})`; y = `(ih-oh)*(1-on/${frames})`; }
-            else if (moveId.includes('diag-br')) { x = `(iw-ow)*(1-on/${frames})`; y = `(ih-oh)*(1-on/${frames})`; }
+            if (id.includes('slow-l')) x = `(iw-ow)*(on/${frames})`;
+            else if (id.includes('slow-r')) x = `(iw-ow)*(1-on/${frames})`;
+            else if (id.includes('slow-u')) y = `(ih-oh)*(on/${frames})`;
+            else if (id.includes('slow-d')) y = `(ih-oh)*(1-on/${frames})`;
+            else if (id.includes('fast-l')) x = `(iw-ow)*((on*2)/${frames})`;
+            else if (id.includes('fast-r')) x = `(iw-ow)*(1-(on*2)/${frames})`;
+            else if (id.includes('diag-tl')) { x = `(iw-ow)*(on/${frames})`; y = `(ih-oh)*(on/${frames})`; }
+            else if (id.includes('diag-tr')) { x = `(iw-ow)*(1-on/${frames})`; y = `(ih-oh)*(on/${frames})`; }
+            else if (id.includes('diag-bl')) { x = `(iw-ow)*(on/${frames})`; y = `(ih-oh)*(1-on/${frames})`; }
+            else if (id.includes('diag-br')) { x = `(iw-ow)*(1-on/${frames})`; y = `(ih-oh)*(1-on/${frames})`; }
         }
-        // --- ZOOMS ---
-        else if (moveId && moveId.startsWith('mov-zoom-')) {
-            if (moveId.includes('crash-in')) {
+        // --- 2. 3D ZOOMS & DYNAMIC ---
+        else if (id.includes('zoom-') || id === 'dolly-zoom') {
+            if (id.includes('crash-in')) {
                 z = `min(zoom+0.05,2.0)`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (moveId.includes('crash-out')) {
+            } else if (id.includes('crash-out')) {
                 z = `max(2.0-0.05*on,1.0)`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (moveId.includes('slow-in')) {
+            } else if (id.includes('slow-in')) {
                 z = `min(zoom+0.0015,1.2)`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (moveId.includes('slow-out')) {
+            } else if (id.includes('fast-in')) {
+                z = `min(zoom+0.005,1.5)`;
+                x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+            } else if (id.includes('slow-out')) {
                 z = `max(1.2-0.0015*on,1.0)`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (moveId.includes('bounce')) {
+            } else if (id.includes('bounce')) {
                 z = `1.0+0.1*sin(2*PI*on/(${frames}/2))`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (moveId.includes('pulse')) {
-                const freq = moveId.includes('fast') ? 10 : 3;
+            } else if (id.includes('pulse')) {
+                const freq = id.includes('fast') ? 10 : 3;
                 z = `1.05+0.05*sin(2*PI*on/(${frames}/${freq}))`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+            } else if (id === 'dolly-zoom') {
+                // Dolly zoom simulation: Zoom in strongly while staying centered
+                z = `1.0 + 0.3*sin(PI*on/${frames})`; 
+                x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+            }
+        }
+        // --- 3. ELASTIC & FUN ---
+        else if (id.includes('elastic') || id.includes('jelly') || id.includes('bounce-scale')) {
+            if (id.includes('elastic-left')) {
+                // Use sine wave with exponential decay to simulate elastic snap from left
+                z = '1.0';
+                x = `(iw-ow)/2 + (iw/4)*sin(2*PI*on/(${frames}/2))*exp(-2*on/${frames})`;
+            } else if (id.includes('elastic-right')) {
+                 z = '1.0';
+                 x = `(iw-ow)/2 - (iw/4)*sin(2*PI*on/(${frames}/2))*exp(-2*on/${frames})`;
+            } else if (id.includes('jelly')) {
+                // Rapid wobble zoom
+                z = `1.0 + 0.05*sin(10*PI*on/${frames})`;
+                x = `(iw-ow)/2`; y = `(ih-oh)/2`;
+            } else if (id.includes('bounce-scale')) {
+                 z = `if(lt(on,${frames}/2), 0.5 + (1.2-0.5)*(on/(${frames}/2)), 1.2 - 0.2*((on-${frames}/2)/(${frames}/2)))`;
+                 x = `(iw-ow)/2`; y = `(ih-oh)/2`;
             }
         }
         // --- BLURS ---
-        else if (moveId && moveId.startsWith('mov-blur-')) {
-            // Apply blur via gblur filter chained after zoompan in the filter builder logic, 
-            // OR return a complex filter chain string if possible.
-            // Simplified: Use simple zoom + gblur logic.
-            if (moveId.includes('in')) extra = `,gblur=sigma='20*(1-t/1)':enable='between(t,0,1)'`;
-            else if (moveId.includes('out')) extra = `,gblur=sigma='20*(t/${durationSec-1}-1)':enable='between(t,${durationSec-1},${durationSec})'`;
-            else if (moveId.includes('pulse')) extra = `,gblur=sigma='5*sin(2*PI*t)':enable='between(t,0,${durationSec})'`;
-            else if (moveId.includes('zoom')) {
-                z = `min(zoom+0.01,1.5)`; // Add slight zoom to blur zoom
-                extra = `,gblur=sigma='2*sin(2*PI*t)':enable='between(t,0,${durationSec})'`;
+        else if (id.includes('blur-')) {
+            if (id.includes('in')) {
+                // Blur first 0.5s
+                extra = `,gblur=sigma=20:enable='between(t,0,0.5)'`;
+            }
+            else if (id.includes('out')) {
+                // Blur last 0.5s
+                const startBlur = Math.max(0, durationSec - 0.5);
+                extra = `,gblur=sigma=20:enable='between(t,${startBlur},${durationSec})'`;
+            }
+            else if (id.includes('pulse')) {
+                // Blur in middle 0.5s
+                const mid = durationSec / 2;
+                extra = `,gblur=sigma=15:enable='between(t,${mid-0.25},${mid+0.25})'`;
+            }
+            else if (id.includes('zoom')) {
+                 z = `min(zoom+0.01,1.5)`;
+                 extra = `,gblur=sigma=5:enable='between(t,0,0.3)'`;
             }
         }
-        // --- ELASTIC / FUN / ENTRY (Simulated) ---
-        else if (moveId && (moveId.startsWith('mov-elastic-') || moveId.startsWith('slide-in-') || moveId.startsWith('pop-'))) {
-            // Entry animations usually involve starting off-screen or at scale 0.
-            // Zoompan can simulate this by zooming from very small (or large crop) to normal.
-            if (moveId.includes('slide-in-left')) {
-                // Pan from right (content moves left? No, frame moves).
-                // x moves from 0 to center.
-                x = `(iw-ow)/2 * (t/1)`; // Move frame from left edge to center over 1s
-                z = '1.0';
-            } else if (moveId.includes('pop-in')) {
-                // Zoom from 0.1 to 1.0 quickly with bounce
-                z = `if(lt(t,0.5), 0.1 + (1.2-0.1)*(t/0.5), max(1.0, 1.2 - 0.2*((t-0.5)/0.5)))`;
-            } else if (moveId.includes('elastic')) {
-                // Bouncy zoom
-                z = `1.0 + 0.1*sin(3*PI*t)*exp(-2*t)`;
-            }
-        }
-        // --- LOOPS ---
-        else if (moveId && (moveId === 'pulse' || moveId === 'float' || moveId === 'heartbeat')) {
-            z = `1.0 + 0.05*sin(2*PI*t)`; // Pulse
-            if (moveId === 'float') y = `(ih-oh)/2 + 20*sin(2*PI*t/3)`;
-        }
-        // SHAKES (Simulated via crop/position jitter)
-        else if (moveId && (moveId.includes('shake') || moveId.includes('jitter') || moveId.includes('earthquake') || moveId.includes('glitch'))) {
-            const intensity = moveId.includes('violent') || moveId.includes('earthquake') ? 40 : 10;
+        // --- SHAKES ---
+        else if (id.includes('shake') || id.includes('jitter') || id.includes('earthquake') || id.includes('glitch')) {
+            const intensity = id.includes('violent') || id.includes('earthquake') ? 40 : 10;
             z = '1.1';
             x = `(iw-ow)/2 + (random(1)-0.5)*${intensity}`;
             y = `(ih-oh)/2 + (random(1)-0.5)*${intensity}`;
         }
-        // --- 2. LEGACY ---
-        else if (moveId === 'kenBurns') {
+        // --- LEGACY ---
+        else if (id === 'kenBurns') {
             const startScale = config.startScale || 1.0;
             const endScale = config.endScale || 1.3;
             z = `${startScale}+(${endScale}-${startScale})*on/${frames}`;
             x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
         }
-        else if (moveId === 'zoom-in' || (isImage && !moveId)) {
+        else if (id === 'zoom-in' || (isImage && !id)) {
             z = `min(zoom+0.0015,1.5)`;
             x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
         }
-        else if (moveId === 'zoom-out') {
+        else if (id === 'zoom-out') {
             z = `max(1.5-0.0015*on,1.0)`;
             x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
         }
