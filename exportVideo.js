@@ -1,40 +1,73 @@
-export async function handleExportVideo(job, uploadDir, callback) {
-    try {
-        // Normaliza entradas de vídeo e áudio
-        const videoInputs = (job.files || [])
-            .filter(f => f.mimetype.startsWith('video'))
-            .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
+// exportVideo.js
+import path from 'path';
+import fs from 'fs';
 
-        const audioInputs = (job.files || [])
-            .filter(f => f.mimetype.startsWith('audio'))
-            .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
-
-        if (!videoInputs.length && !audioInputs.length) {
-            throw new Error("Nenhum vídeo ou áudio enviado");
+/**
+ * Normaliza inputs de vídeo e áudio
+ * @param {Array} inputs 
+ * @param {string} type "video" ou "audio"
+ * @returns {Array}
+ */
+function normalizeInputs(inputs, type) {
+    if (!Array.isArray(inputs)) throw new Error(`Inputs devem ser um array (${type})`);
+    return inputs.map(input => {
+        if (!input.path || !fs.existsSync(input.path)) {
+            throw new Error(`Arquivo de ${type} não encontrado: ${input.path}`);
         }
+        return {
+            path: input.path,
+            duration: parseFloat(input.duration) || 5
+        };
+    });
+}
 
-        // Gera outputPath único
-        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
+/**
+ * handleExportVideo
+ * @param {Object} job Objeto de job (contendo files e params)
+ * @param {string} uploadDir Diretório de uploads
+ * @param {Function} callback Callback (jobId, argsFFmpeg, duration)
+ */
+export async function handleExportVideo(job, uploadDir, callback) {
+    if (!job || !job.files || job.files.length === 0) {
+        throw new Error("Nenhum vídeo enviado");
+    }
 
-        // Exemplo: construir args FFmpeg básico (concat ou filtros)
-        const args = [];
+    // Separa vídeos e áudios
+    const videoInputs = job.files
+        .filter(f => f.mimetype.startsWith('video'))
+        .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
 
-        // Adiciona vídeos
-        videoInputs.forEach(v => args.push('-i', v.path));
+    const audioInputs = job.files
+        .filter(f => f.mimetype.startsWith('audio'))
+        .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
 
-        // Adiciona áudios
-        audioInputs.forEach(a => args.push('-i', a.path));
+    // Normaliza
+    const videos = normalizeInputs(videoInputs, 'video');
+    const audios = normalizeInputs(audioInputs, 'audio');
 
-        // Para simplificação: codifica todos os streams
-        args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-y', outputPath);
+    if (videos.length === 0 && audios.length === 0) {
+        throw new Error("Nenhum vídeo ou áudio válido enviado");
+    }
 
-        console.log(`[handleExportVideo] Preparado para FFmpeg. Output: ${outputPath}`);
+    // Define output path
+    const outputFileName = `export_${Date.now()}.mp4`;
+    const outputPath = path.join(uploadDir, outputFileName);
+    job.outputPath = outputPath;
 
-        // Chama callback passando o outputPath
-        callback(job.id, args, 0, outputPath);
+    // Cria argumentos FFmpeg
+    const ffmpegArgs = [];
 
-    } catch (err) {
-        console.error("Erro em handleExportVideo:", err);
-        throw err;
+    videos.forEach(v => ffmpegArgs.push('-i', v.path));
+    audios.forEach(a => ffmpegArgs.push('-i', a.path));
+
+    // Video codec e áudio codec padrão
+    ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-y', outputPath);
+
+    // Estima duração total do vídeo
+    const totalDuration = videos.reduce((sum, v) => sum + v.duration, 0);
+
+    // Chama callback com FFmpeg args
+    if (typeof callback === 'function') {
+        callback(job.id, ffmpegArgs, totalDuration || 10);
     }
 }
