@@ -98,6 +98,15 @@ export default {
             'pop-art': 'eq=saturation=3:contrast=1.5',
             'dreamy': 'gblur=sigma=5,eq=brightness=0.1:saturation=1.2',
             'underwater': 'eq=saturation=0.8,colorbalance=rs=-0.2:gs=0.1:bs=0.3,gblur=sigma=2',
+            'posterize': 'curves=posterize',
+            'fade': 'colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3',
+            'vibrant': 'eq=saturation=2',
+            'muted': 'eq=saturation=0.5',
+            'b-and-w-low': 'hue=s=0,eq=contrast=0.8',
+            'golden-hour': 'colorbalance=rs=0.3:gs=0.1:bs=-0.3,eq=saturation=1.2',
+            'cold-blue': 'colorbalance=bs=0.4:rs=-0.1,eq=saturation=0.8',
+            'scifi': 'eq=contrast=1.3,hue=h=180',
+            'pastel': 'eq=contrast=0.8:brightness=0.2:saturation=1.5',
             
             // Retro
             'old-film': 'noise=alls=20:allf=t+u,vignette=PI/4,hue=s=0.5',
