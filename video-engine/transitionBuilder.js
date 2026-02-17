@@ -51,9 +51,9 @@ export default {
         const targetFps = parseInt(exportConfig.fps) || 30;
         
         // Filtro de Escala Seguro - CRITICAL FIX
-        // We use 'max(2,trunc(iw/2)*2)' to ensure dimensions never drop below 2px, preventing FFmpeg errors.
-        // Quotes are added around expressions to protect commas.
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=${targetFps},format=yuv420p`;
+        // Simplified double-scale to prevent parsing errors and ensure even dimensions for yuv420p.
+        // Step 1: Scale to fit inside target box. Step 2: Round to nearest even number. Step 3: Pad to target.
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // CALCULAR DURAÇÃO TOTAL DO PROJETO
         const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0);
@@ -81,8 +81,8 @@ export default {
         if (bgFile) {
              inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', bgFile);
              const bgIdx = inputIndexCounter++;
-             // Fix crop error by ensuring even dimensions before crop using quotes
-             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps}[bg_base];`;
+             // Ensure safe scaling for background crop
+             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale=trunc(iw/2)*2:trunc(ih/2)*2,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
         } else {
              inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
              baseStream = `[${inputIndexCounter++}:v]`;
@@ -166,8 +166,8 @@ export default {
                     addFilter(staticMove);
                 }
 
-                // Final scale ensure to handle any zoompan resolution changes
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:flags=lanczos,setsar=1`);
+                // Final scale ensure to handle any zoompan resolution changes AND force pixel format
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:flags=lanczos,setsar=1,format=yuv420p`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -316,13 +316,17 @@ export default {
                  
                  // Transform (Scale & Rotate)
                  const scale = clip.properties.transform?.scale || 0.5;
-                 // Ensure width is even and at least 2 pixels to avoid ffmpeg errors
+                 // Force even width calculation
                  const w = Math.max(2, Math.floor(targetRes.w * scale / 2) * 2);
+                 // Scale with explicit -2 height logic to preserve aspect but enforce even dimensions
                  filters.push(`scale=${w}:-2`);
                  
                  if (clip.properties.transform?.rotation) {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
                  }
+                 
+                 // Ensure pixel format matches main composition to avoid "Failed to configure output pad" errors
+                 filters.push('format=yuv420p');
 
                  filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
                  overlayInputLabel = `[${processedLabel}]`;
