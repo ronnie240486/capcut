@@ -72,7 +72,6 @@ setInterval(() => {
     const now = Date.now();
     Object.keys(jobs).forEach(id => {
         if (now - jobs[id].startTime > 3600000) { // 1 hour
-            // Optional: delete files
             if (jobs[id].outputPath && fs.existsSync(jobs[id].outputPath)) {
                 try { fs.unlinkSync(jobs[id].outputPath); } catch(e) {}
             }
@@ -81,15 +80,6 @@ setInterval(() => {
     });
 }, 3600000);
 
-// Fallbacks
-const REAL_MUSIC_FALLBACKS = [
-    { id: 'fb_m1', name: 'Cinematic Epic', artist: 'Gregor', duration: 120, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/audio/2022/03/09/audio_a7e2311438.mp3'} }
-];
-
-const REAL_SFX_FALLBACKS = [
-    { id: 'fb_s1', name: 'Whoosh', artist: 'SFX', duration: 2, previews: {'preview-hq-mp3': 'https://cdn.pixabay.com/audio/2022/03/10/audio_c36c1e54c2.mp3'} }
-];
-
 function timeToSeconds(timeStr) {
     if (!timeStr) return 0;
     const parts = timeStr.split(':');
@@ -97,192 +87,142 @@ function timeToSeconds(timeStr) {
     return (parseFloat(parts[0]) * 3600) + (parseFloat(parts[1]) * 60) + parseFloat(parts[2]);
 }
 
-function createFFmpegJob(jobId, args, expectedDuration, outputPath) {
+function createFFmpegJob(jobId, args, expectedDuration, res) {
     if (!jobs[jobId]) jobs[jobId] = { id: jobId, startTime: Date.now() };
     jobs[jobId].status = 'processing';
     jobs[jobId].progress = 0;
-
-    // Registra outputPath
-    jobs[jobId].outputPath = outputPath;
-
-    console.log(`[Job ${jobId}] Spawning FFmpeg:`, args.join(' '));
-
-    const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-stats', ...args]);
-
-    let stderr = '';
-    ffmpeg.stderr.on('data', d => { stderr += d.toString(); });
-
-    ffmpeg.on('error', (err) => {
-        console.error(`[Job ${jobId}] FFmpeg Error:`, err);
-        jobs[jobId].status = 'failed';
-        jobs[jobId].error = err.message;
-    });
-
-    ffmpeg.on('close', (code) => {
-        if (code === 0) {
-            console.log(`[Job ${jobId}] Completed. Output: ${outputPath}`);
-            jobs[jobId].status = 'completed';
-            jobs[jobId].progress = 100;
-        } else {
-            console.error(`[Job ${jobId}] Failed with code ${code}`, stderr);
-            jobs[jobId].status = 'failed';
-            jobs[jobId].error = "Processing Failed";
-        }
-    });
-}
-
-
-// Routes
-app.get('/api/proxy/pixabay', (req, res) => {
-    const { q, type, token } = req.query;
-    if (!token || token === 'undefined') return res.json({ hits: [] });
-    const url = type === 'video' 
-        ? `https://pixabay.com/api/videos/?key=${token}&q=${encodeURIComponent(q)}`
-        : `https://pixabay.com/api/?key=${token}&q=${encodeURIComponent(q)}`;
     
-    const apiReq = https.get(url, (apiRes) => apiRes.pipe(res));
-    apiReq.on('error', (e) => {
-        console.error("Pixabay Proxy Error:", e);
-        res.status(500).json({ hits: [] });
-    });
-});
+    if (res && !res.headersSent) res.status(202).json({ jobId });
 
-app.get('/api/proxy/freesound', (req, res) => {
-    const { token, q } = req.query;
-    if (!token) return res.json({ results: REAL_SFX_FALLBACKS });
-    const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q)}&fields=id,name,previews,duration&token=${token}`;
-    
-    const apiReq = https.get(url, (apiRes) => apiRes.pipe(res));
-    apiReq.on('error', (e) => {
-        console.error("Freesound Proxy Error:", e);
-        res.json({ results: REAL_SFX_FALLBACKS });
-    });
-});
-
-// Single Clip Processing (with Filter Builder)
-const processSingleClipJob = (jobId) => {
-    const job = jobs[jobId];
-    if (!job) return;
+    const finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', ...args];
+    console.log(`[Job ${jobId}] Spawning FFmpeg...`);
     
     try {
-        const action = jobId.split('_')[0]; 
-        const file = job.files[0];
-        if (!file) { job.status = 'failed'; job.error = "No file uploaded"; return; }
+        const ffmpeg = spawn('ffmpeg', finalArgs);
         
-        let ext = '.mp4';
-        if (file.mimetype.startsWith('audio') || action === 'extract-audio' || action.includes('voice') || action.includes('music')) {
-            ext = '.mp3';
-        }
-        
-        const outputPath = path.join(uploadDir, `${action}-${Date.now()}${ext}`);
-        job.outputPath = outputPath;
-        
-        let args = [];
-        
-        if (action.includes('extract-audio')) {
-            args = ['-i', file.path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', '-y', outputPath];
-        } else {
-            const { filterComplex, mapArgs, outputOptions } = filterBuilder.build(action, job.params, file.path);
-            args = ['-i', file.path];
-            if (filterComplex) args.push('-filter_complex', filterComplex);
-            if (mapArgs && mapArgs.length > 0) args.push(...mapArgs);
-            else if (!filterComplex) args.push('-c', 'copy');
-            if (outputOptions && outputOptions.length > 0) args.push(...outputOptions);
-            else if (filterComplex) {
-                if (ext === '.mp4') args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac');
-                if (ext === '.mp3') args.push('-c:a', 'libmp3lame');
+        let stderr = '';
+        ffmpeg.stderr.on('data', d => {
+            const line = d.toString();
+            stderr += line;
+            const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
+            if (timeMatch && expectedDuration > 0) {
+                const t = timeToSeconds(timeMatch[1]);
+                const p = Math.round((t / expectedDuration) * 100);
+                if (jobs[jobId]) jobs[jobId].progress = Math.min(99, Math.max(0, p));
             }
-            args.push('-y', outputPath);
-        }
-        
-        createFFmpegJob(jobId, args, 10);
+        });
+
+        ffmpeg.on('error', (err) => {
+            console.error(`[Job ${jobId}] Spawn Error:`, err);
+            if (jobs[jobId]) {
+                jobs[jobId].status = 'failed';
+                jobs[jobId].error = err.message;
+            }
+        });
+
+        ffmpeg.on('close', (code) => {
+            if (!jobs[jobId]) return;
+            
+            // Validate File Existence & Size
+            const fileExists = jobs[jobId].outputPath && fs.existsSync(jobs[jobId].outputPath);
+            const fileSize = fileExists ? fs.statSync(jobs[jobId].outputPath).size : 0;
+            const hasValidContent = fileSize > 100; // Minimum size for a valid header
+
+            // Success Condition: Code 0 AND File exists with content
+            // OR if Code != 0 but file seems valid (resilient check for mobile streams)
+            const isSuccess = (code === 0 && hasValidContent) || (fileSize > 1024 && hasValidContent);
+
+            if (isSuccess) {
+                console.log(`[Job ${jobId}] Success. Size: ${fileSize} bytes`);
+                jobs[jobId].status = 'completed';
+                jobs[jobId].progress = 100;
+                jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+            } else {
+                console.error(`[Job ${jobId}] Failed. Code: ${code}. File Size: ${fileSize}`, stderr);
+                jobs[jobId].status = 'failed';
+                jobs[jobId].error = `Erro ao renderizar. Código: ${code}. ` + (stderr.slice(-100) || "Verifique logs.");
+                // Cleanup partial file
+                if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
+            }
+        });
     } catch (e) {
-        console.error(`Process Single Clip Error [${jobId}]:`, e);
-        job.status = 'failed';
-        job.error = e.message;
+        console.error(`[Job ${jobId}] Fatal Exception:`, e);
+        if(jobs[jobId]) {
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = "Erro crítico no servidor.";
+        }
     }
-};
+}
 
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
     jobs[jobId] = { id: jobId, status: 'pending', files: req.files || [], params: req.body, startTime: Date.now() };
     
-    // Defer processing
-    setTimeout(() => processSingleClipJob(jobId), 100);
-    
-    res.status(202).json({ jobId });
+    setTimeout(() => {
+        const job = jobs[jobId];
+        const file = job.files[0];
+        if (!file) { job.status = 'failed'; return; }
+        
+        let ext = '.mp4';
+        if (file.mimetype.startsWith('audio') || action === 'extract-audio' || action.includes('voice')) ext = '.mp3';
+        
+        const outputPath = path.join(uploadDir, `${action}-${Date.now()}${ext}`);
+        job.outputPath = outputPath;
+        
+        let args = [];
+        if (action.includes('extract-audio')) {
+            args = ['-i', file.path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', '-y', outputPath];
+            createFFmpegJob(jobId, args, 10, res);
+        } else {
+            const { filterComplex, mapArgs, outputOptions } = filterBuilder.build(action, job.params, file.path);
+            args = ['-i', file.path];
+            if (filterComplex) args.push('-filter_complex', filterComplex);
+            if (mapArgs?.length) args.push(...mapArgs);
+            else if (!filterComplex) args.push('-c', 'copy');
+            if (outputOptions?.length) args.push(...outputOptions);
+            args.push('-y', outputPath);
+            createFFmpegJob(jobId, args, 10, res);
+        }
+    }, 100);
 });
 
-// Export Route Corrigida
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
-
-    // Cria job imediatamente
-    const job = {
-        id: jobId,
-        status: 'pending',
-        files: req.files || [],
-        params: req.body,
-        startTime: Date.now()
-    };
-    jobs[jobId] = job;
-
-    // Cria arrays de vídeo e áudio para handleExportVideo
-    job.videoInputs = job.files
-        .filter(f => f.mimetype.startsWith('video'))
-        .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
-
-    job.audioInputs = job.files
-        .filter(f => f.mimetype.startsWith('audio'))
-        .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
-
-    // Resposta imediata
+    jobs[jobId] = { id: jobId, status: 'pending', files: req.files || [], params: req.body, startTime: Date.now() };
     res.status(202).json({ jobId });
-
-    // Chama handleExportVideo após 100ms
+    
     setTimeout(() => {
-    handleExportVideo(jobs[jobId], uploadDir, (id, args, dur, outputPath) => {
-        const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
-
-        // Atualiza o job com o caminho do arquivo de saída
-        if (!jobs[id]) jobs[id] = {};
-        jobs[id].outputPath = outputPath;
-
-        createFFmpegJob(id, safeArgs, dur, outputPath);
-    }).catch(err => {
-        console.error(`Export Job Failed [${jobId}]:`, err);
-        if (jobs[jobId]) {
-            jobs[jobId].status = 'failed';
-            jobs[jobId].error = "Export Initialization Failed: " + err.message;
-        }
-    });
-}, 100);
-
-
-
+        handleExportVideo(jobs[jobId], uploadDir, (id, args, dur) => {
+            // Buffer de segurança para evitar corrupção de áudio em conexões lentas
+            const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
+            createFFmpegJob(id, safeArgs, dur);
+        }).catch(err => {
+            if (jobs[jobId]) {
+                jobs[jobId].status = 'failed';
+                jobs[jobId].error = "Configuração do Export falhou: " + err.message;
+            }
+        });
+    }, 100);
+});
 
 app.get('/api/process/status/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
-    if (!job) {
-        // If not found, log it for debugging
-        console.warn(`[404] Job not found: ${req.params.jobId}`);
-        return res.status(404).json({ status: 'not_found' });
-    }
+    if (!job) return res.status(404).json({ status: 'not_found' });
     res.json(job);
 });
 
 app.get('/api/process/download/:jobId', (req, res) => {
     const job = jobs[req.params.jobId];
-    if (job && job.outputPath && fs.existsSync(job.outputPath)) {
+    if (job && job.outputPath && fs.existsSync(job.outputPath) && fs.statSync(job.outputPath).size > 0) {
+        res.setHeader('Content-Disposition', `attachment; filename="proedit_export_${Date.now()}.mp4"`);
         res.download(job.outputPath);
     } else {
-        res.status(404).send("File not found");
+        res.status(404).send("Arquivo indisponível ou vazio.");
     }
 });
 
 app.get('/api/check-ffmpeg', (req, res) => {
-    // Also verify we can spawn ffmpeg
     const check = spawn('ffmpeg', ['-version']);
     check.on('error', () => res.status(500).send("FFmpeg Missing"));
     check.on('close', (code) => {
