@@ -1,66 +1,85 @@
 // exportVideo.js
-import { spawn } from 'child_process';
+
+import fs from 'fs';
+import { exec } from 'child_process';
 
 /**
- * Exporta vídeo combinando imagens e áudios.
- * @param {string} outputPath - Caminho do arquivo final.
- * @param {Array|Object} videoInputs - Array de objetos de vídeo { path, duration } ou objeto único.
- * @param {Array|Object} audioInputs - Array de objetos de áudio { path, duration } ou objeto único.
- * @returns {Promise<void>}
+ * Helper para normalizar inputs de vídeo ou áudio
+ * Garante que cada item seja { path, duration }
+ * Se a duração não estiver definida, usa a padrão (defaultDuration)
+ */
+function normalizeInputs(inputs, defaultDuration = 4) {
+  if (!Array.isArray(inputs)) {
+    throw new Error('Inputs devem ser um array');
+  }
+
+  return inputs.map(item => {
+    if (typeof item === 'string') {
+      // Se for string, transforma em objeto
+      return { path: item, duration: defaultDuration };
+    }
+
+    if (!item.path) {
+      throw new Error(`Input inválido: ${JSON.stringify(item)} (falta path)`);
+    }
+
+    // Se duration não existe, usa default
+    return { path: item.path, duration: item.duration ?? defaultDuration };
+  });
+}
+
+/**
+ * Função principal que exporta o vídeo
+ * @param {string} outputPath - caminho final do vídeo
+ * @param {Array} videoInputs - array de { path, duration }
+ * @param {Array} audioInputs - array de { path, duration }
  */
 export async function handleExportVideo(outputPath, videoInputs, audioInputs) {
-  return new Promise((resolve, reject) => {
-    // 🔹 Garantir que sejam arrays
-    if (!Array.isArray(videoInputs)) videoInputs = [videoInputs];
-    if (!Array.isArray(audioInputs)) audioInputs = [audioInputs];
+  try {
+    console.log('DEBUG - videoInputs antes da normalização:', videoInputs);
+    console.log('DEBUG - audioInputs antes da normalização:', audioInputs);
 
-    // 🔹 Validar formatos corretos
-    if (!videoInputs.every(v => v.path && v.duration)) {
-      return reject(new Error('Todos os videoInputs devem ter { path, duration }'));
-    }
-    if (!audioInputs.every(a => a.path && a.duration)) {
-      return reject(new Error('Todos os audioInputs devem ter { path, duration }'));
-    }
+    // Normaliza os inputs
+    const videos = normalizeInputs(videoInputs);
+    const audios = normalizeInputs(audioInputs);
 
-    // 🔹 Montar argumentos do FFmpeg (exemplo simplificado)
-    const ffmpegArgs = [];
+    console.log('DEBUG - videoInputs normalizados:', videos);
+    console.log('DEBUG - audioInputs normalizados:', audios);
 
-    // Entrada de cada vídeo
-    videoInputs.forEach(v => {
-      ffmpegArgs.push('-loop', '1', '-t', `${v.duration}`, '-i', v.path);
+    // Exemplo simples de construção do comando FFmpeg
+    // Aqui você pode adicionar suas transições, zoompan, etc.
+    let ffmpegCmd = `ffmpeg -y -f lavfi -i color=c=black:s=1920x1080:r=30 `;
+
+    // Adiciona cada vídeo como input
+    videos.forEach((v, i) => {
+      ffmpegCmd += `-loop 1 -t ${v.duration} -i "${v.path}" `;
     });
 
-    // Entrada de cada áudio
-    audioInputs.forEach(a => {
-      ffmpegArgs.push('-i', a.path);
+    // Adiciona cada áudio como input
+    audios.forEach((a, i) => {
+      ffmpegCmd += `-i "${a.path}" `;
     });
 
-    // Saída final simplificada (substitua com seus filtros reais)
-    ffmpegArgs.push(
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',
-      '-crf', '23',
-      '-c:a', 'aac',
-      '-b:a', '192k',
-      '-shortest',
-      outputPath
-    );
+    // Exemplo de saída simples (sem filtros complexos ainda)
+    ffmpegCmd += `-c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p `;
+    ffmpegCmd += `-c:a aac -b:a 192k -ac 2 -ar 44100 `;
+    ffmpegCmd += `"${outputPath}"`;
 
-    console.log('FFmpeg args:', ffmpegArgs);
+    console.log('DEBUG - Comando FFmpeg:', ffmpegCmd);
 
-    const ffmpeg = spawn('ffmpeg', ffmpegArgs);
-
-    ffmpeg.stdout.on('data', data => console.log('FFmpeg:', data.toString()));
-    ffmpeg.stderr.on('data', data => console.log('FFmpeg ERR:', data.toString()));
-
-    ffmpeg.on('close', code => {
-      if (code === 0) {
+    // Executa FFmpeg
+    await new Promise((resolve, reject) => {
+      exec(ffmpegCmd, (error, stdout, stderr) => {
+        if (error) {
+          console.error('Erro FFmpeg:', stderr);
+          return reject(error);
+        }
+        console.log('FFmpeg finalizado com sucesso!');
         resolve();
-      } else {
-        reject(new Error(`FFmpeg exited with code ${code}`));
-      }
+      });
     });
-
-    ffmpeg.on('error', err => reject(err));
-  });
+  } catch (err) {
+    console.error('Erro em handleExportVideo:', err);
+    throw err;
+  }
 }
