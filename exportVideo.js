@@ -1,85 +1,76 @@
-// exportVideo.js
-
 import fs from 'fs';
-import { exec } from 'child_process';
+import path from 'path';
+import { spawn } from 'child_process';
 
 /**
- * Helper para normalizar inputs de vídeo ou áudio
- * Garante que cada item seja { path, duration }
- * Se a duração não estiver definida, usa a padrão (defaultDuration)
+ * Normaliza os inputs garantindo que sejam arrays de objetos { path, duration }
  */
-function normalizeInputs(inputs, defaultDuration = 4) {
-  if (!Array.isArray(inputs)) {
-    throw new Error('Inputs devem ser um array');
-  }
-
-  return inputs.map(item => {
-    if (typeof item === 'string') {
-      // Se for string, transforma em objeto
-      return { path: item, duration: defaultDuration };
-    }
-
-    if (!item.path) {
-      throw new Error(`Input inválido: ${JSON.stringify(item)} (falta path)`);
-    }
-
-    // Se duration não existe, usa default
-    return { path: item.path, duration: item.duration ?? defaultDuration };
-  });
+function normalizeInputs(inputs, type) {
+    if (!Array.isArray(inputs)) throw new Error(`${type} deve ser um array`);
+    return inputs.map((item, index) => {
+        if (!item.path) throw new Error(`Todos os ${type} devem ter { path, duration }`);
+        return {
+            path: item.path,
+            duration: typeof item.duration === 'number' ? item.duration : 5 // default 5s
+        };
+    });
 }
 
 /**
- * Função principal que exporta o vídeo
- * @param {string} outputPath - caminho final do vídeo
- * @param {Array} videoInputs - array de { path, duration }
- * @param {Array} audioInputs - array de { path, duration }
+ * handleExportVideo
+ * @param {Array} videoInputs Array de vídeos { path, duration }
+ * @param {Array} audioInputs Array de áudios { path, duration }
+ * @param {String} outputDir Diretório de saída
+ * @param {Function} callback Recebe (jobId, ffmpegArgs, totalDuration)
  */
-export async function handleExportVideo(outputPath, videoInputs, audioInputs) {
-  try {
-    console.log('DEBUG - videoInputs antes da normalização:', videoInputs);
-    console.log('DEBUG - audioInputs antes da normalização:', audioInputs);
+export async function handleExportVideo(videoInputs, audioInputs, outputDir, callback) {
+    try {
+        // Normaliza os inputs
+        const videos = normalizeInputs(videoInputs, 'videoInputs');
+        const audios = normalizeInputs(audioInputs, 'audioInputs');
 
-    // Normaliza os inputs
-    const videos = normalizeInputs(videoInputs);
-    const audios = normalizeInputs(audioInputs);
+        // Cria jobId
+        const jobId = `export_${Date.now()}`;
 
-    console.log('DEBUG - videoInputs normalizados:', videos);
-    console.log('DEBUG - audioInputs normalizados:', audios);
+        // Paths de saída
+        const outputPath = path.join(outputDir, `export_${Date.now()}.mp4`);
 
-    // Exemplo simples de construção do comando FFmpeg
-    // Aqui você pode adicionar suas transições, zoompan, etc.
-    let ffmpegCmd = `ffmpeg -y -f lavfi -i color=c=black:s=1920x1080:r=30 `;
+        // FFmpeg args básicos
+        const args = [];
 
-    // Adiciona cada vídeo como input
-    videos.forEach((v, i) => {
-      ffmpegCmd += `-loop 1 -t ${v.duration} -i "${v.path}" `;
-    });
+        // Adiciona vídeos
+        videos.forEach(v => {
+            args.push('-i', v.path);
+        });
 
-    // Adiciona cada áudio como input
-    audios.forEach((a, i) => {
-      ffmpegCmd += `-i "${a.path}" `;
-    });
+        // Adiciona áudios
+        audios.forEach(a => {
+            args.push('-i', a.path);
+        });
 
-    // Exemplo de saída simples (sem filtros complexos ainda)
-    ffmpegCmd += `-c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p `;
-    ffmpegCmd += `-c:a aac -b:a 192k -ac 2 -ar 44100 `;
-    ffmpegCmd += `"${outputPath}"`;
+        // Combinar vídeos e áudios (simples crossfade/concat)
+        // Aqui você pode personalizar filtros complexos
+        // Para teste inicial, vamos apenas copiar streams
+        args.push(
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-shortest',
+            '-y',
+            outputPath
+        );
 
-    console.log('DEBUG - Comando FFmpeg:', ffmpegCmd);
+        // Calcula duração total estimada (soma dos vídeos)
+        const totalDuration = videos.reduce((sum, v) => sum + v.duration, 0);
 
-    // Executa FFmpeg
-    await new Promise((resolve, reject) => {
-      exec(ffmpegCmd, (error, stdout, stderr) => {
-        if (error) {
-          console.error('Erro FFmpeg:', stderr);
-          return reject(error);
-        }
-        console.log('FFmpeg finalizado com sucesso!');
-        resolve();
-      });
-    });
-  } catch (err) {
-    console.error('Erro em handleExportVideo:', err);
-    throw err;
-  }
+        // Retorna para o server criar o processo FFmpeg
+        callback(jobId, args, totalDuration);
+
+        return outputPath;
+
+    } catch (err) {
+        console.error("Erro em handleExportVideo:", err);
+        throw err;
+    }
 }
