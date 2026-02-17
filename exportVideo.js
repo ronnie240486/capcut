@@ -1,14 +1,31 @@
 
 import path from 'path';
+import fs from 'fs';
 import { exec } from 'child_process';
 import transitionBuilder from './video-engine/transitionBuilder.js';
 
-function getMediaInfo(filePath) {
+function validateAndProbe(filePath) {
     return new Promise((resolve) => {
-        exec(`ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
-            if (err) return resolve({ hasAudio: false });
+        // 1. Basic Size Check
+        try {
+            const stats = fs.statSync(filePath);
+            if (stats.size < 100) { 
+                 console.warn(`[Export] Skipping empty/tiny file: ${filePath} (${stats.size} bytes)`);
+                 return resolve({ isValid: false });
+            }
+        } catch(e) {
+            console.warn(`[Export] File not found: ${filePath}`);
+            return resolve({ isValid: false });
+        }
+
+        // 2. FFprobe Check
+        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
+            if (err) {
+                console.warn(`[Export] Probe failed for ${filePath}: ${err.message}`);
+                return resolve({ isValid: false });
+            }
             const hasAudio = stdout && stdout.includes('audio');
-            resolve({ hasAudio });
+            resolve({ isValid: true, hasAudio });
         });
     });
 }
@@ -27,10 +44,13 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
         const fileMap = {};
         if (job.files && job.files.length > 0) {
             for (const f of job.files) {
-                fileMap[f.originalname] = f.path;
-                if (media[f.originalname]) {
-                    const info = await getMediaInfo(f.path);
-                    media[f.originalname].hasAudio = info.hasAudio;
+                const info = await validateAndProbe(f.path);
+                
+                if (info.isValid) {
+                    fileMap[f.originalname] = f.path;
+                    if (media[f.originalname]) {
+                        media[f.originalname].hasAudio = info.hasAudio;
+                    }
                 }
             }
         }
