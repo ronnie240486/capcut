@@ -166,6 +166,7 @@ export default {
                     addFilter(staticMove);
                 }
 
+                // Final scale ensure to handle any zoompan resolution changes
                 addFilter(`scale=${targetRes.w}:${targetRes.h}:flags=lanczos,setsar=1`);
 
                 mainTrackLabels.push({
@@ -229,8 +230,6 @@ export default {
         let finalComp = baseStream;
         
         // Se temos trilha principal, sobrepomos ao fundo. 
-        // Como 'mainTrackStream' vem de xfade/concat, ele começa em 0.
-        // Se houver transparência ou gaps (impossível com concat), o fundo aparece.
         if (mainTrackStream) {
             const compLabel = `comp_base`;
             // overlay=eof_action=pass garante que o fundo continue se o video acabar antes
@@ -245,7 +244,7 @@ export default {
             let overlayInputLabel = '';
             
             if (clip.type === 'text') {
-                 // ... TEXT GENERATION LOGIC (Mantido igual) ...
+                 // ... TEXT GENERATION LOGIC ...
                  const bgLabel = `txtbg_${i}`;
                  filterChain += `color=c=black@0.0:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${clip.duration}[${bgLabel}];`;
 
@@ -289,7 +288,6 @@ export default {
 
             } else {
                  // IMAGE OR VIDEO OVERLAY (PIP)
-                 // Correção: Tratamento unificado para vídeo/imagem em camada
                  const filePath = fileMap[clip.fileName];
                  if (!filePath) return;
                  
@@ -323,9 +321,10 @@ export default {
                  
                  // Transform (Scale & Rotate)
                  const scale = clip.properties.transform?.scale || 0.5; // Default overlay smaller
-                 // Ensure width is even
-                 const w = Math.floor(targetRes.w * scale / 2) * 2;
-                 filters.push(`scale=${w}:-1`);
+                 // Ensure width is even and at least 2 pixels to avoid ffmpeg errors
+                 const w = Math.max(2, Math.floor(targetRes.w * scale / 2) * 2);
+                 // Use -2 to maintain aspect ratio and ensure height is divisible by 2
+                 filters.push(`scale=${w}:-2`);
                  
                  if (clip.properties.transform?.rotation) {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
@@ -384,12 +383,6 @@ export default {
                 const filePath = fileMap[clip.fileName];
                 const mediaInfo = mediaLibrary[clip.fileName];
                 if (!filePath || !mediaInfo?.hasAudio) return;
-                
-                // Precisamos achar o input index correto. 
-                // Como não guardamos o input index do loop anterior facilmente,
-                // vamos adicionar uma nova entrada de input para o áudio. 
-                // Isso é menos eficiente mas mais seguro do que tentar mapear index.
-                // Ou melhor: fileMap já tem o path.
                 
                 inputs.push('-i', filePath);
                 const idx = inputIndexCounter++;
