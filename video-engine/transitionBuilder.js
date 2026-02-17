@@ -52,7 +52,8 @@ export default {
         
         // Filtro de Escala Seguro: Força resolução par e preenche com barras pretas se necessário (Letterbox)
         // Pad corrigido para usar expressões matemáticas de centralização (W-iw)/2 em vez de -1
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${targetRes.w}:${targetRes.h}:(W-iw)/2:(H-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(1920-iw)/2:(1080-ih)/2:color=black
+,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // SEPARAR TRILHAS
         // Video Principal (Base para transições xfade)
