@@ -235,53 +235,36 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
     res.status(202).json({ jobId });
 });
 
-// Export Route - robust version
+// Export Route Corrigida
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
 
-    // Cria o job imediatamente
-    jobs[jobId] = {
+    // Cria job imediatamente
+    const job = {
         id: jobId,
         status: 'pending',
         files: req.files || [],
         params: req.body,
         startTime: Date.now()
     };
+    jobs[jobId] = job;
 
-    // Responde rápido para o front
+    // Cria arrays de vídeo e áudio para handleExportVideo
+    job.videoInputs = job.files
+        .filter(f => f.mimetype.startsWith('video'))
+        .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
+
+    job.audioInputs = job.files
+        .filter(f => f.mimetype.startsWith('audio'))
+        .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
+
+    // Resposta imediata
     res.status(202).json({ jobId });
 
-    // Defer processamento
+    // Chama handleExportVideo após 100ms
     setTimeout(() => {
-        const job = jobs[jobId];
-        if (!job || !job.files || job.files.length === 0) {
-            console.error(`Export Job [${jobId}] falhou: nenhum arquivo enviado.`);
-            if (job) {
-                job.status = 'failed';
-                job.error = 'Nenhum arquivo enviado para exportação';
-            }
-            return;
-        }
-
-        // Cria arrays para handleExportVideo
-        const videoInputs = job.files
-            .filter(f => f.mimetype.startsWith('video'))
-            .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
-
-        const audioInputs = job.files
-            .filter(f => f.mimetype.startsWith('audio'))
-            .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
-
-        // Checa se pelo menos um input existe
-        if (videoInputs.length === 0 && audioInputs.length === 0) {
-            console.error(`Export Job [${jobId}] falhou: nenhum vídeo ou áudio válido.`);
-            job.status = 'failed';
-            job.error = 'Nenhum vídeo ou áudio válido para exportação';
-            return;
-        }
-
-        // Chama handleExportVideo
         handleExportVideo(job, uploadDir, (id, args, dur) => {
+            // Adiciona max_muxing_queue_size para evitar erros de FFmpeg
             const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
             createFFmpegJob(id, safeArgs, dur);
         }).catch(err => {
@@ -291,9 +274,9 @@ app.post('/api/export/start', uploadAny, (req, res) => {
                 job.error = "Export Initialization Failed: " + err.message;
             }
         });
-
     }, 100);
 });
+
 
 
 app.get('/api/process/status/:jobId', (req, res) => {
