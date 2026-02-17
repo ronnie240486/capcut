@@ -29,13 +29,14 @@ app.use(express.urlencoded({ extended: true, limit: '1gb' }));
 const uploadDir = path.resolve(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// Global Error Handlers
+// Global error handling
 process.on('uncaughtException', (err) => console.error('Uncaught Exception:', err));
 process.on('unhandledRejection', (reason) => console.error('Unhandled Rejection:', reason));
 
 // Filename sanitization
 const sanitizeFilename = (name) => name.replace(/[^a-z0-9.]/gi, '_').replace(/_{2,}/g, '_');
 
+// Multer storage
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => cb(null, `${Date.now()}-${sanitizeFilename(file.originalname)}`)
@@ -46,9 +47,10 @@ const uploadAny = multer({
     limits: { fieldSize: 100 * 1024 * 1024, fileSize: 2048 * 1024 * 1024 }
 }).any();
 
+// Jobs store
 const jobs = {};
 
-// Cleanup old jobs
+// Cleanup old jobs every hour
 setInterval(() => {
     const now = Date.now();
     Object.keys(jobs).forEach(id => {
@@ -61,7 +63,7 @@ setInterval(() => {
     });
 }, 3600000);
 
-// Convert HH:MM:SS to seconds
+// Helper: convert HH:MM:SS to seconds
 function timeToSeconds(timeStr) {
     if (!timeStr) return 0;
     const parts = timeStr.split(':');
@@ -124,7 +126,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     }
 }
 
-// Single clip processing
+// Single clip processing route
 app.post('/api/process/start/:action', uploadAny, (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
@@ -157,17 +159,23 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
     }, 100);
 });
 
-// Export multiple videos + audios
+// Multi-video/audio export route (crossfade, transitions, pan/zoom)
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
     jobs[jobId] = { id: jobId, status: 'pending', files: req.files || [], params: req.body, startTime: Date.now() };
     res.status(202).json({ jobId });
 
     setTimeout(() => {
-        handleExportVideo(jobs[jobId], uploadDir, (id, args, dur) => {
+        // Build arrays de vídeos e áudios
+        const job = jobs[jobId];
+        job.videoInputs = job.files.filter(f => f.mimetype.startsWith('video')).map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
+        job.audioInputs = job.files.filter(f => f.mimetype.startsWith('audio')).map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
+
+        handleExportVideo(job, uploadDir, (id, args, dur) => {
             const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
             createFFmpegJob(id, safeArgs, dur);
         }).catch(err => {
+            console.error(`Export Job Failed [${jobId}]:`, err);
             if (jobs[jobId]) {
                 jobs[jobId].status = 'failed';
                 jobs[jobId].error = "Export falhou: " + err.message;
