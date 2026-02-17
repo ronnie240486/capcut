@@ -97,5 +97,107 @@ export default {
 
         return { filterComplex, mapArgs, outputOptions };
     },
+
+    getFFmpegFilterFromEffect: (effectId) => {
+        if (!effectId) return null;
+
+        // --- 1. PROCEDURAL EFFECTS (MATCHING FRONTEND CONSTANTS) ---
+        
+        const cgMatch = effectId.match(/^cg-pro-(\d+)$/);
+        if (cgMatch) {
+            const i = parseInt(cgMatch[1], 10);
+            const contrast = 1 + (i % 5) * 0.1;
+            const sat = 1 + (i % 3) * 0.2;
+            const hue = (i * 15) % 360;
+            return `eq=contrast=${contrast.toFixed(2)}:saturation=${sat.toFixed(2)},hue=h=${hue}`;
+        }
+
+        const vinMatch = effectId.match(/^vintage-style-(\d+)$/);
+        if (vinMatch) {
+            const i = parseInt(vinMatch[1], 10);
+            const sepia = 0.3 + (i % 5) * 0.1;
+            return `eq=saturation=0.5:contrast=0.9:brightness=0.1,colorbalance=rs=${sepia.toFixed(2)}:bs=-${(sepia/2).toFixed(2)}`;
+        }
+
+        // --- 2. STATIC NAMED EFFECTS ---
+        const effects = {
+            'teal-orange': 'colorbalance=rs=0.2:bs=-0.2:gs=0:rm=0.2:gm=0:bm=-0.2:rh=0.2:gh=0:bh=-0.2,eq=saturation=1.3',
+            'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
+            'warm': 'colorbalance=rs=0.3:gs=0:bs=-0.3,eq=saturation=0.8:contrast=1.1',
+            'cool': 'colorbalance=rs=-0.1:bs=0.2,eq=brightness=0.1',
+            'vivid': 'eq=saturation=1.8:contrast=1.2',
+            'mono': 'hue=s=0,eq=contrast=1.2',
+        };
+        
+        return effects[effectId] || null;
+    },
+
+    getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}, targetRes = {w:1280, h:720}, targetFps = 30) => {
+        const fps = targetFps || 30;
+        const frames = Math.max(1, Math.ceil(durationSec * fps));
+        const w = targetRes.w;
+        const h = targetRes.h;
+        
+        let z = '1.0';
+        let x = '(iw-ow)/2';
+        let y = '(ih-oh)/2';
+        let extra = ''; 
+        
+        // --- 1. PROCEDURAL PARSING (mov- prefix) ---
+        if (moveId && moveId.startsWith('mov-pan-')) {
+            z = '1.2';
+            if (moveId.includes('slow-l')) x = `(iw-ow)*(on/${frames})`;
+            else if (moveId.includes('slow-r')) x = `(iw-ow)*(1-on/${frames})`;
+        }
+        // --- ZOOMS ---
+        else if (moveId && moveId.startsWith('mov-zoom-')) {
+            if (moveId.includes('crash-in')) {
+                z = `min(zoom+0.05,2.0)`;
+                x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+            } else if (moveId.includes('fast-in')) {
+                z = `min(zoom+0.05,1.5)`;
+                x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+            } else if (moveId.includes('slow-in')) {
+                z = `min(zoom+0.0015,1.2)`;
+                x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+            } else if (moveId.includes('slow-out')) {
+                z = `max(1.2-0.0015*on,1.0)`;
+                x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+            } else if (moveId.includes('bounce')) {
+                z = `1.0+0.1*sin(2*PI*on/(${frames}/2))`;
+                x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+            }
+        }
+        // --- DOLLY ---
+        else if (moveId && moveId.startsWith('mov-dolly-')) {
+             if (moveId.includes('zoom')) {
+                z = `max(1.4-0.015*on,1.0)`; 
+                x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+             }
+        }
+        // --- 2. LEGACY ---
+        else if (moveId === 'kenBurns') {
+            const startScale = config.startScale || 1.0;
+            const endScale = config.endScale || 1.3;
+            z = `${startScale}+(${endScale}-${startScale})*on/${frames}`;
+            x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+        }
+        else {
+             z = '1.0'; x = '(iw-ow)/2'; y = '(ih-oh)/2';
+        }
+        
+        return `zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}${extra}`;
+    },
+
+    getTransitionXfade: (id) => {
+        const map = {
+            'fade': 'fade', 
+            'crossfade': 'fade', 
+            'black': 'fadeblack', 
+            'white': 'fadewhite'
+        };
+        return map[id] || 'fade';
+    },
+    
     getAtempoFilter
 };
