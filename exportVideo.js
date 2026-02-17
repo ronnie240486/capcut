@@ -1,76 +1,97 @@
-// exportVideo.js
+
 import path from 'path';
+import fs from 'fs';
+import { exec } from 'child_process';
+import transitionBuilder from './video-engine/transitionBuilder.js';
 
-/**
- * Normaliza cada entrada de vídeo ou áudio.
- * Garante que path seja string e duration seja número.
- */
-function normalizeInputs(inputs, type = 'video') {
-    if (!Array.isArray(inputs)) {
-        throw new Error(`Inputs devem ser um array (${type})`);
-    }
-
-    return inputs.map((item, index) => {
-        if (!item.path || !item.duration) {
-            throw new Error(`Todos os ${type}Inputs devem ter { path, duration }, problema no índice ${index}`);
+function validateAndProbe(filePath) {
+    return new Promise((resolve) => {
+        // 1. Basic Size Check
+        try {
+            const stats = fs.statSync(filePath);
+            if (stats.size < 100) { 
+                 console.warn(`[Export] Skipping empty/tiny file: ${filePath} (${stats.size} bytes)`);
+                 return resolve({ isValid: false });
+            }
+        } catch(e) {
+            console.warn(`[Export] File not found: ${filePath}`);
+            return resolve({ isValid: false });
         }
 
-        // Se for array, pega o primeiro elemento
-        const filePath = Array.isArray(item.path) ? item.path[0] : item.path;
-        const duration = parseFloat(item.duration);
-
-        if (!filePath || isNaN(duration)) {
-            throw new Error(`Inputs inválidos no índice ${index} (${type})`);
-        }
-
-        return { path: filePath, duration };
+        // 2. FFprobe Check
+        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
+            if (err) {
+                console.warn(`[Export] Probe failed for ${filePath}: ${err.message}`);
+                return resolve({ isValid: false });
+            }
+            const hasAudio = stdout && stdout.includes('audio');
+            resolve({ isValid: true, hasAudio });
+        });
     });
 }
 
-/**
- * Prepara os argumentos do FFmpeg para exportar vídeo final
- */
-export async function handleExportVideo(job, uploadDir, onReady) {
+export const handleExportVideo = async (job, uploadDir, onStart) => {
     try {
-        const { videoInputs: rawVideos, audioInputs: rawAudios } = job.params;
+        const { projectState } = job.params;
+        if (!projectState) throw new Error("Missing projectState");
 
-        // Normaliza os inputs
-        const videoInputs = normalizeInputs(rawVideos, 'video');
-        const audioInputs = normalizeInputs(rawAudios, 'audio');
-
-        if (videoInputs.length === 0 && audioInputs.length === 0) {
-            throw new Error('Nenhum vídeo ou áudio fornecido');
+        const state = JSON.parse(projectState);
+        const { clips, media, totalDuration } = state;
+        const exportConfig = state.exportConfig || {};
+        const fps = parseInt(exportConfig.fps) || 30;
+        
+        // Mapeamento de arquivos
+        const fileMap = {};
+        if (job.files && job.files.length > 0) {
+            for (const f of job.files) {
+                const info = await validateAndProbe(f.path);
+                
+                if (info.isValid) {
+                    fileMap[f.originalname] = f.path;
+                    if (media[f.originalname]) {
+                        media[f.originalname].hasAudio = info.hasAudio;
+                    }
+                }
+            }
         }
 
-        const ffmpegArgs = [];
+        // Pass totalDuration to buildTimeline
+        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, exportConfig, totalDuration);
+        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
+        job.outputPath = outputPath;
 
-        // Adiciona vídeos
-        videoInputs.forEach((v, idx) => {
-            const filePath = path.resolve(uploadDir, path.basename(v.path));
-            ffmpegArgs.push('-loop', '1', '-t', v.duration.toString(), '-i', filePath);
-        });
-
-        // Adiciona áudios
-        audioInputs.forEach((a) => {
-            const filePath = path.resolve(uploadDir, path.basename(a.path));
-            ffmpegArgs.push('-i', filePath);
-        });
-
-        // Configura codecs e opções básicas
-        ffmpegArgs.push(
+        const args = [
+            ...buildResult.inputs,
+            '-filter_complex', buildResult.filterComplex,
+            '-map', buildResult.outputMapVideo,
+            '-map', buildResult.outputMapAudio,
+            
+            // Codec de Vídeo Otimizado
             '-c:v', 'libx264',
-            '-preset', 'ultrafast',
+            '-preset', 'ultrafast', // Rápido para UX, mas seguro
+            '-crf', '23', // Boa qualidade visual
+            '-pix_fmt', 'yuv420p', // Compatibilidade máxima
+            
+            // FORÇAR SINCRONIA DE VÍDEO
+            '-r', String(fps), // Força output FPS constante
+            '-vsync', '1',     // CFR (Constant Frame Rate) - vital para evitar drift
+            
+            // Codec de Áudio Otimizado
             '-c:a', 'aac',
             '-b:a', '192k',
-            '-shortest'
-        );
+            '-ac', '2',
+            '-ar', '44100',
+            
+            // Duração e Container
+            '-t', String(totalDuration + 0.1), // Garante que não corte o último frame
+            '-movflags', '+faststart',
+            '-y',
+            outputPath
+        ];
 
-        // Chama callback quando pronto para spawn
-        const totalDuration = videoInputs.reduce((sum, v) => sum + v.duration, 0);
-        onReady(job.id, ffmpegArgs, totalDuration);
-
-    } catch (err) {
-        console.error('Erro em handleExportVideo:', err);
-        throw err;
+        onStart(job.id, args, totalDuration || 30);
+    } catch (e) {
+        console.error("Export Build Error:", e);
+        throw e;
     }
-}
+};
