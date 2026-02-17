@@ -95,51 +95,56 @@ export default {
         
         if (id === 'mov-flash-pulse') {
             z = '1.0';
-            // Brightness oscillation using sine wave
-            postFilters.push("eq=brightness='0.3*sin(20*t)'");
+            // Flash Brightness: Pulse between 0.0 and 0.4 every ~0.6s
+            postFilters.push("eq=brightness='0.2+0.2*sin(10*t)'");
         
         } else if (id === 'mov-strobe-move') {
             z = '1.05'; 
-            // Strobe effect: oscillate brightness sharply
-            postFilters.push("eq=brightness='if(lt(mod(t,0.1),0.05),0.4,-0.2)'");
+            // Strobe: Hard cuts between brightness 0.4 and -0.2
+            postFilters.push("eq=brightness='if(lt(mod(t,0.15),0.075),0.4,-0.2)'");
         
         } else if (id === 'mov-frame-skip') {
             z = '1.0';
-            // Simulate frame skipping by holding position for intervals
-            // Using a stepped function for x/y
-            x = `(iw-ow)/2 + 20*floor(sin(5*time))`;
+            // Frame Skip: Hold position periodically
+            // We use zoompan for position control. floor(sin) creates stepped movement
+            x = `${centerX} + 30*floor(sin(8*time))`;
         
         } else if (id === 'mov-vhs-tracking') {
             z = '1.1';
-            // Add noise and vertical jitter
-            y = `${centerY} + 10*sin(50*time)`;
-            postFilters.push("noise=alls=15:allf=t+u,eq=saturation=1.4:contrast=1.1");
+            // VHS Tracking: Slow vertical drift with jitter + noise
+            y = `${centerY} + 15*sin(2*time) + 5*sin(50*time)`;
+            postFilters.push("noise=alls=20:allf=t+u,eq=saturation=1.4");
             
         } else if (id === 'mov-jitter-y') {
             z = '1.1';
-            // Rapid vertical jitter
-            y = `${centerY} + 20*sin(500*time)`;
+            // Rapid vertical jitter (Frequency ~50 rad/s is visible at 30fps)
+            y = `${centerY} + 20*sin(50*time)`;
             
         } else if (id === 'mov-jitter-x') {
             z = '1.1';
             // Rapid horizontal jitter
-            x = `${centerX} + 20*sin(500*time)`;
+            x = `${centerX} + 20*sin(50*time)`;
             
         } else if (id === 'mov-rgb-shift-move') {
             z = '1.05';
-            // RGB Split effect
-            postFilters.push("rgbashift=rh='20*sin(10*t)':bh='-20*sin(10*t)'");
+            // RGB Shift: Using GEQ (Generic Equation) because rgbashift doesn't animate well
+            // Shift Red and Blue channels based on time
+            // r(x,y) = p(x+shift, y), g(x,y) = p(x,y), b(x,y) = p(x-shift, y)
+            // T is time in seconds
+            const shiftExpr = "20*sin(5*T)";
+            postFilters.push(`geq=r='p(X+(${shiftExpr}),Y)':g='p(X,Y)':b='p(X-(${shiftExpr}),Y)'`);
             
         } else if (id === 'mov-shake-violent') {
             z = '1.2'; 
-            // Chaotic movement on both axes
-            x = `${centerX} + 50*sin(130*time)`;
-            y = `${centerY} + 50*cos(170*time)`;
+            // Violent Shake: Chaotic movement on both axes
+            // Frequencies around 40-70 are fast but visible. 
+            x = `${centerX} + 40*sin(45*time)`;
+            y = `${centerY} + 40*cos(65*time)`;
             
         } else if (id === 'mov-glitch-skid') {
             z = '1.1';
-            // Fast horizontal slide (skid)
-            x = `${centerX} + (iw/5)*sin(2*time)`;
+            // Skid: Fast horizontal slide with a reset
+            x = `${centerX} + (iw/8)*sin(4*time)`;
         
         }
         
