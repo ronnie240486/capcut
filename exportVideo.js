@@ -1,97 +1,98 @@
+const { spawn } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 
-import path from 'path';
-import fs from 'fs';
-import { exec } from 'child_process';
-import transitionBuilder from './video-engine/transitionBuilder.js';
+// Função para gerar clipes individuais
+async function generateClip(clipIndex, images, audio, outputDir) {
+  return new Promise((resolve, reject) => {
+    const outputFile = path.join(outputDir, `clip_${clipIndex}.mp4`);
 
-function validateAndProbe(filePath) {
-    return new Promise((resolve) => {
-        // 1. Basic Size Check
-        try {
-            const stats = fs.statSync(filePath);
-            if (stats.size < 100) { 
-                 console.warn(`[Export] Skipping empty/tiny file: ${filePath} (${stats.size} bytes)`);
-                 return resolve({ isValid: false });
-            }
-        } catch(e) {
-            console.warn(`[Export] File not found: ${filePath}`);
-            return resolve({ isValid: false });
-        }
+    // Monta filter_complex para duas imagens e fade simples
+    const filterComplex = `
+      [0:v]scale=1920:1080:force_original_aspect_ratio=decrease,
+      pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,
+      setsar=1,fps=30,format=yuv420p[v0];
+      [1:v]scale=1920:1080:force_original_aspect_ratio=decrease,
+      pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,
+      setsar=1,fps=30,format=yuv420p[v1];
+      [v0][v1]xfade=transition=fade:duration=0.5:offset=2[vout]
+    `.replace(/\s+/g, ' ');
 
-        // 2. FFprobe Check
-        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
-            if (err) {
-                console.warn(`[Export] Probe failed for ${filePath}: ${err.message}`);
-                return resolve({ isValid: false });
-            }
-            const hasAudio = stdout && stdout.includes('audio');
-            resolve({ isValid: true, hasAudio });
-        });
+    const ffmpegArgs = [
+      "-y",
+      "-i", images[0],
+      "-i", images[1],
+      "-i", audio,
+      "-filter_complex", filterComplex,
+      "-map", "[vout]",
+      "-map", "2:a",
+      "-c:v", "libx264",
+      "-preset", "fast",
+      "-crf", "23",
+      "-c:a", "aac",
+      "-b:a", "192k",
+      "-shortest",
+      outputFile
+    ];
+
+    const ffmpeg = spawn("ffmpeg", ffmpegArgs);
+
+    ffmpeg.stderr.on("data", (data) => {
+      console.log(`FFmpeg [clip ${clipIndex}]: ${data}`);
     });
+
+    ffmpeg.on("close", (code) => {
+      if (code === 0) resolve(outputFile);
+      else reject(new Error(`FFmpeg clip ${clipIndex} failed with code ${code}`));
+    });
+  });
 }
 
-export const handleExportVideo = async (job, uploadDir, onStart) => {
-    try {
-        const { projectState } = job.params;
-        if (!projectState) throw new Error("Missing projectState");
+// Função para concatenar todos os clipes
+async function concatClips(clips, outputFile) {
+  const listFile = "list.txt";
+  fs.writeFileSync(listFile, clips.map(c => `file '${c}'`).join("\n"));
 
-        const state = JSON.parse(projectState);
-        const { clips, media, totalDuration } = state;
-        const exportConfig = state.exportConfig || {};
-        const fps = parseInt(exportConfig.fps) || 30;
-        
-        // Mapeamento de arquivos
-        const fileMap = {};
-        if (job.files && job.files.length > 0) {
-            for (const f of job.files) {
-                const info = await validateAndProbe(f.path);
-                
-                if (info.isValid) {
-                    fileMap[f.originalname] = f.path;
-                    if (media[f.originalname]) {
-                        media[f.originalname].hasAudio = info.hasAudio;
-                    }
-                }
-            }
-        }
+  return new Promise((resolve, reject) => {
+    const ffmpeg = spawn("ffmpeg", [
+      "-y",
+      "-f", "concat",
+      "-safe", "0",
+      "-i", listFile,
+      "-c", "copy",
+      outputFile
+    ]);
 
-        // Pass totalDuration to buildTimeline
-        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, exportConfig, totalDuration);
-        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
-        job.outputPath = outputPath;
+    ffmpeg.stderr.on("data", (data) => console.log(`FFmpeg concat: ${data}`));
 
-        const args = [
-            ...buildResult.inputs,
-            '-filter_complex', buildResult.filterComplex,
-            '-map', buildResult.outputMapVideo,
-            '-map', buildResult.outputMapAudio,
-            
-            // Codec de Vídeo Otimizado
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast', // Rápido para UX, mas seguro
-            '-crf', '23', // Boa qualidade visual
-            '-pix_fmt', 'yuv420p', // Compatibilidade máxima
-            
-            // FORÇAR SINCRONIA DE VÍDEO
-            '-r', String(fps), // Força output FPS constante
-            '-vsync', '1',     // CFR (Constant Frame Rate) - vital para evitar drift
-            
-            // Codec de Áudio Otimizado
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-ac', '2',
-            '-ar', '44100',
-            
-            // Duração e Container
-            '-t', String(totalDuration + 0.1), // Garante que não corte o último frame
-            '-movflags', '+faststart',
-            '-y',
-            outputPath
-        ];
+    ffmpeg.on("close", (code) => {
+      fs.unlinkSync(listFile);
+      if (code === 0) resolve(outputFile);
+      else reject(new Error(`FFmpeg concat failed with code ${code}`));
+    });
+  });
+}
 
-        onStart(job.id, args, totalDuration || 30);
-    } catch (e) {
-        console.error("Export Build Error:", e);
-        throw e;
-    }
-};
+// Exporta vídeo final
+async function exportVideo(clipsData, outputFile) {
+  const tempDir = "./temp_clips";
+  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+
+  const clipFiles = [];
+
+  for (let i = 0; i < clipsData.length; i++) {
+    const { images, audio } = clipsData[i];
+    const clipFile = await generateClip(i, images, audio, tempDir);
+    clipFiles.push(clipFile);
+  }
+
+  await concatClips(clipFiles, outputFile);
+
+  // Limpa arquivos temporários
+  clipFiles.forEach(f => fs.unlinkSync(f));
+  fs.rmdirSync(tempDir);
+
+  console.log("Export finalizado:", outputFile);
+}
+
+module.exports = { exportVideo };
