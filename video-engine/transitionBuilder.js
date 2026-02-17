@@ -51,8 +51,8 @@ export default {
         const targetFps = parseInt(exportConfig.fps) || 30;
         
         // Filtro de Escala Seguro: Força resolução par e preenche com barras pretas se necessário (Letterbox)
-        // Pad corrigido para usar expressões matemáticas de centralização (ow-iw)/2 em vez de -1
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
+        // Pad corrigido para usar expressões matemáticas de centralização (W-iw)/2 em vez de -1
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${targetRes.w}:${targetRes.h}:(W-iw)/2:(H-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // SEPARAR TRILHAS
         // Video Principal (Base para transições xfade)
