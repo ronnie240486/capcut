@@ -37,6 +37,9 @@ export default {
             'rgb-split': "geq=r='p(X+20,Y)':g='p(X,Y)':b='p(X-20,Y)'",
             'glitch-chroma': "geq=r='p(X+15,Y)':g='p(X,Y)':b='p(X-15,Y)',hue=s=2", 
             
+            // Urban Glitch: Hue Cycle + Grid lines + Contrast
+            'urban-glitch': "hue=H=2*PI*t:s=2,eq=contrast=1.2,drawgrid=y=0:h=16:t=2:c=black@0.3",
+
             // Ensure min dim of 2 for pixelate steps
             'pixelate': 'scale=max(2,trunc(iw/20)):max(2,trunc(ih/20)):flags=nearest,scale=iw*20:ih*20:flags=neighbor',
             'block-glitch': 'scale=max(2,trunc(iw/10)):max(2,trunc(ih/10)):flags=nearest,scale=iw*10:ih*10:flags=neighbor',
@@ -210,9 +213,10 @@ export default {
             'pixelize': 'pixelize',
             'pixel-sort': 'pixelize',
             'hologram': 'pixelize',
-            'glitch': 'pixelize', // Glitch fallback to pixelize for blocky transition
+            'glitch': 'pixelize', 
             'glitch-chroma': 'pixelize', 
-            'color-glitch': 'hblur', // Falha de cor transition fallback
+            'color-glitch': 'hblur', 
+            'urban-glitch': 'hblur', // Maps to hblur as xfade can't do hue shifts
             'rgb-split': 'distance',
             'color-tear': 'wipetl',
             
