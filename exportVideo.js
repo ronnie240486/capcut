@@ -1,65 +1,109 @@
 import path from 'path';
 import fs from 'fs';
+import { exec } from 'child_process';
+import transitionBuilder from './video-engine/transitionBuilder.js';
 
-// Movimentos e efeitos
-const MOVEMENTS = {
-    zoomIn: d=>`scale=iw*1.1:ih*1.1,zoompan=z='min(zoom+0.0005,1.5)':d=${d*25}`,
-    zoomOut:d=>`scale=iw*0.9:ih*0.9,zoompan=z='max(zoom-0.0005,1.0)':d=${d*25}`,
-    panLeft:d=>`crop=iw:ih:0:0,translate=x='-t*50':y=0`,
-    panRight:d=>`crop=iw:ih:0:0,translate=x='t*50':y=0`,
-    fadeIn:d=>`fade=t=in:st=0:d=1`,
-    fadeOut:d=>`fade=t=out:st=${d-1}:d=1`,
-    rotate:d=>`rotate='PI/180*t*10':ow=rotw(iw):oh=roth(ih)`,
-};
+// Valida arquivo físico e com probe FFmpeg
+function validateAndProbe(filePath) {
+    return new Promise((resolve) => {
+        try {
+            const stats = fs.statSync(filePath);
+            if (stats.size < 100) { 
+                console.warn(`[Export] Ignoring tiny file: ${filePath} (${stats.size} bytes)`);
+                return resolve({ isValid: false });
+            }
+        } catch(e) {
+            console.warn(`[Export] File missing: ${filePath}`);
+            return resolve({ isValid: false });
+        }
 
-function normalizeInputs(inputs,type='video'){
-    if(!Array.isArray(inputs)) throw new Error(`Inputs devem ser um array (${type})`);
-    return inputs.map(i=>{
-        if(!i.path||!fs.existsSync(i.path)) throw new Error(`Arquivo não encontrado: ${i.path}`);
-        return { path:i.path, duration:i.duration||5 };
+        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
+            if (err) {
+                console.warn(`[Export] FFprobe failed: ${filePath}: ${err.message}`);
+                return resolve({ isValid: false });
+            }
+            const hasAudio = stdout && stdout.includes('audio');
+            resolve({ isValid: true, hasAudio });
+        });
     });
 }
 
-function buildMovementsFilter(idx,d,movements=Object.keys(MOVEMENTS)){
-    return `[${idx}:v]${movements.map(m=>MOVEMENTS[m](d)).join(',')}[v${idx}]`;
-}
+// Função principal de exportação
+export const handleExportVideo = async (job, uploadDir, onStart) => {
+    try {
+        const { projectState } = job.params;
+        if (!projectState) throw new Error("Missing projectState");
 
-function buildFilterComplex(allVisuals){
-    let filterComplex='';
-    let lastOutput='[v0]';
-    filterComplex+=buildMovementsFilter(0,allVisuals[0].duration)+';';
-    lastOutput='[v0]';
-    for(let i=1;i<allVisuals.length;i++){
-        filterComplex+=buildMovementsFilter(i,allVisuals[i].duration)+';';
-        const offset=allVisuals.slice(0,i).reduce((sum,c)=>sum+c.duration,0);
-        const outName=`[vxf${i}]`;
-        filterComplex+=`${lastOutput}[v${i}]xfade=transition=fade:duration=1:offset=${offset}${outName};`;
-        lastOutput=outName;
+        const state = JSON.parse(projectState);
+        const { clips, media, totalDuration } = state;
+        const exportConfig = state.exportConfig || {};
+        const fps = parseInt(exportConfig.fps) || 30;
+
+        // Mapear arquivos válidos
+        const fileMap = {};
+        if (job.files?.length) {
+            for (const f of job.files) {
+                const info = await validateAndProbe(f.path);
+                if (info.isValid) {
+                    fileMap[f.originalname] = f.path;
+                    if (media[f.originalname]) {
+                        media[f.originalname].hasAudio = info.hasAudio;
+                    }
+                }
+            }
+        }
+
+        if (Object.keys(fileMap).length === 0) throw new Error("Nenhum vídeo ou áudio válido enviado");
+
+        // Build timeline com todas transições/filtros
+        const buildResult = transitionBuilder.buildTimeline(
+            clips,
+            fileMap,
+            media,
+            exportConfig,
+            totalDuration
+        );
+
+        // Saída do arquivo final
+        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
+        job.outputPath = outputPath;
+
+        // Montagem dos argumentos FFmpeg
+        const args = [
+            ...buildResult.inputs,
+            '-filter_complex', buildResult.filterComplex,
+            ...buildResult.mapArgs || [],
+            '-map', buildResult.outputMapVideo,
+            '-map', buildResult.outputMapAudio,
+
+            // Codec de vídeo
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',
+            '-crf', '23',
+            '-pix_fmt', 'yuv420p',
+
+            // Sincronização
+            '-r', String(fps),
+            '-vsync', '1',
+
+            // Codec de áudio
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-ac', '2',
+            '-ar', '44100',
+
+            // Container e duração
+            '-t', String(totalDuration + 0.1),
+            '-movflags', '+faststart',
+            '-y',
+            outputPath
+        ];
+
+        // Inicia job com callback para FFmpeg
+        onStart(job.id, args, totalDuration || 30);
+
+    } catch (e) {
+        console.error("Export Build Error:", e);
+        throw e;
     }
-    return { filterComplex, lastOutput };
-}
-
-export async function handleExportVideo(job,uploadDir,callback){
-    if(!job||!job.files) throw new Error("Nenhum vídeo enviado");
-
-    const videoInputs=normalizeInputs(job.files.filter(f=>f.mimetype.startsWith('video')),'video');
-    const audioInputs=normalizeInputs(job.files.filter(f=>f.mimetype.startsWith('audio')),'audio');
-
-    if(!videoInputs.length) throw new Error("Nenhum vídeo válido encontrado");
-
-    const outputPath=path.join(uploadDir,`export_${Date.now()}.mp4`);
-    job.outputPath=outputPath;
-
-    const { filterComplex, lastOutput } = buildFilterComplex(videoInputs);
-
-    let args=[];
-    videoInputs.forEach(v=>args.push('-i',v.path));
-    audioInputs.forEach(a=>args.push('-i',a.path));
-
-    args.push('-filter_complex', filterComplex);
-    args.push('-map', lastOutput);
-    if(audioInputs.length) args.push('-map',`${videoInputs.length}:a?`);
-    args.push('-c:v','libx264','-preset','ultrafast','-c:a','aac','-b:a','192k','-shortest','-y',outputPath);
-
-    if(callback) callback(job.id,args,videoInputs.reduce((sum,v)=>sum+v.duration,0));
-}
+};
