@@ -1,69 +1,66 @@
 // exportVideo.js
 import { spawn } from 'child_process';
-import path from 'path';
-import fs from 'fs';
 
 /**
- * Função para exportar vídeo usando FFmpeg
- * @param {string} outputPath - Caminho do arquivo final (ex: '/app/uploads/output.mp4')
- * @param {Array} videoInputs - Array de objetos de vídeo { path: string, duration: number }
- * @param {Array} audioInputs - Array de objetos de áudio { path: string, duration: number }
+ * Exporta vídeo combinando imagens e áudios.
+ * @param {string} outputPath - Caminho do arquivo final.
+ * @param {Array|Object} videoInputs - Array de objetos de vídeo { path, duration } ou objeto único.
+ * @param {Array|Object} audioInputs - Array de objetos de áudio { path, duration } ou objeto único.
  * @returns {Promise<void>}
  */
 export async function handleExportVideo(outputPath, videoInputs, audioInputs) {
   return new Promise((resolve, reject) => {
-    try {
-      // Monta o comando FFmpeg básico
-      const ffmpegArgs = [
-        '-y', // sobrescreve sem perguntar
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-f', 'lavfi',
-        '-i', `color=c=black:s=1920x1080:r=30`,
-        '-f', 'lavfi',
-        '-i', `anullsrc=channel_layout=stereo:sample_rate=44100`,
-      ];
+    // 🔹 Garantir que sejam arrays
+    if (!Array.isArray(videoInputs)) videoInputs = [videoInputs];
+    if (!Array.isArray(audioInputs)) audioInputs = [audioInputs];
 
-      // Adiciona vídeos e áudios
-      videoInputs.forEach(v => {
-        ffmpegArgs.push('-loop', '1', '-t', `${v.duration}`, '-i', v.path);
-      });
-      audioInputs.forEach(a => {
-        ffmpegArgs.push('-i', a.path);
-      });
-
-      // Saída final
-      ffmpegArgs.push(
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '23',
-        '-pix_fmt', 'yuv420p',
-        '-r', '30',
-        '-c:a', 'aac',
-        '-b:a', '192k',
-        '-ac', '2',
-        '-ar', '44100',
-        outputPath
-      );
-
-      // Executa FFmpeg
-      const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
-
-      ffmpegProcess.stderr.on('data', (data) => {
-        console.error(`FFmpeg stderr: ${data}`);
-      });
-
-      ffmpegProcess.on('close', (code) => {
-        if (code === 0) {
-          console.log(`Vídeo exportado com sucesso: ${outputPath}`);
-          resolve();
-        } else {
-          reject(new Error(`FFmpeg finalizou com código ${code}`));
-        }
-      });
-
-    } catch (err) {
-      reject(err);
+    // 🔹 Validar formatos corretos
+    if (!videoInputs.every(v => v.path && v.duration)) {
+      return reject(new Error('Todos os videoInputs devem ter { path, duration }'));
     }
+    if (!audioInputs.every(a => a.path && a.duration)) {
+      return reject(new Error('Todos os audioInputs devem ter { path, duration }'));
+    }
+
+    // 🔹 Montar argumentos do FFmpeg (exemplo simplificado)
+    const ffmpegArgs = [];
+
+    // Entrada de cada vídeo
+    videoInputs.forEach(v => {
+      ffmpegArgs.push('-loop', '1', '-t', `${v.duration}`, '-i', v.path);
+    });
+
+    // Entrada de cada áudio
+    audioInputs.forEach(a => {
+      ffmpegArgs.push('-i', a.path);
+    });
+
+    // Saída final simplificada (substitua com seus filtros reais)
+    ffmpegArgs.push(
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-crf', '23',
+      '-c:a', 'aac',
+      '-b:a', '192k',
+      '-shortest',
+      outputPath
+    );
+
+    console.log('FFmpeg args:', ffmpegArgs);
+
+    const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+
+    ffmpeg.stdout.on('data', data => console.log('FFmpeg:', data.toString()));
+    ffmpeg.stderr.on('data', data => console.log('FFmpeg ERR:', data.toString()));
+
+    ffmpeg.on('close', code => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`FFmpeg exited with code ${code}`));
+      }
+    });
+
+    ffmpeg.on('error', err => reject(err));
   });
 }
