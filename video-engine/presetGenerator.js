@@ -77,29 +77,36 @@ export default {
         return effects[effectId] || null;
     },
 
-    getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}, targetRes = {w:1280, h:720}, targetFps = 30) => {
-        const fps = targetFps || 30;
-        const w = targetRes.w;
-        const h = targetRes.h;
-        const frames = Math.max(1, Math.ceil(durationSec * fps));
-        const progress = `(on/${frames})`; 
-        const base = `zoompan=d=${isImage ? frames : 1}:s=${w}x${h}:fps=${fps}`; 
-        const centerX = `(iw/2)-(iw/zoom/2)`;
-        const centerY = `(ih/2)-(ih/zoom/2)`;
+   getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}, targetRes = { w: 1280, h: 720 }, targetFps = 30) => {
+    const fps = targetFps || 30;
+    const w = targetRes.w;
+    const h = targetRes.h;
+    const frames = Math.max(1, Math.ceil(durationSec * fps));
+    const progress = `(on/${frames})`;
 
-        if (moveId === 'kenBurns') {
-            const startScale = config.startScale || 1.0;
-            const endScale = config.endScale || 1.3;
-            return `${base}:z='${startScale}+(${endScale}-${startScale})*${progress}':x='${centerX}':y='${centerY}'`;
-        }
-        
-        // Zoom In Simples
-        if (moveId === 'zoom-in' || (isImage && !moveId)) {
-             return `${base}:z='1.0+(0.05)*${progress}':x='${centerX}':y='${centerY}'`;
-        }
+    const centerX = `(iw/2)-(iw/zoom/2)`;
+    const centerY = `(ih/2)-(ih/zoom/2)`;
 
-        return null;
-    },
+    // ---- MOVIMENTO NEUTRO (SAFE) ----
+    if (!moveId) {
+        return `zoompan=z='1':x='${centerX}':y='${centerY}':d=${frames}:fps=${fps}:s=${w}x${h}`;
+    }
+
+    // ---- KEN BURNS ----
+    if (moveId === 'kenBurns') {
+        const start = config.startScale || 1.0;
+        const end = config.endScale || 1.3;
+        return `zoompan=z='${start}+(${end}-${start})*${progress}':x='${centerX}':y='${centerY}':d=${frames}:fps=${fps}:s=${w}x${h}`;
+    }
+
+    // ---- ZOOM IN PADRÃO ----
+    if (moveId === 'zoom-in') {
+        return `zoompan=z='1.0+(0.05*${progress})':x='${centerX}':y='${centerY}':d=${frames}:fps=${fps}:s=${w}x${h}`;
+    }
+
+    return null;
+}
+
 
     getTransitionXfade: (id) => {
         // TABELA OFICIAL DE XFADE DO FFMPEG
