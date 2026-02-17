@@ -33,7 +33,10 @@ export default {
             'glitch-scan': 'drawgrid=y=0:h=4:t=1:c=black@0.5,hue=H=2*PI*t:s=1.5',
             'scan-line-v': 'drawgrid=x=0:w=4:t=1:c=black@0.5',
             'chromatic': "geq=r='p(X+5,Y)':g='p(X,Y)':b='p(X-5,Y)'",
-            'rgb-split': "geq=r='p(X+10,Y)':g='p(X,Y)':b='p(X-10,Y)'",
+            // RGB Split mais forte para glitch de cor
+            'rgb-split': "geq=r='p(X+20,Y)':g='p(X,Y)':b='p(X-20,Y)'",
+            'glitch-chroma': "geq=r='p(X+15,Y)':g='p(X,Y)':b='p(X-15,Y)',hue=s=2", 
+            
             // Ensure min dim of 2 for pixelate steps
             'pixelate': 'scale=max(2,trunc(iw/20)):max(2,trunc(ih/20)):flags=nearest,scale=iw*20:ih*20:flags=neighbor',
             'block-glitch': 'scale=max(2,trunc(iw/10)):max(2,trunc(ih/10)):flags=nearest,scale=iw*10:ih*10:flags=neighbor',
@@ -47,7 +50,10 @@ export default {
             'invert': 'negate',
             'flash-chroma': 'hue=h=90:s=2',
             'flash-c': 'hue=h=90:s=2',
-            'color-glitch': 'hue=h=180:s=2',
+            // Color Glitch: Cycle Hue rapidly
+            'color-glitch': 'hue=H=2*PI*t:s=2', 
+            'color-tear': 'hue=H=PI*t:s=3',
+            
             'teal-orange': 'curves=r=0/0 0.25/0.15 0.5/0.5 0.75/0.85 1/1:b=0/0 0.25/0.35 0.5/0.5 0.75/0.65 1/1',
             'noir': 'hue=s=0,contrast=1.5,eq=brightness=-0.1',
             'mono': 'hue=s=0,contrast=1.2',
@@ -91,7 +97,17 @@ export default {
         let x = '(iw-ow)/2';
         let y = '(ih-oh)/2';
         
-        if (moveId === 'kenBurns') {
+        // --- PULSE / HEARTBEAT LOGIC ---
+        if (moveId && (moveId.includes('pulse') || moveId.includes('heartbeat'))) {
+            // Oscillation using sin(). time is in seconds.
+            // 1.05 + 0.05 * sin(...) oscillates between 1.0 and 1.1
+            // Frequency: 2*PI*time * speed
+            const freq = moveId.includes('fast') ? 5 : 2;
+            z = `1.05+0.05*sin(2*PI*time*${freq})`;
+            x = `(iw/2)-(iw/zoom/2)`;
+            y = `(ih/2)-(ih/zoom/2)`;
+        }
+        else if (moveId === 'kenBurns') {
             const startScale = config.startScale || 1.0;
             const endScale = config.endScale || 1.3;
             z = `${startScale}+(${endScale}-${startScale})*on/${frames}`;
@@ -194,9 +210,11 @@ export default {
             'pixelize': 'pixelize',
             'pixel-sort': 'pixelize',
             'hologram': 'pixelize',
-            'glitch': 'slideleft', // Glitch real exige shader complexo, fallback para slide rápido
+            'glitch': 'pixelize', // Glitch fallback to pixelize for blocky transition
+            'glitch-chroma': 'pixelize', 
+            'color-glitch': 'hblur', // Falha de cor transition fallback
             'rgb-split': 'distance',
-            'color-glitch': 'hblur',
+            'color-tear': 'wipetl',
             
             // --- APROXIMAÇÕES VISUAIS ---
             'page-turn': 'wipetl',
