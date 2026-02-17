@@ -77,12 +77,11 @@ export default {
         const w = targetRes.w;
         const h = targetRes.h;
         
-        let filters = [];
-        const id = moveId || '';
+        // Separamos filtros de Geometria (ZoomPan) e Pós-Processamento (Cor/Distorção)
+        let zoomPanFilter = '';
+        let postFilters = [];
         
-        // Default Zoompan parameters
-        // IMPORTANT: z must be >= 1. x and y use 'on' (frame number) or 'time'.
-        // To center correctly: x = 'iw/2-(iw/zoom)/2', y = 'ih/2-(ih/zoom)/2'
+        const id = moveId || '';
         
         const centerX = '(iw/2)-(iw/zoom/2)';
         const centerY = '(ih/2)-(ih/zoom/2)';
@@ -92,17 +91,16 @@ export default {
         let y = centerY;
 
         // =========================================================================
-        // 1. CINEMATIC PANS (Movimentos de Câmera Suaves)
+        // 1. CINEMATIC PANS
         // =========================================================================
         if (id.includes('mov-pan-')) {
-            z = '1.2'; // Must zoom in slightly to pan without black bars
+            z = '1.2'; 
             const dur = frames;
-            
             const rightX = '(iw-iw/zoom)';
             const bottomY = '(ih-ih/zoom)';
             
-            if (id.includes('slow-l')) x = `${rightX} - (${rightX})*(on/${dur})`; // Right to Left
-            else if (id.includes('slow-r')) x = `(${rightX})*(on/${dur})`; // Left to Right
+            if (id.includes('slow-l')) x = `${rightX} - (${rightX})*(on/${dur})`;
+            else if (id.includes('slow-r')) x = `(${rightX})*(on/${dur})`;
             else if (id.includes('slow-u')) y = `${bottomY} - (${bottomY})*(on/${dur})`;
             else if (id.includes('slow-d')) y = `(${bottomY})*(on/${dur})`;
             else if (id.includes('fast-l')) x = `${rightX} - (${rightX})*(min(1,2*on/${dur}))`;
@@ -112,10 +110,8 @@ export default {
             else if (id.includes('diag-bl')) { x = `${rightX}*(1-on/${dur})`; y = `(${bottomY})*(on/${dur})`; }
             else if (id.includes('diag-br')) { x = `(${rightX})*(on/${dur})`; y = `(${bottomY})*(on/${dur})`; }
             
-            filters.push(`zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
-
         // =========================================================================
-        // 2. DYNAMIC ZOOMS (Zooms Complexos e Rápidos)
+        // 2. DYNAMIC ZOOMS
         // =========================================================================
         } else if (id.includes('mov-zoom-') || id === 'dolly-zoom') {
             if (id.includes('crash-in')) z = `min(zoom+0.1,2.5)`;
@@ -133,103 +129,92 @@ export default {
             }
             else if (id.includes('twist-in')) {
                 z = `min(zoom+0.02,1.5)`;
-                filters.push(`rotate=a='(t*2)':c=none`); 
+                postFilters.push(`rotate=a='(t*2)':c=none`); 
             }
             else if (id.includes('twist-out')) {
                 z = `max(1.5-0.02*on,1.0)`;
-                filters.push(`rotate=a='-(t*2)':c=none`);
+                postFilters.push(`rotate=a='-(t*2)':c=none`);
             }
             else if (id === 'dolly-zoom' || id === 'mov-dolly-vertigo') { z = `1.0 + 0.3*sin(PI*on/${frames})`; }
             
-            filters.push(`zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
-
         // =========================================================================
-        // 3. 3D TRANSFORMS (Simulados)
+        // 3. 3D TRANSFORMS
         // =========================================================================
         } else if (id.includes('mov-3d-')) {
-            // Need to zoom out slightly before rotate to avoid black corners, or zoom in.
-            // Using a base zoompan of 1.2
             if (id.includes('flip-x')) {
-                filters.push(`zoompan=z=1.1:d=${frames}:s=${w}x${h}:fps=${fps}`);
-                filters.push(`rotate=a='2*PI*t'`); 
+                z = '1.1'; // Slight zoom for rotation
+                postFilters.push(`rotate=a='2*PI*t'`); 
             }
             else if (id.includes('tumble')) {
-                 filters.push(`rotate=a='t':c=black`);
-                 filters.push(`zoompan=z='1.0+0.5*sin(time)':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 z = `1.0+0.5*sin(time)`;
+                 postFilters.push(`rotate=a='t':c=black`);
             }
             else if (id.includes('float')) {
-                 filters.push(`zoompan=z='1.05':x='(iw-ow)/2 + 20*sin(time)':y='(ih-oh)/2 + 20*cos(time)':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 z = '1.05';
+                 x = `(iw-ow)/2 + 20*sin(time)`;
+                 y = `(ih-oh)/2 + 20*cos(time)`;
             }
             else if (id.includes('perspective')) {
-                // Pseudo perspective via zoompan y slide + zoom
+                z = '1.2';
                 if (id.includes('u')) y = `${centerY} - (on*2)`;
-                filters.push(`zoompan=z='1.2':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
 
         // =========================================================================
-        // 4. GLITCH E CAOS
+        // 4. GLITCH E CAOS (Post-process logic mostly)
         // =========================================================================
         } else if (id.includes('glitch') || id.includes('chaos') || id.includes('tear') || id.includes('vhs') || id.includes('frame-skip') || id.includes('strobe') || id.includes('jitter')) {
             if (id.includes('snap')) {
-                filters.push(`crop=w=iw-80:h=ih-80:x='40+if(lt(mod(t,1),0.06),(random(t)*80-40),0)':y='40+if(lt(mod(t,1),0.06),(random(t)*80-40),0)',scale=${w}:${h}`);
+                postFilters.push(`crop=w=iw-80:h=ih-80:x='40+if(lt(mod(t,1),0.06),(random(t)*80-40),0)':y='40+if(lt(mod(t,1),0.06),(random(t)*80-40),0)',scale=${w}:${h}`);
             } else if (id.includes('digital-tear')) {
-                 filters.push(`noise=alls=40:allf=t+u`);
+                 postFilters.push(`noise=alls=40:allf=t+u`);
             } else if (id.includes('vhs-tracking')) {
-                 filters.push(`noise=alls=10:allf=t+u,eq=saturation=1.5`);
+                 postFilters.push(`noise=alls=10:allf=t+u,eq=saturation=1.5`);
             } else if (id.includes('rgb-shift')) {
-                 filters.push(`rgbashift=rh=20:bv=20`);
+                 postFilters.push(`rgbashift=rh=20:bv=20`);
             } else if (id.includes('strobe-move')) {
-                 filters.push(`eq=brightness='if(lt(mod(t,0.1),0.05),1.5,0.8)'`);
+                 postFilters.push(`eq=brightness='if(lt(mod(t,0.1),0.05),1.5,0.8)'`);
             } else {
-                 filters.push(`noise=alls=20:allf=t+u`);
+                 postFilters.push(`noise=alls=20:allf=t+u`);
             }
 
         // =========================================================================
-        // 5. ELASTIC & FUN (FIXED MATH: eq/rotate uses 't', zoompan uses 'time')
+        // 5. ELASTIC & FUN (CRITICAL FIX FOR COLORS)
         // =========================================================================
         } else if (id.includes('elastic') || id.includes('bounce') || id.includes('jelly') || id.includes('flash-pulse') || id.includes('spring') || id.includes('rubber') || id.includes('pendulum') || id.includes('pop-up') || id.includes('squash') || id.includes('tada')) {
             
-            // Standardizing base zoom for movement room
-            z = '1.4'; 
+            z = '1.4'; // Base zoom for elasticity
             
             if (id === 'mov-bounce-drop') {
-                // Drop from top to center with bounce
                 const amp = '200';
                 y = `${centerY} - ${amp}*exp(-3*time)*cos(15*time)`; 
             } 
             else if (id === 'mov-elastic-snap-l' || id === 'mov-elastic-band') {
-                // Snap from left
                 const amp = '300';
                 x = `${centerX} - ${amp}*exp(-3*time)*cos(12*time)`;
             }
             else if (id === 'mov-elastic-snap-r' || id === 'mov-elastic-right') {
-                // Snap from right
                 const amp = '300';
                 x = `${centerX} + ${amp}*exp(-3*time)*cos(12*time)`;
             }
             else if (id === 'mov-rubber-band') {
-                // Pulsing zoom
                 z = '1.2 + 0.15*sin(10*time)';
             }
             else if (id.includes('jelly') || id === 'mov-jelly-wobble') {
-                 // Fast wobbling x/y
                  x = `${centerX} + 10*sin(15*time)`;
                  y = `${centerY} + 10*cos(15*time)`;
             }
             else if (id === 'mov-spring-up') {
-                 // Spring upwards
                  const amp = '200';
                  y = `${centerY} + ${amp}*exp(-3*time)*cos(12*time)`;
             }
             else if (id === 'mov-spring-down') {
-                 // Spring downwards (same as bounce drop really, but maybe inverted phase)
                  const amp = '200';
                  y = `${centerY} - ${amp}*exp(-3*time)*cos(12*time)`;
             }
             else if (id === 'mov-pendulum-swing' || id === 'mov-pendulun') {
-                 // rotate uses 't'
-                 filters.push(`rotate=a='0.2*sin(3*t)*exp(-0.2*t)':c=none:ow=rotw(iw):oh=roth(ih)`);
-                 z = '1.3'; // Zoom in to cover rotation edges
+                 z = '1.3';
+                 // Rotate AFTER Zoompan to avoid cropping edges weirdly
+                 postFilters.push(`rotate=a='0.2*sin(3*t)*exp(-0.2*t)':c=none:ow=rotw(iw):oh=roth(ih)`);
             }
             else if (id === 'mov-pop-up' || id === 'mov-popup') {
                  z = '1.0 + 0.5*sin(PI*min(time,0.5))'; 
@@ -238,48 +223,57 @@ export default {
                  z = '1.2 + 0.1*sin(8*time)';
             }
             else if (id === 'mov-tada' || id === 'mov-tadal') {
-                 // rotate uses 't'
-                 filters.push(`rotate=a='0.1*sin(10*t)*min(1,t)':c=none`);
                  z = '1.2';
+                 postFilters.push(`rotate=a='0.1*sin(10*t)*min(1,t)':c=none`);
             }
             else if (id.includes('flash-pulse')) {
-                 // eq uses 't'. Brightness range -1 to 1. 0 is normal.
-                 // We want pulse to bright (positive).
-                 filters.push(`eq=brightness='0.25*sin(10*t)'`);
-                 z = '1.0'; // No movement
+                 z = '1.0';
+                 // IMPORTANT: eq uses 't' and MUST come after zoompan creates the video stream
+                 // 'brightness' ranges -1.0 to 1.0. 
+                 // We want peaks of brightness.
+                 postFilters.push(`eq=brightness='0.3*sin(10*t)'`);
             }
-
-            filters.push(`zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
+            else if (id.includes('rgb-split')) {
+                 z = '1.1';
+                 postFilters.push(`rgbashift=rh='10*sin(5*t)':bh='-10*sin(5*t)'`);
+            }
 
         // =========================================================================
         // 6. ANIMAÇÃO DE ENTRADA
         // =========================================================================
         } else if (id.includes('slide-in') || id === 'pop-in' || id === 'fade-in' || id.includes('swing-in')) {
             if (id === 'slide-in-left') {
-                 filters.push(`zoompan=z=1:x='(iw-ow)/2 - (iw)*(1-min(time*2,1))':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 x = `(iw-ow)/2 - (iw)*(1-min(time*2,1))`;
+                 y = `(ih-oh)/2`;
+                 z = '1.0';
             } else if (id === 'slide-in-right') {
-                 filters.push(`zoompan=z=1:x='(iw-ow)/2 + (iw)*(1-min(time*2,1))':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 x = `(iw-ow)/2 + (iw)*(1-min(time*2,1))`;
+                 y = `(ih-oh)/2`;
+                 z = '1.0';
             } else if (id === 'slide-in-bottom') {
-                 filters.push(`zoompan=z=1:x='(iw-ow)/2':y='(ih-oh)/2 + (ih)*(1-min(time*2,1))':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 x = `(iw-ow)/2`;
+                 y = `(ih-oh)/2 + (ih)*(1-min(time*2,1))`;
+                 z = '1.0';
             } else if (id === 'pop-in') {
                  z = `if(lt(on,15), max(0.1, on/15), 1.0)`; 
-                 filters.push(`zoompan=z='${z}':x='(iw/2)-(iw/zoom/2)':y='(ih/2)-(ih/zoom/2)':d=${frames}:s=${w}x${h}:fps=${fps}`);
             } else if (id === 'fade-in') {
-                 filters.push(`fade=t=in:st=0:d=1`);
+                 postFilters.push(`fade=t=in:st=0:d=1`);
             } else if (id === 'swing-in') {
-                 // rotate uses 't'
-                 filters.push(`rotate=a='if(lt(t,1), -10*(1-t)*PI/180, 0)':c=none:ow=rotw(iw):oh=roth(ih)`);
+                 postFilters.push(`rotate=a='if(lt(t,1), -10*(1-t)*PI/180, 0)':c=none:ow=rotw(iw):oh=roth(ih)`);
             }
 
         // =========================================================================
-        // 7. BLUR & SHAKE & LOOP (Outros)
+        // 7. BLUR & SHAKE & LOOP
         // =========================================================================
         } else if (id.includes('blur')) {
-            if (id.includes('in')) filters.push(`boxblur=20:1:enable='between(t,0,0.5)'`);
-            else if (id.includes('out')) filters.push(`boxblur=20:1:enable='between(t,${Math.max(0, durationSec-0.5)},${durationSec})'`);
-            else if (id.includes('pulse')) filters.push(`boxblur=10:1:enable='lt(mod(t,1),0.3)'`);
-            else if (id.includes('zoom')) filters.push(`zoompan=z='min(zoom+0.005,1.2)':d=${frames}:s=${w}x${h}:fps=${fps},boxblur=10:1`);
-            else filters.push(`boxblur=10:1`);
+            if (id.includes('in')) postFilters.push(`boxblur=20:1:enable='between(t,0,0.5)'`);
+            else if (id.includes('out')) postFilters.push(`boxblur=20:1:enable='between(t,${Math.max(0, durationSec-0.5)},${durationSec})'`);
+            else if (id.includes('pulse')) postFilters.push(`boxblur=10:1:enable='lt(mod(t,1),0.3)'`);
+            else if (id.includes('zoom')) {
+                z = 'min(zoom+0.005,1.2)';
+                postFilters.push(`boxblur=10:1`);
+            }
+            else postFilters.push(`boxblur=10:1`);
         
         } else if (id.includes('shake') || id.includes('handheld') || id.includes('earthquake')) {
              let intensity = 10;
@@ -287,24 +281,24 @@ export default {
              if (id.includes('handheld-2')) intensity = 15;
              if (id.includes('shake-hard')) intensity = 30;
              if (id.includes('earthquake')) intensity = 50;
-             const shakeX = `(iw-ow)/2 + (random(1)-0.5)*${intensity}`;
-             const shakeY = `(ih-oh)/2 + (random(1)-0.5)*${intensity}`;
-             filters.push(`scale=${Math.floor(w*1.1)}:-2,crop=${w}:${h}:${shakeX}:${shakeY}`);
+             
+             // Shake logic in FFmpeg is complex inside zoompan due to 'random'.
+             // We'll use a crop-based shake AFTER scaling to targetRes in the main pipeline.
+             // But here we return a filter string.
+             // Standard way: zoom in slightly, then crop randomly.
+             z = '1.1'; // Zoom needed for shake room
+             // Using crop filter for shake as post-process is easier than zoompan x/y random
+             const shakeExpr = `x='(iw-ow)/2 + (random(1)-0.5)*${intensity}':y='(ih-oh)/2 + (random(1)-0.5)*${intensity}'`;
+             postFilters.push(`crop=w=iw-${intensity}:h=ih-${intensity}:${shakeExpr},scale=${w}:${h}`);
         
         } else if (id === 'pulse') {
-            filters.push(`zoompan=z='1.05+0.05*sin(2*PI*time)':d=${frames}:s=${w}x${h}:fps=${fps}`);
-        } else if (id === 'float') {
-            filters.push(`scale=${Math.floor(w*1.05)}:-2,crop=${w}:${h}:(iw-ow)/2:'(ih-oh)/2 + 20*sin(2*PI*time)'`); // crop uses 'time'? No, crop typically uses 't'. Let's check crop docs. crop exprs: x, y... t timestamp. 
-            // Wait, previous code used 'time' for crop in float.
-            // Documentation says 't' or 'timestamp'.
-            // Safest to use 't' for crop.
-            // Let's fix this just in case.
+            z = '1.05+0.05*sin(2*PI*time)';
         } else if (id === 'heartbeat') {
-            filters.push(`zoompan=z='1.0 + 0.1*abs(sin(3*PI*time))':d=${frames}:s=${w}x${h}:fps=${fps}`);
+            z = '1.0 + 0.1*abs(sin(3*PI*time))';
         }
 
         // =========================================================================
-        // 8. KEN BURNS (Default or Custom)
+        // 8. KEN BURNS
         // =========================================================================
         else if (id === 'kenBurns') {
             const startScale = config.startScale || 1.0;
@@ -317,20 +311,26 @@ export default {
                  const xOffset = `(iw/100) * (${sX} + (${eX}-${sX})*on/${frames})`;
                  x = `(iw/2)-(iw/zoom/2) + ${xOffset}`;
             }
-            filters.push(`zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
         
         } else if (isImage && !id) {
-            // Default gentle zoom
-            z = `min(zoom+0.0015,1.5)`;
-            filters.push(`zoompan=z='${z}':x='(iw/2)-(iw/zoom/2)':y='(ih/2)-(ih/zoom/2)':d=${frames}:s=${w}x${h}:fps=${fps}`);
+            z = `min(zoom+0.0015,1.5)`; // Default slow zoom
         }
         
         // Photo Effects
         if (id === 'photo-flash') {
-            filters.push(`eq=brightness='1+0.5*sin(2*PI*t*5)':enable='lt(t,1)'`);
+            postFilters.push(`eq=brightness='1+0.5*sin(2*PI*t*5)':enable='lt(t,1)'`);
         }
 
-        return filters.length > 0 ? filters.join(',') : null;
+        // 1. Construct ZoomPan (Always First)
+        zoomPanFilter = `zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`;
+        
+        // 2. Combine with Post Filters (comma separated)
+        // Zoompan outputs a video stream, subsequent filters apply to that stream using 't'.
+        if (postFilters.length > 0) {
+            return `${zoomPanFilter},${postFilters.join(',')}`;
+        }
+        
+        return zoomPanFilter;
     },
 
     getTransitionXfade: (id) => {
