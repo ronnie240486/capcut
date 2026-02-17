@@ -80,27 +80,44 @@ export default {
         let filters = [];
         const id = moveId || '';
         
+        // Default Zoompan parameters
+        // IMPORTANT: z must be >= 1. x and y use 'on' (frame number) or 'time'.
+        // To center correctly: x = 'iw/2-(iw/zoom)/2', y = 'ih/2-(ih/zoom)/2'
+        
+        const centerX = '(iw/2)-(iw/zoom/2)';
+        const centerY = '(ih/2)-(ih/zoom/2)';
+        
         let z = '1.0';
-        let x = '(iw-ow)/2';
-        let y = '(ih-oh)/2';
+        let x = centerX;
+        let y = centerY;
 
         // =========================================================================
         // 1. CINEMATIC PANS (Movimentos de Câmera Suaves)
         // =========================================================================
         if (id.includes('mov-pan-')) {
-            z = '1.2'; // Zoom necessário para pan
+            z = '1.2'; // Must zoom in slightly to pan without black bars
             const dur = frames;
+            // Panning logic: interpolate between start and end positions
+            // Max offset is roughly iw/z * (z-1) ? No.
+            // Visible width is iw/z. Total width iw. Max pan = iw - iw/z.
+            // Center is at iw/2 - iw/2z.
+            // Left edge x=0. Right edge x=iw - iw/z.
             
-            if (id.includes('slow-l')) x = `(iw-ow)*(on/${dur})`;
-            else if (id.includes('slow-r')) x = `(iw-ow)*(1-on/${dur})`;
-            else if (id.includes('slow-u')) y = `(ih-oh)*(on/${dur})`;
-            else if (id.includes('slow-d')) y = `(ih-oh)*(1-on/${dur})`;
-            else if (id.includes('fast-l')) x = `(iw-ow)*(2*on/${dur})`;
-            else if (id.includes('fast-r')) x = `(iw-ow)*(1-2*on/${dur})`;
-            else if (id.includes('diag-tl')) { x = `(iw-ow)*(on/${dur})`; y = `(ih-oh)*(on/${dur})`; }
-            else if (id.includes('diag-tr')) { x = `(iw-ow)*(1-on/${dur})`; y = `(ih-oh)*(on/${dur})`; }
-            else if (id.includes('diag-bl')) { x = `(iw-ow)*(on/${dur})`; y = `(ih-oh)*(1-on/${dur})`; }
-            else if (id.includes('diag-br')) { x = `(iw-ow)*(1-on/${dur})`; y = `(ih-oh)*(1-on/${dur})`; }
+            const leftX = '0';
+            const rightX = '(iw-iw/zoom)';
+            const topY = '0';
+            const bottomY = '(ih-ih/zoom)';
+            
+            if (id.includes('slow-l')) x = `${rightX} - (${rightX})*(on/${dur})`; // Right to Left
+            else if (id.includes('slow-r')) x = `(${rightX})*(on/${dur})`; // Left to Right
+            else if (id.includes('slow-u')) y = `${bottomY} - (${bottomY})*(on/${dur})`;
+            else if (id.includes('slow-d')) y = `(${bottomY})*(on/${dur})`;
+            else if (id.includes('fast-l')) x = `${rightX} - (${rightX})*(min(1,2*on/${dur}))`;
+            else if (id.includes('fast-r')) x = `(${rightX})*(min(1,2*on/${dur}))`;
+            else if (id.includes('diag-tl')) { x = `${rightX}*(1-on/${dur})`; y = `${bottomY}*(1-on/${dur})`; }
+            else if (id.includes('diag-tr')) { x = `(${rightX})*(on/${dur})`; y = `${bottomY}*(1-on/${dur})`; }
+            else if (id.includes('diag-bl')) { x = `${rightX}*(1-on/${dur})`; y = `(${bottomY})*(on/${dur})`; }
+            else if (id.includes('diag-br')) { x = `(${rightX})*(on/${dur})`; y = `(${bottomY})*(on/${dur})`; }
             
             filters.push(`zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
 
@@ -117,9 +134,9 @@ export default {
             else if (id.includes('pulse-slow')) z = `1.1+0.1*sin(2*PI*on/${fps})`;
             else if (id.includes('pulse-fast')) z = `1.1+0.1*sin(4*PI*on/${fps})`;
             else if (id.includes('wobble')) { 
-                z = `1.1`; 
-                x = `(iw-ow)/2 + 20*sin(4*PI*on/${fps})`; 
-                y = `(ih-oh)/2 + 20*cos(4*PI*on/${fps})`; 
+                z = `1.2`; 
+                x = `${centerX} + 40*sin(4*PI*on/${fps})`; 
+                y = `${centerY} + 40*cos(4*PI*on/${fps})`; 
             }
             else if (id.includes('twist-in')) {
                 z = `min(zoom+0.02,1.5)`;
@@ -137,24 +154,19 @@ export default {
         // 3. 3D TRANSFORMS (Simulados)
         // =========================================================================
         } else if (id.includes('mov-3d-')) {
-            if (id.includes('flip-x')) filters.push(`hflip`);
-            else if (id.includes('flip-y')) filters.push(`vflip`);
-            else if (id.includes('roll')) filters.push(`rotate=a='2*PI*t':c=black`);
-            else if (id.includes('spin-axis')) filters.push(`rotate=a='4*PI*t':c=black`);
+            // Need to zoom out slightly before rotate to avoid black corners, or zoom in.
+            // Using a base zoompan of 1.2
+            if (id.includes('flip-x')) {
+                filters.push(`zoompan=z=1.1:d=${frames}:s=${w}x${h}:fps=${fps}`);
+                filters.push(`rotate=a='2*PI*t'`); // Simple rotation, proper 3D flip requires 'perspective' filter which is complex
+            }
             else if (id.includes('tumble')) {
                  filters.push(`rotate=a='t':c=black`);
                  filters.push(`zoompan=z='1.0+0.5*sin(t)':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
-            else if (id.includes('swing')) {
-                 filters.push(`rotate=a='0.2*sin(2*PI*t)':c=none`);
-            }
-            else if (id.includes('float')) {
-                 filters.push(`zoompan=z='1.05':x='(iw-ow)/2 + 20*sin(t)':y='(ih-oh)/2 + 20*cos(t)':d=${frames}:s=${w}x${h}:fps=${fps}`);
-            }
             else if (id.includes('perspective')) {
-                // Pseudo perspective via zoompan crop movement
-                if (id.includes('u')) y = `(ih-oh)/2 - (on*5)`;
-                if (id.includes('d')) y = `(ih-oh)/2 + (on*5)`;
+                // Pseudo perspective via zoompan y slide + zoom
+                if (id.includes('u')) y = `${centerY} - (on*2)`;
                 filters.push(`zoompan=z='1.2':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
 
@@ -164,8 +176,6 @@ export default {
         } else if (id.includes('glitch') || id.includes('chaos') || id.includes('tear') || id.includes('vhs') || id.includes('frame-skip') || id.includes('strobe') || id.includes('jitter')) {
             if (id.includes('snap')) {
                 filters.push(`crop=w=iw-80:h=ih-80:x='40+if(lt(mod(t,1),0.06),(random(t)*80-40),0)':y='40+if(lt(mod(t,1),0.06),(random(t)*80-40),0)',scale=${w}:${h}`);
-            } else if (id.includes('skid')) {
-                filters.push(`crop=w=iw-200:h=ih:x='100+if(lt(mod(t,2),0.1),(random(t)*200-100),0)':y=0,scale=${w}:${h}`);
             } else if (id.includes('digital-tear')) {
                  filters.push(`noise=alls=40:allf=t+u`);
             } else if (id.includes('vhs-tracking')) {
@@ -174,12 +184,6 @@ export default {
                  filters.push(`rgbashift=rh=20:bv=20`);
             } else if (id.includes('strobe-move')) {
                  filters.push(`eq=brightness='if(lt(mod(t,0.1),0.05),1.5,0.8)'`);
-            } else if (id.includes('frame-skip')) {
-                 filters.push(`fps=fps=5`);
-            } else if (id.includes('jitter')) {
-                 const intensity = id.includes('y') ? 'y' : 'x';
-                 // Slight crop to allow shake
-                 filters.push(`crop=w=iw-20:h=ih-20:x=10:y=10,scale=${w}:${h},geq=r='p(X+(random(1)*10-5)*${intensity==='x'?1:0},Y+(random(1)*10-5)*${intensity==='y'?1:0})'`);
             } else {
                  filters.push(`noise=alls=20:allf=t+u`);
             }
@@ -189,80 +193,79 @@ export default {
         // =========================================================================
         } else if (id.includes('elastic') || id.includes('bounce') || id.includes('jelly') || id.includes('flash-pulse') || id.includes('spring') || id.includes('rubber') || id.includes('pendulum') || id.includes('pop-up') || id.includes('squash') || id.includes('tada')) {
             
-            // Using time variable for zoompan logic to ensure safety.
-            // Requires z > 1 for panning to work. Using 1.5 as base zoom for motion effects.
-
+            // Standardizing base zoom for movement room
+            z = '1.4'; 
+            
             if (id === 'mov-bounce-drop') {
-                z = '1.5';
-                const targetY = '(ih-oh)/2';
-                // Damped oscillation: y = target * (1 - exp(-3*time)*cos(10*time))
-                y = `${targetY} * (1 - exp(-3*time)*cos(10*time))`;
-                filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                // Drop from top to center with bounce
+                // y starts high (offset negative in render, but here y coord is positive down)
+                // We want image to start 'above' and drop in. 
+                // In zoompan, y=0 is top. Center is y=ih/2-ih/2z.
+                // We oscillate y around center.
+                const amp = '200';
+                y = `${centerY} - ${amp}*exp(-3*time)*cos(15*time)`; 
             } 
-            else if (id === 'mov-elastic-snap-l') {
-                z = '1.5';
-                const targetX = '(iw-ow)/2';
-                // Snap from left (start 0)
-                x = `${targetX} * (1 - exp(-3*time)*cos(10*time))`;
-                filters.push(`zoompan=z='${z}':x='${x}':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+            else if (id === 'mov-elastic-snap-l' || id === 'mov-elastic-band') {
+                // Snap from left
+                const amp = '300';
+                x = `${centerX} - ${amp}*exp(-3*time)*cos(12*time)`;
             }
-            else if (id === 'mov-elastic-snap-r') {
-                z = '1.5';
-                const targetX = '(iw-ow)/2';
-                const startX = '(iw-ow)';
+            else if (id === 'mov-elastic-snap-r' || id === 'mov-elastic-right') {
                 // Snap from right
-                const progress = '(1 - exp(-3*time)*cos(10*time))';
-                x = `${startX} + (${targetX}-${startX}) * ${progress}`;
-                filters.push(`zoompan=z='${z}':x='${x}':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                const amp = '300';
+                x = `${centerX} + ${amp}*exp(-3*time)*cos(12*time)`;
             }
             else if (id === 'mov-rubber-band') {
-                // Zoom stretches
-                z = '1.2 + 0.2*sin(8*time)';
-                filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                // Pulsing zoom
+                z = '1.2 + 0.15*sin(10*time)';
             }
             else if (id.includes('jelly') || id === 'mov-jelly-wobble') {
-                 // Fast wobble
-                 z = '1.1 + 0.05*sin(15*time)';
-                 filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 // Fast wobbling x/y
+                 x = `${centerX} + 10*sin(15*time)`;
+                 y = `${centerY} + 10*cos(15*time)`;
             }
             else if (id === 'mov-spring-up') {
-                 // Move Up: (ih-oh) -> (ih-oh)/2
-                 z = '1.5';
-                 const startY = '(ih-oh)';
-                 const targetY = '(ih-oh)/2';
-                 const progress = '(1 - exp(-3*time)*cos(10*time))';
-                 y = `${startY} + (${targetY}-${startY}) * ${progress}`;
-                 filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 // Spring upwards
+                 const amp = '200';
+                 y = `${centerY} + ${amp}*exp(-3*time)*cos(12*time)`;
             }
             else if (id === 'mov-spring-down') {
-                 // Move Down: 0 -> (ih-oh)/2
-                 z = '1.5';
-                 const targetY = '(ih-oh)/2';
-                 y = `${targetY} * (1 - exp(-3*time)*cos(10*time))`;
-                 filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 // Spring downwards (same as bounce drop really, but maybe inverted phase)
+                 const amp = '200';
+                 y = `${centerY} - ${amp}*exp(-3*time)*cos(12*time)`;
             }
-            else if (id === 'mov-pendulum-swing') {
-                 const angle = '0.3*sin(3*time)*exp(-0.5*time)';
-                 filters.push(`rotate=a='${angle}':c=none:ow=rotw(iw):oh=roth(ih)`);
-                 // Zoom to cover black corners
-                 filters.push(`zoompan=z=1.2:d=${frames}:s=${w}x${h}:fps=${fps}`);
+            else if (id === 'mov-pendulum-swing' || id === 'mov-pendulun') {
+                 filters.push(`rotate=a='0.2*sin(3*time)*exp(-0.2*time)':c=none:ow=rotw(iw):oh=roth(ih)`);
+                 z = '1.3'; // Zoom in to cover rotation edges
             }
-            else if (id === 'mov-pop-up') {
-                 // Zoom in quick
-                 z = 'min(zoom+0.1, 1.5)';
-                 filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+            else if (id === 'mov-pop-up' || id === 'mov-popup') {
+                 // Fast Zoom In from 0? Zoompan can't do z=0.
+                 // We simulate pop up by z going from very high (zoomed in? no that's close)
+                 // Pop up: Object scales 0 -> 1.
+                 // Camera equivalent: Zoom out? 
+                 // Let's just do a quick elastic zoom in.
+                 z = 'min(1.0 + 2.0*exp(-5*time), 3.0)'; // Starts at 3.0, decays to 1.0? 
+                 // Wait, scale 0->1 means z infinity -> 1.
+                 // Let's try z starts at 0.1 (zoomed out far? no z>=1).
+                 // We can't do true pop up (scale 0) with zoompan on full video. 
+                 // We'll do a "Punch" zoom.
+                 z = '1.0 + 0.5*sin(PI*min(time,0.5))'; 
             }
-            else if (id === 'mov-squash-stretch') {
-                 z = '1.0 + 0.2*abs(sin(5*time))';
-                 filters.push(`zoompan=z='${z}':d=${frames}:s=${w}x${h}:fps=${fps}`);
+            else if (id === 'mov-squash-stretch' || id === 'mov-squash') {
+                 // Emulated via zoom oscillation
+                 z = '1.2 + 0.1*sin(8*time)';
+                 // And some scaling if possible, but zoompan is safer.
             }
-            else if (id === 'mov-tada') {
-                 filters.push(`rotate=a='0.1*sin(10*time)':c=none`);
-                 filters.push(`zoompan=z='1.1+0.1*sin(5*time)':d=${frames}:s=${w}x${h}:fps=${fps}`);
+            else if (id === 'mov-tada' || id === 'mov-tadal') {
+                 filters.push(`rotate=a='0.1*sin(10*time)*min(1,time)':c=none`);
+                 z = '1.2';
             }
             else if (id.includes('flash-pulse')) {
                  filters.push(`eq=brightness='1+0.5*sin(10*time)'`);
+                 z = '1.0'; // No movement
             }
+
+            filters.push(`zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
 
         // =========================================================================
         // 6. ANIMAÇÃO DE ENTRADA
