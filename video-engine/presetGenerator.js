@@ -27,8 +27,7 @@ export default {
     getFFmpegFilterFromEffect: (effectId) => {
         if (!effectId) return null;
 
-        // --- 1. PROCEDURAL EFFECTS (MATCHING FRONTEND CONSTANTS) ---
-        
+        // --- 1. PROCEDURAL EFFECTS ---
         const cgMatch = effectId.match(/^cg-pro-(\d+)$/);
         if (cgMatch) {
             const i = parseInt(cgMatch[1], 10);
@@ -74,7 +73,6 @@ export default {
 
         // --- 2. STATIC NAMED EFFECTS ---
         const effects = {
-            // Glitch & Distortion
             'glitch-scan': 'drawgrid=y=0:h=4:t=1:c=black@0.5,hue=H=2*PI*t:s=1.5',
             'scan-line-v': 'drawgrid=x=0:w=4:t=1:c=black@0.5',
             'chromatic': "geq=r='p(X+5,Y)':g='p(X,Y)':b='p(X-5,Y)'",
@@ -85,8 +83,6 @@ export default {
             'block-glitch': 'scale=iw/10:ih/10:flags=nearest,scale=iw*10:ih*10:flags=neighbor',
             'bad-signal': 'noise=alls=20:allf=t+u,eq=contrast=1.5:brightness=0.1',
             'vhs-distort': 'noise=alls=10:allf=t+u,eq=saturation=1.3,gblur=sigma=1',
-            
-            // Colors
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2:gs=0:rm=0.2:gm=0:bm=-0.2:rh=0.2:gh=0:bh=-0.2,eq=saturation=1.3',
             'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
             'mono': 'hue=s=0,eq=contrast=1.2',
@@ -98,8 +94,6 @@ export default {
             'pop-art': 'eq=saturation=3:contrast=1.5',
             'dreamy': 'gblur=sigma=5,eq=brightness=0.1:saturation=1.2',
             'underwater': 'eq=saturation=0.8,colorbalance=rs=-0.2:gs=0.1:bs=0.3,gblur=sigma=2',
-            
-            // Retro
             'old-film': 'noise=alls=20:allf=t+u,vignette=PI/4,hue=s=0.5',
             'grain': 'noise=alls=30:allf=t+u',
             'vignette': 'vignette=PI/3',
@@ -118,109 +112,119 @@ export default {
         let z = '1.0';
         let x = '(iw-ow)/2';
         let y = '(ih-oh)/2';
-        let extra = ''; // For filters like blur
+        let extra = ''; 
         
-        // --- 1. PROCEDURAL PARSING (mov- prefix) ---
-        if (moveId && moveId.startsWith('mov-pan-')) {
+        // Normalize ID
+        const id = moveId || '';
+        
+        // --- 1. PROCEDURAL PANS (Full Duration) ---
+        if (id.includes('pan-')) {
             z = '1.2';
-            if (moveId.includes('slow-l')) x = `(iw-ow)*(on/${frames})`;
-            else if (moveId.includes('slow-r')) x = `(iw-ow)*(1-on/${frames})`;
-            else if (moveId.includes('slow-u')) y = `(ih-oh)*(on/${frames})`;
-            else if (moveId.includes('slow-d')) y = `(ih-oh)*(1-on/${frames})`;
-            else if (moveId.includes('fast-l')) x = `(iw-ow)*((on*2)/${frames})`;
-            else if (moveId.includes('fast-r')) x = `(iw-ow)*(1-(on*2)/${frames})`;
-            else if (moveId.includes('diag-tl')) { x = `(iw-ow)*(on/${frames})`; y = `(ih-oh)*(on/${frames})`; }
-            else if (moveId.includes('diag-tr')) { x = `(iw-ow)*(1-on/${frames})`; y = `(ih-oh)*(on/${frames})`; }
-            else if (moveId.includes('diag-bl')) { x = `(iw-ow)*(on/${frames})`; y = `(ih-oh)*(1-on/${frames})`; }
-            else if (moveId.includes('diag-br')) { x = `(iw-ow)*(1-on/${frames})`; y = `(ih-oh)*(1-on/${frames})`; }
+            if (id.includes('slow-l')) x = `(iw-ow)*(on/${frames})`;
+            else if (id.includes('slow-r')) x = `(iw-ow)*(1-on/${frames})`;
+            else if (id.includes('slow-u')) y = `(ih-oh)*(on/${frames})`;
+            else if (id.includes('slow-d')) y = `(ih-oh)*(1-on/${frames})`;
+            else if (id.includes('fast-l')) x = `(iw-ow)*((on*2)/${frames})`; // 2x speed loop
+            else if (id.includes('fast-r')) x = `(iw-ow)*(1-(on*2)/${frames})`;
+            else if (id.includes('diag-tl')) { x = `(iw-ow)*(on/${frames})`; y = `(ih-oh)*(on/${frames})`; }
+            else if (id.includes('diag-tr')) { x = `(iw-ow)*(1-on/${frames})`; y = `(ih-oh)*(on/${frames})`; }
+            else if (id.includes('diag-bl')) { x = `(iw-ow)*(on/${frames})`; y = `(ih-oh)*(1-on/${frames})`; }
+            else if (id.includes('diag-br')) { x = `(iw-ow)*(1-on/${frames})`; y = `(ih-oh)*(1-on/${frames})`; }
         }
-        // --- ZOOMS ---
-        else if (moveId && moveId.startsWith('mov-zoom-')) {
-            if (moveId.includes('crash-in')) {
-                z = `min(zoom+0.05,2.0)`;
+        // --- 2. 3D ZOOMS (Full Duration) ---
+        else if (id.includes('zoom-') || id === 'dolly-zoom') {
+            if (id.includes('crash-in')) {
+                z = `min(1.0+0.05*on,2.0)`; // Constant growth
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (moveId.includes('crash-out')) {
+            } else if (id.includes('crash-out')) {
                 z = `max(2.0-0.05*on,1.0)`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (moveId.includes('slow-in')) {
-                z = `min(zoom+0.0015,1.2)`;
+            } else if (id.includes('slow-in')) {
+                z = `min(1.0+0.0015*on,1.3)`; // Slow growth over frames
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (moveId.includes('slow-out')) {
-                z = `max(1.2-0.0015*on,1.0)`;
+            } else if (id.includes('fast-in')) {
+                z = `min(1.0+0.005*on,1.8)`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (moveId.includes('bounce')) {
-                z = `1.0+0.1*sin(2*PI*on/(${frames}/2))`;
+            } else if (id.includes('slow-out')) {
+                z = `max(1.3-0.0015*on,1.0)`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (moveId.includes('pulse')) {
-                const freq = moveId.includes('fast') ? 10 : 3;
+            } else if (id.includes('bounce')) {
+                // Continuous Sine Wave for Bounce
+                z = `1.0+0.1*sin(2*PI*on/(${frames}/2))`; 
+                x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+            } else if (id.includes('pulse')) {
+                const freq = id.includes('fast') ? 10 : 3;
                 z = `1.05+0.05*sin(2*PI*on/(${frames}/${freq}))`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+            } else if (id === 'dolly-zoom') {
+                z = `1.0 + 0.3*sin(PI*on/${frames})`; 
+                x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
             }
         }
-        // --- BLURS ---
-        else if (moveId && moveId.startsWith('mov-blur-')) {
-            // FIX: gblur sigma is not animatable in standard FFmpeg. Using static intervals.
-            if (moveId.includes('in')) {
-                // Blur first 0.5s
-                extra = `,gblur=sigma=20:enable='between(t,0,0.5)'`;
-            }
-            else if (moveId.includes('out')) {
-                // Blur last 0.5s
-                const startBlur = Math.max(0, durationSec - 0.5);
-                extra = `,gblur=sigma=20:enable='between(t,${startBlur},${durationSec})'`;
-            }
-            else if (moveId.includes('pulse')) {
-                // Blur in middle 0.5s
-                const mid = durationSec / 2;
-                extra = `,gblur=sigma=15:enable='between(t,${mid-0.25},${mid+0.25})'`;
-            }
-            else if (moveId.includes('zoom')) {
-                 z = `min(zoom+0.01,1.5)`;
-                 // Quick blur at start to simulate "zoom rush"
-                 extra = `,gblur=sigma=5:enable='between(t,0,0.3)'`;
-            }
-        }
-        // --- ELASTIC / FUN / ENTRY (Simulated) ---
-        else if (moveId && (moveId.startsWith('mov-elastic-') || moveId.startsWith('slide-in-') || moveId.startsWith('pop-'))) {
-            // Entry animations usually involve starting off-screen or at scale 0.
-            // Zoompan can simulate this by zooming from very small (or large crop) to normal.
-            if (moveId.includes('slide-in-left')) {
-                // Pan from right (content moves left? No, frame moves).
-                // x moves from 0 to center.
-                x = `(iw-ow)/2 * (t/1)`; // Move frame from left edge to center over 1s
+        // --- 3. ELASTIC & FUN (Continuous / Full Duration) ---
+        else if (id.includes('elastic') || id.includes('jelly') || id.includes('bounce-scale')) {
+            if (id.includes('elastic-left')) {
+                // Removed exponential decay to make it "last until end" (continuous sway)
                 z = '1.0';
-            } else if (moveId.includes('pop-in')) {
-                // Zoom from 0.1 to 1.0 quickly with bounce
-                z = `if(lt(t,0.5), 0.1 + (1.2-0.1)*(t/0.5), max(1.0, 1.2 - 0.2*((t-0.5)/0.5)))`;
-            } else if (moveId.includes('elastic')) {
-                // Bouncy zoom
-                z = `1.0 + 0.1*sin(3*PI*t)*exp(-2*t)`;
+                x = `(iw-ow)/2 + (iw/10)*sin(2*PI*on/(${frames}/2))`; // Sway left/right
+            } else if (id.includes('elastic-right')) {
+                 z = '1.0';
+                 x = `(iw-ow)/2 - (iw/10)*sin(2*PI*on/(${frames}/2))`;
+            } else if (id.includes('jelly')) {
+                // Continuous wobble
+                z = `1.0 + 0.05*sin(10*PI*on/${frames})`;
+                x = `(iw-ow)/2`; y = `(ih-oh)/2`;
+            } else if (id.includes('bounce-scale')) {
+                 // Slow pulse scale
+                 z = `1.0 + 0.2*sin(2*PI*on/${frames})`;
+                 x = `(iw-ow)/2`; y = `(ih-oh)/2`;
             }
         }
-        // --- LOOPS ---
-        else if (moveId && (moveId === 'pulse' || moveId === 'float' || moveId === 'heartbeat')) {
-            z = `1.0 + 0.05*sin(2*PI*t)`; // Pulse
-            if (moveId === 'float') y = `(ih-oh)/2 + 20*sin(2*PI*t/3)`;
+        // --- BLURS (Simulated Full Duration) ---
+        else if (id.includes('blur-')) {
+            // gblur sigma doesn't support expressions in all builds.
+            // We use static blur toggled by enable, OR just apply constant blur if requested.
+            // For "Blur In" (start blurred -> clear), we split into 2 segments ideally, 
+            // but here we just apply a pulsating blur or constant blur if animation fails.
+            
+            if (id.includes('in')) {
+                // Blur first half, clear second half (simulated focus pull)
+                extra = `,gblur=sigma=20:enable='between(t,0,${durationSec/2})'`;
+            }
+            else if (id.includes('out')) {
+                // Clear first half, blur second half
+                extra = `,gblur=sigma=20:enable='between(t,${durationSec/2},${durationSec})'`;
+            }
+            else if (id.includes('pulse')) {
+                // Blur ON/OFF every 1 second
+                extra = `,gblur=sigma=15:enable='lt(mod(t,2),1)'`;
+            }
+            else if (id.includes('zoom')) {
+                 z = `min(1.0+0.01*on,1.5)`;
+                 // Blur only at very start to simulate motion kick
+                 extra = `,gblur=sigma=5:enable='between(t,0,0.5)'`;
+            }
         }
-        // SHAKES (Simulated via crop/position jitter)
-        else if (moveId && (moveId.includes('shake') || moveId.includes('jitter') || moveId.includes('earthquake') || moveId.includes('glitch'))) {
-            const intensity = moveId.includes('violent') || moveId.includes('earthquake') ? 40 : 10;
-            z = '1.1';
+        // --- SHAKES (Continuous) ---
+        else if (id.includes('shake') || id.includes('jitter') || id.includes('earthquake') || id.includes('glitch')) {
+            const intensity = id.includes('violent') || id.includes('earthquake') ? 40 : 10;
+            z = '1.1'; // Zoom slightly to avoid black borders during shake
+            // Random shake for every frame
             x = `(iw-ow)/2 + (random(1)-0.5)*${intensity}`;
             y = `(ih-oh)/2 + (random(1)-0.5)*${intensity}`;
         }
-        // --- 2. LEGACY ---
-        else if (moveId === 'kenBurns') {
+        // --- LEGACY ---
+        else if (id === 'kenBurns') {
             const startScale = config.startScale || 1.0;
             const endScale = config.endScale || 1.3;
             z = `${startScale}+(${endScale}-${startScale})*on/${frames}`;
             x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
         }
-        else if (moveId === 'zoom-in' || (isImage && !moveId)) {
-            z = `min(zoom+0.0015,1.5)`;
+        else if (id === 'zoom-in' || (isImage && !id)) {
+            z = `min(1.0+0.0015*on,1.5)`;
             x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
         }
-        else if (moveId === 'zoom-out') {
+        else if (id === 'zoom-out') {
             z = `max(1.5-0.0015*on,1.0)`;
             x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
         }
@@ -232,116 +236,20 @@ export default {
     },
 
     getTransitionXfade: (id) => {
-        // FULL MAPPING OF CONSTANTS.TS to FFMPEG XFADE
-        // https://ffmpeg.org/ffmpeg-filters.html#xfade
-        
         const map = {
-            // Basics
-            'fade': 'fade', 
-            'crossfade': 'fade', 
-            'mix': 'fade', 
-            'dissolve': 'dissolve',
-            'blur-dissolve': 'distance', // Approx for "blur dissolve"
-            'filter-blur': 'distance',
-
-            // Colors
-            'black': 'fadeblack', 
-            'white': 'fadewhite', 
-            'flash': 'fadewhite', 
-            'flash-white': 'fadewhite', 
-            'flash-black': 'fadeblack',
-            
-            // Wipes & Slides
+            'fade': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'dissolve': 'dissolve',
+            'blur-dissolve': 'distance', 'filter-blur': 'distance',
+            'black': 'fadeblack', 'white': 'fadewhite', 'flash': 'fadewhite',
             'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'wipe-up': 'wipeup', 'wipe-down': 'wipedown',
             'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
-            'push-left': 'slideleft', 'push-right': 'slideright', 'push-up': 'slideup', 'push-down': 'slidedown',
-            'smooth-left': 'smoothleft', 'smooth-right': 'smoothright', 'smooth-up': 'smoothup', 'smooth-down': 'smoothdown',
-            
-            // Shapes
-            'circle-open': 'circleopen', 'circle-close': 'circleclose', 
-            'rect-crop': 'rectcrop', 'diamond-in': 'diagtl', 'diamond-out': 'diagbr',
-            'radial': 'radial', 'clock-wipe': 'radial', 'spiral-wipe': 'radial',
-            'iris-in': 'circleopen', 'iris-out': 'circleclose',
-            'triangle-wipe': 'diagtl',
-            'checker-wipe': 'checkerboard', 'checkerboard': 'checkerboard',
-            
-            // Glitch / Cyber (Best Approx)
-            'pixelize': 'pixelize', 
-            'glitch': 'pixelize', 
-            'glitch-chroma': 'pixelize',
-            'pixel-sort': 'pixelize', 
-            'hologram': 'pixelize',
-            'color-glitch': 'hblur', 
-            'urban-glitch': 'hblur',
-            'rgb-split': 'distance', 
-            'rgb-shake': 'distance',
-            'blur-warp': 'hblur', 
-            'morph': 'morph',
-            'datamosh': 'pixelize',
-            'cyber-zoom': 'zoomin',
-            'cyber-slice': 'slice', // requires FFmpeg 6.1+
-            
-            // Organic / Liquid
-            'liquid-melt': 'dissolve', 
-            'ink-splash': 'circleopen', 
-            'oil-paint': 'dissolve',
-            'water-ripple': 'wipetl',
-            'water-drop': 'circleopen',
-            'bubble-pop': 'circleopen',
-            
-            // Paper / Texture
-            'paper-rip': 'wipetl', 
-            'page-turn': 'wipetl',
-            'burn-paper': 'dissolve', 
-            'fold-up': 'slideup',
-            
-            // 3D / Rotation
-            'cube-rotate-l': 'slideleft', 'cube-rotate-r': 'slideright', 
-            'cube-rotate-u': 'slideup', 'cube-rotate-d': 'slidedown',
-            'door-open': 'hlslice', 'shutters': 'hlslice',
-            'mosaic-small': 'pixelize', 'mosaic-large': 'pixelize',
-            'whip-left': 'slideleft', 'whip-right': 'slideright', 
-            'whip-up': 'slideup', 'whip-down': 'slidedown',
-            'whip-diagonal-1': 'wipetl', 'whip-diagonal-2': 'wipebr',
-            'spin-cw': 'radial', 'spin-ccw': 'radial',
-            'spin-zoom-in': 'zoomin', 'spin-zoom-out': 'zoomout',
-            'flip-card': 'squeezeh',
-            
-            // Optics / Light
+            'push-left': 'slideleft', 'push-right': 'slideright', 
+            'circle-open': 'circleopen', 'circle-close': 'circleclose',
+            'pixelize': 'pixelize', 'glitch': 'pixelize', 'glitch-chroma': 'pixelize',
+            'liquid-melt': 'dissolve', 'ink-splash': 'circleopen',
+            'page-turn': 'wipetl', 'burn-paper': 'dissolve',
+            'cube-rotate-l': 'slideleft', 'cube-rotate-r': 'slideright',
             'zoom-in': 'zoomin', 'zoom-out': 'zoomout',
-            'flash-bang': 'fadewhite',
-            'exposure': 'fadewhite',
-            'burn': 'fadeblack',
-            'bokeh-blur': 'distance',
-            
-            // Creative Fallbacks (Mapping "Blood Mist" etc)
-            'blood-mist': 'dissolve', 
-            'fire-burn': 'dissolve', 
-            'smoke-reveal': 'dissolve',
-            'black-smoke': 'fadeblack',
-            'white-smoke': 'fadewhite',
-            'visual-buzz': 'pixelize',
-            'rip-diag': 'wipetl',
-            'zoom-neg': 'zoomout',
-            'infinity-1': 'zoomin',
-            'digital-paint': 'pixelize',
-            'brush-wind': 'wipeleft',
-            'dust-burst': 'dissolve',
-            'film-roll-v': 'slideup',
-            'astral-project': 'dissolve',
-            'lens-flare': 'fadewhite',
-            'pull-away': 'zoomout',
-            'fade-classic': 'fade',
-            'flashback': 'fadewhite',
-            'nightmare': 'fadeblack',
-            'bubble-blur': 'distance',
-            'paper-unfold': 'circleopen',
-            'corrupt-img': 'pixelize',
-            'glow-intense': 'fadewhite',
-            'dynamic-blur': 'distance'
         };
-        
-        // Return valid mapping or default to 'fade'
         return map[id] || 'fade';
     }
 };
