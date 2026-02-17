@@ -90,60 +90,47 @@ export default {
         let y = centerY;
 
         // =========================================================================
-        // 1. CHAOS & GLITCH MOVEMENTS (Requested Fixes)
+        // 1. SPECIFIC REQUESTED MOVEMENTS (High Priority)
         // =========================================================================
         
         if (id === 'mov-flash-pulse') {
             z = '1.0';
-            // Brightness oscillation: 0.2 base + 0.3 swing
-            postFilters.push("eq=brightness='0.2+0.3*sin(12*t)'");
+            postFilters.push("eq=brightness='0.2+0.2*sin(10*t)'");
         
         } else if (id === 'mov-strobe-move') {
             z = '1.05'; 
-            // Strobe: Hard cuts using modulo
-            postFilters.push("eq=brightness='if(lt(mod(t,0.1),0.05),0.5,-0.3)'");
+            postFilters.push("eq=brightness='if(lt(mod(t,0.15),0.075),0.4,-0.2)'");
         
         } else if (id === 'mov-frame-skip') {
             z = '1.0';
-            // Simulate low FPS stop-motion by stepping X position
-            x = `${centerX} + 40*floor(sin(8*time))`;
+            x = `${centerX} + 30*floor(sin(8*time))`;
         
         } else if (id === 'mov-vhs-tracking') {
             z = '1.1';
-            // Vertical drift + noise
-            y = `${centerY} + 20*sin(2*time) + 5*sin(50*time)`;
+            y = `${centerY} + 15*sin(2*time) + 5*sin(50*time)`;
             postFilters.push("noise=alls=20:allf=t+u,eq=saturation=1.4");
             
         } else if (id === 'mov-jitter-y') {
             z = '1.1';
-            // Fast vertical shake (Frequency ~40 rad/s is safe for 30fps)
-            y = `${centerY} + 20*sin(40*time)`;
+            y = `${centerY} + 20*sin(50*time)`;
             
         } else if (id === 'mov-jitter-x') {
             z = '1.1';
-            // Fast horizontal shake
-            x = `${centerX} + 20*sin(40*time)`;
+            x = `${centerX} + 20*sin(50*time)`;
             
         } else if (id === 'mov-rgb-shift-move') {
             z = '1.05';
-            // RGB Shift using GEQ (Generic Equation)
-            // Shift Red left/right based on sine wave
-            const shiftAmount = "20*sin(6*T)";
-            // r(x,y) = p(x+shift, y), g(x,y) = p(x, y), b(x,y) = p(x-shift, y)
-            postFilters.push(`geq=r='p(X+(${shiftAmount}),Y)':g='p(X,Y)':b='p(X-(${shiftAmount}),Y)'`);
+            const shiftExpr = "20*sin(5*T)";
+            postFilters.push(`geq=r='p(X+(${shiftExpr}),Y)':g='p(X,Y)':b='p(X-(${shiftExpr}),Y)'`);
             
         } else if (id === 'mov-shake-violent') {
             z = '1.2'; 
-            // Chaotic movement on X and Y
             x = `${centerX} + 40*sin(45*time)`;
             y = `${centerY} + 40*cos(65*time)`;
-            // Add some blur for "violent" feel
-            postFilters.push("boxblur=2:1");
             
         } else if (id === 'mov-glitch-skid') {
             z = '1.1';
-            // Fast slide back and forth
-            x = `${centerX} + (iw/6)*sin(4*time)`;
+            x = `${centerX} + (iw/8)*sin(4*time)`;
         
         }
         
@@ -168,7 +155,7 @@ export default {
             else if (id.includes('diag-br')) { x = `(${rightX})*(on/${dur})`; y = `(${bottomY})*(on/${dur})`; }
             
         // =========================================================================
-        // 3. DYNAMIC ZOOMS
+        // 3. DYNAMIC ZOOMS (Crash, Twist, Pulse, Wobble, Dolly)
         // =========================================================================
         } else if (id.includes('mov-zoom-') || id === 'dolly-zoom') {
             if (id.includes('crash-in')) z = `min(zoom+0.1,2.5)`;
