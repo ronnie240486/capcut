@@ -238,22 +238,39 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
 // Export Route
 app.post('/api/export/start', uploadAny, (req, res) => {
     const jobId = `export_${Date.now()}`;
-    // Create job immediately
-    jobs[jobId] = { id: jobId, status: 'pending', files: req.files || [], params: req.body, startTime: Date.now() };
+    const jobFiles = req.files || [];
+    const jobParams = req.body || {};
+
+    jobs[jobId] = { id: jobId, status: 'pending', files: jobFiles, params: jobParams, startTime: Date.now() };
     res.status(202).json({ jobId });
-    
-    // Call the export handler
+
     setTimeout(() => {
-        handleExportVideo(jobs[jobId], uploadDir, (id, args, dur) => {
-            const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
-            createFFmpegJob(id, safeArgs, dur);
-        }).catch(err => {
-            console.error(`Export Job Failed to Start [${jobId}]:`, err);
-            if (jobs[jobId]) {
-                jobs[jobId].status = 'failed';
-                jobs[jobId].error = "Export Initialization Failed: " + err.message;
-            }
-        });
+        try {
+            const job = jobs[jobId];
+
+            // Cria arrays para handleExportVideo
+            const videoInputs = job.files
+                .filter(f => f.mimetype.startsWith('video'))
+                .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
+
+            const audioInputs = job.files
+                .filter(f => f.mimetype.startsWith('audio'))
+                .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
+
+            handleExportVideo(videoInputs, audioInputs, uploadDir, (id, args, dur) => {
+                const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
+                createFFmpegJob(id, safeArgs, dur);
+            }).catch(err => {
+                console.error(`Export Job Failed [${jobId}]:`, err);
+                job.status = 'failed';
+                job.error = "Export Initialization Failed: " + err.message;
+            });
+
+        } catch (e) {
+            console.error(`Failed to init export job [${jobId}]:`, e);
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = e.message;
+        }
     }, 100);
 });
 
