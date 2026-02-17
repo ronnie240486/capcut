@@ -55,7 +55,8 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             }
         }
 
-        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, exportConfig);
+        // Pass totalDuration to buildTimeline
+        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, exportConfig, totalDuration);
         const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
         job.outputPath = outputPath;
 
@@ -80,9 +81,6 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             '-b:a', '192k',
             '-ac', '2',
             '-ar', '44100',
-            
-            // NOTA: '-af aresample=async=1' removido daqui pois causava erro de conflito com filter_complex.
-            // Foi movido para dentro do transitionBuilder.js
             
             // Duração e Container
             '-t', String(totalDuration + 0.1), // Garante que não corte o último frame
