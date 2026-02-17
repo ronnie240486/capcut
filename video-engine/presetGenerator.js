@@ -83,79 +83,139 @@ export default {
         const w = targetRes.w;
         const h = targetRes.h;
         const frames = Math.max(1, Math.ceil(durationSec * fps));
-        const progress = `(on/${frames})`; 
-        const base = `zoompan=d=${isImage ? frames : 1}:s=${w}x${h}:fps=${fps}`; 
-        const centerX = `(iw/2)-(iw/zoom/2)`;
-        const centerY = `(ih/2)-(ih/zoom/2)`;
-
+        const zStep = (frames * 0.0015).toFixed(4); // Smooth zoom step
+        
+        // Base ZoomPan logic
+        // z = zoom, d = duration, s = size output, x/y = viewport position
+        let z = '1.0';
+        let x = '(iw-ow)/2';
+        let y = '(ih-oh)/2';
+        
         if (moveId === 'kenBurns') {
             const startScale = config.startScale || 1.0;
             const endScale = config.endScale || 1.3;
-            return `${base}:z='${startScale}+(${endScale}-${startScale})*${progress}':x='${centerX}':y='${centerY}'`;
+            z = `${startScale}+(${endScale}-${startScale})*on/${frames}`;
+            // Simple center zoom
+            x = `(iw/2)-(iw/zoom/2)`;
+            y = `(ih/2)-(ih/zoom/2)`;
+        } 
+        else if (moveId === 'zoom-in' || (isImage && !moveId)) {
+            // Default gentle zoom in
+            z = `min(zoom+0.0015,1.5)`;
+            x = `(iw/2)-(iw/zoom/2)`;
+            y = `(ih/2)-(ih/zoom/2)`;
         }
-        
-        // Zoom In Simples
-        if (moveId === 'zoom-in' || (isImage && !moveId)) {
-             return `${base}:z='1.0+(0.05)*${progress}':x='${centerX}':y='${centerY}'`;
+        else if (moveId === 'zoom-out') {
+            z = `max(1.5-0.0015*on,1.0)`;
+            x = `(iw/2)-(iw/zoom/2)`;
+            y = `(ih/2)-(ih/zoom/2)`;
+        }
+        else if (moveId === 'pan-slow-l' || moveId === 'slide-left') {
+            z = '1.2'; // Must zoom in slightly to pan without black bars
+            x = `(iw-ow)*(on/${frames})`; // Moves viewport right -> content moves left
+            y = `(ih-oh)/2`;
+        }
+        else if (moveId === 'pan-slow-r' || moveId === 'slide-right') {
+            z = '1.2';
+            x = `(iw-ow)*(1-on/${frames})`; // Content moves right
+            y = `(ih-oh)/2`;
+        }
+        else if (moveId === 'pan-slow-u' || moveId === 'slide-up') {
+            z = '1.2';
+            x = `(iw-ow)/2`;
+            y = `(ih-oh)*(on/${frames})`; // Content moves up
+        }
+        else if (moveId === 'pan-slow-d' || moveId === 'slide-down') {
+            z = '1.2';
+            x = `(iw-ow)/2`;
+            y = `(ih-oh)*(1-on/${frames})`; // Content moves down
+        }
+        else if (moveId === 'zoom-crash-in') {
+            z = `min(zoom+0.05,2.0)`; // Fast zoom
+            x = `(iw/2)-(iw/zoom/2)`;
+            y = `(ih/2)-(ih/zoom/2)`;
+        }
+        else if (moveId && (moveId.includes('shake') || moveId.includes('jitter') || moveId.includes('earthquake'))) {
+            // Simulate shake with cropping
+            const intensity = moveId.includes('earthquake') ? 20 : 10;
+            return `crop=w=iw-${intensity*2}:h=ih-${intensity*2}:x=${intensity}+random(1)*${intensity}:y=${intensity}+random(1)*${intensity},scale=${w}:${h}`;
         }
 
-        return null;
+        // Return Standard Zoompan filter
+        return `zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`;
     },
 
     getTransitionXfade: (id) => {
-        // TABELA OFICIAL DE XFADE DO FFMPEG
-        // Mapeamos os nomes "bonitos" da UI para os nomes técnicos do FFmpeg
+        // TABELA OFICIAL DE XFADE DO FFMPEG MAPEDA PARA NOSSOS IDs
         const map = {
-            // Básicos
+            // --- BÁSICOS ---
             'fade': 'fade',
             'crossfade': 'fade',
             'mix': 'fade',
             'dissolve': 'dissolve',
             'black': 'fadeblack', 
             'white': 'fadewhite',
+            'flash-white': 'fadewhite',
+            'flash-black': 'fadeblack',
             
-            // Geometria / Wipe
+            // --- GEOMÉTRICO (WIPES) ---
             'wipe-left': 'wipeleft',
             'wipe-right': 'wiperight',
             'wipe-up': 'wipeup',
             'wipe-down': 'wipedown',
+            'rect-crop': 'rectcrop',
             'circle-open': 'circleopen',
             'circle-close': 'circleclose',
-            'rect-crop': 'rectcrop',
-            'radial': 'radial', // ESPIRAL/CLOCK USAM ESSE
+            'diamond-in': 'diagtl', // Aproximação
+            'diamond-out': 'diagbr', 
+            'checker-wipe': 'checkerboard',
+            'checkerboard': 'checkerboard',
+            'iris-in': 'circleopen',
+            'iris-out': 'circleclose',
+            'radial': 'radial',
             'clock-wipe': 'radial',
             'spiral-wipe': 'radial',
+            'wipe-radial': 'radial',
             
-            // Movimento / Slide
+            // --- MOVIMENTO (SLIDES) ---
             'slide-left': 'slideleft',
             'slide-right': 'slideright',
             'slide-up': 'slideup',
             'slide-down': 'slidedown',
+            'push-left': 'slideleft',
+            'push-right': 'slideright',
             'smooth-left': 'smoothleft',
             'smooth-right': 'smoothright',
             'squeeze-h': 'squeezeh',
             'squeeze-v': 'squeezev',
             'zoom-in': 'zoomin',
             
-            // Mapeamentos Especiais (Aproximações Visuais)
-            'page-turn': 'wipetl', // "Virar Página" (simulado via wipe diagonal superior esquerdo)
+            // --- GLITCH & MODERN ---
+            'pixelize': 'pixelize',
+            'pixel-sort': 'pixelize',
+            'hologram': 'pixelize',
+            'glitch': 'slideleft', // Glitch real exige shader complexo, fallback para slide rápido
+            'rgb-split': 'distance',
+            'color-glitch': 'hblur',
+            
+            // --- APROXIMAÇÕES VISUAIS ---
+            'page-turn': 'wipetl',
             'cube-rotate-l': 'slideleft', 
             'cube-rotate-r': 'slideright',
-            'spin-cw': 'radial', // Spin visualmente parece radial no fade
+            'spin-cw': 'radial', 
             'spin-ccw': 'radial',
-            'whip-left': 'slideleft', // Whip é um slide rápido
+            'whip-left': 'slideleft',
             'whip-right': 'slideright',
             'whip-up': 'slideup',
             'whip-down': 'slidedown',
-            
-            // Glitch e Pixel
-            'pixelize': 'pixelize',
-            'glitch': 'slideleft', // Glitch geralmente envolve movimento lateral
-            'pixel-sort': 'pixelize',
-            'hologram': 'pixelize'
+            'luma-fade': 'fade', // Luma precisa de map externo, fallback
+            'blur-warp': 'hblur',
+            'morph': 'morph', // Requer ffmpeg mais novo
+            'whip-diagonal-1': 'wipetl',
+            'whip-diagonal-2': 'wipebr'
         };
         
-        // Se não encontrar, fallback seguro para 'fade' para evitar erro no FFmpeg
+        // Retorna o mapeamento ou 'fade' como fallback seguro para não quebrar o render
         return map[id] || 'fade';
     }
 };
