@@ -77,7 +77,6 @@ export default {
         const w = targetRes.w;
         const h = targetRes.h;
         
-        // Separamos filtros de Geometria (ZoomPan) e Pós-Processamento (Cor/Distorção)
         let zoomPanFilter = '';
         let postFilters = [];
         
@@ -91,9 +90,63 @@ export default {
         let y = centerY;
 
         // =========================================================================
-        // 1. CINEMATIC PANS
+        // 1. SPECIFIC REQUESTED MOVEMENTS (High Priority)
         // =========================================================================
-        if (id.includes('mov-pan-')) {
+        
+        if (id === 'mov-flash-pulse') {
+            z = '1.0';
+            // Brightness oscillation using sine wave
+            postFilters.push("eq=brightness='0.3*sin(20*t)'");
+        
+        } else if (id === 'mov-strobe-move') {
+            z = '1.05'; 
+            // Strobe effect: oscillate brightness sharply
+            postFilters.push("eq=brightness='if(lt(mod(t,0.1),0.05),0.4,-0.2)'");
+        
+        } else if (id === 'mov-frame-skip') {
+            z = '1.0';
+            // Simulate frame skipping by holding position for intervals
+            // Using a stepped function for x/y
+            x = `(iw-ow)/2 + 20*floor(sin(5*time))`;
+        
+        } else if (id === 'mov-vhs-tracking') {
+            z = '1.1';
+            // Add noise and vertical jitter
+            y = `${centerY} + 10*sin(50*time)`;
+            postFilters.push("noise=alls=15:allf=t+u,eq=saturation=1.4:contrast=1.1");
+            
+        } else if (id === 'mov-jitter-y') {
+            z = '1.1';
+            // Rapid vertical jitter
+            y = `${centerY} + 20*sin(500*time)`;
+            
+        } else if (id === 'mov-jitter-x') {
+            z = '1.1';
+            // Rapid horizontal jitter
+            x = `${centerX} + 20*sin(500*time)`;
+            
+        } else if (id === 'mov-rgb-shift-move') {
+            z = '1.05';
+            // RGB Split effect
+            postFilters.push("rgbashift=rh='20*sin(10*t)':bh='-20*sin(10*t)'");
+            
+        } else if (id === 'mov-shake-violent') {
+            z = '1.2'; 
+            // Chaotic movement on both axes
+            x = `${centerX} + 50*sin(130*time)`;
+            y = `${centerY} + 50*cos(170*time)`;
+            
+        } else if (id === 'mov-glitch-skid') {
+            z = '1.1';
+            // Fast horizontal slide (skid)
+            x = `${centerX} + (iw/5)*sin(2*time)`;
+        
+        }
+        
+        // =========================================================================
+        // 2. CINEMATIC PANS
+        // =========================================================================
+        else if (id.includes('mov-pan-')) {
             z = '1.2'; 
             const dur = frames;
             const rightX = '(iw-iw/zoom)';
@@ -111,7 +164,7 @@ export default {
             else if (id.includes('diag-br')) { x = `(${rightX})*(on/${dur})`; y = `(${bottomY})*(on/${dur})`; }
             
         // =========================================================================
-        // 2. DYNAMIC ZOOMS
+        // 3. DYNAMIC ZOOMS
         // =========================================================================
         } else if (id.includes('mov-zoom-') || id === 'dolly-zoom') {
             if (id.includes('crash-in')) z = `min(zoom+0.1,2.5)`;
@@ -138,11 +191,11 @@ export default {
             else if (id === 'dolly-zoom' || id === 'mov-dolly-vertigo') { z = `1.0 + 0.3*sin(PI*on/${frames})`; }
             
         // =========================================================================
-        // 3. 3D TRANSFORMS
+        // 4. 3D TRANSFORMS
         // =========================================================================
         } else if (id.includes('mov-3d-')) {
             if (id.includes('flip-x')) {
-                z = '1.1'; // Slight zoom for rotation
+                z = '1.1'; 
                 postFilters.push(`rotate=a='2*PI*t'`); 
             }
             else if (id.includes('tumble')) {
@@ -160,29 +213,23 @@ export default {
             }
 
         // =========================================================================
-        // 4. GLITCH E CAOS (Post-process logic mostly)
+        // 5. GLITCH E CAOS GENERIC
         // =========================================================================
         } else if (id.includes('glitch') || id.includes('chaos') || id.includes('tear') || id.includes('vhs') || id.includes('frame-skip') || id.includes('strobe') || id.includes('jitter')) {
-            if (id.includes('snap')) {
-                postFilters.push(`crop=w=iw-80:h=ih-80:x='40+if(lt(mod(t,1),0.06),(random(t)*80-40),0)':y='40+if(lt(mod(t,1),0.06),(random(t)*80-40),0)',scale=${w}:${h}`);
-            } else if (id.includes('digital-tear')) {
-                 postFilters.push(`noise=alls=40:allf=t+u`);
-            } else if (id.includes('vhs-tracking')) {
-                 postFilters.push(`noise=alls=10:allf=t+u,eq=saturation=1.5`);
-            } else if (id.includes('rgb-shift')) {
-                 postFilters.push(`rgbashift=rh=20:bv=20`);
-            } else if (id.includes('strobe-move')) {
-                 postFilters.push(`eq=brightness='if(lt(mod(t,0.1),0.05),1.5,0.8)'`);
-            } else {
+            // Already handled specifically above, generic fallbacks here
+             if (id.includes('snap')) {
+                // simple horizontal snap
+                x = `${centerX} + if(lt(mod(time,1),0.1), 50, 0)`;
+             } else {
                  postFilters.push(`noise=alls=20:allf=t+u`);
-            }
+             }
 
         // =========================================================================
-        // 5. ELASTIC & FUN (CRITICAL FIX FOR COLORS)
+        // 6. ELASTIC & FUN
         // =========================================================================
         } else if (id.includes('elastic') || id.includes('bounce') || id.includes('jelly') || id.includes('flash-pulse') || id.includes('spring') || id.includes('rubber') || id.includes('pendulum') || id.includes('pop-up') || id.includes('squash') || id.includes('tada')) {
             
-            z = '1.4'; // Base zoom for elasticity
+            z = '1.4'; 
             
             if (id === 'mov-bounce-drop') {
                 const amp = '200';
@@ -213,7 +260,6 @@ export default {
             }
             else if (id === 'mov-pendulum-swing' || id === 'mov-pendulun') {
                  z = '1.3';
-                 // Rotate AFTER Zoompan to avoid cropping edges weirdly
                  postFilters.push(`rotate=a='0.2*sin(3*t)*exp(-0.2*t)':c=none:ow=rotw(iw):oh=roth(ih)`);
             }
             else if (id === 'mov-pop-up' || id === 'mov-popup') {
@@ -226,20 +272,9 @@ export default {
                  z = '1.2';
                  postFilters.push(`rotate=a='0.1*sin(10*t)*min(1,t)':c=none`);
             }
-            else if (id.includes('flash-pulse')) {
-                 z = '1.0';
-                 // IMPORTANT: eq uses 't' and MUST come after zoompan creates the video stream
-                 // 'brightness' ranges -1.0 to 1.0. 
-                 // We want peaks of brightness.
-                 postFilters.push(`eq=brightness='0.3*sin(10*t)'`);
-            }
-            else if (id.includes('rgb-split')) {
-                 z = '1.1';
-                 postFilters.push(`rgbashift=rh='10*sin(5*t)':bh='-10*sin(5*t)'`);
-            }
 
         // =========================================================================
-        // 6. ANIMAÇÃO DE ENTRADA
+        // 7. ANIMAÇÃO DE ENTRADA
         // =========================================================================
         } else if (id.includes('slide-in') || id === 'pop-in' || id === 'fade-in' || id.includes('swing-in')) {
             if (id === 'slide-in-left') {
@@ -263,7 +298,7 @@ export default {
             }
 
         // =========================================================================
-        // 7. BLUR & SHAKE & LOOP
+        // 8. BLUR & SHAKE & LOOP
         // =========================================================================
         } else if (id.includes('blur')) {
             if (id.includes('in')) postFilters.push(`boxblur=20:1:enable='between(t,0,0.5)'`);
@@ -282,12 +317,7 @@ export default {
              if (id.includes('shake-hard')) intensity = 30;
              if (id.includes('earthquake')) intensity = 50;
              
-             // Shake logic in FFmpeg is complex inside zoompan due to 'random'.
-             // We'll use a crop-based shake AFTER scaling to targetRes in the main pipeline.
-             // But here we return a filter string.
-             // Standard way: zoom in slightly, then crop randomly.
-             z = '1.1'; // Zoom needed for shake room
-             // Using crop filter for shake as post-process is easier than zoompan x/y random
+             z = '1.1'; 
              const shakeExpr = `x='(iw-ow)/2 + (random(1)-0.5)*${intensity}':y='(ih-oh)/2 + (random(1)-0.5)*${intensity}'`;
              postFilters.push(`crop=w=iw-${intensity}:h=ih-${intensity}:${shakeExpr},scale=${w}:${h}`);
         
@@ -298,7 +328,7 @@ export default {
         }
 
         // =========================================================================
-        // 8. KEN BURNS
+        // 9. KEN BURNS
         // =========================================================================
         else if (id === 'kenBurns') {
             const startScale = config.startScale || 1.0;
@@ -313,7 +343,7 @@ export default {
             }
         
         } else if (isImage && !id) {
-            z = `min(zoom+0.0015,1.5)`; // Default slow zoom
+            z = `min(zoom+0.0015,1.5)`; 
         }
         
         // Photo Effects
@@ -321,11 +351,8 @@ export default {
             postFilters.push(`eq=brightness='1+0.5*sin(2*PI*t*5)':enable='lt(t,1)'`);
         }
 
-        // 1. Construct ZoomPan (Always First)
         zoomPanFilter = `zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`;
         
-        // 2. Combine with Post Filters (comma separated)
-        // Zoompan outputs a video stream, subsequent filters apply to that stream using 't'.
         if (postFilters.length > 0) {
             return `${zoomPanFilter},${postFilters.join(',')}`;
         }
