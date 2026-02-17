@@ -132,7 +132,7 @@ export default {
             else if (id.includes('diag-br')) { x = `(iw-ow)*(1-on/${frames})`; y = `(ih-oh)*(1-on/${frames})`; }
         }
         // --- 2. 3D ZOOMS (Full Duration) ---
-        else if (id.includes('zoom-') || id === 'dolly-zoom') {
+        else if (id.includes('zoom-') || id === 'dolly-zoom' || id === 'mov-dolly-vertigo') {
             if (id.includes('crash-in')) {
                 z = `min(1.0+0.05*on,2.0)`; // Constant growth
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
@@ -148,7 +148,7 @@ export default {
             } else if (id.includes('slow-out')) {
                 z = `max(1.3-0.0015*on,1.0)`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (id.includes('bounce')) {
+            } else if (id.includes('bounce') || id.includes('wobble')) {
                 // Continuous Sine Wave for Bounce
                 z = `1.0+0.1*sin(2*PI*on/(${frames}/2))`; 
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
@@ -156,37 +156,58 @@ export default {
                 const freq = id.includes('fast') ? 10 : 3;
                 z = `1.05+0.05*sin(2*PI*on/(${frames}/${freq}))`;
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
-            } else if (id === 'dolly-zoom') {
+            } else if (id === 'dolly-zoom' || id === 'mov-dolly-vertigo') {
                 z = `1.0 + 0.3*sin(PI*on/${frames})`; 
                 x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
             }
         }
-        // --- 3. ELASTIC & FUN (Continuous / Full Duration) ---
-        else if (id.includes('elastic') || id.includes('jelly') || id.includes('bounce-scale')) {
-            if (id.includes('elastic-left')) {
-                // Removed exponential decay to make it "last until end" (continuous sway)
-                z = '1.0';
-                x = `(iw-ow)/2 + (iw/10)*sin(2*PI*on/(${frames}/2))`; // Sway left/right
-            } else if (id.includes('elastic-right')) {
-                 z = '1.0';
-                 x = `(iw-ow)/2 - (iw/10)*sin(2*PI*on/(${frames}/2))`;
+        // --- 3. ELASTIC & FUN (Continuous / Full Duration Mapped to Zoom/Pan) ---
+        else if (id.includes('elastic') || id.includes('rubber') || id.includes('bounce') || id.includes('jelly') || id.includes('spring')) {
+            if (id.includes('rubber-band')) {
+                 // Simulated pulsing zoom (squash/stretch not possible in zoompan, only scale)
+                 z = `min(1.0+0.05*sin(2*PI*on/30), 1.5)`;
+                 x = `(iw-ow)/2`; y = `(ih-oh)/2`;
+            } else if (id.includes('bounce-drop')) {
+                 // Bouncing on Y axis
+                 z = '1.1'; // Slight zoom
+                 y = `(ih-oh)/2 + 40*abs(sin(2*PI*on/60))`;
+            } else if (id.includes('elastic-snap-l') || id.includes('elastic-left')) {
+                 z = '1.1';
+                 x = `(iw-ow)/2 + 20*sin(2*PI*on/40)`; // Sway left/right
+            } else if (id.includes('elastic-snap-r') || id.includes('elastic-right')) {
+                 z = '1.1';
+                 x = `(iw-ow)/2 - 20*sin(2*PI*on/40)`;
             } else if (id.includes('jelly')) {
-                // Continuous wobble
+                // Rapid wobble zoom
                 z = `1.0 + 0.05*sin(10*PI*on/${frames})`;
                 x = `(iw-ow)/2`; y = `(ih-oh)/2`;
-            } else if (id.includes('bounce-scale')) {
-                 // Slow pulse scale
-                 z = `1.0 + 0.2*sin(2*PI*on/${frames})`;
-                 x = `(iw-ow)/2`; y = `(ih-oh)/2`;
+            } else if (id.includes('spring')) {
+                 z = '1.0';
+                 y = `(ih-oh)/2 + 30*sin(2*PI*on/20)*exp(-0.5*on/${frames})`; // Damped spring
+            }
+        }
+        // --- 4. GLITCH & CHAOS (Mapped to Shaking/Jitter) ---
+        else if (id.includes('glitch') || id.includes('rgb') || id.includes('chaos') || id.includes('vhs') || id.includes('frame-skip')) {
+            // Simulated motion glitch via rapid random XY changes
+            z = '1.2'; // Zoom in to allow shaking without black borders
+            if (id.includes('rgb-shift') || id.includes('glitch-snap')) {
+                x = `(iw-ow)/2 + (random(1)-0.5)*50`;
+                y = `(ih-oh)/2 + (random(1)-0.5)*50`;
+            } else if (id.includes('vhs')) {
+                // Tracking jitter
+                y = `(ih-oh)/2 + 10*sin(2*PI*on/10)`; 
+                x = `(iw-ow)/2 + (random(1)-0.5)*5`;
+            } else if (id.includes('frame-skip')) {
+                // Simulated by freezing position occasionally? Hard to do in zoompan. 
+                // We'll do a jerky movement.
+                x = `(iw-ow)/2 + if(lt(mod(on,10),5), 20, -20)`;
+            } else {
+                 x = `(iw-ow)/2 + (random(1)-0.5)*80`;
+                 y = `(ih-oh)/2 + (random(1)-0.5)*80`;
             }
         }
         // --- BLURS (Simulated Full Duration) ---
         else if (id.includes('blur-')) {
-            // gblur sigma doesn't support expressions in all builds.
-            // We use static blur toggled by enable, OR just apply constant blur if requested.
-            // For "Blur In" (start blurred -> clear), we split into 2 segments ideally, 
-            // but here we just apply a pulsating blur or constant blur if animation fails.
-            
             if (id.includes('in')) {
                 // Blur first half, clear second half (simulated focus pull)
                 extra = `,gblur=sigma=20:enable='between(t,0,${durationSec/2})'`;
@@ -201,12 +222,11 @@ export default {
             }
             else if (id.includes('zoom')) {
                  z = `min(1.0+0.01*on,1.5)`;
-                 // Blur only at very start to simulate motion kick
                  extra = `,gblur=sigma=5:enable='between(t,0,0.5)'`;
             }
         }
         // --- SHAKES (Continuous) ---
-        else if (id.includes('shake') || id.includes('jitter') || id.includes('earthquake') || id.includes('glitch')) {
+        else if (id.includes('shake') || id.includes('jitter') || id.includes('earthquake')) {
             const intensity = id.includes('violent') || id.includes('earthquake') ? 40 : 10;
             z = '1.1'; // Zoom slightly to avoid black borders during shake
             // Random shake for every frame
