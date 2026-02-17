@@ -60,7 +60,7 @@ export default {
         
         const id = moveId || '';
         
-        // --- 1. Basic Pan/Zoom ---
+        // --- 1. Basic Pan/Zoom (Fixed Syntax: Use 'time' not 't' for zoompan expressions) ---
         let z = '1.0';
         let x = '(iw-ow)/2';
         let y = '(ih-oh)/2';
@@ -100,23 +100,24 @@ export default {
             filters.push(`zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
         }
 
-        // --- 2. Blur Movements ---
+        // --- 2. Blur Movements (Fixed Syntax: Use enable with 't') ---
         if (id.includes('mov-blur')) {
             if (id === 'mov-blur-in') {
-                // Blur from 20 down to 0 over 1 second (approx 30 frames)
-                filters.push(`boxblur=luma_radius='min(20,20*(1-t/1.0))':luma_power=1:enable='between(t,0,1)'`);
+                // Blur at start (0-0.5s), then sharp
+                filters.push(`boxblur=20:1:enable='between(t,0,0.5)'`);
             } else if (id === 'mov-blur-out') {
-                 // Blur from 0 to 20 near end
-                filters.push(`boxblur=luma_radius='min(20,20*((t-${Math.max(0, durationSec-1)})/1.0))':luma_power=1:enable='between(t,${Math.max(0, durationSec-1)},${durationSec})'`);
+                // Sharp then blur at end
+                filters.push(`boxblur=20:1:enable='between(t,${Math.max(0, durationSec-0.5)},${durationSec})'`);
             } else if (id === 'mov-blur-pulse') {
-                filters.push(`boxblur=luma_radius='10*abs(sin(2*PI*t))':luma_power=1`);
+                // Toggle blur every 1 second
+                filters.push(`boxblur=10:1:enable='lt(mod(t,1),0.3)'`);
             } else if (id === 'mov-blur-zoom') {
-                // Zoom is already handled above if combined, but specific blur here
-                filters.push(`boxblur=luma_radius='min(10,zoom*5)':luma_power=1`);
+                filters.push(`boxblur=10:1:enable='between(t,0,0.5)'`);
+                // Also add a zoom effect for this one if we can chain it, but simple blur is safer
             }
         }
 
-        // --- 3. Shake & Jitter ---
+        // --- 3. Shake & Jitter (Fixed Syntax: Use crop) ---
         if (id.includes('shake') || id.includes('handheld') || id.includes('earthquake') || id.includes('jitter')) {
              let intensity = 10;
              if (id.includes('handheld-1')) intensity = 5;
@@ -134,37 +135,93 @@ export default {
 
         // --- 4. Loop Animations ---
         if (id === 'pulse') {
-            // Zoom in/out loop
-            const zPulse = `1.05+0.05*sin(2*PI*t)`; // Cycle every 1s (2*PI*t)
+            // Simulated pulse via zoompan
+            const zPulse = `1.05+0.05*sin(2*PI*time)`; 
             filters.push(`zoompan=z='${zPulse}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${w}x${h}:fps=${fps}`);
         }
         if (id === 'float') {
-            // Translate Y up/down. Requires crop trick or pad.
-            // Simplified: gentle zoom + pan Y
-            const yFloat = `(ih-oh)/2 + 20*sin(2*PI*t)`;
-            filters.push(`scale=${Math.floor(w*1.05)}:-2,crop=${w}:${h}:(iw-ow)/2:${yFloat}`);
-        }
-        if (id === 'wiggle' || id === 'spin-slow' || id === 'pendulum') {
-             // Rotate
-             let angle = `0`;
-             if (id === 'wiggle') angle = `(PI/180)*3*sin(4*PI*t)`; // +/- 3 degrees, fast
-             if (id === 'pendulum') angle = `(PI/180)*10*sin(1*PI*t)`; // +/- 10 degrees, slow
-             if (id === 'spin-slow') angle = `t*0.2`; // Continuous slow rotation
-             
-             // Rotate requires complex filtering to avoid black corners (scale up then rotate then crop)
-             // Scale 1.2x to be safe
-             filters.push(`scale=${Math.floor(w*1.2)}:-2,rotate='${angle}':ow=${w}:oh=${h}:c=none`);
+            // Gentle Y pan
+             const yFloat = `(ih-oh)/2 + 20*sin(2*PI*time)`;
+             filters.push(`scale=${Math.floor(w*1.05)}:-2,crop=${w}:${h}:(iw-ow)/2:${yFloat}`);
         }
         if (id === 'heartbeat') {
-            const zHeart = `1.0 + 0.1*abs(sin(3*PI*t))`; // Fast pulse
+             // Quick zoom pulse
+            const zHeart = `1.0 + 0.1*abs(sin(3*PI*time))`; 
             filters.push(`zoompan=z='${zHeart}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${w}x${h}:fps=${fps}`);
+        }
+        
+        // --- 5. Entry Animations (Slide In) ---
+        if (id.includes('slide-in')) {
+            // We simulate slide-in by starting zoomed in/panned out and moving to center
+            // Real slide-in requires padding which is complex for a single filter string
+            // We'll use a zoom-out reveal or pan reveal
+            if (id === 'slide-in-left') {
+                 // Pan from left
+                 filters.push(`zoompan=z=1:x='(iw-ow)/2 - (iw)*(1-min(time,1))':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+            } else if (id === 'slide-in-right') {
+                 filters.push(`zoompan=z=1:x='(iw-ow)/2 + (iw)*(1-min(time,1))':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+            } else if (id === 'slide-in-bottom') {
+                 filters.push(`zoompan=z=1:x='(iw-ow)/2':y='(ih-oh)/2 + (ih)*(1-min(time,1))':d=${frames}:s=${w}x${h}:fps=${fps}`);
+            }
+        }
+        
+        // --- 6. Photo Effects ---
+        if (id === 'photo-flash') {
+            filters.push(`eq=brightness='1+0.5*sin(2*PI*t*5)':enable='lt(t,1)'`);
+        }
+        if (id === 'rgb-split-anim') {
+            // Simulated RGB split using geq (expensive but visual) or simplified tint
+            // Simplified: hue jitter
+            filters.push(`hue=h='t*10'`); 
+        }
+
+        // --- 7. Glitch & Chaos ---
+        if (id.includes('glitch') || id.includes('digital-tear')) {
+             // Periodic noise/block
+             filters.push(`noise=alls=20:allf=t+u,drawgrid=y=0:h=32:t=2:c=black@0.5:enable='lt(mod(t,1),0.2)'`);
         }
 
         return filters.length > 0 ? filters.join(',') : null;
     },
 
     getTransitionXfade: (id) => {
-        // ... (Keeping existing map)
-        return 'fade'; // Default
+        const map = {
+            'fade': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'dissolve': 'dissolve',
+            'blur-dissolve': 'distance', 'filter-blur': 'distance',
+            'black': 'fadeblack', 'white': 'fadewhite', 'flash': 'fadewhite',
+            'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'wipe-up': 'wipeup', 'wipe-down': 'wipedown',
+            'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
+            'push-left': 'slideleft', 'push-right': 'slideright', 'push-up': 'slideup', 'push-down': 'slidedown',
+            'circle-open': 'circleopen', 'circle-close': 'circleclose', 'diamond-in': 'diagtl', 'diamond-out': 'diagbr',
+            'clock-wipe': 'radial', 'iris-in': 'circleopen', 'iris-out': 'circleclose',
+            'pixelize': 'pixelize', 'glitch': 'pixelize', 'glitch-chroma': 'pixelize', 'pixel-sort': 'pixelize',
+            'color-glitch': 'hblur', 'urban-glitch': 'hblur', 'rgb-split': 'distance',
+            'liquid-melt': 'dissolve', 'ink-splash': 'circleopen', 'water-ripple': 'wipetl',
+            'paper-rip': 'wipetl', 'page-turn': 'wipetl',
+            'cube-rotate-l': 'slideleft', 'cube-rotate-r': 'slideright', 'cube-rotate-u': 'slideup', 'cube-rotate-d': 'slidedown',
+            'blood-mist': 'dissolve', 'black-smoke': 'fadeblack', 'white-smoke': 'fadewhite',
+            'fire-burn': 'dissolve', 'visual-buzz': 'pixelize', 'rip-diag': 'wipetl', 'zoom-neg': 'zoomout',
+            'infinity-1': 'zoomin', 'digital-paint': 'pixelize', 'brush-wind': 'wipeleft', 'dust-burst': 'dissolve',
+            'film-roll-v': 'slideup', 'astral-project': 'dissolve', 'lens-flare': 'fadewhite',
+            'mosaic-small': 'pixelize', 'mosaic-large': 'pixelize',
+            'triangle-wipe': 'diagtl', 'star-zoom': 'circleopen', 'spiral-wipe': 'radial', 'grid-flip': 'pixelize',
+            'dots-reveal': 'circleopen', 'shutters': 'rectcrop', 'wipe-radial': 'radial', 'checkerboard': 'rectcrop',
+            'diamond-zoom': 'diagtl', 'hex-reveal': 'circleopen', 'stripes-h': 'rectcrop', 'stripes-v': 'rectcrop',
+            'heart-wipe': 'circleopen',
+            'zoom-blur-l': 'slideleft', 'zoom-blur-r': 'slideright', 'spin-zoom-in': 'zoomin', 'spin-zoom-out': 'zoomout',
+            'whip-diagonal-1': 'diagtl', 'whip-diagonal-2': 'diagbr',
+            'flash-bang': 'fadewhite', 'exposure': 'fadewhite', 'burn': 'dissolve', 'bokeh-blur': 'distance',
+            'light-leak-tr': 'dissolve', 'flare-pass': 'slideleft', 'prism-split': 'distance', 'god-rays': 'dissolve',
+            'elastic-left': 'slideleft', 'elastic-right': 'slideright', 'elastic-up': 'slideup', 'elastic-down': 'slidedown',
+            'bounce-scale': 'zoomin', 'jelly': 'pixelize',
+            'zoom-in': 'zoomin', 'zoom-out': 'zoomout', 'zoom-spin-fast': 'zoomin', 'spin-cw': 'rotateccw', 'spin-ccw': 'rotatecw',
+            'whip-left': 'slideleft', 'whip-right': 'slideright', 'whip-up': 'slideup', 'whip-down': 'slidedown',
+            'perspective-left': 'slideleft', 'perspective-right': 'slideright',
+            'glitch-scan': 'hblur', 'datamosh': 'pixelize', 'noise-jump': 'pixelize', 'cyber-slice': 'rectcrop',
+            'push-left': 'slideleft', 'push-right': 'slideright', 'swirl': 'radial', 'kaleidoscope': 'circleopen',
+            'water-drop': 'circleopen', 'wave': 'wipetl', 'stretch-h': 'slideleft', 'stretch-v': 'slideup',
+            'morph': 'dissolve', 'turbulence': 'dissolve', 'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'distance'
+        };
+        return map[id] || 'fade';
     }
 };
