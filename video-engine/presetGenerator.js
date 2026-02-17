@@ -102,10 +102,17 @@ export default {
         
         // --- PULSE / HEARTBEAT LOGIC ---
         if (moveId && (moveId.includes('pulse') || moveId.includes('heartbeat'))) {
+            // Default base frequency: 0.5 Hz (1 pulse every 2 seconds) - SLOWER
+            let baseFreq = 0.5;
+            
+            if (moveId.includes('fast')) baseFreq = 2.0;
+            
+            // Respect the 'speed' config from the UI slider (defaults to 1)
+            const speedMulti = config.speed || 1.0;
+            const freq = baseFreq * speedMulti;
+
             // Oscillation using sin(). time is in seconds.
             // 1.05 + 0.05 * sin(...) oscillates between 1.0 and 1.1
-            // Frequency: 2*PI*time * speed
-            const freq = moveId.includes('fast') ? 5 : 2;
             z = `1.05+0.05*sin(2*PI*time*${freq})`;
             x = `(iw/2)-(iw/zoom/2)`;
             y = `(ih/2)-(ih/zoom/2)`;
