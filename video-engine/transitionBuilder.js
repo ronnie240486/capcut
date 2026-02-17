@@ -152,16 +152,47 @@ export default {
                 }
 
                 // 4. MOVIMENTO (Zoom/Pan/KenBurns)
-                // Passa a resolução alvo para o presetGenerator para evitar downscaling acidental
-                if (clip.properties && clip.properties.movement) {
-                    const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
-                    if (moveFilter) addFilter(moveFilter);
-                } else if (clip.type === 'image') {
-                    // Aplica um filtro zoompan neutro para imagens para garantir compatibilidade de pixel format e buffer
-                    // Agora passando targetRes corretamente
-                    const staticMove = presetGenerator.getMovementFilter(null, duration, true, {}, targetRes, targetFps);
-                    addFilter(staticMove);
-                }
+// Sempre aplicar scale+pad após qualquer zoompan
+if (clip.properties && clip.properties.movement) {
+
+    const moveFilter = presetGenerator.getMovementFilter(
+        clip.properties.movement.type,
+        duration,
+        clip.type === 'image',
+        clip.properties.movement.config,
+        targetRes,
+        targetFps
+    );
+
+    if (moveFilter) {
+        addFilter(
+            `${moveFilter},` +
+            `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+            `pad=${targetRes.w}:${targetRes.h}:(${targetRes.w}-iw)/2:(${targetRes.h}-ih)/2:color=black,` +
+            `setsar=1`
+        );
+    }
+
+} else if (clip.type === 'image') {
+
+    // zoompan neutro para imagens
+    const staticMove = presetGenerator.getMovementFilter(
+        null,
+        duration,
+        true,
+        {},
+        targetRes,
+        targetFps
+    );
+
+    addFilter(
+        `${staticMove},` +
+        `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+        `pad=${targetRes.w}:${targetRes.h}:(${targetRes.w}-iw)/2:(${targetRes.h}-ih)/2:color=black,` +
+        `setsar=1`
+    );
+}
+
 
                 // 5. ESCALA FINAL (Garantia pós-movimento)
                 // Alguns filtros de movimento podem alterar SAR/Dimensões
