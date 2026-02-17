@@ -185,63 +185,83 @@ export default {
             }
 
         // =========================================================================
-        // 5. ELASTIC & FUN (ADICIONADO E CORRIGIDO)
+        // 5. ELASTIC & FUN (FIXED MATH)
         // =========================================================================
         } else if (id.includes('elastic') || id.includes('bounce') || id.includes('jelly') || id.includes('flash-pulse') || id.includes('spring') || id.includes('rubber') || id.includes('pendulum') || id.includes('pop-up') || id.includes('squash') || id.includes('tada')) {
             
+            // Using time variable for zoompan logic to ensure safety.
+            // Requires z > 1 for panning to work. Using 1.5 as base zoom for motion effects.
+
             if (id === 'mov-bounce-drop') {
-                // FIXED: Use math without commas inside arguments (avoiding max(0, ...))
-                // Damped oscillation logic for Y offset
-                const dropY = `(ih-oh)/2 + (ih/3)*exp(-2*time)*cos(10*time)`; 
-                filters.push(`zoompan=z=1:x='(iw-ow)/2':y='${dropY}':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                z = '1.5';
+                const targetY = '(ih-oh)/2';
+                // Damped oscillation: y = target * (1 - exp(-3*time)*cos(10*time))
+                y = `${targetY} * (1 - exp(-3*time)*cos(10*time))`;
+                filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
             } 
             else if (id === 'mov-elastic-snap-l') {
-                const elastic = `1 - cos(time*5)*exp(-time*2)`;
-                const xExpr = `(iw-ow)/2 - iw*(1-(${elastic}))`;
-                filters.push(`zoompan=z=1:x='${xExpr}':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                z = '1.5';
+                const targetX = '(iw-ow)/2';
+                // Snap from left (start 0)
+                x = `${targetX} * (1 - exp(-3*time)*cos(10*time))`;
+                filters.push(`zoompan=z='${z}':x='${x}':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
             else if (id === 'mov-elastic-snap-r') {
-                const elastic = `1 - cos(time*5)*exp(-time*2)`;
-                const xExpr = `(iw-ow)/2 + iw*(1-(${elastic}))`;
-                filters.push(`zoompan=z=1:x='${xExpr}':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                z = '1.5';
+                const targetX = '(iw-ow)/2';
+                const startX = '(iw-ow)';
+                // Snap from right
+                const progress = '(1 - exp(-3*time)*cos(10*time))';
+                x = `${startX} + (${targetX}-${startX}) * ${progress}`;
+                filters.push(`zoompan=z='${z}':x='${x}':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
             else if (id === 'mov-rubber-band') {
-                const zRubber = `1.0 + 0.1*sin(time*10)*exp(-time)`;
-                filters.push(`zoompan=z='${zRubber}':x='(iw-ow)/2':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                // Zoom stretches
+                z = '1.2 + 0.2*sin(8*time)';
+                filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
             else if (id.includes('jelly') || id === 'mov-jelly-wobble') {
-                 const zJelly = `1.05 + 0.05*sin(time*8)`;
-                 filters.push(`zoompan=z='${zJelly}':x='(iw-ow)/2':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 // Fast wobble
+                 z = '1.1 + 0.05*sin(15*time)';
+                 filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
             else if (id === 'mov-spring-up') {
-                 const spring = `1 - cos(time*5)*exp(-time*2)`;
-                 const yExpr = `(ih-oh)/2 + ih/2*(1-(${spring}))`;
-                 filters.push(`zoompan=z=1:x='(iw-ow)/2':y='${yExpr}':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 // Move Up: (ih-oh) -> (ih-oh)/2
+                 z = '1.5';
+                 const startY = '(ih-oh)';
+                 const targetY = '(ih-oh)/2';
+                 const progress = '(1 - exp(-3*time)*cos(10*time))';
+                 y = `${startY} + (${targetY}-${startY}) * ${progress}`;
+                 filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
             else if (id === 'mov-spring-down') {
-                 const spring = `1 - cos(time*5)*exp(-time*2)`;
-                 const yExpr = `(ih-oh)/2 - ih/2*(1-(${spring}))`;
-                 filters.push(`zoompan=z=1:x='(iw-ow)/2':y='${yExpr}':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 // Move Down: 0 -> (ih-oh)/2
+                 z = '1.5';
+                 const targetY = '(ih-oh)/2';
+                 y = `${targetY} * (1 - exp(-3*time)*cos(10*time))`;
+                 filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
             else if (id === 'mov-pendulum-swing') {
-                 const rot = `0.2*sin(time*3)*exp(-time*0.5)`;
-                 filters.push(`rotate=a='${rot}':c=none:ow=rotw(iw):oh=roth(ih)`);
+                 const angle = '0.3*sin(3*time)*exp(-0.5*time)';
+                 filters.push(`rotate=a='${angle}':c=none:ow=rotw(iw):oh=roth(ih)`);
+                 // Zoom to cover black corners
+                 filters.push(`zoompan=z=1.2:d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
             else if (id === 'mov-pop-up') {
-                 // Fast zoom in
-                 filters.push(`zoompan=z='min(zoom+0.05, 1.2)':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 // Zoom in quick
+                 z = 'min(zoom+0.1, 1.5)';
+                 filters.push(`zoompan=z='${z}':x='(iw-ow)/2':y='(ih-oh)/2':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
             else if (id === 'mov-squash-stretch') {
-                 const zSquash = `1.0 + 0.1*sin(time*5)`;
-                 filters.push(`zoompan=z='${zSquash}':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 z = '1.0 + 0.2*abs(sin(5*time))';
+                 filters.push(`zoompan=z='${z}':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
             else if (id === 'mov-tada') {
-                 const zTada = `1.0 + 0.1*sin(time*10)*exp(-time)`;
-                 const rotTada = `0.1*sin(time*20)*exp(-time)`;
-                 filters.push(`rotate=a='${rotTada}':c=none,zoompan=z='${zTada}':d=${frames}:s=${w}x${h}:fps=${fps}`);
+                 filters.push(`rotate=a='0.1*sin(10*time)':c=none`);
+                 filters.push(`zoompan=z='1.1+0.1*sin(5*time)':d=${frames}:s=${w}x${h}:fps=${fps}`);
             }
             else if (id.includes('flash-pulse')) {
-                 filters.push(`eq=brightness='1+0.5*sin(10*t)'`);
+                 filters.push(`eq=brightness='1+0.5*sin(10*time)'`);
             }
 
         // =========================================================================
