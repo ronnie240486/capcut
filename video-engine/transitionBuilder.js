@@ -204,23 +204,48 @@ export default {
 
                 for (let i = 1; i < mainTrackLabels.length; i++) {
                     const nextClip = mainTrackLabels[i];
+                    // IMPORTANT: Ensure transition exists, otherwise use a minimal value to prevent breakage
                     const trans = nextClip.transition || { id: 'fade', duration: 0.5 };
                     const hasExplicitTrans = !!nextClip.transition;
-                    let transDur = hasExplicitTrans ? trans.duration : 0.04; 
+                    let transDur = hasExplicitTrans ? trans.duration : 0.0; 
+                    
+                    // Offset logic: Start transition 'duration' seconds before the end of the previous clip
+                    // accumulatedDuration is the end time of the previous mix
                     const offset = accumulatedDuration - transDur;
                     
-                    if (offset < 0) transDur = 0.04; 
+                    // Fallback to simple concat if offset is negative (clip too short)
+                    if (offset < 0) {
+                        transDur = 0; 
+                    }
 
-                    const transId = presetGenerator.getTransitionXfade(trans.id);
+                    // Get FFmpeg Xfade name, default to 'fade' if not found
+                    let transId = presetGenerator.getTransitionXfade(trans.id);
+                    if (!transId) transId = 'fade';
+
                     const nextLabelV = `mix_v_${i}`;
                     const nextLabelA = `mix_a_${i}`;
                     
-                    filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
-                    filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
+                    if (transDur > 0 && hasExplicitTrans) {
+                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
+                        filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
+                        accumulatedDuration = offset + nextClip.duration;
+                    } else {
+                        // Simple Concatenation via Xfade (with 0 duration effectively or simple concat)
+                        // Actually, xfade doesn't support 0 duration well. We should use concat filter for hard cuts, 
+                        // but to keep stream graph simple, we can use a tiny mix or just accumulate logic.
+                        // For simplicity in this engine, we will assume a tiny dissolve for stability if no transition, or rely on frontend to handle "cut" as separate tracks?
+                        // Better approach: If no transition, use xfade with 0 duration? No.
+                        // We use acrossfade d=0? No.
+                        // Let's use a very short standard fade (0.04s ~ 1 frame) to prevent clicking/flashing if no transition is specified but we need to join streams.
+                        const safeDur = 0.04;
+                        const safeOffset = accumulatedDuration - safeDur;
+                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset}[${nextLabelV}];`;
+                         filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${safeDur}:c1=tri:c2=tri[${nextLabelA}];`;
+                         accumulatedDuration = safeOffset + nextClip.duration;
+                    }
                     
                     currentMixV = `[${nextLabelV}]`;
                     currentMixA = `[${nextLabelA}]`;
-                    accumulatedDuration = offset + nextClip.duration;
                 }
                 mainTrackVideoStream = currentMixV;
                 mainTrackAudioStream = currentMixA;
