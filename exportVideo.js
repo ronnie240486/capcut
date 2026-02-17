@@ -1,73 +1,99 @@
-// exportVideo.js
 import path from 'path';
 import fs from 'fs';
 
 /**
- * Normaliza inputs de vídeo e áudio
- * @param {Array} inputs 
- * @param {string} type "video" ou "audio"
- * @returns {Array}
+ * Normaliza inputs: garante que sejam arrays de objetos { path, duration }
  */
 function normalizeInputs(inputs, type) {
-    if (!Array.isArray(inputs)) throw new Error(`Inputs devem ser um array (${type})`);
-    return inputs.map(input => {
-        if (!input.path || !fs.existsSync(input.path)) {
-            throw new Error(`Arquivo de ${type} não encontrado: ${input.path}`);
-        }
-        return {
-            path: input.path,
-            duration: parseFloat(input.duration) || 5
-        };
+    if (!Array.isArray(inputs)) {
+        throw new Error(`Inputs devem ser um array (${type})`);
+    }
+    inputs.forEach((input, idx) => {
+        if (!input.path) throw new Error(`${type}[${idx}] precisa ter 'path'`);
+        if (!input.duration) input.duration = 5;
     });
+    return inputs;
 }
 
 /**
  * handleExportVideo
- * @param {Object} job Objeto de job (contendo files e params)
- * @param {string} uploadDir Diretório de uploads
- * @param {Function} callback Callback (jobId, argsFFmpeg, duration)
+ * @param {Object} job - job enviado do server.js
+ * @param {string} uploadDir - pasta de uploads
+ * @param {Function} callback - (jobId, ffmpegArgs, totalDuration)
  */
 export async function handleExportVideo(job, uploadDir, callback) {
-    if (!job || !job.files || job.files.length === 0) {
-        throw new Error("Nenhum vídeo enviado");
-    }
+    try {
+        // Separar tipos
+        const videoInputs = normalizeInputs(
+            job.files.filter(f => f.mimetype.startsWith('video')).map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 })),
+            'video'
+        );
 
-    // Separa vídeos e áudios
-    const videoInputs = job.files
-        .filter(f => f.mimetype.startsWith('video'))
-        .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
+        const audioInputs = normalizeInputs(
+            job.files.filter(f => f.mimetype.startsWith('audio')).map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 })),
+            'audio'
+        );
 
-    const audioInputs = job.files
-        .filter(f => f.mimetype.startsWith('audio'))
-        .map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 }));
+        const imageInputs = normalizeInputs(
+            job.files.filter(f => f.mimetype.startsWith('image')).map(f => ({ path: f.path, duration: parseFloat(job.params.duration) || 5 })),
+            'image'
+        );
 
-    // Normaliza
-    const videos = normalizeInputs(videoInputs, 'video');
-    const audios = normalizeInputs(audioInputs, 'audio');
+        if (videoInputs.length + imageInputs.length === 0) {
+            throw new Error("Nenhum vídeo ou imagem enviado");
+        }
 
-    if (videos.length === 0 && audios.length === 0) {
-        throw new Error("Nenhum vídeo ou áudio válido enviado");
-    }
+        // Montar argumentos FFmpeg
+        const ffmpegArgs = [];
+        let filterComplexParts = [];
+        let mapArgs = [];
 
-    // Define output path
-    const outputFileName = `export_${Date.now()}.mp4`;
-    const outputPath = path.join(uploadDir, outputFileName);
-    job.outputPath = outputPath;
+        // 1️⃣ Adicionar imagens (loop para criar vídeos de duração fixa)
+        imageInputs.forEach((img, idx) => {
+            ffmpegArgs.push('-loop', '1', '-t', img.duration, '-i', img.path);
+            // Map de cada imagem
+            mapArgs.push(`[${idx}:v]`);
+        });
 
-    // Cria argumentos FFmpeg
-    const ffmpegArgs = [];
+        // 2️⃣ Adicionar vídeos
+        videoInputs.forEach((vid, idx) => {
+            ffmpegArgs.push('-i', vid.path);
+            mapArgs.push(`[${imageInputs.length + idx}:v]`);
+        });
 
-    videos.forEach(v => ffmpegArgs.push('-i', v.path));
-    audios.forEach(a => ffmpegArgs.push('-i', a.path));
+        // 3️⃣ Criar transições simples (fade) entre todos os vídeos/imagens
+        if (mapArgs.length > 1) {
+            let fadeFilters = [];
+            for (let i = 1; i < mapArgs.length; i++) {
+                fadeFilters.push(`${mapArgs[i-1]}${mapArgs[i]}xfade=transition=fade:duration=1:offset=${i*5}[v${i}]`);
+            }
+            filterComplexParts = fadeFilters;
+        }
 
-    // Video codec e áudio codec padrão
-    ffmpegArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-y', outputPath);
+        // Combinar filtros
+        let filterComplex = filterComplexParts.length ? filterComplexParts.join('; ') : null;
 
-    // Estima duração total do vídeo
-    const totalDuration = videos.reduce((sum, v) => sum + v.duration, 0);
+        // Output final
+        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
+        job.outputPath = outputPath;
 
-    // Chama callback com FFmpeg args
-    if (typeof callback === 'function') {
-        callback(job.id, ffmpegArgs, totalDuration || 10);
+        const totalDuration = Math.max(
+            ...[...videoInputs, ...imageInputs].map(v => v.duration)
+        );
+
+        // Callback com args
+        const finalArgs = [...ffmpegArgs];
+        if (filterComplex) {
+            finalArgs.push('-filter_complex', filterComplex, '-map', `[v${mapArgs.length-1}]`);
+        }
+        finalArgs.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-y', outputPath);
+
+        // Se houver áudio, adiciona ao final
+        audioInputs.forEach(aud => finalArgs.push('-i', aud.path));
+
+        callback(job.id, finalArgs, totalDuration);
+    } catch (err) {
+        console.error("Erro em handleExportVideo:", err);
+        throw err;
     }
 }
