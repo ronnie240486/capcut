@@ -159,15 +159,25 @@ export default {
         }
         // --- BLURS ---
         else if (moveId && moveId.startsWith('mov-blur-')) {
-            // Apply blur via gblur filter chained after zoompan in the filter builder logic, 
-            // OR return a complex filter chain string if possible.
-            // Simplified: Use simple zoom + gblur logic.
-            if (moveId.includes('in')) extra = `,gblur=sigma='20*(1-t/1)':enable='between(t,0,1)'`;
-            else if (moveId.includes('out')) extra = `,gblur=sigma='20*(t/${durationSec-1}-1)':enable='between(t,${durationSec-1},${durationSec})'`;
-            else if (moveId.includes('pulse')) extra = `,gblur=sigma='5*sin(2*PI*t)':enable='between(t,0,${durationSec})'`;
+            // FIX: gblur sigma is not animatable in standard FFmpeg. Using static intervals.
+            if (moveId.includes('in')) {
+                // Blur first 0.5s
+                extra = `,gblur=sigma=20:enable='between(t,0,0.5)'`;
+            }
+            else if (moveId.includes('out')) {
+                // Blur last 0.5s
+                const startBlur = Math.max(0, durationSec - 0.5);
+                extra = `,gblur=sigma=20:enable='between(t,${startBlur},${durationSec})'`;
+            }
+            else if (moveId.includes('pulse')) {
+                // Blur in middle 0.5s
+                const mid = durationSec / 2;
+                extra = `,gblur=sigma=15:enable='between(t,${mid-0.25},${mid+0.25})'`;
+            }
             else if (moveId.includes('zoom')) {
-                z = `min(zoom+0.01,1.5)`; // Add slight zoom to blur zoom
-                extra = `,gblur=sigma='2*sin(2*PI*t)':enable='between(t,0,${durationSec})'`;
+                 z = `min(zoom+0.01,1.5)`;
+                 // Quick blur at start to simulate "zoom rush"
+                 extra = `,gblur=sigma=5:enable='between(t,0,0.3)'`;
             }
         }
         // --- ELASTIC / FUN / ENTRY (Simulated) ---
