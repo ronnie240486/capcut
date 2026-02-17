@@ -1,82 +1,96 @@
 // exportVideo.js
 import path from 'path';
-import fs from 'fs/promises';
 
-// Normaliza inputs e garante que são arrays válidos
+/**
+ * Normaliza os inputs e valida
+ */
 function normalizeInputs(inputs, type = 'video') {
-    if (!Array.isArray(inputs)) {
-        throw new Error(`Inputs devem ser um array (${type})`);
-    }
-    inputs.forEach((i, idx) => {
-        if (!i.path || typeof i.path !== 'string') {
-            throw new Error(`Cada input precisa ter { path } (${type} index ${idx})`);
-        }
-        if (!i.duration) i.duration = 5; // fallback duration
+    if (!inputs) return [];
+    if (!Array.isArray(inputs)) throw new Error(`Inputs devem ser um array (${type})`);
+    return inputs.map(input => {
+        if (!input.path) throw new Error(`Cada input deve ter { path, duration } (${type})`);
+        return { path: input.path, duration: input.duration || 5 };
     });
-    return inputs;
 }
 
-export async function handleExportVideo(job, uploadDir, ffmpegCallback) {
+/**
+ * Handle Export Video
+ * @param {Object} job - job do servidor
+ * @param {string} uploadDir - diretório de uploads
+ * @param {Function} callback - (jobId, args, duration)
+ */
+export async function handleExportVideo(job, uploadDir, callback) {
     try {
-        if (!job || !job.files) throw new Error("Job inválido");
+        if (!job.files || job.files.length === 0) {
+            throw new Error("Nenhum arquivo enviado");
+        }
 
-        // Separar vídeos e áudios
+        console.log(`[Export] Arquivos recebidos:`, job.files.map(f => ({
+            name: f.originalname,
+            type: f.mimetype,
+            path: f.path
+        })));
+
+        // Cria arrays para FFmpeg
         const videoInputs = normalizeInputs(
-            job.files.filter(f => f.mimetype.startsWith('video')).map(f => ({
-                path: f.path,
-                duration: parseFloat(job.params.duration) || 5
-            })), 'video'
+            job.files.filter(f => f.mimetype.startsWith('video')),
+            'video'
         );
 
         const audioInputs = normalizeInputs(
-            job.files.filter(f => f.mimetype.startsWith('audio')).map(f => ({
-                path: f.path,
-                duration: parseFloat(job.params.duration) || 5
-            })), 'audio'
+            job.files.filter(f => f.mimetype.startsWith('audio')),
+            'audio'
         );
 
-        if (videoInputs.length === 0) {
-            throw new Error("Nenhum vídeo enviado");
+        if (videoInputs.length === 0 && audioInputs.length === 0) {
+            throw new Error("Nenhum vídeo ou áudio válido enviado");
         }
 
-        // Cria filter_complex dinamicamente
-        let filterComplex = '';
-        const mapArgs = [];
-        let lastVideoLabel = null;
+        // Cria caminho de saída
+        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
 
-        videoInputs.forEach((v, i) => {
-            const label = `v${i}`;
-            // Aplica movimento básico: zoom de 1x a 1.05x
-            filterComplex += `[${i}:v]scale=1280:720,zoompan=z='if(lte(zoom,1.05),zoom+0.001,1.0)':d=1:fps=30[${label}];`;
+        // Monta args para FFmpeg
+        const args = [];
 
-            if (lastVideoLabel !== null) {
-                const outLabel = `v${i}out`;
-                filterComplex += `[${lastVideoLabel}][${label}]xfade=transition=fade:duration=1:offset=${i * v.duration}[${outLabel}];`;
-                lastVideoLabel = outLabel;
-            } else {
-                lastVideoLabel = label;
-            }
+        // Adiciona vídeos
+        videoInputs.forEach(v => {
+            args.push('-i', v.path);
         });
 
-        mapArgs.push('-map', `[${lastVideoLabel}]`);
+        // Adiciona áudios
+        audioInputs.forEach(a => {
+            args.push('-i', a.path);
+        });
 
-        // Mapeia todos os áudios enviados (ou do primeiro vídeo se não houver)
-        if (audioInputs.length > 0) {
-            audioInputs.forEach((a, i) => mapArgs.push('-i', a.path));
-            mapArgs.push('-map', `${videoInputs.length}:a?`); // primeiro audio como exemplo
-        } else {
-            mapArgs.push('-map', '0:a?'); // fallback: áudio do primeiro vídeo
+        // Filter Complex básico para vídeos + transições simples
+        const filters = [];
+        if (videoInputs.length > 0) {
+            // exemplo: aplica fade in/out em cada vídeo
+            videoInputs.forEach((v, i) => {
+                filters.push(`[${i}:v]fade=t=in:st=0:d=1,fade=t=out:st=${v.duration - 1}:d=1[v${i}]`);
+            });
+
+            // concatena vídeos
+            const concatInputs = videoInputs.map((v, i) => `[v${i}]`).join('');
+            filters.push(`${concatInputs}concat=n=${videoInputs.length}:v=1:a=0[outv]`);
+            args.push('-filter_complex', filters.join(';'));
+            args.push('-map', '[outv]');
         }
 
-        // Define caminho final do arquivo
-        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
-        job.outputPath = outputPath;
+        // Mapeia áudio (simplesmente pega todos)
+        audioInputs.forEach((a, i) => {
+            args.push('-map', `${videoInputs.length + i}:a`);
+        });
 
-        // Argumentos finais do FFmpeg
-        const args = ['-i', videoInputs.map(v => v.path).join(' -i '), '-filter_complex', filterComplex, ...mapArgs, '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-y', outputPath];
+        // Código de saída
+        args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-y', outputPath);
 
-        // Chama callback para criar o job FFmpeg
-        ffmpegCallback(job.id, args, videoInputs.reduce((sum, v) => sum + v.duration, 0));
+        console.log(`[Export] FFmpeg Args:`, args);
+
+        // Duration total estimado (soma dos vídeos ou fallback 5s)
+        const totalDuration = videoInputs.reduce((sum, v) => sum + v.duration, 0) || 5;
+
+        callback(job.id, args, totalDuration);
 
     } catch (err) {
         console.error("Erro em handleExportVideo:", err);
