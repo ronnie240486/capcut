@@ -23,6 +23,25 @@ export default {
         '-acodec', 'libmp3lame',
         '-q:a', '2'
     ],
+    const getFinalScaleFilter = (targetRes, targetFps) => {
+    return [
+        // Ajusta a imagem/vídeo para caber no quadro sem distorcer
+        `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=lanczos`,
+
+        // Completa as bordas, mantendo proporção
+        `pad=${targetRes.w}:${targetRes.h}:(${targetRes.w}-iw)/2:(${targetRes.h}-ih)/2:color=black`,
+
+        // Mantém SAR correto
+        `setsar=1`,
+
+        // Garante FPS fixo para todo o projeto
+        `fps=${targetFps}`,
+
+        // Formato compatível com xfade e codecs
+        `format=yuv420p`
+    ].join(",");
+};
+
 
     getFFmpegFilterFromEffect: (effectId) => {
         if (!effectId) return null;
