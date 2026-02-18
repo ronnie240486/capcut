@@ -463,9 +463,9 @@ export default {
             'whip-left': 'slideleft', 'whip-right': 'slideright', 'whip-up': 'slideup', 'whip-down': 'slidedown',
             'perspective-left': 'slideleft', 'perspective-right': 'slideright',
             'glitch-scan': 'hblur', 'datamosh': 'pixelize', 'noise-jump': 'pixelize', 'cyber-slice': 'rectcrop',
-            'push-left': 'slideleft', 'push-right': 'slideright', 'swirl': 'radial', 'kaleidoscope': 'circleopen',
-            'water-drop': 'circleopen', 'wave': 'wipetl', 'stretch-h': 'slideleft', 'stretch-v': 'slideup',
-            'morph': 'dissolve', 'turbulence': 'dissolve', 'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'distance',
+            'push-left': 'slideleft', 'push-right': 'slideright', 'swirl': 'radial', 'kaleidoscope': 'kaleidoscope',
+            'water-drop': 'circleopen', 'wave': 'wipetl', 'stretch-h': 'squeezeh', 'stretch-v': 'squeezev',
+            'morph': 'dissolve', 'turbulence': 'hblur', 'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'distance',
             'scan-line-v': 'hblur',
             
             // New CapCut Trends
