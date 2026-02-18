@@ -154,14 +154,14 @@ export default {
             
         } else if (id === 'mov-glitch-skid') {
             z = '1.1';
-            // Lighter skid: (iw/30) instead of (iw/8), approx 40px shift
+            // LIGHTER VERSION: Changed from (iw/8) to (iw/30) approx ~40px shift instead of 160px
             x = `${centerX} + (iw/30)*sin(10*time)`;
 
         } else if (id === 'mov-glitch-snap') {
             z = '1.05';
-            // Sharp quick movements in X and Y
-            x = `${centerX} + 20*sin(40*time)`;
-            y = `${centerY} + 15*cos(40*time)`;
+            // SNAP EFFECT: Rapid X/Y shifts using high frequency sin/cos
+            x = `${centerX} + 25*sin(45*time)`;
+            y = `${centerY} + 15*cos(45*time)`;
         }
         
         // =========================================================================
@@ -445,8 +445,8 @@ export default {
             'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
             
             // Updated Fallbacks for "Redemoinho" (Swirl) and "Caleidoscopio" (Kaleidoscope)
-            'swirl': 'radial', // 'spiral' causes errors in some FFmpeg versions; 'radial' is safe (clock wipe)
-            'kaleidoscope': 'pixelize', // 'kaleidoscope' is not standard; 'pixelize' or 'diagtl' are safe alternatives
+            'swirl': 'radial', // 'spiral' causes errors; 'radial' is safe (clock wipe)
+            'kaleidoscope': 'pixelize', // 'kaleidoscope' isn't standard; 'pixelize' is safe
             
             // Other Mappings
             'water-drop': 'circleopen', 'wave': 'slideleft', // 'wipetl' might be unsafe if not available
