@@ -463,7 +463,7 @@ export default {
             'whip-left': 'slideleft', 'whip-right': 'slideright', 'whip-up': 'slideup', 'whip-down': 'slidedown',
             'perspective-left': 'slideleft', 'perspective-right': 'slideright',
             'glitch-scan': 'hblur', 'datamosh': 'pixelize', 'noise-jump': 'pixelize', 'cyber-slice': 'rectcrop',
-            'push-left': 'slideleft', 'push-right': 'slideright', 'swirl': 'radial', 'kaleidoscope': 'kaleidoscope',
+            'push-left': 'slideleft', 'push-right': 'slideright', 'swirl': 'radial', 'kaleidoscope': 'pixelize',
             'water-drop': 'circleopen', 'wave': 'wipetl', 'stretch-h': 'squeezeh', 'stretch-v': 'squeezev',
             'morph': 'dissolve', 'turbulence': 'hblur', 'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'distance',
             'scan-line-v': 'hblur',
