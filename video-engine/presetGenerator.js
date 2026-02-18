@@ -443,7 +443,14 @@ export default {
             'glitch-scan': 'hblur', 'datamosh': 'pixelize', 'noise-jump': 'pixelize', 'cyber-slice': 'rectcrop',
             'push-left': 'slideleft', 'push-right': 'slideright', 'swirl': 'radial', 'kaleidoscope': 'circleopen',
             'water-drop': 'circleopen', 'wave': 'wipetl', 'stretch-h': 'slideleft', 'stretch-v': 'slideup',
-            'morph': 'dissolve', 'turbulence': 'dissolve', 'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'distance'
+            'morph': 'dissolve', 'turbulence': 'dissolve', 'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'distance',
+            
+            // New CapCut Trends
+            'flashback': 'fadewhite', 'combine-overlay': 'dissolve', 'combine-mix': 'dissolve',
+            'nightmare': 'pixelize', 'bubble-blur': 'circleopen', 'paper-unfold': 'wipetl',
+            'corrupt-img': 'pixelize', 'glow-intense': 'fadewhite', 'dynamic-blur': 'hblur',
+            'flash-black': 'fadeblack', 'flash-white': 'fadewhite', 'pull-away': 'zoomout',
+            'fade-classic': 'fade'
         };
         return map[id] || 'fade';
     }
