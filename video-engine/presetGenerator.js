@@ -154,8 +154,14 @@ export default {
             
         } else if (id === 'mov-glitch-skid') {
             z = '1.1';
-            x = `${centerX} + (iw/8)*sin(4*time)`;
-        
+            // Lighter skid: (iw/30) instead of (iw/8), approx 40px shift
+            x = `${centerX} + (iw/30)*sin(10*time)`;
+
+        } else if (id === 'mov-glitch-snap') {
+            z = '1.05';
+            // Sharp quick movements in X and Y
+            x = `${centerX} + 20*sin(40*time)`;
+            y = `${centerY} + 15*cos(40*time)`;
         }
         
         // =========================================================================
