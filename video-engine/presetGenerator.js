@@ -117,22 +117,20 @@ export default {
             x = `${centerX} + 30*floor(sin(8*time))`;
         
         } else if (id === 'mov-vhs-tracking') {
-            z = '1.05';
-            // Combined effects:
-            // 1. Vertical drift/tracking (y movement)
-            // 2. Horizontal jitter (x movement)
-            // 3. RGB split via geq (chromatic aberration)
-            // 4. Noise and Saturation via noise/eq
+            // SMOOTHER VHS: Removed Shake/Jitter
+            // 1. Slow Vertical Drift (Y)
+            // 2. Slow Hue Cycling (Color Shift)
+            // 3. Subtle RGB Split (Chromatic Aberration)
             
-            y = `${centerY} + 20*sin(0.5*time) + 5*sin(50*time)`;
-            x = `${centerX} + 2*sin(100*time)`;
+            z = '1.02';
+            y = `${centerY} + 2*sin(time)`; // Gentle drift
+            // Removed high freq jitter on X and Y
 
-            // RGB Shift for VHS look (using T for geq time)
-            const shift = "5*sin(15*T)";
-            postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)'`);
+            // Hue Cycle + Saturation boost
+            postFilters.push("eq=hue='sin(0.5*t)*10':saturation=1.2:contrast=1.1");
             
-            // Standard temporal noise
-            postFilters.push("noise=alls=20:allf=t,eq=saturation=1.4:contrast=1.1");
+            // Subtle Chromatic Aberration
+            postFilters.push("geq=r='p(X+2,Y)':g='p(X,Y)':b='p(X-2,Y)'");
             
         } else if (id === 'mov-jitter-y') {
             z = '1.1';
@@ -196,7 +194,7 @@ export default {
             // TR: Bottom-Left to Top-Right
             else if (id.includes('diag-tr')) { 
                 x = `${rightX}*(on/${dur})`; 
-                y = `${bottomY}*(1-on/${dur})`; 
+                y = `${bottomY}*(on/${dur})`; 
             }
             // BL: Top-Right to Bottom-Left
             else if (id.includes('diag-bl')) { 
