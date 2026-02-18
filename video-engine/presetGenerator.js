@@ -95,21 +95,22 @@ export default {
         
         if (id === 'mov-flash-pulse') {
             z = '1.0';
-            postFilters.push("eq=brightness='0.2+0.2*sin(10*t)'");
+            postFilters.push("eq=eval=frame:brightness='0.2+0.2*sin(10*t)'");
         
         } else if (id === 'photo-flash') {
             z = '1.0';
-            postFilters.push(`eq=brightness='1+0.5*sin(2*PI*t*5)':enable='lt(t,1)'`);
+            // Add eval=frame to ensure brightness changes over time
+            postFilters.push(`eq=eval=frame:brightness='1+0.5*sin(2*PI*t*5)':enable='lt(t,1)'`);
 
         } else if (id === 'rgb-split-anim' || id === 'rgb-split') {
             z = '1.02';
-            // Dynamic shift using sin wave
-            const shift = "10*sin(20*t)";
+            // Dynamic shift using sin wave. Use 'T' (uppercase) for time in geq filter.
+            const shift = "10*sin(20*T)";
             postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)'`);
 
         } else if (id === 'mov-strobe-move') {
             z = '1.05'; 
-            postFilters.push("eq=brightness='if(lt(mod(t,0.15),0.075),0.4,-0.2)'");
+            postFilters.push("eq=eval=frame:brightness='if(lt(mod(t,0.15),0.075),0.4,-0.2)'");
         
         } else if (id === 'mov-frame-skip') {
             z = '1.0';
@@ -118,7 +119,8 @@ export default {
         } else if (id === 'mov-vhs-tracking') {
             z = '1.1';
             y = `${centerY} + 15*sin(2*time) + 5*sin(50*time)`;
-            postFilters.push("noise=alls=20:allf=t+u,eq=saturation=1.4");
+            // Standard temporal noise flag 't'
+            postFilters.push("noise=alls=20:allf=t,eq=saturation=1.4");
             
         } else if (id === 'mov-jitter-y') {
             z = '1.1';
