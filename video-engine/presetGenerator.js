@@ -431,11 +431,20 @@ export default {
 
     getTransitionXfade: (id) => {
         const map = {
+            // Standard Basics
             'fade': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'dissolve': 'dissolve',
             'blur-dissolve': 'distance', 'filter-blur': 'distance',
             'black': 'fadeblack', 'white': 'fadewhite', 'flash': 'fadewhite',
             'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'wipe-up': 'wipeup', 'wipe-down': 'wipedown',
             'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
+            
+            // New Requested Mappings
+            'swirl': 'spiral', 'kaleidoscope': 'pixelize', // Use spiral for swirl, pixelize for kaleidoscope
+            'water-drop': 'circleopen', 'wave': 'wipetl',
+            'stretch-h': 'squeezeh', 'stretch-v': 'squeezev',
+            'morph': 'dissolve', 'turbulence': 'hblur',
+            
+            // Existing Mappings
             'push-left': 'slideleft', 'push-right': 'slideright', 'push-up': 'slideup', 'push-down': 'slidedown',
             'circle-open': 'circleopen', 'circle-close': 'circleclose', 'diamond-in': 'diagtl', 'diamond-out': 'diagbr',
             'clock-wipe': 'radial', 'iris-in': 'circleopen', 'iris-out': 'circleclose',
@@ -463,9 +472,7 @@ export default {
             'whip-left': 'slideleft', 'whip-right': 'slideright', 'whip-up': 'slideup', 'whip-down': 'slidedown',
             'perspective-left': 'slideleft', 'perspective-right': 'slideright',
             'glitch-scan': 'hblur', 'datamosh': 'pixelize', 'noise-jump': 'pixelize', 'cyber-slice': 'rectcrop',
-            'push-left': 'slideleft', 'push-right': 'slideright', 'swirl': 'radial', 'kaleidoscope': 'pixelize',
-            'water-drop': 'circleopen', 'wave': 'wipetl', 'stretch-h': 'squeezeh', 'stretch-v': 'squeezev',
-            'morph': 'dissolve', 'turbulence': 'hblur', 'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'distance',
+            'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'distance',
             'scan-line-v': 'hblur',
             
             // New CapCut Trends
@@ -473,7 +480,6 @@ export default {
             'nightmare': 'pixelize', 'bubble-blur': 'circleopen', 'paper-unfold': 'wipetl',
             'corrupt-img': 'pixelize', 'glow-intense': 'fadewhite', 'dynamic-blur': 'hblur',
             'flash-black': 'fadeblack', 'flash-white': 'fadewhite', 'pull-away': 'zoomout',
-            'fade-classic': 'fade'
         };
         return map[id] || 'fade';
     }
