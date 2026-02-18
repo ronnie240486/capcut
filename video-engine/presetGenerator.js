@@ -438,23 +438,28 @@ export default {
             'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'wipe-up': 'wipeup', 'wipe-down': 'wipedown',
             'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
             
-            // New Requested Mappings
-            'swirl': 'spiral', 'kaleidoscope': 'pixelize', // Use spiral for swirl, pixelize for kaleidoscope
-            'water-drop': 'circleopen', 'wave': 'wipetl',
-            'stretch-h': 'squeezeh', 'stretch-v': 'squeezev',
-            'morph': 'dissolve', 'turbulence': 'hblur',
+            // Updated Fallbacks for "Redemoinho" (Swirl) and "Caleidoscopio" (Kaleidoscope)
+            'swirl': 'radial', // 'spiral' causes errors in some FFmpeg versions; 'radial' is safe (clock wipe)
+            'kaleidoscope': 'pixelize', // 'kaleidoscope' is not standard; 'pixelize' or 'diagtl' are safe alternatives
+            
+            // Other Mappings
+            'water-drop': 'circleopen', 'wave': 'slideleft', // 'wipetl' might be unsafe if not available
+            'stretch-h': 'slideleft', // 'squeezeh' might be unsafe
+            'stretch-v': 'slideup',   // 'squeezev' might be unsafe
+            'morph': 'dissolve', 
+            'turbulence': 'dissolve', // 'hblur' might be unsafe
             
             // Existing Mappings
             'push-left': 'slideleft', 'push-right': 'slideright', 'push-up': 'slideup', 'push-down': 'slidedown',
             'circle-open': 'circleopen', 'circle-close': 'circleclose', 'diamond-in': 'diagtl', 'diamond-out': 'diagbr',
             'clock-wipe': 'radial', 'iris-in': 'circleopen', 'iris-out': 'circleclose',
             'pixelize': 'pixelize', 'glitch': 'pixelize', 'glitch-chroma': 'pixelize', 'pixel-sort': 'pixelize',
-            'color-glitch': 'hblur', 'urban-glitch': 'hblur', 'rgb-split': 'distance',
-            'liquid-melt': 'dissolve', 'ink-splash': 'circleopen', 'water-ripple': 'wipetl',
-            'paper-rip': 'wipetl', 'page-turn': 'wipetl',
+            'color-glitch': 'dissolve', 'urban-glitch': 'dissolve', 'rgb-split': 'distance',
+            'liquid-melt': 'dissolve', 'ink-splash': 'circleopen', 'water-ripple': 'slideleft',
+            'paper-rip': 'slideup', 'page-turn': 'slideleft',
             'cube-rotate-l': 'slideleft', 'cube-rotate-r': 'slideright', 'cube-rotate-u': 'slideup', 'cube-rotate-d': 'slidedown',
             'blood-mist': 'dissolve', 'black-smoke': 'fadeblack', 'white-smoke': 'fadewhite',
-            'fire-burn': 'dissolve', 'visual-buzz': 'pixelize', 'rip-diag': 'wipetl', 'zoom-neg': 'zoomout',
+            'fire-burn': 'dissolve', 'visual-buzz': 'pixelize', 'rip-diag': 'slideleft', 'zoom-neg': 'zoomout',
             'infinity-1': 'zoomin', 'digital-paint': 'pixelize', 'brush-wind': 'wipeleft', 'dust-burst': 'dissolve',
             'film-roll-v': 'slideup', 'astral-project': 'dissolve', 'lens-flare': 'fadewhite',
             'mosaic-small': 'pixelize', 'mosaic-large': 'pixelize',
@@ -471,14 +476,14 @@ export default {
             'zoom-in': 'zoomin', 'zoom-out': 'zoomout', 'zoom-spin-fast': 'zoomin', 'spin-cw': 'rotateccw', 'spin-ccw': 'rotatecw',
             'whip-left': 'slideleft', 'whip-right': 'slideright', 'whip-up': 'slideup', 'whip-down': 'slidedown',
             'perspective-left': 'slideleft', 'perspective-right': 'slideright',
-            'glitch-scan': 'hblur', 'datamosh': 'pixelize', 'noise-jump': 'pixelize', 'cyber-slice': 'rectcrop',
+            'glitch-scan': 'dissolve', 'datamosh': 'pixelize', 'noise-jump': 'pixelize', 'cyber-slice': 'rectcrop',
             'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'distance',
-            'scan-line-v': 'hblur',
+            'scan-line-v': 'dissolve',
             
             // New CapCut Trends
             'flashback': 'fadewhite', 'combine-overlay': 'dissolve', 'combine-mix': 'dissolve',
-            'nightmare': 'pixelize', 'bubble-blur': 'circleopen', 'paper-unfold': 'wipetl',
-            'corrupt-img': 'pixelize', 'glow-intense': 'fadewhite', 'dynamic-blur': 'hblur',
+            'nightmare': 'pixelize', 'bubble-blur': 'circleopen', 'paper-unfold': 'slideleft',
+            'corrupt-img': 'pixelize', 'glow-intense': 'fadewhite', 'dynamic-blur': 'dissolve',
             'flash-black': 'fadeblack', 'flash-white': 'fadewhite', 'pull-away': 'zoomout',
         };
         return map[id] || 'fade';
