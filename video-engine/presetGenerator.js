@@ -212,9 +212,11 @@ export default {
 
             if (id.includes('crash-in')) z = `min(zoom+0.15,3.0)`;
             else if (id.includes('crash-out')) z = `max(3.0-0.15*on,1.0)`;
-            else if (id.includes('slow-in')) z = `min(zoom+0.0015,1.2)`;
-            else if (id.includes('fast-in')) z = `min(zoom+0.005,1.5)`;
-            else if (id.includes('slow-out')) z = `max(1.2-0.0015*on,1.0)`;
+            
+            // Replaced hardcoded zooms with duration-based logic (on/frames)
+            else if (id.includes('slow-in')) z = `1.0 + (0.2 * on / ${frames})`; // 1.0 -> 1.2
+            else if (id.includes('fast-in')) z = `1.0 + (0.5 * on / ${frames})`; // 1.0 -> 1.5
+            else if (id.includes('slow-out')) z = `1.2 - (0.2 * on / ${frames})`; // 1.2 -> 1.0
             
             else if (id.includes('bounce-in')) {
                  // Zoom in slightly then zoom back then in
@@ -392,18 +394,26 @@ export default {
         }
 
         // =========================================================================
-        // 9. KEN BURNS
+        // 9. KEN BURNS (Duration Adjusted)
         // =========================================================================
         else if (id === 'kenBurns') {
             const startScale = config.startScale || 1.0;
-            const endScale = config.endScale || 1.3;
+            const endScale = config.endScale || 1.35;
+            // Use 'on' (frame index) and 'frames' (total frames) for smooth linear zoom
             z = `${startScale}+(${endScale}-${startScale})*on/${frames}`;
+            
             x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
             if (config.startX !== undefined || config.endX !== undefined) {
                  const sX = config.startX || 0;
                  const eX = config.endX || 0;
                  const xOffset = `(iw/100) * (${sX} + (${eX}-${sX})*on/${frames})`;
                  x = `(iw/2)-(iw/zoom/2) + ${xOffset}`;
+            }
+             if (config.startY !== undefined || config.endY !== undefined) {
+                 const sY = config.startY || 0;
+                 const eY = config.endY || 0;
+                 const yOffset = `(ih/100) * (${sY} + (${eY}-${sY})*on/${frames})`;
+                 y = `(ih/2)-(ih/zoom/2) + ${yOffset}`;
             }
         
         } else if (isImage && !id) {
