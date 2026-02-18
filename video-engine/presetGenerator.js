@@ -97,6 +97,16 @@ export default {
             z = '1.0';
             postFilters.push("eq=brightness='0.2+0.2*sin(10*t)'");
         
+        } else if (id === 'photo-flash') {
+            z = '1.0';
+            postFilters.push(`eq=brightness='1+0.5*sin(2*PI*t*5)':enable='lt(t,1)'`);
+
+        } else if (id === 'rgb-split-anim' || id === 'rgb-split') {
+            z = '1.02';
+            // Dynamic shift using sin wave
+            const shift = "10*sin(20*t)";
+            postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)'`);
+
         } else if (id === 'mov-strobe-move') {
             z = '1.05'; 
             postFilters.push("eq=brightness='if(lt(mod(t,0.15),0.075),0.4,-0.2)'");
@@ -384,11 +394,6 @@ export default {
         
         } else if (isImage && !id) {
             z = `min(zoom+0.0015,1.5)`; 
-        }
-        
-        // Photo Effects
-        if (id === 'photo-flash') {
-            postFilters.push(`eq=brightness='1+0.5*sin(2*PI*t*5)':enable='lt(t,1)'`);
         }
 
         zoomPanFilter = `zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`;
