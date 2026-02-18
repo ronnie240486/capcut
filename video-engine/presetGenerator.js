@@ -444,9 +444,9 @@ export default {
             'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'wipe-up': 'wipeup', 'wipe-down': 'wipedown',
             'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
             
-            // Updated Fallbacks for "Redemoinho" (Swirl) and "Caleidoscopio" (Kaleidoscope)
-            'swirl': 'radial', // 'spiral' causes errors; 'radial' is safe (clock wipe)
-            'kaleidoscope': 'pixelize', // 'kaleidoscope' isn't standard; 'pixelize' is safe
+            // Updated Fallbacks for "Redemoinho" (Swirl) and "Caleidoscopio" (Kaleidoscope) based on user feedback
+            'swirl': 'circleopen', // Replaced 'radial' (clock) with 'circleopen'
+            'kaleidoscope': 'hlslice', // Replaced 'pixelize' with 'hlslice' (fragments)
             
             // Other Mappings
             'water-drop': 'circleopen', 'wave': 'slideleft', // 'wipetl' might be unsafe if not available
