@@ -98,9 +98,9 @@ export default {
             postFilters.push("eq=eval=frame:brightness='0.2+0.2*sin(10*t)'");
         
         } else if (id === 'photo-flash') {
-            z = '1.0';
-            // Add eval=frame to ensure brightness changes over time
-            postFilters.push(`eq=eval=frame:brightness='1+0.5*sin(2*PI*t*5)':enable='lt(t,1)'`);
+            z = '1.02';
+            // Increased speed (25*t) and intensity for faster strobing effect
+            postFilters.push(`eq=eval=frame:brightness='0.3+0.5*sin(25*t)'`);
 
         } else if (id === 'rgb-split-anim' || id === 'rgb-split') {
             z = '1.02';
@@ -117,10 +117,22 @@ export default {
             x = `${centerX} + 30*floor(sin(8*time))`;
         
         } else if (id === 'mov-vhs-tracking') {
-            z = '1.1';
-            y = `${centerY} + 15*sin(2*time) + 5*sin(50*time)`;
-            // Standard temporal noise flag 't'
-            postFilters.push("noise=alls=20:allf=t,eq=saturation=1.4");
+            z = '1.05';
+            // Combined effects:
+            // 1. Vertical drift/tracking (y movement)
+            // 2. Horizontal jitter (x movement)
+            // 3. RGB split via geq (chromatic aberration)
+            // 4. Noise and Saturation via noise/eq
+            
+            y = `${centerY} + 20*sin(0.5*time) + 5*sin(50*time)`;
+            x = `${centerX} + 2*sin(100*time)`;
+
+            // RGB Shift for VHS look (using T for geq time)
+            const shift = "5*sin(15*T)";
+            postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)'`);
+            
+            // Standard temporal noise
+            postFilters.push("noise=alls=20:allf=t,eq=saturation=1.4:contrast=1.1");
             
         } else if (id === 'mov-jitter-y') {
             z = '1.1';
