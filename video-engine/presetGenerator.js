@@ -135,24 +135,49 @@ export default {
         }
         
         // =========================================================================
-        // 2. CINEMATIC PANS
+        // 2. CINEMATIC PANS (Standard & Diagonal)
         // =========================================================================
         else if (id.includes('mov-pan-')) {
             z = '1.2'; 
             const dur = frames;
+            
+            // X bounds: 0 to (iw - iw/zoom)
             const rightX = '(iw-iw/zoom)';
+            // Y bounds: 0 to (ih - ih/zoom)
             const bottomY = '(ih-ih/zoom)';
             
-            if (id.includes('slow-l')) x = `${rightX} - (${rightX})*(on/${dur})`;
-            else if (id.includes('slow-r')) x = `(${rightX})*(on/${dur})`;
-            else if (id.includes('slow-u')) y = `${bottomY} - (${bottomY})*(on/${dur})`;
-            else if (id.includes('slow-d')) y = `(${bottomY})*(on/${dur})`;
-            else if (id.includes('fast-l')) x = `${rightX} - (${rightX})*(min(1,2*on/${dur}))`;
-            else if (id.includes('fast-r')) x = `(${rightX})*(min(1,2*on/${dur}))`;
-            else if (id.includes('diag-tl')) { x = `${rightX}*(1-on/${dur})`; y = `${bottomY}*(1-on/${dur})`; }
-            else if (id.includes('diag-tr')) { x = `(${rightX})*(on/${dur})`; y = `${bottomY}*(1-on/${dur})`; }
-            else if (id.includes('diag-bl')) { x = `${rightX}*(1-on/${dur})`; y = `(${bottomY})*(on/${dur})`; }
-            else if (id.includes('diag-br')) { x = `(${rightX})*(on/${dur})`; y = `(${bottomY})*(on/${dur})`; }
+            // NOTE: 'on' is the current frame number
+            
+            if (id.includes('slow-l')) x = `${rightX} - (${rightX})*(on/${dur})`; // Right to Left
+            else if (id.includes('slow-r')) x = `(${rightX})*(on/${dur})`; // Left to Right
+            else if (id.includes('slow-u')) y = `${bottomY} - (${bottomY})*(on/${dur})`; // Bottom to Top
+            else if (id.includes('slow-d')) y = `(${bottomY})*(on/${dur})`; // Top to Bottom
+            
+            // FAST PANS (Increased speed or distance perception)
+            else if (id.includes('fast-l')) x = `${rightX} - (${rightX})*(min(1,1.5*on/${dur}))`; // Faster easing
+            else if (id.includes('fast-r')) x = `(${rightX})*(min(1,1.5*on/${dur}))`;
+            
+            // DIAGONAL PANS
+            // TL: Bottom-Right to Top-Left
+            else if (id.includes('diag-tl')) { 
+                x = `${rightX}*(1-on/${dur})`; 
+                y = `${bottomY}*(1-on/${dur})`; 
+            }
+            // TR: Bottom-Left to Top-Right
+            else if (id.includes('diag-tr')) { 
+                x = `${rightX}*(on/${dur})`; 
+                y = `${bottomY}*(1-on/${dur})`; 
+            }
+            // BL: Top-Right to Bottom-Left
+            else if (id.includes('diag-bl')) { 
+                x = `${rightX}*(1-on/${dur})`; 
+                y = `${bottomY}*(on/${dur})`; 
+            }
+            // BR: Top-Left to Bottom-Right
+            else if (id.includes('diag-br')) { 
+                x = `${rightX}*(on/${dur})`; 
+                y = `${bottomY}*(on/${dur})`; 
+            }
             
         // =========================================================================
         // 3. DYNAMIC ZOOMS (Crash, Twist, Pulse, Wobble, Dolly)
