@@ -108,7 +108,7 @@ export default {
             'glitch-scan': 'drawgrid=y=0:h=4:t=1:c=black@0.5,hue=H=2*PI*t:s=1.5',
             'chromatic': "geq=r='p(X+5,Y)':g='p(X,Y)':b='p(X-5,Y)'",
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2:gs=0:rm=0.2:gm=0:bm=-0.2:rh=0.2:gh=0:bh=-0.2,eq=saturation=1.3',
-            'matrix': 'colorbalance=gs=0.5:rs=-0.2:bs=-0.2,eq=contrast=1.2',
+            'matrix': 'colorbalance=gs=0.5:rs=-0.2:bs=-0.2,eq=contrast=1.2,hue=h=90',
             'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
             'vintage-warm': 'colorbalance=rs=0.3:gs=0:bs=-0.3,eq=saturation=0.8:contrast=1.1',
             'cyberpunk': 'eq=contrast=1.4:saturation=2,colorbalance=rs=0.2:bs=0.3',
@@ -120,7 +120,16 @@ export default {
             'mono': 'hue=s=0',
             'sepia-max': 'hue=s=0,colorbalance=rs=0.3:bs=-0.3',
             'night-vision': 'hue=s=0,colorbalance=gs=0.5,eq=contrast=1.2',
-            'scifi': 'colorbalance=bs=0.4:rs=-0.2,eq=contrast=1.2'
+            'scifi': 'colorbalance=bs=0.4:rs=-0.2,eq=contrast=1.2',
+            'underwater': 'hue=h=190,eq=brightness=-0.2:contrast=1.2',
+            'horror': 'hue=s=0,eq=contrast=1.5:brightness=-0.3,colorbalance=rs=0.1',
+            'sunset': 'colorbalance=rs=0.4:bs=-0.2,eq=saturation=1.5',
+            'posterize': 'eq=contrast=2:saturation=1.5', // Approximate
+            'fade': 'eq=contrast=0.8:brightness=0.2',
+            'b-and-w-low': 'hue=s=0,eq=contrast=0.8',
+            'golden-hour': 'colorbalance=rs=0.2:bs=-0.1,eq=saturation=1.4',
+            'cold-blue': 'hue=h=210,eq=saturation=0.8',
+            'pastel': 'eq=brightness=0.2:saturation=0.7'
         };
         
         return effects[effectId] || null;
@@ -159,7 +168,7 @@ export default {
 
         } else if (id === 'rgb-split-anim' || id === 'rgb-split') {
             z = '1.02';
-            // FIX: Made smoother and slower (3*T instead of 20*T)
+            // FIX: Made smoother and slower (3*T instead of 20*T) as requested
             const shift = "20*sin(3*T)";
             postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)'`);
 
