@@ -157,29 +157,48 @@ export default {
         // =========================================================================
         // 3. DYNAMIC ZOOMS (Crash, Twist, Pulse, Wobble, Dolly)
         // =========================================================================
-        } else if (id.includes('mov-zoom-') || id === 'dolly-zoom') {
-            if (id.includes('crash-in')) z = `min(zoom+0.1,2.5)`;
-            else if (id.includes('crash-out')) z = `max(2.5-0.1*on,1.0)`;
+        } else if (id.includes('mov-zoom-') || id === 'dolly-zoom' || id === 'mov-dolly-vertigo') {
+            // Defaults
+            z = `min(zoom+0.0015,1.2)`;
+
+            if (id.includes('crash-in')) z = `min(zoom+0.15,3.0)`;
+            else if (id.includes('crash-out')) z = `max(3.0-0.15*on,1.0)`;
             else if (id.includes('slow-in')) z = `min(zoom+0.0015,1.2)`;
             else if (id.includes('fast-in')) z = `min(zoom+0.005,1.5)`;
             else if (id.includes('slow-out')) z = `max(1.2-0.0015*on,1.0)`;
-            else if (id.includes('bounce-in')) z = `1.0+0.3*abs(sin(PI*on/30))`;
-            else if (id.includes('pulse-slow')) z = `1.1+0.1*sin(2*PI*on/${fps})`;
-            else if (id.includes('pulse-fast')) z = `1.1+0.1*sin(4*PI*on/${fps})`;
+            
+            else if (id.includes('bounce-in')) {
+                 // Zoom in slightly then zoom back then in
+                 z = `1.0 + 0.3*abs(sin(PI*on/(30*0.5))) * exp(-on/30)`; 
+            }
+            
+            else if (id.includes('pulse-slow')) z = `1.1 + 0.05*sin(2*PI*on/(30*2))`;
+            else if (id.includes('pulse-fast')) z = `1.1 + 0.05*sin(2*PI*on/(30*0.5))`;
+            
             else if (id.includes('wobble')) { 
                 z = `1.2`; 
-                x = `${centerX} + 40*sin(4*PI*on/${fps})`; 
-                y = `${centerY} + 40*cos(4*PI*on/${fps})`; 
+                x = `${centerX} + 30*sin(2*PI*on/60)`; 
+                y = `${centerY} + 30*cos(2*PI*on/90)`; 
             }
+            
+            else if (id.includes('shake')) { // mov-zoom-shake
+                z = `1.2`;
+                x = `${centerX} + 20*(random(1)-0.5)`;
+                y = `${centerY} + 20*(random(1)-0.5)`;
+            }
+
             else if (id.includes('twist-in')) {
                 z = `min(zoom+0.02,1.5)`;
-                postFilters.push(`rotate=a='(t*2)':c=none`); 
+                postFilters.push(`rotate=a='(t*1)':c=none:ow=rotw(iw):oh=roth(ih)`); 
             }
             else if (id.includes('twist-out')) {
                 z = `max(1.5-0.02*on,1.0)`;
-                postFilters.push(`rotate=a='-(t*2)':c=none`);
+                postFilters.push(`rotate=a='-(t*1)':c=none:ow=rotw(iw):oh=roth(ih)`);
             }
-            else if (id === 'dolly-zoom' || id === 'mov-dolly-vertigo') { z = `1.0 + 0.3*sin(PI*on/${frames})`; }
+            else if (id === 'dolly-zoom' || id === 'mov-dolly-vertigo') { 
+                // Simulate vertigo by pulsing zoom deeply
+                z = `1.0 + 0.4*sin(PI*on/${frames})`; 
+            }
             
         // =========================================================================
         // 4. 3D TRANSFORMS
