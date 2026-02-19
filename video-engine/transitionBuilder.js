@@ -50,8 +50,13 @@ export default {
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
         const targetFps = parseInt(exportConfig.fps) || 30;
         
-        // Filtro de Escala Seguro - Ensure dimensions are even and at least 2px
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=${targetFps},format=yuv420p`;
+        // Filtro de Escala Seguro
+        // 1. Force original aspect ratio decrease (fits inside box)
+        // 2. Scale to ensure even dimensions (required for yuv420p)
+        // 3. Pad to exact target resolution (opaque black to avoid alpha issues with yuv420p)
+        // 4. Setsar=1 (Square pixels)
+        // 5. Settb=AVTB (Standardize timebase to avoid xfade auto_scale errors)
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,settb=AVTB,fps=${targetFps},format=yuv420p`;
 
         // CALCULAR DURAÇÃO TOTAL DO PROJETO
         const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0);
@@ -153,7 +158,6 @@ export default {
 
                 let moveApplied = false;
                 if (clip.properties && clip.properties.movement) {
-                    // Update: Pass targetRes and targetFps to movement generator to avoid aspect ratio issues
                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
                     if (moveFilter) {
                         addFilter(moveFilter);
@@ -166,8 +170,9 @@ export default {
                     addFilter(staticMove);
                 }
 
-                // Force scale again after movement to ensure even dimensions for xfade (and at least 2px)
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:flags=lanczos,setsar=1,format=yuv420p`);
+                // Ensure properties match for XFADE (Critical: setsar=1, yuv420p)
+                // We re-apply safe scale logic just in case zoompan messed up dimensions or SAR
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -188,7 +193,6 @@ export default {
                 } else {
                     // Padding Audio (Silence for this clip duration)
                     const audioLabel = `a_pad_${i}`;
-                    // Re-use the main silence source if possible, but trimming it is safer for concatenation
                     const padIdx = inputIndexCounter++;
                     inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     filterChain += `[${padIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${audioLabel}];`;
@@ -230,13 +234,7 @@ export default {
                         filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
                         accumulatedDuration = offset + nextClip.duration;
                     } else {
-                        // Simple Concatenation via Xfade (with 0 duration effectively or simple concat)
-                        // Actually, xfade doesn't support 0 duration well. We should use concat filter for hard cuts, 
-                        // but to keep stream graph simple, we can use a tiny mix or just accumulate logic.
-                        // For simplicity in this engine, we will assume a tiny dissolve for stability if no transition, or rely on frontend to handle "cut" as separate tracks?
-                        // Better approach: If no transition, use xfade with 0 duration? No.
-                        // We use acrossfade d=0? No.
-                        // Let's use a very short standard fade (0.04s ~ 1 frame) to prevent clicking/flashing if no transition is specified but we need to join streams.
+                        // Simple Concatenation via Xfade (safe fallback to prevent flashes)
                         const safeDur = 0.04;
                         const safeOffset = accumulatedDuration - safeDur;
                          filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset}[${nextLabelV}];`;
@@ -257,6 +255,7 @@ export default {
         
         if (mainTrackVideoStream) {
             const compLabel = `comp_base`;
+            // Base stream is already setsar=1, mainTrack is setsar=1
             filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
             finalComp = `[${compLabel}]`;
         }
@@ -343,7 +342,15 @@ export default {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
                  }
                  
-                 filters.push('format=yuv420p');
+                 // Overlay input should be yuva420p or rgba to support transparency
+                 // But since we use simple overlays, yuv420p is often forced by ffmpeg for output.
+                 // We keep it dynamic or force format if needed. 
+                 // For safety with simple overlays, format=yuv420p drops alpha!
+                 // Correct logic: Don't force yuv420p on overlay inputs if they need transparency.
+                 // But video overlays usually don't have alpha. Images might.
+                 // If image has alpha, we need a format supporting it (rgba, yuva420p).
+                 // However, the main stream is yuv420p. Mixing formats in filtergraph is tricky.
+                 // We will skip format forcing here to let ffmpeg negotiate best format for overlay.
 
                  filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
                  overlayInputLabel = `[${processedLabel}]`;
