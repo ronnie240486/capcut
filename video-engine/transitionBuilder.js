@@ -1,3 +1,4 @@
+
 import presetGenerator from './presetGenerator.js';
 
 // Helper to escape text for drawtext filter
@@ -18,7 +19,7 @@ function wrapText(text, maxCharsPerLine) {
     if (!text) return '';
     const words = text.split(' ');
     let lines = [];
-    let currentLine = words[0] || '';
+    let currentLine = words[0];
 
     for (let i = 1; i < words.length; i++) {
         if (currentLine.length + 1 + words[i].length <= maxCharsPerLine) {
@@ -28,7 +29,7 @@ function wrapText(text, maxCharsPerLine) {
             currentLine = words[i];
         }
     }
-    if (currentLine) lines.push(currentLine);
+    lines.push(currentLine);
     return lines.join('\n');
 }
 
@@ -49,8 +50,8 @@ export default {
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
         const targetFps = parseInt(exportConfig.fps) || 30;
         
-        // Filtro de Escala Seguro - Ensure output is always yuv420p for xfade compatibility
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=${targetFps},format=yuv420p`;
+        // Filtro de Escala Seguro - Ensure dimensions are even and at least 2px
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // CALCULAR DURAÇÃO TOTAL DO PROJETO
         const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0);
@@ -76,12 +77,10 @@ export default {
         if (bgFile) {
              inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', bgFile);
              const bgIdx = inputIndexCounter++;
-             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale=trunc(iw/2)*2:trunc(ih/2)*2,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
+             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
         } else {
              inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
-             const bgIdx = inputIndexCounter++;
-             filterChain += `[${bgIdx}:v]format=yuv420p[bg_base];`;
-             baseVideoStream = '[bg_base]';
+             baseVideoStream = `[${inputIndexCounter++}:v]`;
         }
 
         // Audio Base (Full Duration Silence) - Critical for AMIX stability
@@ -125,8 +124,7 @@ export default {
 
                 if (clip.type !== 'image') {
                     const start = clip.mediaStartOffset || 0;
-                    // FIX: trim duration should be just duration, not start + duration
-                    addFilter(`trim=start=${start}:duration=${duration},setpts=PTS-STARTPTS`);
+                    addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
                 } else {
                     addFilter(`setpts=PTS-STARTPTS`);
                 }
@@ -155,6 +153,7 @@ export default {
 
                 let moveApplied = false;
                 if (clip.properties && clip.properties.movement) {
+                    // Update: Pass targetRes and targetFps to movement generator to avoid aspect ratio issues
                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
                     if (moveFilter) {
                         addFilter(moveFilter);
@@ -167,7 +166,7 @@ export default {
                     addFilter(staticMove);
                 }
 
-                // Force scale again after movement to ensure even dimensions and format for xfade
+                // Force scale again after movement to ensure even dimensions for xfade (and at least 2px)
                 addFilter(`scale=${targetRes.w}:${targetRes.h}:flags=lanczos,setsar=1,format=yuv420p`);
 
                 mainTrackLabels.push({
@@ -184,11 +183,12 @@ export default {
                     const vol = clip.properties.volume !== undefined ? clip.properties.volume : 1;
                     const audioFormatFilter = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp,aresample=async=1';
                     
-                    // FIX: atrim duration should be just duration
-                    filterChain += `[${idx}:a]${audioFormatFilter},atrim=start=${start}:duration=${duration},asetpts=PTS-STARTPTS,volume=${vol}[${audioLabel}];`;
+                    filterChain += `[${idx}:a]${audioFormatFilter},atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${vol}[${audioLabel}];`;
                     mainTrackAudioSegments.push(`[${audioLabel}]`);
                 } else {
+                    // Padding Audio (Silence for this clip duration)
                     const audioLabel = `a_pad_${i}`;
+                    // Re-use the main silence source if possible, but trimming it is safer for concatenation
                     const padIdx = inputIndexCounter++;
                     inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
                     filterChain += `[${padIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${audioLabel}];`;
@@ -196,6 +196,7 @@ export default {
                 }
              });
 
+             // Compor Trilha Principal (Video & Audio Concat/Xfade)
              if (mainTrackLabels.length > 0) {
                 let currentMixV = mainTrackLabels[0].label;
                 let currentMixA = mainTrackAudioSegments[0];
@@ -203,15 +204,21 @@ export default {
 
                 for (let i = 1; i < mainTrackLabels.length; i++) {
                     const nextClip = mainTrackLabels[i];
+                    // IMPORTANT: Ensure transition exists, otherwise use a minimal value to prevent breakage
                     const trans = nextClip.transition || { id: 'fade', duration: 0.5 };
                     const hasExplicitTrans = !!nextClip.transition;
                     let transDur = hasExplicitTrans ? trans.duration : 0.0; 
                     
+                    // Offset logic: Start transition 'duration' seconds before the end of the previous clip
+                    // accumulatedDuration is the end time of the previous mix
                     const offset = accumulatedDuration - transDur;
+                    
+                    // Fallback to simple concat if offset is negative (clip too short)
                     if (offset < 0) {
                         transDur = 0; 
                     }
 
+                    // Get FFmpeg Xfade name, default to 'fade' if not found
                     let transId = presetGenerator.getTransitionXfade(trans.id);
                     if (!transId) transId = 'fade';
 
@@ -223,6 +230,13 @@ export default {
                         filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
                         accumulatedDuration = offset + nextClip.duration;
                     } else {
+                        // Simple Concatenation via Xfade (with 0 duration effectively or simple concat)
+                        // Actually, xfade doesn't support 0 duration well. We should use concat filter for hard cuts, 
+                        // but to keep stream graph simple, we can use a tiny mix or just accumulate logic.
+                        // For simplicity in this engine, we will assume a tiny dissolve for stability if no transition, or rely on frontend to handle "cut" as separate tracks?
+                        // Better approach: If no transition, use xfade with 0 duration? No.
+                        // We use acrossfade d=0? No.
+                        // Let's use a very short standard fade (0.04s ~ 1 frame) to prevent clicking/flashing if no transition is specified but we need to join streams.
                         const safeDur = 0.04;
                         const safeOffset = accumulatedDuration - safeDur;
                          filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset}[${nextLabelV}];`;
@@ -311,7 +325,7 @@ export default {
                  
                  if (clip.type === 'video') {
                      const start = clip.mediaStartOffset || 0;
-                     filters.push(`trim=start=${start}:duration=${clip.duration},setpts=PTS-STARTPTS`);
+                     filters.push(`trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS`);
                  } else {
                      filters.push(`trim=duration=${clip.duration},setpts=PTS-STARTPTS`);
                  }
@@ -354,14 +368,17 @@ export default {
             finalComp = `[${nextCompLabel}]`;
         });
 
-        // --- 4. MIXAGEM DE ÁUDIO ---
+        // --- 4. MIXAGEM DE ÁUDIO (ROBUSTA) ---
+        // Start with the full duration silence
         let audioMixInputs = [baseAudioStream];
         const safeAudioFormat = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
         
+        // Add Main Track Audio if exists
         if (mainTrackAudioStream) {
             audioMixInputs.push(mainTrackAudioStream);
         }
 
+        // Add Extra Audio Clips
         audioClips.forEach((clip, i) => {
             const filePath = fileMap[clip.fileName];
             if (!filePath) return;
@@ -374,10 +391,11 @@ export default {
             const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
             const delayMs = Math.round(clip.start * 1000); 
             
-            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
+            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
             audioMixInputs.push(`[${lbl}]`);
         });
 
+        // Add Layer Audio Clips
         overlayClips.forEach((clip, i) => {
             if (clip.type === 'video') {
                 const filePath = fileMap[clip.fileName];
@@ -392,12 +410,13 @@ export default {
                 const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
                 const delayMs = Math.round(clip.start * 1000);
                 
-                filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
+                filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
                 audioMixInputs.push(`[${lbl}]`);
             }
         });
 
         let finalAudio = '[final_audio_out]';
+        // Use amix with duration=first because the first input is our full-length silence track
         filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
 
         if (filterChain.endsWith(';')) {
