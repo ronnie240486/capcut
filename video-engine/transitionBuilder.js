@@ -51,12 +51,11 @@ export default {
         const targetFps = parseInt(exportConfig.fps) || 30;
         
         // Filtro de Escala Seguro
-        // 1. Force original aspect ratio decrease (fits inside box)
-        // 2. Scale to ensure even dimensions (required for yuv420p)
-        // 3. Pad to exact target resolution (opaque black to avoid alpha issues with yuv420p)
-        // 4. Setsar=1 (Square pixels)
-        // 5. Settb=AVTB (Standardize timebase to avoid xfade auto_scale errors)
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,settb=AVTB,fps=${targetFps},format=yuv420p`;
+        // 1. Scale to fit inside target box (force_original_aspect_ratio=decrease)
+        // 2. Ensure even dimensions for YUV420P (trunc(iw/2)*2)
+        // 3. Pad to target resolution using -1:-1 (auto-center) to avoid fractional pixel errors
+        // 4. Set SAR and Timebase
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,settb=AVTB,fps=${targetFps},format=yuv420p`;
 
         // CALCULAR DURAÇÃO TOTAL DO PROJETO
         const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0);
@@ -82,7 +81,7 @@ export default {
         if (bgFile) {
              inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', bgFile);
              const bgIdx = inputIndexCounter++;
-             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
+             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale=trunc(iw/2)*2:trunc(ih/2)*2,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
         } else {
              inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
              baseVideoStream = `[${inputIndexCounter++}:v]`;
@@ -171,8 +170,8 @@ export default {
                 }
 
                 // Ensure properties match for XFADE (Critical: setsar=1, yuv420p)
-                // We re-apply safe scale logic just in case zoompan messed up dimensions or SAR
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p`);
+                // We re-apply safe scale logic with -1:-1 padding to handle odd dimensions correctly
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p`);
 
                 mainTrackLabels.push({
                     label: currentV,
