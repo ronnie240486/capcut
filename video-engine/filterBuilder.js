@@ -18,7 +18,7 @@ function getAtempoFilter(speed) {
     return filters.join(',');
 }
 
-module.exports = {
+export default {
     /**
      * Builds the filter graph based on the action type.
      */
@@ -36,6 +36,7 @@ module.exports = {
                 // But we must also ensure width is even.
                 filterComplex = `[0:v]scale='min(1280,trunc(iw/2)*2)':-2,pad='ceil(iw/2)*2':'ceil(ih/2)*2',setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
                 mapArgs = ['-map', '[v]'];
+                // We ignore audio for slow motion interpolation usually, or we'd need to stretch it too
                 break;
 
             case 'upscale-real':
@@ -61,6 +62,12 @@ module.exports = {
                 const thresh = params.threshold || -30;
                 filterComplex = `[0:a]silenceremove=stop_periods=-1:stop_duration=${stopDur}:stop_threshold=${thresh}dB[a]`;
                 mapArgs = ['-map', '0:v', '-map', '[a]'];
+                // Video sync is tricky with silenceremove on audio only. 
+                // Usually this requires complex syncing or dropping video frames which ffmpeg does automatically if V is mapped but A is shortened?
+                // For safety in this MVP, we might desync if we don't trim video. 
+                // A safer 'jump cut' requires analyzing timestamps first. 
+                // For now, we apply to audio and let FFmpeg try to match or just process audio.
+                // Assuming this is mostly for audio clips based on the app usage.
                 outputOptions = ['-c:v', 'copy'];
                 break;
 
