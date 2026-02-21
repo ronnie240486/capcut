@@ -50,12 +50,12 @@ export default {
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
         const targetFps = parseInt(exportConfig.fps) || 30;
         
-        // Filtro de Escala Seguro
-        // 1. Scale to fit inside target box (force_original_aspect_ratio=decrease)
-        // 2. Ensure even dimensions for YUV420P (trunc(iw/2)*2)
-        // 3. Pad to target resolution using -1:-1 (auto-center) to avoid fractional pixel errors
-        // 4. Set SAR and Timebase
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,settb=AVTB,fps=${targetFps},format=yuv420p`;
+        // Filtro de Escala Seguro e Uniformização
+        // 1. Scale to fit inside target box
+        // 2. Ensure even dimensions for YUV420P
+        // 3. Pad to target resolution
+        // 4. Force setsar=1 to avoid aspect ratio mismatches in concat/xfade
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // CALCULAR DURAÇÃO TOTAL DO PROJETO
         const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0);
@@ -123,7 +123,7 @@ export default {
                     currentV = `[${nextLabel}]`;
                 };
 
-                // Standardize Resolution
+                // Standardize Resolution EARLY
                 addFilter(SCALE_FILTER);
 
                 if (clip.type !== 'image') {
@@ -171,7 +171,8 @@ export default {
 
                 // Ensure properties match for XFADE (Critical: setsar=1, yuv420p)
                 // We re-apply safe scale logic with -1:-1 padding to handle odd dimensions correctly
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p`);
+                // Adding FIFO buffer here to prevent "Resource temporarily unavailable"
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p,fifo`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -229,14 +230,14 @@ export default {
                     const nextLabelA = `mix_a_${i}`;
                     
                     if (transDur > 0 && hasExplicitTrans) {
-                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
+                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset},fifo[${nextLabelV}];`;
                         filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
                         accumulatedDuration = offset + nextClip.duration;
                     } else {
                         // Simple Concatenation via Xfade (safe fallback to prevent flashes)
                         const safeDur = 0.04;
                         const safeOffset = accumulatedDuration - safeDur;
-                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset}[${nextLabelV}];`;
+                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset},fifo[${nextLabelV}];`;
                          filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${safeDur}:c1=tri:c2=tri[${nextLabelA}];`;
                          accumulatedDuration = safeOffset + nextClip.duration;
                     }
@@ -255,7 +256,8 @@ export default {
         if (mainTrackVideoStream) {
             const compLabel = `comp_base`;
             // Base stream is already setsar=1, mainTrack is setsar=1
-            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
+            // Adding FIFO to main stream before overlay
+            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass,fifo[${compLabel}];`;
             finalComp = `[${compLabel}]`;
         }
 
@@ -321,6 +323,10 @@ export default {
                  
                  let filters = [];
                  
+                 // Force Alpha format immediately for Overlay content to avoid format issues during scaling
+                 // Also force SAR=1 to match main track and prevent overlay errors
+                 filters.push('format=yuva420p,setsar=1');
+
                  if (clip.type === 'video') {
                      const start = clip.mediaStartOffset || 0;
                      filters.push(`trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS`);
@@ -332,6 +338,11 @@ export default {
                      const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                      if (fx) filters.push(fx);
                  }
+
+                 if (clip.properties.movement) {
+                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, clip.duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
+                     if (moveFilter) filters.push(moveFilter);
+                 }
                  
                  const scale = clip.properties.transform?.scale || 0.5;
                  const w = Math.max(2, Math.floor(targetRes.w * scale / 2) * 2);
@@ -341,23 +352,17 @@ export default {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
                  }
                  
-                 // Overlay input should be yuva420p or rgba to support transparency
-                 // But since we use simple overlays, yuv420p is often forced by ffmpeg for output.
-                 // We keep it dynamic or force format if needed. 
-                 // For safety with simple overlays, format=yuv420p drops alpha!
-                 // Correct logic: Don't force yuv420p on overlay inputs if they need transparency.
-                 // But video overlays usually don't have alpha. Images might.
-                 // If image has alpha, we need a format supporting it (rgba, yuva420p).
-                 // However, the main stream is yuv420p. Mixing formats in filtergraph is tricky.
-                 // We will skip format forcing here to let ffmpeg negotiate best format for overlay.
+                 // Add FIFO buffer at the end of overlay chain
+                 filters.push('fifo');
 
                  filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
                  overlayInputLabel = `[${processedLabel}]`;
             }
 
             const nextCompLabel = `comp_${i}`;
-            const startTime = clip.start;
-            const endTime = startTime + clip.duration;
+            // Use fixed precision to avoid scientific notation in FFmpeg expressions
+            const startTime = parseFloat(clip.start.toFixed(4));
+            const endTime = parseFloat((startTime + clip.duration).toFixed(4));
             
             let overlayX = '(W-w)/2';
             let overlayY = '(H-h)/2';
@@ -370,7 +375,9 @@ export default {
 
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
+            // Add FIFO to main track before overlaying to ensure sync
+            filterChain += `${finalComp}fifo[main_fifo_${i}];`;
+            filterChain += `[main_fifo_${i}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
 
