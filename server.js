@@ -6,6 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
+import { createServer as createViteServer } from 'vite';
 import { handleExportVideo } from './exportVideo.js';
 import filterBuilder from './video-engine/filterBuilder.js';
 import https from 'https';
@@ -244,5 +245,20 @@ app.get('/api/check-ffmpeg', (req, res) => {
         else res.status(500).send("FFmpeg Error");
     });
 });
+
+// Vite middleware for development
+if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+    });
+    app.use(vite.middlewares);
+} else {
+    // Serve static files in production
+    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.get('*', (req, res) => {
+        res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+    });
+}
 
 app.listen(PORT, '0.0.0.0', () => console.log(`Server running on ${PORT}`));
