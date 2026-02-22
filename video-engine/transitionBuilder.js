@@ -49,13 +49,13 @@ export default {
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
         const targetFps = parseInt(exportConfig.fps) || 30;
 
-        // Cache for reusing inputs and tracking usage
+        // Cache for reusing inputs and tracking video usage
         const inputCache = {};
-        const inputUsageCount = {};
-        const getOrAddInput = (filePath, isImage = false, duration = 0) => {
+        const videoUsageCount = {};
+        const getOrAddInput = (filePath, isImage = false, duration = 0, useVideo = false) => {
             const key = `${filePath}_${isImage}_${duration}`;
             if (inputCache[key] !== undefined) {
-                inputUsageCount[key]++;
+                if (useVideo) videoUsageCount[key] = (videoUsageCount[key] || 0) + 1;
                 return { idx: inputCache[key], key };
             }
             
@@ -66,7 +66,7 @@ export default {
                 inputs.push('-i', filePath);
             }
             inputCache[key] = idx;
-            inputUsageCount[key] = 1;
+            if (useVideo) videoUsageCount[key] = 1;
             return { idx, key };
         };
         
@@ -74,7 +74,7 @@ export default {
         const inputLabelsUsed = {};
         const getStreamLabel = (inputInfo) => {
             const { idx, key } = inputInfo;
-            const count = inputUsageCount[key];
+            const count = videoUsageCount[key] || 0;
             if (count <= 1) return `[${idx}:v]`;
             
             if (!inputLabelsUsed[key]) inputLabelsUsed[key] = 0;
@@ -87,7 +87,7 @@ export default {
             let splits = '';
             for (const key in inputCache) {
                 const idx = inputCache[key];
-                const count = inputUsageCount[key];
+                const count = videoUsageCount[key] || 0;
                 if (count > 1) {
                     let splitLabels = '';
                     for (let i = 0; i < count; i++) {
@@ -153,7 +153,7 @@ export default {
                 if (!filePath) return;
 
                 const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
-                const inputInfo = getOrAddInput(filePath, clip.type === 'image', duration);
+                const inputInfo = getOrAddInput(filePath, clip.type === 'image', duration, true);
                 const idx = inputInfo.idx;
                 let currentV = getStreamLabel(inputInfo);
                 
@@ -353,7 +353,7 @@ export default {
                  const filePath = fileMap[clip.fileName];
                  if (!filePath) return;
                  
-                 const inputInfo = getOrAddInput(filePath, clip.type === 'image', clip.duration);
+                 const inputInfo = getOrAddInput(filePath, clip.type === 'image', clip.duration, true);
                  const rawLabel = getStreamLabel(inputInfo);
                  const processedLabel = `ov_proc_${i}`;
                  
