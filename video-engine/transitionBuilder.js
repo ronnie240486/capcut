@@ -173,7 +173,7 @@ export default {
                 // We re-apply safe scale logic with centered padding to handle odd dimensions correctly
                 // Adding FIFO buffer here to prevent "Resource temporarily unavailable"
                 // We use max(2, ...) to avoid 0-dimension errors
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p,fifo`);
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -231,14 +231,14 @@ export default {
                     const nextLabelA = `mix_a_${i}`;
                     
                     if (transDur > 0 && hasExplicitTrans) {
-                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset},fifo[${nextLabelV}];`;
+                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
                         filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
                         accumulatedDuration = offset + nextClip.duration;
                     } else {
                         // Simple Concatenation via Xfade (safe fallback to prevent flashes)
                         const safeDur = 0.04;
-                        const safeOffset = accumulatedDuration - safeDur;
-                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset},fifo[${nextLabelV}];`;
+                        const safeOffset = Math.max(0, accumulatedDuration - safeDur);
+                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset}[${nextLabelV}];`;
                          filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${safeDur}:c1=tri:c2=tri[${nextLabelA}];`;
                          accumulatedDuration = safeOffset + nextClip.duration;
                     }
@@ -356,7 +356,13 @@ export default {
                  // Add FIFO buffer at the end of overlay chain
                  filters.push('fifo');
 
-                 filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
+                 const joinedFilters = filters.filter(Boolean).join(',');
+                 if (joinedFilters) {
+                     filterChain += `${rawLabel}${joinedFilters}[${processedLabel}];`;
+                 } else {
+                     // Fallback if no filters (should not happen due to format/fifo)
+                     filterChain += `${rawLabel}null[${processedLabel}];`;
+                 }
                  overlayInputLabel = `[${processedLabel}]`;
             }
 
@@ -376,9 +382,8 @@ export default {
 
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB,fifo[${shiftedLabel}];`;
-            // Always use fifo to ensure valid syntax [in]filter[out] and improve stability
-            filterChain += `${finalComp}fifo[main_fifo_${i}];`;
-            filterChain += `[main_fifo_${i}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass,fifo[${nextCompLabel}];`;
+            
+            filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
 
