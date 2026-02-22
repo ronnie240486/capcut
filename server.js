@@ -15,7 +15,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 
 // Improved CORS
 app.use(cors({
@@ -94,22 +94,22 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     
     if (res && !res.headersSent) res.status(202).json({ jobId });
 
-    // Inject thread_queue_size and threads for robustness
-    let finalArgs = ['-hide_banner', '-loglevel', 'info', '-stats', '-threads', '1'];
+    // Inject thread_queue_size for robustness
+    let finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats'];
     
     // Scan args and inject thread_queue_size before every -i (input)
     // to prevent "Resource temporarily unavailable" on reading
     const improvedArgs = [];
     for(let i=0; i<args.length; i++) {
         if(args[i] === '-i') {
-            improvedArgs.push('-thread_queue_size', '64'); 
+            improvedArgs.push('-thread_queue_size', '1024'); 
         }
         improvedArgs.push(args[i]);
     }
 
     finalArgs = [...finalArgs, ...improvedArgs];
 
-    console.log(`[Job ${jobId}] Spawning FFmpeg with args:`, finalArgs.join(' '));
+    console.log(`[Job ${jobId}] Spawning FFmpeg...`);
     
     try {
         const ffmpeg = spawn('ffmpeg', finalArgs);
@@ -118,9 +118,6 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
         ffmpeg.stderr.on('data', d => {
             const line = d.toString();
             stderr += line;
-            // Also log to console for visibility in logs
-            process.stdout.write(line);
-            
             const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
             if (timeMatch && expectedDuration > 0) {
                 const t = timeToSeconds(timeMatch[1]);
@@ -212,7 +209,8 @@ app.post('/api/export/start', uploadAny, (req, res) => {
     setTimeout(() => {
         handleExportVideo(jobs[jobId], uploadDir, (id, args, dur) => {
             // Buffer de segurança para evitar corrupção de áudio em conexões lentas
-            const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
+            const outputPath = args.pop();
+            const safeArgs = [...args, '-max_muxing_queue_size', '4096', outputPath];
             createFFmpegJob(id, safeArgs, dur);
         }).catch(err => {
             if (jobs[jobId]) {
@@ -248,33 +246,29 @@ app.get('/api/check-ffmpeg', (req, res) => {
     });
 });
 
-async function startServer() {
-    // Vite middleware for development
-    console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
-    if (process.env.NODE_ENV !== 'production') {
-        console.log('[Server] Starting Vite in middleware mode...');
-        try {
-            const vite = await createViteServer({
-                server: { middlewareMode: true },
-                appType: 'spa',
-            });
-            app.use(vite.middlewares);
-            console.log('[Server] Vite middleware integrated.');
-        } catch (e) {
-            console.error('[Server] Failed to start Vite:', e);
-        }
-    } else {
-        // Serve static files in production
-        console.log('[Server] Serving static files from dist/');
-        app.use(express.static(path.resolve(__dirname, 'dist')));
-        app.get('*', (req, res) => {
-            res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-        });
-    }
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[Server] Running on http://0.0.0.0:${PORT}`);
+});
 
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`[Server] Running on http://0.0.0.0:${PORT}`);
+// Vite middleware for development
+console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
+if (process.env.NODE_ENV !== 'production') {
+    console.log('[Server] Starting Vite in middleware mode...');
+    try {
+        const vite = await createViteServer({
+            server: { middlewareMode: true },
+            appType: 'spa',
+        });
+        app.use(vite.middlewares);
+        console.log('[Server] Vite middleware integrated.');
+    } catch (e) {
+        console.error('[Server] Failed to start Vite:', e);
+    }
+} else {
+    // Serve static files in production
+    console.log('[Server] Serving static files from dist/');
+    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.get('*', (req, res) => {
+        res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
 }
-
-startServer();
