@@ -342,16 +342,14 @@ export default {
                      if (moveFilter) filters.push(moveFilter);
                  }
                  
-                 const scale = clip.properties.transform?.scale || 0.5;
-                 const w = Math.max(2, Math.floor(targetRes.w * scale / 2) * 2);
-                 filters.push(`scale=${w}:-2`);
-                 
                  if (clip.properties.transform?.rotation) {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
                  }
                  
-                 // Force Alpha format and SAR at the END of the chain to ensure it's preserved for overlay
-                 filters.push('format=yuva420p,setsar=1,fifo');
+                 const scaleVal = clip.properties.transform?.scale || 0.5;
+                 const targetW = Math.max(2, Math.floor(targetRes.w * scaleVal / 2) * 2);
+                 // Robust scaling for overlays with alpha preservation and SAR normalization
+                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p,fifo`);
 
                  filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
                  overlayInputLabel = `[${processedLabel}]`;
@@ -401,8 +399,9 @@ export default {
             const startTrim = clip.mediaStartOffset || 0;
             const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
             const delayMs = Math.round(clip.start * 1000); 
+            const dur = Math.max(0.1, clip.duration);
             
-            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
+            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + dur},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
             audioMixInputs.push(`[${lbl}]`);
         });
 
@@ -420,8 +419,9 @@ export default {
                 const startTrim = clip.mediaStartOffset || 0;
                 const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
                 const delayMs = Math.round(clip.start * 1000);
+                const dur = Math.max(0.1, clip.duration);
                 
-                filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
+                filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + dur},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
                 audioMixInputs.push(`[${lbl}]`);
             }
         });
