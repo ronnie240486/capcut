@@ -7,8 +7,8 @@ export default {
         '-level', '4.1',
         '-pix_fmt', 'yuv420p',
         '-movflags', '+faststart',
-        '-r', '30',
-        '-fps_mode', 'cfr'
+        '-vsync', '1',
+        '-r', '30'
     ],
 
     getAudioArgs: () => [
@@ -55,7 +55,7 @@ export default {
         // Standard Effects
         const effects = {
             'glitch-scan': 'drawgrid=y=0:h=4:t=1:c=black@0.5,hue=H=2*PI*t:s=1.5',
-            'chromatic': "geq=r='p(X+5,Y)':g='p(X,Y)':b='p(X-5,Y)'",
+            'chromatic': "geq=r='p(X+5,Y)':g='p(X,Y)':b='p(X-5,Y)':a='p(X,Y)'",
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2:gs=0:rm=0.2:gm=0:bm=-0.2:rh=0.2:gh=0:bh=-0.2,eq=saturation=1.3',
             'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
             'vintage-warm': 'colorbalance=rs=0.3:gs=0:bs=-0.3,eq=saturation=0.8:contrast=1.1',
@@ -106,7 +106,7 @@ export default {
             z = '1.02';
             // Dynamic shift using sin wave. Use 'T' (uppercase) for time in geq filter.
             const shift = "10*sin(20*T)";
-            postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)'`);
+            postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)':a='p(X,Y)'`);
 
         } else if (id === 'mov-strobe-move') {
             z = '1.05'; 
@@ -121,7 +121,7 @@ export default {
             y = `${centerY} + 20*sin(0.5*time) + 5*sin(50*time)`;
             x = `${centerX} + 2*sin(100*time)`;
             const shift = "5*sin(15*T)";
-            postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)'`);
+            postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)':a='p(X,Y)'`);
             postFilters.push("noise=alls=20:allf=t,eq=saturation=1.4:contrast=1.1");
             
         } else if (id === 'mov-jitter-y') {
@@ -135,7 +135,7 @@ export default {
         } else if (id === 'mov-rgb-shift-move') {
             z = '1.05';
             const shiftExpr = "20*sin(5*T)";
-            postFilters.push(`geq=r='p(X+(${shiftExpr}),Y)':g='p(X,Y)':b='p(X-(${shiftExpr}),Y)'`);
+            postFilters.push(`geq=r='p(X+(${shiftExpr}),Y)':g='p(X,Y)':b='p(X-(${shiftExpr}),Y)':a='p(X,Y)'`);
             
         } else if (id === 'mov-shake-violent') {
             z = '1.2'; 
@@ -291,8 +291,9 @@ export default {
 
         zoomPanFilter = `zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`;
         
-        if (postFilters.length > 0) {
-            return [zoomPanFilter, ...postFilters].filter(Boolean).join(',');
+        const validPostFilters = postFilters.filter(f => f && f.trim().length > 0);
+        if (validPostFilters.length > 0) {
+            return `${zoomPanFilter},${validPostFilters.join(',')}`;
         }
         
         return zoomPanFilter;
