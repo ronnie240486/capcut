@@ -154,6 +154,7 @@ export default {
 
                 const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
                 const inputInfo = getOrAddInput(filePath, clip.type === 'image', duration);
+                const idx = inputInfo.idx;
                 let currentV = getStreamLabel(inputInfo);
                 
                 const addFilter = (filterText) => {
@@ -352,15 +353,20 @@ export default {
                  const filePath = fileMap[clip.fileName];
                  if (!filePath) return;
                  
-                 const idx = getOrAddInput(filePath, clip.type === 'image', clip.duration);
-                 const rawLabel = `[${idx}:v]`;
+                 const inputInfo = getOrAddInput(filePath, clip.type === 'image', clip.duration);
+                 const rawLabel = getStreamLabel(inputInfo);
                  const processedLabel = `ov_proc_${i}`;
                  
                  let filters = [];
                  
-                 // Force Alpha format immediately for Overlay content to avoid format issues during scaling
-                 // Also force SAR=1 to match main track and prevent overlay errors
-                 filters.push('format=yuva420p,setsar=1');
+                 // zoompan requires yuv420p and no alpha. 
+                 // If we have movement (which uses zoompan), we must convert to yuv420p first.
+                 if (clip.properties.movement || clip.type === 'image') {
+                     filters.push('format=yuv420p');
+                 } else {
+                     filters.push('format=yuva420p');
+                 }
+                 filters.push('setsar=1');
 
                  if (clip.type === 'video') {
                      const start = clip.mediaStartOffset || 0;
@@ -433,7 +439,8 @@ export default {
             const filePath = fileMap[clip.fileName];
             if (!filePath) return;
             
-            const idx = getOrAddInput(filePath);
+            const inputInfo = getOrAddInput(filePath);
+            const idx = inputInfo.idx;
             const lbl = `sfx_${i}`;
             
             const startTrim = clip.mediaStartOffset || 0;
@@ -451,7 +458,8 @@ export default {
                 const mediaInfo = mediaLibrary[clip.fileName];
                 if (!filePath || !mediaInfo?.hasAudio) return;
                 
-                const idx = getOrAddInput(filePath);
+                const inputInfo = getOrAddInput(filePath);
+                const idx = inputInfo.idx;
                 const lbl = `layer_audio_${i}`;
                 
                 const startTrim = clip.mediaStartOffset || 0;
@@ -470,6 +478,10 @@ export default {
         if (filterChain.endsWith(';')) {
             filterChain = filterChain.slice(0, -1);
         }
+
+        // Prepend splits to the filter chain
+        const splits = generateSplits();
+        filterChain = splits + filterChain;
 
         return {
             inputs,
