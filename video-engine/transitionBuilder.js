@@ -1,35 +1,3 @@
-
-import presetGenerator from './presetGenerator.js';
-
-// Helper to escape text for drawtext filter
-function escapeDrawText(text) {
-    if (!text) return '';
-    return text
-        .replace(/\\/g, '\\\\')
-        .replace(/:/g, '\\:')
-        .replace(/'/g, "\\'")
-        .replace(/\(/g, '\\(')
-        .replace(/\)/g, '\\)')
-        .replace(/\[/g, '\\[')
-        .replace(/\]/g, '\\]');
-}
-
-// Helper to wrap text manually since drawtext wrapping can be finicky
-function wrapText(text, maxCharsPerLine) {
-    if (!text) return '';
-    const words = text.split(' ');
-    let lines = [];
-    let currentLine = words[0];
-
-    for (let i = 1; i < words.length; i++) {
-        if (currentLine.length + 1 + words[i].length <= maxCharsPerLine) {
-            currentLine += ' ' + words[i];
-        } else {
-            lines.push(currentLine);
-            currentLine = words[i];
-        }
-    }
-    lines.push(currentLine);
     return lines.join('\n');
 }
 
@@ -49,6 +17,22 @@ export default {
         
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
         const targetFps = parseInt(exportConfig.fps) || 30;
+
+        // Cache for reusing inputs
+        const inputCache = {};
+        const getOrAddInput = (filePath, isImage = false, duration = 0) => {
+            const key = `${filePath}_${isImage}_${duration}`;
+            if (inputCache[key] !== undefined) return inputCache[key];
+            
+            const idx = inputIndexCounter++;
+            if (isImage) {
+                inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath);
+            } else {
+                inputs.push('-i', filePath);
+            }
+            inputCache[key] = idx;
+            return idx;
+        };
         
         // Filtro de Escala Seguro e Uniformização
         // 1. Scale to fit inside target box
@@ -83,15 +67,13 @@ export default {
              const bgIdx = inputIndexCounter++;
              filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale=trunc(iw/2)*2:trunc(ih/2)*2,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
         } else {
-             inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
-             baseVideoStream = `[${inputIndexCounter++}:v]`;
+             filterChain += `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${projectDuration},format=yuv420p[bg_base];`;
+             baseVideoStream = '[bg_base]';
         }
 
         // Audio Base (Full Duration Silence) - Critical for AMIX stability
         let baseAudioStream = '[base_audio_silence]';
-        inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-        const silenceIdx = inputIndexCounter++;
-        filterChain += `[${silenceIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[base_audio_silence];`;
+        filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${projectDuration},aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[base_audio_silence];`;
 
         // --- 1. PROCESSAR TRILHA PRINCIPAL (VIDEO) ---
         let mainTrackVideoStream = null;
@@ -106,14 +88,7 @@ export default {
                 if (!filePath) return;
 
                 const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
-
-                if (clip.type === 'image') {
-                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath); 
-                } else {
-                    inputs.push('-i', filePath);
-                }
-
-                const idx = inputIndexCounter++;
+                const idx = getOrAddInput(filePath, clip.type === 'image', duration);
                 let currentV = `[${idx}:v]`;
                 
                 const addFilter = (filterText) => {
@@ -192,11 +167,9 @@ export default {
                     filterChain += `[${idx}:a]${audioFormatFilter},atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${vol}[${audioLabel}];`;
                     mainTrackAudioSegments.push(`[${audioLabel}]`);
                 } else {
-                    // Padding Audio (Silence for this clip duration)
+                    // Padding Audio (Source filter inside graph to save command-line inputs)
                     const audioLabel = `a_pad_${i}`;
-                    const padIdx = inputIndexCounter++;
-                    inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-                    filterChain += `[${padIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${audioLabel}];`;
+                    filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${audioLabel}];`;
                     mainTrackAudioSegments.push(`[${audioLabel}]`);
                 }
              });
@@ -258,7 +231,7 @@ export default {
             const compLabel = `comp_base`;
             // Base stream is already setsar=1, mainTrack is setsar=1
             // Adding FIFO to main stream before overlay
-            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass,fifo[${compLabel}];`;
+            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
             finalComp = `[${compLabel}]`;
         }
 
@@ -312,13 +285,7 @@ export default {
                  const filePath = fileMap[clip.fileName];
                  if (!filePath) return;
                  
-                 if (clip.type === 'image') {
-                     inputs.push('-loop', '1', '-t', (clip.duration + 1).toString(), '-i', filePath);
-                 } else {
-                     inputs.push('-i', filePath);
-                 }
-                 
-                 const idx = inputIndexCounter++;
+                 const idx = getOrAddInput(filePath, clip.type === 'image', clip.duration);
                  const rawLabel = `[${idx}:v]`;
                  const processedLabel = `ov_proc_${i}`;
                  
@@ -399,8 +366,7 @@ export default {
             const filePath = fileMap[clip.fileName];
             if (!filePath) return;
             
-            inputs.push('-i', filePath);
-            const idx = inputIndexCounter++;
+            const idx = getOrAddInput(filePath);
             const lbl = `sfx_${i}`;
             
             const startTrim = clip.mediaStartOffset || 0;
@@ -418,8 +384,7 @@ export default {
                 const mediaInfo = mediaLibrary[clip.fileName];
                 if (!filePath || !mediaInfo?.hasAudio) return;
                 
-                inputs.push('-i', filePath);
-                const idx = inputIndexCounter++;
+                const idx = getOrAddInput(filePath);
                 const lbl = `layer_audio_${i}`;
                 
                 const startTrim = clip.mediaStartOffset || 0;
