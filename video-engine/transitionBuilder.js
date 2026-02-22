@@ -52,10 +52,10 @@ export default {
         
         // Filtro de Escala Seguro e Uniformização
         // 1. Scale to fit inside target box
-        // 2. Ensure even dimensions for YUV420P
-        // 3. Pad to target resolution
+        // 2. Ensure even dimensions for YUV420P (Min 2px)
+        // 3. Pad to target resolution (Centered)
         // 4. Force setsar=1 to avoid aspect ratio mismatches in concat/xfade
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // CALCULAR DURAÇÃO TOTAL DO PROJETO
         const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0);
@@ -170,9 +170,9 @@ export default {
                 }
 
                 // Ensure properties match for XFADE (Critical: setsar=1, yuv420p)
-                // We re-apply safe scale logic with -1:-1 padding to handle odd dimensions correctly
+                // We re-apply safe scale logic with centered padding to handle odd dimensions correctly
                 // Adding FIFO buffer here to prevent "Resource temporarily unavailable"
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p,fifo`);
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p,fifo`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -346,7 +346,7 @@ export default {
                  
                  const scale = clip.properties.transform?.scale || 0.5;
                  const w = Math.max(2, Math.floor(targetRes.w * scale / 2) * 2);
-                 filters.push(`scale=${w}:-2`);
+                 filters.push(`scale=${w}:'max(2,trunc(ih*${w}/iw/2)*2)'`);
                  
                  if (clip.properties.transform?.rotation) {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
