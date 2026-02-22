@@ -15,7 +15,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Improved CORS
 app.use(cors({
@@ -248,29 +248,26 @@ app.get('/api/check-ffmpeg', (req, res) => {
     });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Server] Running on http://0.0.0.0:${PORT}`);
-});
-
-// Vite middleware for development
-console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
-if (process.env.NODE_ENV !== 'production') {
-    console.log('[Server] Starting Vite in middleware mode...');
-    try {
-        const vite = await createViteServer({
-            server: { middlewareMode: true },
-            appType: 'spa',
+async function startServer() {
+    // Vite middleware for development
+    console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
+    if (process.env.NODE_ENV !== 'production') {
+        console.log('[Server] Starting Vite in middleware mode...');
+        try {
+            const vite = await createViteServer({
+                server: { middlewareMode: true },
+                appType: 'spa',
+            });
+            app.use(vite.middlewares);
+            console.log('[Server] Vite middleware integrated.');
+        } catch (e) {
+            console.error('[Server] Failed to start Vite:', e);
+        }
+    } else {
+        // Serve static files in production
+        console.log('[Server] Serving static files from dist/');
+        app.use(express.static(path.resolve(__dirname, 'dist')));
+        app.get('*', (req, res) => {
+            res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
         });
-        app.use(vite.middlewares);
-        console.log('[Server] Vite middleware integrated.');
-    } catch (e) {
-        console.error('[Server] Failed to start Vite:', e);
     }
-} else {
-    // Serve static files in production
-    console.log('[Server] Serving static files from dist/');
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (req, res) => {
-        res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-    });
-}
