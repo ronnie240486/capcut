@@ -1,493 +1,347 @@
-import presetGenerator from './presetGenerator.js';
 
 export default {
-    // Helper to escape text for drawtext filter
-    escapeDrawText: (text) => {
-        if (!text) return '';
-        return text
-            .replace(/\\/g, '\\\\')
-            .replace(/:/g, '\\:')
-            .replace(/'/g, "\\'")
-            .replace(/\(/g, '\\(')
-            .replace(/\)/g, '\\)')
-            .replace(/\[/g, '\\[')
-            .replace(/\]/g, '\\]');
-    },
+    getVideoArgs: () => [
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast', 
+        '-profile:v', 'high',
+        '-level', '4.1',
+        '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart',
+        '-vsync', '1',
+        '-r', '30'
+    ],
 
-    // Helper to wrap text manually since drawtext wrapping can be finicky
-    wrapText: (text, maxCharsPerLine) => {
-        if (!text) return '';
-        const words = text.split(' ');
-        let lines = [];
-        let currentLine = words[0];
+    getAudioArgs: () => [
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-ar', '44100',
+        '-ac', '2'
+    ],
 
-        for (let i = 1; i < words.length; i++) {
-            if (currentLine.length + 1 + words[i].length <= maxCharsPerLine) {
-                currentLine += ' ' + words[i];
-            } else {
-                lines.push(currentLine);
-                currentLine = words[i];
-            }
+    getAudioExtractArgs: () => [
+        '-vn',
+        '-acodec', 'libmp3lame',
+        '-q:a', '2'
+    ],
+
+    getFFmpegFilterFromEffect: (effectId) => {
+        if (!effectId) return null;
+
+        // Color Grading Procedural
+        const cgMatch = effectId.match(/^cg-pro-(\d+)$/);
+        if (cgMatch) {
+            const i = parseInt(cgMatch[1], 10);
+            const contrast = 1 + (i % 5) * 0.1;
+            const sat = 1 + (i % 3) * 0.2;
+            const hue = (i * 15) % 360;
+            return `eq=contrast=${contrast.toFixed(2)}:saturation=${sat.toFixed(2)},hue=h=${hue}`;
         }
-        lines.push(currentLine);
-        return lines.join('\n');
-    },
-
-    buildTimeline: (clips, fileMap, mediaLibrary, exportConfig = {}, explicitTotalDuration = 30) => {
-        let inputs = [];
-        let filterChain = '';
         
-        let inputIndexCounter = 0;
-
-        // --- CONFIGURAÇÃO DE RESOLUÇÃO E FPS ---
-        const resMap = {
-            '720p': { w: 1280, h: 720 },
-            '1080p': { w: 1920, h: 1080 },
-            '4k': { w: 3840, h: 2160 }
-        };
-        
-        const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
-        const targetFps = parseInt(exportConfig.fps) || 30;
-
-        // Cache for reusing inputs and tracking video usage
-        const inputCache = {};
-        const videoUsageCount = {};
-        const getOrAddInput = (filePath, isImage = false, duration = 0, useVideo = false) => {
-            const key = `${filePath}_${isImage}_${duration}`;
-            if (inputCache[key] !== undefined) {
-                if (useVideo) videoUsageCount[key] = (videoUsageCount[key] || 0) + 1;
-                return { idx: inputCache[key], key };
-            }
-            
-            const idx = inputIndexCounter++;
-            if (isImage) {
-                inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath);
-            } else {
-                inputs.push('-i', filePath);
-            }
-            inputCache[key] = idx;
-            if (useVideo) videoUsageCount[key] = 1;
-            return { idx, key };
-        };
-        
-        // Helper to get the correct label for an input usage
-        const inputLabelsUsed = {};
-        const getStreamLabel = (inputInfo) => {
-            const { idx, key } = inputInfo;
-            const count = videoUsageCount[key] || 0;
-            if (count <= 1) return `[${idx}:v]`;
-            
-            if (!inputLabelsUsed[key]) inputLabelsUsed[key] = 0;
-            const usageIdx = inputLabelsUsed[key]++;
-            return `[v_split_${idx}_${usageIdx}]`;
-        };
-
-        // Pre-process filterChain for splits
-        const generateSplits = () => {
-            let splits = '';
-            for (const key in inputCache) {
-                const idx = inputCache[key];
-                const count = videoUsageCount[key] || 0;
-                if (count > 1) {
-                    let splitLabels = '';
-                    for (let i = 0; i < count; i++) {
-                        splitLabels += `[v_split_${idx}_${i}]`;
-                    }
-                    splits += `[${idx}:v]split=${count}${splitLabels};`;
-                }
-            }
-            return splits;
-        };
-        
-        // Filtro de Escala Seguro e Uniformização
-        // 1. Scale to fit inside target box
-        // 2. Ensure even dimensions for YUV420P (Min 2px)
-        // 3. Pad to target resolution (Centered)
-        // 4. Force setsar=1 to avoid aspect ratio mismatches in concat/xfade
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
-
-        // CALCULAR DURAÇÃO TOTAL DO PROJETO
-        const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0);
-        const projectDuration = Math.max(explicitTotalDuration, maxClipEnd, 1);
-
-        // SEPARAR TRILHAS
-        const mainTrackClips = clips.filter(c => c.track === 'video').sort((a, b) => a.start - b.start);
-        
-        const overlayClips = clips.filter(c => 
-            ['text', 'subtitle', 'camada'].includes(c.track)
-        ).sort((a, b) => a.start - b.start);
-
-        const audioClips = clips.filter(c => 
-            ['audio', 'narration', 'music', 'sfx'].includes(c.track) ||
-            (c.type === 'audio' && !['video', 'camada', 'text'].includes(c.track))
-        );
-
-        // --- 0. GERAR BACKGROUND BASE (VIDEO & AUDIO) ---
-        
-        // Video Base (Black or Image)
-        let baseVideoStream = '[bg_base]';
-        const bgFile = fileMap['background']; 
-        if (bgFile) {
-             inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', bgFile);
-             const bgIdx = inputIndexCounter++;
-             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale=trunc(iw/2)*2:trunc(ih/2)*2,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
-        } else {
-             filterChain += `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${projectDuration},format=yuv420p[bg_base];`;
-             baseVideoStream = '[bg_base]';
+        // Vintage Procedural
+        const vinMatch = effectId.match(/^vintage-style-(\d+)$/);
+        if (vinMatch) {
+             const i = parseInt(vinMatch[1], 10);
+             const sepia = 0.3 + (i%5)*0.1;
+             return `eq=contrast=0.9:brightness=1.1,colorbalance=rs=${sepia}:gs=${sepia/2}:bs=-${sepia}`;
         }
 
-        // Audio Base (Full Duration Silence) - Critical for AMIX stability
-        let baseAudioStream = '[base_audio_silence]';
-        filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${projectDuration},aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[base_audio_silence];`;
+        // Cyberpunk Procedural
+        const cyberMatch = effectId.match(/^cyber-neon-(\d+)$/);
+        if (cyberMatch) {
+             const i = parseInt(cyberMatch[1], 10);
+             return `eq=contrast=1.3:saturation=1.5,hue=h=${i*10}`;
+        }
 
-        // --- 1. PROCESSAR TRILHA PRINCIPAL (VIDEO) ---
-        let mainTrackVideoStream = null;
-        let mainTrackAudioStream = null;
+        // Standard Effects
+        const effects = {
+            'glitch-scan': 'drawgrid=y=0:h=4:t=1:c=black@0.5,hue=H=2*PI*t:s=1.5',
+            'chromatic': "geq=r='p(X+5,Y)':g='p(X,Y)':b='p(X-5,Y)':a='p(X,Y)'",
+            'teal-orange': 'colorbalance=rs=0.2:bs=-0.2:gs=0:rm=0.2:gm=0:bm=-0.2:rh=0.2:gh=0:bh=-0.2,eq=saturation=1.3',
+            'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
+            'vintage-warm': 'colorbalance=rs=0.3:gs=0:bs=-0.3,eq=saturation=0.8:contrast=1.1',
+            'cyberpunk': 'eq=contrast=1.4:saturation=2,colorbalance=rs=0.2:bs=0.3',
+            'dreamy-blur': 'gblur=sigma=2,eq=brightness=0.1:saturation=1.2',
+            'pop-art': 'eq=saturation=3:contrast=1.5',
+            'warm': 'colorbalance=rs=0.1:bs=-0.1,eq=saturation=1.1',
+            'cool': 'colorbalance=bs=0.1:rs=-0.1,eq=saturation=1.1',
+            'vivid': 'eq=saturation=1.5:contrast=1.1',
+            'mono': 'hue=s=0'
+        };
         
-        if (mainTrackClips.length > 0) {
-             let mainTrackLabels = [];
-             let mainTrackAudioSegments = [];
+        return effects[effectId] || null;
+    },
+
+    getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}, targetRes = {w:1280, h:720}, targetFps = 30) => {
+        const fps = targetFps || 30;
+        const frames = Math.max(1, Math.ceil(durationSec * fps));
+        const w = targetRes.w;
+        const h = targetRes.h;
+        
+        let zoomPanFilter = '';
+        let postFilters = [];
+        
+        const id = moveId || '';
+        
+        const centerX = '(iw/2)-(iw/zoom/2)';
+        const centerY = '(ih/2)-(ih/zoom/2)';
+        
+        let z = '1.0';
+        let x = centerX;
+        let y = centerY;
+
+        // =========================================================================
+        // 1. SPECIFIC REQUESTED MOVEMENTS (High Priority)
+        // =========================================================================
+        
+        if (id === 'mov-flash-pulse') {
+            z = '1.0';
+            postFilters.push("eq=eval=frame:brightness='0.2+0.2*sin(10*t)'");
+        
+        } else if (id === 'photo-flash') {
+            z = '1.02';
+            // Increased speed (25*t) and intensity for faster strobing effect
+            postFilters.push(`eq=eval=frame:brightness='0.3+0.5*sin(25*t)'`);
+
+        } else if (id === 'rgb-split-anim' || id === 'rgb-split') {
+            z = '1.02';
+            // Dynamic shift using sin wave. Use 'T' (uppercase) for time in geq filter.
+            const shift = "10*sin(20*T)";
+            postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)':a='p(X,Y)'`);
+
+        } else if (id === 'mov-strobe-move') {
+            z = '1.05'; 
+            postFilters.push("eq=eval=frame:brightness='if(lt(mod(t,0.15),0.075),0.4,-0.2)'");
+        
+        } else if (id === 'mov-frame-skip') {
+            z = '1.0';
+            x = `${centerX} + 30*floor(sin(8*time))`;
+        
+        } else if (id === 'mov-vhs-tracking') {
+            z = '1.05';
+            y = `${centerY} + 20*sin(0.5*time) + 5*sin(50*time)`;
+            x = `${centerX} + 2*sin(100*time)`;
+            const shift = "5*sin(15*T)";
+            postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)':a='p(X,Y)'`);
+            postFilters.push("noise=alls=20:allf=t,eq=saturation=1.4:contrast=1.1");
+            
+        } else if (id === 'mov-jitter-y') {
+            z = '1.1';
+            y = `${centerY} + 20*sin(50*time)`;
+            
+        } else if (id === 'mov-jitter-x') {
+            z = '1.1';
+            x = `${centerX} + 20*sin(50*time)`;
+            
+        } else if (id === 'mov-rgb-shift-move') {
+            z = '1.05';
+            const shiftExpr = "20*sin(5*T)";
+            postFilters.push(`geq=r='p(X+(${shiftExpr}),Y)':g='p(X,Y)':b='p(X-(${shiftExpr}),Y)':a='p(X,Y)'`);
+            
+        } else if (id === 'mov-shake-violent') {
+            z = '1.2'; 
+            x = `${centerX} + 40*sin(45*time)`;
+            y = `${centerY} + 40*cos(65*time)`;
+            
+        } else if (id === 'mov-glitch-skid') {
+            z = '1.1';
+            x = `${centerX} + (iw/30)*sin(10*time)`;
+
+        } else if (id === 'mov-glitch-snap') {
+            z = '1.05';
+            x = `${centerX} + 25*sin(45*time)`;
+            y = `${centerY} + 15*cos(45*time)`;
+        }
+        
+        // =========================================================================
+        // 2. CINEMATIC PANS (Standard & Diagonal)
+        // =========================================================================
+        else if (id.includes('mov-pan-')) {
+            z = '1.2'; 
+            const dur = frames;
+            const rightX = '(iw-iw/zoom)';
+            const bottomY = '(ih-ih/zoom)';
+            
+            if (id.includes('slow-l')) x = `${rightX} - (${rightX})*(on/${dur})`; 
+            else if (id.includes('slow-r')) x = `(${rightX})*(on/${dur})`;
+            else if (id.includes('slow-u')) y = `${bottomY} - (${bottomY})*(on/${dur})`;
+            else if (id.includes('slow-d')) y = `(${bottomY})*(on/${dur})`;
+            
+            else if (id.includes('fast-l')) x = `${rightX} - (${rightX})*(min(1,1.5*on/${dur}))`;
+            else if (id.includes('fast-r')) x = `(${rightX})*(min(1,1.5*on/${dur}))`;
+            
+            else if (id.includes('diag-tl')) { x = `${rightX}*(1-on/${dur})`; y = `${bottomY}*(1-on/${dur})`; }
+            else if (id.includes('diag-tr')) { x = `${rightX}*(on/${dur})`; y = `${bottomY}*(1-on/${dur})`; }
+            else if (id.includes('diag-bl')) { x = `${rightX}*(1-on/${dur})`; y = `${bottomY}*(on/${dur})`; }
+            else if (id.includes('diag-br')) { x = `${rightX}*(on/${dur})`; y = `${bottomY}*(on/${dur})`; }
+            
+        // =========================================================================
+        // 3. DYNAMIC ZOOMS (Crash, Twist, Pulse, Wobble, Dolly)
+        // =========================================================================
+        } else if (id.includes('mov-zoom-') || id === 'dolly-zoom' || id === 'mov-dolly-vertigo') {
+            z = `min(zoom+0.0015,1.2)`;
+
+            if (id.includes('crash-in')) z = `min(zoom+0.15,3.0)`;
+            else if (id.includes('crash-out')) z = `max(3.0-0.15*on,1.0)`;
+            else if (id.includes('slow-in')) z = `1.0 + (0.2 * on / ${frames})`; 
+            else if (id.includes('fast-in')) z = `1.0 + (0.5 * on / ${frames})`; 
+            else if (id.includes('slow-out')) z = `1.2 - (0.2 * on / ${frames})`; 
+            else if (id.includes('bounce-in')) { z = `1.0 + 0.3*abs(sin(PI*on/(30*0.5))) * exp(-on/30)`; }
+            else if (id.includes('pulse-slow')) z = `1.1 + 0.05*sin(2*PI*on/(30*2))`;
+            else if (id.includes('pulse-fast')) z = `1.1 + 0.05*sin(2*PI*on/(30*0.5))`;
+            else if (id.includes('wobble')) { z = `1.2`; x = `${centerX} + 30*sin(2*PI*on/60)`; y = `${centerY} + 30*cos(2*PI*on/90)`; }
+            else if (id.includes('shake')) { z = `1.2`; x = `${centerX} + 20*(random(1)-0.5)`; y = `${centerY} + 20*(random(1)-0.5)`; }
+            else if (id.includes('twist-in')) { z = `min(zoom+0.02,1.5)`; postFilters.push(`rotate=a='(t*1)':c=none:ow=rotw(iw):oh=roth(ih)`); }
+            else if (id.includes('twist-out')) { z = `max(1.5-0.02*on,1.0)`; postFilters.push(`rotate=a='-(t*1)':c=none:ow=rotw(iw):oh=roth(ih)`); }
+            else if (id === 'dolly-zoom' || id === 'mov-dolly-vertigo') { z = `1.0 + 0.4*sin(PI*on/${frames})`; }
+            
+        // =========================================================================
+        // 4. 3D TRANSFORMS
+        // =========================================================================
+        } else if (id.includes('mov-3d-')) {
+            if (id.includes('flip-x')) { z = '1.1'; postFilters.push(`rotate=a='2*PI*t'`); }
+            else if (id.includes('tumble')) { z = `1.0+0.5*sin(time)`; postFilters.push(`rotate=a='t':c=black`); }
+            else if (id.includes('float')) { z = '1.05'; x = `${centerX} + 20*sin(time)`; y = `${centerY} + 20*cos(time)`; }
+            else if (id.includes('spin-axis')) { z = '1.2'; postFilters.push(`rotate=a='2*PI*t/5':c=none`); }
+            else if (id.includes('swing-l')) { z = '1.2'; x = `${centerX} - 40*sin(time)`; }
+            else if (id.includes('swing-r')) { z = '1.2'; x = `${centerX} + 40*sin(time)`; }
+            else if (id.includes('perspective-u')) { z = '1.2'; y = `${centerY} - 40*sin(time)`; }
+            else if (id.includes('perspective-d')) { z = '1.2'; y = `${centerY} + 40*sin(time)`; }
+
+        // =========================================================================
+        // 5. GENERIC FALLBACKS
+        // =========================================================================
+        } else if (id.includes('glitch') || id.includes('chaos')) {
+             postFilters.push(`noise=alls=20:allf=t+u`);
+        } else if (id.includes('elastic') || id.includes('bounce') || id.includes('jelly')) {
+            z = '1.4'; 
+            if (id === 'mov-bounce-drop') { const amp = '200'; y = `${centerY} - ${amp}*exp(-3*time)*cos(15*time)`; } 
+            else if (id === 'mov-elastic-snap-l') { const amp = '300'; x = `${centerX} - ${amp}*exp(-3*time)*cos(12*time)`; }
+            else if (id === 'mov-elastic-snap-r') { const amp = '300'; x = `${centerX} + ${amp}*exp(-3*time)*cos(12*time)`; }
+            else if (id === 'mov-rubber-band') { z = '1.2 + 0.15*sin(10*time)'; }
+            else if (id.includes('jelly')) { x = `${centerX} + 10*sin(15*time)`; y = `${centerY} + 10*cos(15*time)`; }
+            else if (id === 'mov-spring-up') { const amp = '200'; y = `${centerY} + ${amp}*exp(-3*time)*cos(12*time)`; }
+            else if (id === 'mov-spring-down') { const amp = '200'; y = `${centerY} - ${amp}*exp(-3*time)*cos(12*time)`; }
+            else if (id === 'mov-pendulum-swing') { z = '1.3'; postFilters.push(`rotate=a='0.2*sin(3*t)*exp(-0.2*t)':c=none:ow=rotw(iw):oh=roth(ih)`); }
+            else if (id === 'mov-pop-up') { z = '1.0 + 0.5*sin(PI*min(time,0.5))'; }
+            else if (id === 'mov-squash-stretch') { z = '1.2 + 0.1*sin(8*time)'; }
+            else if (id === 'mov-tada') { z = '1.2'; postFilters.push(`rotate=a='0.1*sin(10*t)*min(1,t)':c=none`); }
+            else if (id === 'mov-flash-pulse') { postFilters.push("eq=brightness='0.2+0.2*sin(10*t)'"); }
+        } 
+        
+        // =========================================================================
+        // 7. ANIMAÇÃO DE ENTRADA
+        // =========================================================================
+        else if (id.includes('slide-in') || id === 'pop-in' || id === 'fade-in' || id.includes('swing-in')) {
+            if (id === 'slide-in-left') { x = `(iw-ow)/2 - (iw)*(1-min(time*2,1))`; y = `(ih-oh)/2`; z = '1.0'; }
+            else if (id === 'slide-in-right') { x = `(iw-ow)/2 + (iw)*(1-min(time*2,1))`; y = `(ih-oh)/2`; z = '1.0'; }
+            else if (id === 'slide-in-bottom') { x = `(iw-ow)/2`; y = `(ih-oh)/2 + (ih)*(1-min(time*2,1))`; z = '1.0'; }
+            else if (id === 'pop-in') { z = `if(lt(on,15), max(0.1, on/15), 1.0)`; }
+            else if (id === 'fade-in') { postFilters.push(`fade=t=in:st=0:d=1`); }
+            else if (id === 'swing-in') { postFilters.push(`rotate=a='if(lt(t,1), -10*(1-t)*PI/180, 0)':c=none:ow=rotw(iw):oh=roth(ih)`); }
+        
+        } else if (id.includes('blur')) {
+            if (id.includes('in')) postFilters.push(`boxblur=20:1:enable='between(t,0,0.5)'`);
+            else if (id.includes('out')) postFilters.push(`boxblur=20:1:enable='between(t,${Math.max(0, durationSec-0.5)},${durationSec})'`);
+            else if (id.includes('pulse')) postFilters.push(`boxblur=10:1:enable='lt(mod(t,1),0.3)'`);
+            else if (id.includes('zoom')) { z = 'min(zoom+0.005,1.2)'; postFilters.push(`boxblur=10:1`); }
+            else postFilters.push(`boxblur=10:1`);
+        
+        } else if (id.includes('shake') || id.includes('handheld') || id.includes('earthquake')) {
+             let intensity = 10;
+             if (id.includes('handheld-1')) intensity = 5;
+             if (id.includes('handheld-2')) intensity = 15;
+             if (id.includes('shake-hard')) intensity = 30;
+             if (id.includes('earthquake')) intensity = 50;
              
-             mainTrackClips.forEach((clip, i) => {
-                const filePath = fileMap[clip.fileName];
-                if (!filePath) return;
-
-                const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
-                const inputInfo = getOrAddInput(filePath, clip.type === 'image', duration, true);
-                const idx = inputInfo.idx;
-                let currentV = getStreamLabel(inputInfo);
-                
-                const addFilter = (filterText) => {
-                    if (!filterText) return;
-                    const nextLabel = `vtmp${i}_${Math.random().toString(36).substr(2, 5)}`;
-                    filterChain += `${currentV}${filterText}[${nextLabel}];`;
-                    currentV = `[${nextLabel}]`;
-                };
-
-                // Standardize format EARLY for zoompan compatibility
-                if (clip.type === 'image') {
-                    addFilter('format=yuv420p');
-                }
-
-                if (clip.type !== 'image') {
-                    const start = clip.mediaStartOffset || 0;
-                    addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
-                } else {
-                    addFilter(`setpts=PTS-STARTPTS`);
-                }
-                
-                if (clip.transition && clip.transition.id === 'zoom-neg') {
-                    const transDur = clip.transition.duration || 0.5;
-                    addFilter(`negate=enable='between(t,0,${transDur})'`);
-                }
-
-                if (clip.effect) {
-                    const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                    if (fx) addFilter(fx);
-                }
-                
-                if (clip.properties && clip.properties.adjustments) {
-                    const adj = clip.properties.adjustments;
-                    let eqParts = [];
-                    if (adj.brightness !== 1) eqParts.push(`brightness=${(adj.brightness - 1).toFixed(2)}`);
-                    if (adj.contrast !== 1) eqParts.push(`contrast=${adj.contrast.toFixed(2)}`);
-                    if (adj.saturate !== 1) eqParts.push(`saturation=${adj.saturate.toFixed(2)}`);
-                    
-                    let eqFilter = eqParts.length > 0 ? `eq=${eqParts.join(':')}` : '';
-                    if (adj.hue !== 0) eqFilter = eqFilter ? `${eqFilter},hue=h=${adj.hue}` : `hue=h=${adj.hue}`;
-                    if (eqFilter) addFilter(eqFilter);
-                }
-
-                let moveApplied = false;
-                if (clip.properties && clip.properties.movement) {
-                    const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
-                    if (moveFilter) {
-                        addFilter(moveFilter);
-                        moveApplied = true;
-                    }
-                } 
-                
-                if (!moveApplied && clip.type === 'image') {
-                    const staticMove = presetGenerator.getMovementFilter(null, duration, true, {}, targetRes, targetFps);
-                    addFilter(staticMove);
-                }
-
-                // Ensure properties match for XFADE (Critical: setsar=1, yuv420p)
-                // We re-apply safe scale logic with centered padding to handle odd dimensions correctly
-                // Adding FIFO buffer here to prevent "Resource temporarily unavailable"
-                // We use max(2, ...) to avoid 0-dimension errors
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p`);
-
-                mainTrackLabels.push({
-                    label: currentV,
-                    duration: duration,
-                    transition: clip.transition
-                });
-
-                // Audio do Video
-                const mediaInfo = mediaLibrary[clip.fileName];
-                if (clip.type === 'video' && mediaInfo?.hasAudio) {
-                    const audioLabel = `a_main_${i}`;
-                    const start = clip.mediaStartOffset || 0;
-                    const vol = clip.properties.volume !== undefined ? clip.properties.volume : 1;
-                    const audioFormatFilter = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp,aresample=async=1';
-                    
-                    filterChain += `[${idx}:a]${audioFormatFilter},atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${vol}[${audioLabel}];`;
-                    mainTrackAudioSegments.push(`[${audioLabel}]`);
-                } else {
-                    // Padding Audio (Source filter inside graph to save command-line inputs)
-                    const audioLabel = `a_pad_${i}`;
-                    filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${duration},aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${audioLabel}];`;
-                    mainTrackAudioSegments.push(`[${audioLabel}]`);
-                }
-             });
-
-             // Compor Trilha Principal (Video & Audio Concat/Xfade)
-             if (mainTrackLabels.length > 0) {
-                let currentMixV = mainTrackLabels[0].label;
-                let currentMixA = mainTrackAudioSegments[0];
-                let accumulatedDuration = mainTrackLabels[0].duration;
-
-                for (let i = 1; i < mainTrackLabels.length; i++) {
-                    const nextClip = mainTrackLabels[i];
-                    // IMPORTANT: Ensure transition exists, otherwise use a minimal value to prevent breakage
-                    const trans = nextClip.transition || { id: 'fade', duration: 0.5 };
-                    const hasExplicitTrans = !!nextClip.transition;
-                    let transDur = hasExplicitTrans ? trans.duration : 0.0; 
-                    
-                    // Offset logic: Start transition 'duration' seconds before the end of the previous clip
-                    // accumulatedDuration is the end time of the previous mix
-                    const offset = accumulatedDuration - transDur;
-                    
-                    // Fallback to simple concat if offset is negative (clip too short)
-                    if (offset < 0) {
-                        transDur = 0; 
-                    }
-
-                    // Get FFmpeg Xfade name, default to 'fade' if not found
-                    let transId = presetGenerator.getTransitionXfade(trans.id);
-                    if (!transId) transId = 'fade';
-
-                    const nextLabelV = `mix_v_${i}`;
-                    const nextLabelA = `mix_a_${i}`;
-                    
-                    if (transDur > 0 && hasExplicitTrans) {
-                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
-                        filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
-                        accumulatedDuration = offset + nextClip.duration;
-                    } else {
-                        // Simple Concatenation via Xfade (safe fallback to prevent flashes)
-                        const safeDur = 0.04;
-                        const safeOffset = Math.max(0, accumulatedDuration - safeDur);
-                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset}[${nextLabelV}];`;
-                         filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${safeDur}:c1=tri:c2=tri[${nextLabelA}];`;
-                         accumulatedDuration = safeOffset + nextClip.duration;
-                    }
-                    
-                    currentMixV = `[${nextLabelV}]`;
-                    currentMixA = `[${nextLabelA}]`;
-                }
-                mainTrackVideoStream = currentMixV;
-                mainTrackAudioStream = currentMixA;
-             }
-        }
-
-        // --- 2. JUNTAR BACKGROUND COM MAIN TRACK ---
-        let finalComp = baseVideoStream;
+             z = '1.1'; 
+             const shakeExpr = `x='(iw-ow)/2 + (random(1)-0.5)*${intensity}':y='(ih-oh)/2 + (random(1)-0.5)*${intensity}'`;
+             postFilters.push(`crop=w=iw-${intensity}:h=ih-${intensity}:${shakeExpr},scale=${w}:${h}`);
         
-        if (mainTrackVideoStream) {
-            const compLabel = `comp_base`;
-            // Base stream is already setsar=1, mainTrack is setsar=1
-            // Adding FIFO to main stream before overlay
-            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
-            finalComp = `[${compLabel}]`;
+        } else if (id === 'pulse') {
+            z = '1.05+0.05*sin(2*PI*time)';
+        } else if (id === 'heartbeat') {
+            z = '1.0 + 0.1*abs(sin(3*PI*time))';
         }
 
-        // --- 3. APLICAR OVERLAYS ---
-        overlayClips.forEach((clip, i) => {
-            let overlayInputLabel = '';
+        // =========================================================================
+        // 9. KEN BURNS (Duration Adjusted)
+        // =========================================================================
+        else if (id === 'kenBurns') {
+            const startScale = config.startScale || 1.0;
+            const endScale = config.endScale || 1.35;
+            z = `${startScale}+(${endScale}-${startScale})*on/${frames}`;
             
-            if (clip.type === 'text') {
-                 const bgLabel = `txtbg_${i}`;
-                 filterChain += `color=c=black@0.0:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${clip.duration}[${bgLabel}];`;
-
-                 let txt = (clip.properties.text || '');
-                 const maxChars = targetRes.w > 1280 ? 50 : 30; 
-                 txt = this.wrapText(txt, maxChars);
-                 const escapedTxt = this.escapeDrawText(txt);
-                 
-                 let color = clip.properties.textDesign?.color || 'white';
-                 if (color === 'transparent') color = 'white@0.0';
-
-                 const baseFontSize = 80;
-                 const scaleFactor = targetRes.w / 1280;
-                 const fontsize = Math.round(baseFontSize * scaleFactor * (clip.properties.transform?.scale || 1));
-                 
-                 let x = '(w-text_w)/2';
-                 let y = '(h-text_h)/2';
-                 
-                 if (clip.properties.transform) {
-                     const t = clip.properties.transform;
-                     if (t.x) x += `+(${t.x}*${scaleFactor})`;
-                     if (t.y) y += `+(${t.y}*${scaleFactor})`;
-                 }
-                 
-                 let styles = '';
-                 if (clip.properties.textDesign?.stroke) {
-                     const s = clip.properties.textDesign.stroke;
-                     if (s.width > 0) styles += `:borderw=${s.width * scaleFactor}:bordercolor=${s.color || 'black'}`;
-                 }
-                 if (clip.properties.textDesign?.shadow) {
-                     const sh = clip.properties.textDesign.shadow;
-                     if (sh.x || sh.y) styles += `:shadowx=${(sh.x || 2) * scaleFactor}:shadowy=${(sh.y || 2) * scaleFactor}:shadowcolor=${sh.color || 'black@0.5'}`;
-                 }
-                 
-                 const fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"; 
-                 const fontArg = `:fontfile='${fontFile}'`;
-
-                 const txtLabel = `txt_${i}`;
-                 filterChain += `[${bgLabel}]drawtext=text='${escapedTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}[${txtLabel}];`;
-                 overlayInputLabel = `[${txtLabel}]`;
-
-            } else {
-                 const filePath = fileMap[clip.fileName];
-                 if (!filePath) return;
-                 
-                 const inputInfo = getOrAddInput(filePath, clip.type === 'image', clip.duration, true);
-                 const rawLabel = getStreamLabel(inputInfo);
-                 const processedLabel = `ov_proc_${i}`;
-                 
-                 let filters = [];
-                 
-                 // zoompan requires yuv420p and no alpha. 
-                 // If we have movement (which uses zoompan), we must convert to yuv420p first.
-                 if (clip.properties.movement || clip.type === 'image') {
-                     filters.push('format=yuv420p');
-                 } else {
-                     filters.push('format=yuva420p');
-                 }
-                 filters.push('setsar=1');
-
-                 if (clip.type === 'video') {
-                     const start = clip.mediaStartOffset || 0;
-                     filters.push(`trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS`);
-                 } else {
-                     filters.push(`trim=duration=${clip.duration},setpts=PTS-STARTPTS`);
-                 }
-                 
-                 if (clip.effect) {
-                     const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                     if (fx) filters.push(fx);
-                 }
-
-                 if (clip.properties.movement) {
-                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, clip.duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
-                     if (moveFilter) filters.push(moveFilter);
-                 }
-                 
-                 const scale = clip.properties.transform?.scale || 0.5;
-                 const w = Math.max(2, Math.floor(targetRes.w * scale / 2) * 2);
-                 filters.push(`scale=${w}:'max(2,trunc(ih*${w}/max(1,iw)/2)*2)'`);
-                 
-                 if (clip.properties.transform?.rotation) {
-                     filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
-                 }
-                 
-                 const joinedFilters = filters.filter(Boolean).join(',');
-                 if (joinedFilters) {
-                     filterChain += `${rawLabel}${joinedFilters}[${processedLabel}];`;
-                 } else {
-                     // Fallback if no filters (should not happen due to format/fifo)
-                     filterChain += `${rawLabel}null[${processedLabel}];`;
-                 }
-                 overlayInputLabel = `[${processedLabel}]`;
+            x = `(iw/2)-(iw/zoom/2)`; y = `(ih/2)-(ih/zoom/2)`;
+            if (config.startX !== undefined || config.endX !== undefined) {
+                 const sX = config.startX || 0;
+                 const eX = config.endX || 0;
+                 const xOffset = `(iw/100) * (${sX} + (${eX}-${sX})*on/${frames})`;
+                 x = `(iw/2)-(iw/zoom/2) + ${xOffset}`;
             }
-
-            const nextCompLabel = `comp_${i}`;
-            // Use fixed precision to avoid scientific notation in FFmpeg expressions
-            const startTime = parseFloat(clip.start.toFixed(4));
-            const endTime = parseFloat((startTime + clip.duration).toFixed(4));
-            
-            let overlayX = '(W-w)/2';
-            let overlayY = '(H-h)/2';
-            if (clip.type !== 'text' && clip.properties.transform) {
-                 const t = clip.properties.transform;
-                 const scaleFactor = targetRes.w / 1280;
-                 if (t.x) overlayX += `+(${t.x}*${scaleFactor})`;
-                 if (t.y) overlayY += `+(${t.y}*${scaleFactor})`;
+             if (config.startY !== undefined || config.endY !== undefined) {
+                 const sY = config.startY || 0;
+                 const eY = config.endY || 0;
+                 const yOffset = `(ih/100) * (${sY} + (${eY}-${sY})*on/${frames})`;
+                 y = `(ih/2)-(ih/zoom/2) + ${yOffset}`;
             }
-
-            const shiftedLabel = `shift_${i}`;
-            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            
-            filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
-            finalComp = `[${nextCompLabel}]`;
-        });
-
-        // --- 4. MIXAGEM DE ÁUDIO (ROBUSTA) ---
-        // Start with the full duration silence
-        let audioMixInputs = [baseAudioStream];
-        const safeAudioFormat = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
         
-        // Add Main Track Audio if exists
-        if (mainTrackAudioStream) {
-            audioMixInputs.push(mainTrackAudioStream);
+        } else if (isImage && !id) {
+            z = `min(zoom+0.0015,1.5)`; 
         }
 
-        // Add Extra Audio Clips
-        audioClips.forEach((clip, i) => {
-            const filePath = fileMap[clip.fileName];
-            if (!filePath) return;
-            
-            const inputInfo = getOrAddInput(filePath);
-            const idx = inputInfo.idx;
-            const lbl = `sfx_${i}`;
-            
-            const startTrim = clip.mediaStartOffset || 0;
-            const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
-            const delayMs = Math.round(clip.start * 1000); 
-            
-            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
-            audioMixInputs.push(`[${lbl}]`);
-        });
-
-        // Add Layer Audio Clips
-        overlayClips.forEach((clip, i) => {
-            if (clip.type === 'video') {
-                const filePath = fileMap[clip.fileName];
-                const mediaInfo = mediaLibrary[clip.fileName];
-                if (!filePath || !mediaInfo?.hasAudio) return;
-                
-                const inputInfo = getOrAddInput(filePath);
-                const idx = inputInfo.idx;
-                const lbl = `layer_audio_${i}`;
-                
-                const startTrim = clip.mediaStartOffset || 0;
-                const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
-                const delayMs = Math.round(clip.start * 1000);
-                
-                filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
-                audioMixInputs.push(`[${lbl}]`);
-            }
-        });
-
-        let finalAudio = '[final_audio_out]';
-        // Use amix with duration=first because the first input is our full-length silence track
-        filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
-
-        if (filterChain.endsWith(';')) {
-            filterChain = filterChain.slice(0, -1);
+        zoomPanFilter = `zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`;
+        
+        const validPostFilters = postFilters.filter(f => f && f.trim().length > 0);
+        if (validPostFilters.length > 0) {
+            return `${zoomPanFilter},${validPostFilters.join(',')}`;
         }
+        
+        return zoomPanFilter;
+    },
 
-        // Prepend splits to the filter chain
-        const splits = generateSplits();
-        filterChain = splits + filterChain;
-
-        return {
-            inputs,
-            filterComplex: filterChain,
-            outputMapVideo: finalComp,
-            outputMapAudio: finalAudio
+    getTransitionXfade: (id) => {
+        const map = {
+            'fade': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'dissolve': 'dissolve',
+            'blur-dissolve': 'distance', 'filter-blur': 'distance',
+            'black': 'fadeblack', 'white': 'fadewhite', 'flash': 'fadewhite',
+            'wipe-left': 'wipeleft', 'wipe-right': 'wiperight', 'wipe-up': 'wipeup', 'wipe-down': 'wipedown',
+            'slide-left': 'slideleft', 'slide-right': 'slideright', 'slide-up': 'slideup', 'slide-down': 'slidedown',
+            'swirl': 'circleopen', 'kaleidoscope': 'hlslice', 'water-drop': 'circleopen', 'wave': 'slideleft', 
+            'stretch-h': 'slideleft', 'stretch-v': 'slideup', 'morph': 'dissolve', 'turbulence': 'dissolve',
+            'push-left': 'slideleft', 'push-right': 'slideright', 'push-up': 'slideup', 'push-down': 'slidedown',
+            'circle-open': 'circleopen', 'circle-close': 'circleclose', 'diamond-in': 'diagtl', 'diamond-out': 'diagbr',
+            'clock-wipe': 'radial', 'iris-in': 'circleopen', 'iris-out': 'circleclose',
+            'pixelize': 'pixelize', 'glitch': 'pixelize', 'glitch-chroma': 'pixelize', 'pixel-sort': 'pixelize',
+            'color-glitch': 'dissolve', 'urban-glitch': 'dissolve', 'rgb-split': 'distance',
+            'liquid-melt': 'dissolve', 'ink-splash': 'circleopen', 'water-ripple': 'slideleft',
+            'paper-rip': 'slideup', 'page-turn': 'slideleft',
+            'cube-rotate-l': 'slideleft', 'cube-rotate-r': 'slideright', 'cube-rotate-u': 'slideup', 'cube-rotate-d': 'slidedown',
+            'blood-mist': 'dissolve', 'black-smoke': 'fadeblack', 'white-smoke': 'fadewhite',
+            'fire-burn': 'dissolve', 'visual-buzz': 'pixelize', 'rip-diag': 'slideleft', 'zoom-neg': 'zoomout',
+            'infinity-1': 'zoomin', 'digital-paint': 'pixelize', 'brush-wind': 'wipeleft', 'dust-burst': 'dissolve',
+            'film-roll-v': 'slideup', 'astral-project': 'dissolve', 'lens-flare': 'fadewhite',
+            'mosaic-small': 'pixelize', 'mosaic-large': 'pixelize',
+            'triangle-wipe': 'diagtl', 'star-zoom': 'circleopen', 'spiral-wipe': 'radial', 'grid-flip': 'pixelize',
+            'dots-reveal': 'circleopen', 'shutters': 'rectcrop', 'wipe-radial': 'radial', 'checkerboard': 'rectcrop',
+            'diamond-zoom': 'diagtl', 'hex-reveal': 'circleopen', 'stripes-h': 'rectcrop', 'stripes-v': 'rectcrop',
+            'heart-wipe': 'circleopen',
+            'zoom-blur-l': 'slideleft', 'zoom-blur-r': 'slideright', 'spin-zoom-in': 'zoomin', 'spin-zoom-out': 'zoomout',
+            'whip-diagonal-1': 'diagtl', 'whip-diagonal-2': 'diagbr',
+            'flash-bang': 'fadewhite', 'exposure': 'fadewhite', 'burn': 'dissolve', 'bokeh-blur': 'distance',
+            'light-leak-tr': 'dissolve', 'flare-pass': 'slideleft', 'prism-split': 'distance', 'god-rays': 'dissolve',
+            'elastic-left': 'slideleft', 'elastic-right': 'slideright', 'elastic-up': 'slideup', 'elastic-down': 'slidedown',
+            'bounce-scale': 'zoomin', 'jelly': 'pixelize',
+            'zoom-in': 'zoomin', 'zoom-out': 'zoomout', 'zoom-spin-fast': 'zoomin', 'spin-cw': 'rotateccw', 'spin-ccw': 'rotatecw',
+            'whip-left': 'slideleft', 'whip-right': 'slideright', 'whip-up': 'slideup', 'whip-down': 'slidedown',
+            'perspective-left': 'slideleft', 'perspective-right': 'slideright',
+            'glitch-scan': 'dissolve', 'datamosh': 'pixelize', 'noise-jump': 'pixelize', 'cyber-slice': 'rectcrop',
+            'luma-fade': 'fade', 'film-roll': 'slideup', 'blur-warp': 'distance',
+            'scan-line-v': 'dissolve',
+            'flashback': 'fadewhite', 'combine-overlay': 'dissolve', 'combine-mix': 'dissolve',
+            'nightmare': 'pixelize', 'bubble-blur': 'circleopen', 'paper-unfold': 'slideleft',
+            'corrupt-img': 'pixelize', 'glow-intense': 'fadewhite', 'dynamic-blur': 'dissolve',
+            'flash-black': 'fadeblack', 'flash-white': 'fadewhite', 'pull-away': 'zoomout',
         };
+        return map[id] || 'fade';
     }
 };
