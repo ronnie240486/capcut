@@ -1,39 +1,38 @@
-
 import presetGenerator from './presetGenerator.js';
 
-// Helper to escape text for drawtext filter
-function escapeDrawText(text) {
-    if (!text) return '';
-    return text
-        .replace(/\\/g, '\\\\')
-        .replace(/:/g, '\\:')
-        .replace(/'/g, "\\'")
-        .replace(/\(/g, '\\(')
-        .replace(/\)/g, '\\)')
-        .replace(/\[/g, '\\[')
-        .replace(/\]/g, '\\]');
-}
-
-// Helper to wrap text manually since drawtext wrapping can be finicky
-function wrapText(text, maxCharsPerLine) {
-    if (!text) return '';
-    const words = text.split(' ');
-    let lines = [];
-    let currentLine = words[0];
-
-    for (let i = 1; i < words.length; i++) {
-        if (currentLine.length + 1 + words[i].length <= maxCharsPerLine) {
-            currentLine += ' ' + words[i];
-        } else {
-            lines.push(currentLine);
-            currentLine = words[i];
-        }
-    }
-    lines.push(currentLine);
-    return lines.join('\n');
-}
-
 export default {
+    // Helper to escape text for drawtext filter
+    escapeDrawText: (text) => {
+        if (!text) return '';
+        return text
+            .replace(/\\/g, '\\\\')
+            .replace(/:/g, '\\:')
+            .replace(/'/g, "\\'")
+            .replace(/\(/g, '\\(')
+            .replace(/\)/g, '\\)')
+            .replace(/\[/g, '\\[')
+            .replace(/\]/g, '\\]');
+    },
+
+    // Helper to wrap text manually since drawtext wrapping can be finicky
+    wrapText: (text, maxCharsPerLine) => {
+        if (!text) return '';
+        const words = text.split(' ');
+        let lines = [];
+        let currentLine = words[0];
+
+        for (let i = 1; i < words.length; i++) {
+            if (currentLine.length + 1 + words[i].length <= maxCharsPerLine) {
+                currentLine += ' ' + words[i];
+            } else {
+                lines.push(currentLine);
+                currentLine = words[i];
+            }
+        }
+        lines.push(currentLine);
+        return lines.join('\n');
+    },
+
     buildTimeline: (clips, fileMap, mediaLibrary, exportConfig = {}, explicitTotalDuration = 30) => {
         let inputs = [];
         let filterChain = '';
@@ -277,8 +276,8 @@ export default {
 
                  let txt = (clip.properties.text || '');
                  const maxChars = targetRes.w > 1280 ? 50 : 30; 
-                 txt = wrapText(txt, maxChars);
-                 const escapedTxt = escapeDrawText(txt);
+                 txt = this.wrapText(txt, maxChars);
+                 const escapedTxt = this.escapeDrawText(txt);
                  
                  let color = clip.properties.textDesign?.color || 'white';
                  if (color === 'transparent') color = 'white@0.0';
