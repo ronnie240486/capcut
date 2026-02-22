@@ -94,15 +94,15 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     
     if (res && !res.headersSent) res.status(202).json({ jobId });
 
-    // Inject thread_queue_size for robustness
-    let finalArgs = ['-hide_banner', '-loglevel', 'info', '-stats'];
+    // Inject thread_queue_size and threads for robustness
+    let finalArgs = ['-hide_banner', '-loglevel', 'info', '-stats', '-threads', '1'];
     
     // Scan args and inject thread_queue_size before every -i (input)
     // to prevent "Resource temporarily unavailable" on reading
     const improvedArgs = [];
     for(let i=0; i<args.length; i++) {
         if(args[i] === '-i') {
-            improvedArgs.push('-thread_queue_size', '512'); 
+            improvedArgs.push('-thread_queue_size', '64'); 
         }
         improvedArgs.push(args[i]);
     }
