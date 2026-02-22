@@ -32,9 +32,8 @@ export default {
                 const speed = parseFloat(params.speed) || 0.5;
                 const factor = 1 / speed;
                 // Mininterpolate requires even dimensions for MCI/OBMC modes.
-                // scale='min(1280,trunc(iw/2)*2)':-2 ensures width <= 1280 and even height (due to -2).
-                // But we must also ensure width is even, which trunc(iw/2)*2 does.
-                filterComplex = `[0:v]scale='min(1280,trunc(iw/2)*2)':-2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
+                // We ensure even dimensions and at least 2px.
+                filterComplex = `[0:v]scale='min(1280,trunc(iw/2)*2)':'max(2,trunc(ih*min(1280,iw)/iw/2)*2)',setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
                 mapArgs = ['-map', '[v]'];
                 // We ignore audio for slow motion interpolation usually, or we'd need to stretch it too
                 break;
