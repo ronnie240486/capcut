@@ -292,7 +292,7 @@ export default {
         zoomPanFilter = `zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`;
         
         if (postFilters.length > 0) {
-            return `${zoomPanFilter},${postFilters.join(',')}`;
+            return [zoomPanFilter, ...postFilters].filter(Boolean).join(',');
         }
         
         return zoomPanFilter;
