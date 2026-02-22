@@ -1,25 +1,27 @@
+
 import path from 'path';
 import fs from 'fs';
 import { exec } from 'child_process';
 import transitionBuilder from './video-engine/transitionBuilder.js';
 
-// Valida arquivo físico e com probe FFmpeg
 function validateAndProbe(filePath) {
     return new Promise((resolve) => {
+        // 1. Basic Size Check
         try {
             const stats = fs.statSync(filePath);
             if (stats.size < 100) { 
-                console.warn(`[Export] Ignoring tiny file: ${filePath} (${stats.size} bytes)`);
-                return resolve({ isValid: false });
+                 console.warn(`[Export] Skipping empty/tiny file: ${filePath} (${stats.size} bytes)`);
+                 return resolve({ isValid: false });
             }
         } catch(e) {
-            console.warn(`[Export] File missing: ${filePath}`);
+            console.warn(`[Export] File not found: ${filePath}`);
             return resolve({ isValid: false });
         }
 
+        // 2. FFprobe Check
         exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
             if (err) {
-                console.warn(`[Export] FFprobe failed: ${filePath}: ${err.message}`);
+                console.warn(`[Export] Probe failed for ${filePath}: ${err.message}`);
                 return resolve({ isValid: false });
             }
             const hasAudio = stdout && stdout.includes('audio');
@@ -28,7 +30,6 @@ function validateAndProbe(filePath) {
     });
 }
 
-// Função principal de exportação
 export const handleExportVideo = async (job, uploadDir, onStart) => {
     try {
         const { projectState } = job.params;
@@ -38,12 +39,13 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
         const { clips, media, totalDuration } = state;
         const exportConfig = state.exportConfig || {};
         const fps = parseInt(exportConfig.fps) || 30;
-
-        // Mapear arquivos válidos
+        
+        // Mapeamento de arquivos
         const fileMap = {};
-        if (job.files?.length) {
+        if (job.files && job.files.length > 0) {
             for (const f of job.files) {
                 const info = await validateAndProbe(f.path);
+                
                 if (info.isValid) {
                     fileMap[f.originalname] = f.path;
                     if (media[f.originalname]) {
@@ -53,55 +55,41 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             }
         }
 
-        if (Object.keys(fileMap).length === 0) throw new Error("Nenhum vídeo ou áudio válido enviado");
-
-        // Build timeline com todas transições/filtros
-        const buildResult = transitionBuilder.buildTimeline(
-            clips,
-            fileMap,
-            media,
-            exportConfig,
-            totalDuration
-        );
-
-        // Saída do arquivo final
+        // Pass totalDuration to buildTimeline
+        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, exportConfig, totalDuration);
         const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
         job.outputPath = outputPath;
 
-        // Montagem dos argumentos FFmpeg
         const args = [
             ...buildResult.inputs,
             '-filter_complex', buildResult.filterComplex,
-            ...buildResult.mapArgs || [],
             '-map', buildResult.outputMapVideo,
             '-map', buildResult.outputMapAudio,
-
-            // Codec de vídeo
+            
+            // Codec de Vídeo Otimizado
             '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-crf', '23',
-            '-pix_fmt', 'yuv420p',
-
-            // Sincronização
-            '-r', String(fps),
-            '-vsync', '1',
-
-            // Codec de áudio
+            '-preset', 'ultrafast', // Rápido para UX, mas seguro
+            '-crf', '23', // Boa qualidade visual
+            '-pix_fmt', 'yuv420p', // Compatibilidade máxima
+            
+            // FORÇAR SINCRONIA DE VÍDEO
+            '-r', String(fps), // Força output FPS constante
+            '-fps_mode', 'cfr',     // Vital para evitar drift
+            
+            // Codec de Áudio Otimizado
             '-c:a', 'aac',
             '-b:a', '192k',
             '-ac', '2',
             '-ar', '44100',
-
-            // Container e duração
-            '-t', String(totalDuration + 0.1),
+            
+            // Duração e Container
+            '-t', String(totalDuration + 0.1), // Garante que não corte o último frame
             '-movflags', '+faststart',
             '-y',
             outputPath
         ];
 
-        // Inicia job com callback para FFmpeg
         onStart(job.id, args, totalDuration || 30);
-
     } catch (e) {
         console.error("Export Build Error:", e);
         throw e;
