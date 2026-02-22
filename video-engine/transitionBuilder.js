@@ -376,9 +376,8 @@ export default {
 
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB,fifo[${shiftedLabel}];`;
-            // Only add FIFO to main track if it's the first overlay or every few overlays to prevent deep chains
-            const mainInput = i === 0 ? `${finalComp}fifo` : finalComp;
-            filterChain += `${mainInput}[main_fifo_${i}];`;
+            // Always use fifo to ensure valid syntax [in]filter[out] and improve stability
+            filterChain += `${finalComp}fifo[main_fifo_${i}];`;
             filterChain += `[main_fifo_${i}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass,fifo[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
