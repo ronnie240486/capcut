@@ -49,11 +49,15 @@ export default {
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
         const targetFps = parseInt(exportConfig.fps) || 30;
 
-        // Cache for reusing inputs
+        // Cache for reusing inputs and tracking usage
         const inputCache = {};
+        const inputUsageCount = {};
         const getOrAddInput = (filePath, isImage = false, duration = 0) => {
             const key = `${filePath}_${isImage}_${duration}`;
-            if (inputCache[key] !== undefined) return inputCache[key];
+            if (inputCache[key] !== undefined) {
+                inputUsageCount[key]++;
+                return { idx: inputCache[key], key };
+            }
             
             const idx = inputIndexCounter++;
             if (isImage) {
@@ -62,7 +66,37 @@ export default {
                 inputs.push('-i', filePath);
             }
             inputCache[key] = idx;
-            return idx;
+            inputUsageCount[key] = 1;
+            return { idx, key };
+        };
+        
+        // Helper to get the correct label for an input usage
+        const inputLabelsUsed = {};
+        const getStreamLabel = (inputInfo) => {
+            const { idx, key } = inputInfo;
+            const count = inputUsageCount[key];
+            if (count <= 1) return `[${idx}:v]`;
+            
+            if (!inputLabelsUsed[key]) inputLabelsUsed[key] = 0;
+            const usageIdx = inputLabelsUsed[key]++;
+            return `[v_split_${idx}_${usageIdx}]`;
+        };
+
+        // Pre-process filterChain for splits
+        const generateSplits = () => {
+            let splits = '';
+            for (const key in inputCache) {
+                const idx = inputCache[key];
+                const count = inputUsageCount[key];
+                if (count > 1) {
+                    let splitLabels = '';
+                    for (let i = 0; i < count; i++) {
+                        splitLabels += `[v_split_${idx}_${i}]`;
+                    }
+                    splits += `[${idx}:v]split=${count}${splitLabels};`;
+                }
+            }
+            return splits;
         };
         
         // Filtro de Escala Seguro e Uniformização
@@ -119,8 +153,8 @@ export default {
                 if (!filePath) return;
 
                 const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
-                const idx = getOrAddInput(filePath, clip.type === 'image', duration);
-                let currentV = `[${idx}:v]`;
+                const inputInfo = getOrAddInput(filePath, clip.type === 'image', duration);
+                let currentV = getStreamLabel(inputInfo);
                 
                 const addFilter = (filterText) => {
                     if (!filterText) return;
@@ -129,8 +163,10 @@ export default {
                     currentV = `[${nextLabel}]`;
                 };
 
-                // Standardize Resolution EARLY - Removed redundant call here
-                // addFilter(SCALE_FILTER); 
+                // Standardize format EARLY for zoompan compatibility
+                if (clip.type === 'image') {
+                    addFilter('format=yuv420p');
+                }
 
                 if (clip.type !== 'image') {
                     const start = clip.mediaStartOffset || 0;
