@@ -7,8 +7,8 @@ export default {
         '-level', '4.1',
         '-pix_fmt', 'yuv420p',
         '-movflags', '+faststart',
-        '-vsync', '1',
-        '-r', '30'
+        '-r', '30',
+        '-fps_mode', 'cfr'
     ],
 
     getAudioArgs: () => [
