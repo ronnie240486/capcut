@@ -1,3 +1,35 @@
+
+import presetGenerator from './presetGenerator.js';
+
+// Helper to escape text for drawtext filter
+function escapeDrawText(text) {
+    if (!text) return '';
+    return text
+        .replace(/\\/g, '\\\\')
+        .replace(/:/g, '\\:')
+        .replace(/'/g, "\\'")
+        .replace(/\(/g, '\\(')
+        .replace(/\)/g, '\\)')
+        .replace(/\[/g, '\\[')
+        .replace(/\]/g, '\\]');
+}
+
+// Helper to wrap text manually since drawtext wrapping can be finicky
+function wrapText(text, maxCharsPerLine) {
+    if (!text) return '';
+    const words = text.split(' ');
+    let lines = [];
+    let currentLine = words[0];
+
+    for (let i = 1; i < words.length; i++) {
+        if (currentLine.length + 1 + words[i].length <= maxCharsPerLine) {
+            currentLine += ' ' + words[i];
+        } else {
+            lines.push(currentLine);
+            currentLine = words[i];
+        }
+    }
+    lines.push(currentLine);
     return lines.join('\n');
 }
 
