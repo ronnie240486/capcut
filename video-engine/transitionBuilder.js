@@ -353,9 +353,6 @@ export default {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
                  }
                  
-                 // Add FIFO buffer at the end of overlay chain
-                 filters.push('fifo');
-
                  const joinedFilters = filters.filter(Boolean).join(',');
                  if (joinedFilters) {
                      filterChain += `${rawLabel}${joinedFilters}[${processedLabel}];`;
@@ -381,7 +378,7 @@ export default {
             }
 
             const shiftedLabel = `shift_${i}`;
-            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB,fifo[${shiftedLabel}];`;
+            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
             
             filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
