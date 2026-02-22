@@ -123,8 +123,8 @@ export default {
                     currentV = `[${nextLabel}]`;
                 };
 
-                // Standardize Resolution EARLY
-                addFilter(SCALE_FILTER);
+                // Standardize Resolution EARLY - Removed redundant call here
+                // addFilter(SCALE_FILTER); 
 
                 if (clip.type !== 'image') {
                     const start = clip.mediaStartOffset || 0;
@@ -172,7 +172,8 @@ export default {
                 // Ensure properties match for XFADE (Critical: setsar=1, yuv420p)
                 // We re-apply safe scale logic with centered padding to handle odd dimensions correctly
                 // Adding FIFO buffer here to prevent "Resource temporarily unavailable"
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p,fifo`);
+                // We use max(2, ...) to avoid 0-dimension errors
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p,fifo`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -346,7 +347,7 @@ export default {
                  
                  const scale = clip.properties.transform?.scale || 0.5;
                  const w = Math.max(2, Math.floor(targetRes.w * scale / 2) * 2);
-                 filters.push(`scale=${w}:'max(2,trunc(ih*${w}/iw/2)*2)'`);
+                 filters.push(`scale=${w}:'max(2,trunc(ih*${w}/max(1,iw)/2)*2)'`);
                  
                  if (clip.properties.transform?.rotation) {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
@@ -374,10 +375,11 @@ export default {
             }
 
             const shiftedLabel = `shift_${i}`;
-            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            // Add FIFO to main track before overlaying to ensure sync
-            filterChain += `${finalComp}fifo[main_fifo_${i}];`;
-            filterChain += `[main_fifo_${i}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
+            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB,fifo[${shiftedLabel}];`;
+            // Only add FIFO to main track if it's the first overlay or every few overlays to prevent deep chains
+            const mainInput = i === 0 ? `${finalComp}fifo` : finalComp;
+            filterChain += `${mainInput}[main_fifo_${i}];`;
+            filterChain += `[main_fifo_${i}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass,fifo[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
 
