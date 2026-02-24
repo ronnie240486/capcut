@@ -1,4 +1,4 @@
-
+import fs from 'fs';
 import presetGenerator from './presetGenerator.js';
 
 // Helper to escape text for drawtext filter
@@ -302,7 +302,12 @@ export default {
                  }
                  
                  const fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"; 
-                 const fontArg = `:fontfile='${fontFile}'`;
+                 let fontArg = '';
+                 if (fs.existsSync(fontFile)) {
+                     fontArg = `:fontfile='${fontFile}'`;
+                 } else {
+                     fontArg = ":font='Sans'"; 
+                 }
 
                  const txtLabel = `txt_${i}`;
                  const finalTxt = escapedTxt || ' ';
