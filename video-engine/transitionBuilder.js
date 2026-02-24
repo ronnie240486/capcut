@@ -7,7 +7,8 @@ function escapeDrawText(text) {
     return text
         .replace(/\\/g, '\\\\')
         .replace(/:/g, '\\:')
-        .replace(/'/g, "\\'")
+        .replace(/'/g, "'\\\\''")
+        .replace(/%/g, '%%')
         .replace(/\(/g, '\\(')
         .replace(/\)/g, '\\)')
         .replace(/\[/g, '\\[')
@@ -52,10 +53,10 @@ export default {
         
         // Filtro de Escala Seguro e Uniformização
         // 1. Scale to fit inside target box
-        // 2. Ensure even dimensions for YUV420P (Min 2px)
-        // 3. Pad to target resolution (Centered)
+        // 2. Ensure even dimensions for YUV420P
+        // 3. Pad to target resolution
         // 4. Force setsar=1 to avoid aspect ratio mismatches in concat/xfade
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
 
         // CALCULAR DURAÇÃO TOTAL DO PROJETO
         const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0);
@@ -81,7 +82,7 @@ export default {
         if (bgFile) {
              inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', bgFile);
              const bgIdx = inputIndexCounter++;
-             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale=trunc(iw/2)*2:trunc(ih/2)*2,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
+             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
         } else {
              inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
              baseVideoStream = `[${inputIndexCounter++}:v]`;
@@ -108,7 +109,7 @@ export default {
                 const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
 
                 if (clip.type === 'image') {
-                    inputs.push('-loop', '1', '-r', targetFps.toString(), '-t', (duration + 1).toString(), '-i', filePath); 
+                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath); 
                 } else {
                     inputs.push('-i', filePath);
                 }
@@ -123,8 +124,8 @@ export default {
                     currentV = `[${nextLabel}]`;
                 };
 
-                // Standardize Resolution EARLY - Removed redundant call here
-                // addFilter(SCALE_FILTER); 
+                // Standardize Resolution EARLY
+                addFilter(SCALE_FILTER);
 
                 if (clip.type !== 'image') {
                     const start = clip.mediaStartOffset || 0;
@@ -170,10 +171,9 @@ export default {
                 }
 
                 // Ensure properties match for XFADE (Critical: setsar=1, yuv420p)
-                // We re-apply safe scale logic with centered padding to handle odd dimensions correctly
+                // We re-apply safe scale logic with -1:-1 padding to handle odd dimensions correctly
                 // Adding FIFO buffer here to prevent "Resource temporarily unavailable"
-                // We use max(2, ...) to avoid 0-dimension errors
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p,fifo`);
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p,fifo`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -237,7 +237,7 @@ export default {
                     } else {
                         // Simple Concatenation via Xfade (safe fallback to prevent flashes)
                         const safeDur = 0.04;
-                        const safeOffset = accumulatedDuration - safeDur;
+                        const safeOffset = Math.max(0, accumulatedDuration - safeDur);
                          filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset},fifo[${nextLabelV}];`;
                          filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${safeDur}:c1=tri:c2=tri[${nextLabelA}];`;
                          accumulatedDuration = safeOffset + nextClip.duration;
@@ -305,7 +305,8 @@ export default {
                  const fontArg = `:fontfile='${fontFile}'`;
 
                  const txtLabel = `txt_${i}`;
-                 filterChain += `[${bgLabel}]drawtext=text='${escapedTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}[${txtLabel}];`;
+                 const finalTxt = escapedTxt || ' ';
+                 filterChain += `[${bgLabel}]drawtext=text='${finalTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}[${txtLabel}];`;
                  overlayInputLabel = `[${txtLabel}]`;
 
             } else {
@@ -324,10 +325,6 @@ export default {
                  
                  let filters = [];
                  
-                 // Force Alpha format immediately for Overlay content to avoid format issues during scaling
-                 // Also force SAR=1 to match main track and prevent overlay errors
-                 filters.push('format=yuva420p,setsar=1');
-
                  if (clip.type === 'video') {
                      const start = clip.mediaStartOffset || 0;
                      filters.push(`trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS`);
@@ -345,18 +342,17 @@ export default {
                      if (moveFilter) filters.push(moveFilter);
                  }
                  
-                 const scale = clip.properties.transform?.scale || 0.5;
-                 const w = Math.max(2, Math.floor(targetRes.w * scale / 2) * 2);
-                 filters.push(`scale=${w}:'max(2,trunc(ih*${w}/max(1,iw)/2)*2)'`);
-                 
                  if (clip.properties.transform?.rotation) {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
                  }
                  
-                 // Add FIFO buffer at the end of overlay chain
-                 filters.push('fifo');
+                 const scaleVal = clip.properties.transform?.scale || 0.5;
+                 const targetW = Math.max(2, Math.floor(targetRes.w * scaleVal / 2) * 2);
+                 // Robust scaling for overlays with alpha preservation and SAR normalization
+                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p,fifo`);
 
-                 filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
+                 const validFilters = filters.filter(f => f && f.trim().length > 0);
+                 filterChain += `${rawLabel}${validFilters.join(',')}[${processedLabel}];`;
                  overlayInputLabel = `[${processedLabel}]`;
             }
 
@@ -375,11 +371,10 @@ export default {
             }
 
             const shiftedLabel = `shift_${i}`;
-            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB,fifo[${shiftedLabel}];`;
-            // Only add FIFO to main track if it's the first overlay or every few overlays to prevent deep chains
-            const mainInput = i === 0 ? `${finalComp}fifo` : finalComp;
-            filterChain += `${mainInput}[main_fifo_${i}];`;
-            filterChain += `[main_fifo_${i}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass,fifo[${nextCompLabel}];`;
+            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
+            // Add FIFO to main track before overlaying to ensure sync
+            filterChain += `${finalComp}fifo[main_fifo_${i}];`;
+            filterChain += `[main_fifo_${i}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
 
@@ -405,8 +400,9 @@ export default {
             const startTrim = clip.mediaStartOffset || 0;
             const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
             const delayMs = Math.round(clip.start * 1000); 
+            const dur = Math.max(0.1, clip.duration);
             
-            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
+            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + dur},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
             audioMixInputs.push(`[${lbl}]`);
         });
 
@@ -424,15 +420,20 @@ export default {
                 const startTrim = clip.mediaStartOffset || 0;
                 const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
                 const delayMs = Math.round(clip.start * 1000);
+                const dur = Math.max(0.1, clip.duration);
                 
-                filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + clip.duration},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
+                filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + dur},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
                 audioMixInputs.push(`[${lbl}]`);
             }
         });
 
         let finalAudio = '[final_audio_out]';
-        // Use amix with duration=first because the first input is our full-length silence track
-        filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
+        if (audioMixInputs.length > 1) {
+            // Use amix with duration=first because the first input is our full-length silence track
+            filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
+        } else {
+            filterChain += `${audioMixInputs[0]}acopy[final_audio_out];`;
+        }
 
         if (filterChain.endsWith(';')) {
             filterChain = filterChain.slice(0, -1);
