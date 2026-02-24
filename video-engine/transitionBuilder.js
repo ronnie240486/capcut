@@ -172,8 +172,7 @@ export default {
 
                 // Ensure properties match for XFADE (Critical: setsar=1, yuv420p)
                 // We re-apply safe scale logic with -1:-1 padding to handle odd dimensions correctly
-                // Adding FIFO buffer here to prevent "Resource temporarily unavailable"
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p,fifo`);
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -231,14 +230,14 @@ export default {
                     const nextLabelA = `mix_a_${i}`;
                     
                     if (transDur > 0 && hasExplicitTrans) {
-                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset},fifo[${nextLabelV}];`;
+                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
                         filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
                         accumulatedDuration = offset + nextClip.duration;
                     } else {
                         // Simple Concatenation via Xfade (safe fallback to prevent flashes)
                         const safeDur = 0.04;
                         const safeOffset = Math.max(0, accumulatedDuration - safeDur);
-                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset},fifo[${nextLabelV}];`;
+                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset}[${nextLabelV}];`;
                          filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${safeDur}:c1=tri:c2=tri[${nextLabelA}];`;
                          accumulatedDuration = safeOffset + nextClip.duration;
                     }
@@ -257,8 +256,7 @@ export default {
         if (mainTrackVideoStream) {
             const compLabel = `comp_base`;
             // Base stream is already setsar=1, mainTrack is setsar=1
-            // Adding FIFO to main stream before overlay
-            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass,fifo[${compLabel}];`;
+            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
             finalComp = `[${compLabel}]`;
         }
 
@@ -354,7 +352,7 @@ export default {
                  const scaleVal = clip.properties.transform?.scale || 0.5;
                  const targetW = Math.max(2, Math.floor(targetRes.w * scaleVal / 2) * 2);
                  // Robust scaling for overlays with alpha preservation and SAR normalization
-                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p,fifo`);
+                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p`);
 
                  const validFilters = filters.filter(f => f && f.trim().length > 0);
                  filterChain += `${rawLabel}${validFilters.join(',')}[${processedLabel}];`;
@@ -377,9 +375,7 @@ export default {
 
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            // Add FIFO to main track before overlaying to ensure sync
-            filterChain += `${finalComp}fifo[main_fifo_${i}];`;
-            filterChain += `[main_fifo_${i}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
+            filterChain += `[${finalComp.replace(/[\[\]]/g, '')}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
 
