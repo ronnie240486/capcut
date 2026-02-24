@@ -134,7 +134,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             }
         });
 
-        ffmpeg.on('close', (code) => {
+        ffmpeg.on('close', (code, signal) => {
             if (!jobs[jobId]) return;
             
             // Validate File Existence & Size
@@ -142,9 +142,10 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             const fileSize = fileExists ? fs.statSync(jobs[jobId].outputPath).size : 0;
             const hasValidContent = fileSize > 100; // Minimum size for a valid header
 
-            // Success Condition: Code 0 AND File exists with content
-            // OR if Code != 0 but file seems valid (resilient check for mobile streams)
-            const isSuccess = (code === 0 && hasValidContent) || (fileSize > 1024 && hasValidContent);
+            // Success Condition: Code 0 (or null if signal killed it but file is good?) AND File exists with content
+            // Usually code 0 means success. Signal means killed.
+            // If code is null, it failed (crashed or killed).
+            const isSuccess = (code === 0 && hasValidContent);
 
             if (isSuccess) {
                 console.log(`[Job ${jobId}] Success. Size: ${fileSize} bytes`);
@@ -152,9 +153,10 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
                 jobs[jobId].progress = 100;
                 jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
             } else {
-                console.error(`[Job ${jobId}] Failed. Code: ${code}. File Size: ${fileSize}`, stderr);
+                const errorMsg = `FFmpeg exited with code ${code} and signal ${signal}. File Size: ${fileSize}`;
+                console.error(`[Job ${jobId}] Failed. ${errorMsg}`, stderr);
                 jobs[jobId].status = 'failed';
-                jobs[jobId].error = `Erro ao renderizar. Código: ${code}. ` + (stderr.slice(-100) || "Verifique logs.");
+                jobs[jobId].error = errorMsg + (stderr ? ` Details: ${stderr.slice(-200)}` : '');
                 // Cleanup partial file
                 if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
             }
