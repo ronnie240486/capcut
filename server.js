@@ -102,7 +102,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     const improvedArgs = [];
     for(let i=0; i<args.length; i++) {
         if(args[i] === '-i') {
-            improvedArgs.push('-thread_queue_size', '1024'); 
+            improvedArgs.push('-thread_queue_size', '512'); 
         }
         improvedArgs.push(args[i]);
     }
@@ -134,7 +134,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             }
         });
 
-        ffmpeg.on('close', (code, signal) => {
+        ffmpeg.on('close', (code) => {
             if (!jobs[jobId]) return;
             
             // Validate File Existence & Size
@@ -142,10 +142,9 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
             const fileSize = fileExists ? fs.statSync(jobs[jobId].outputPath).size : 0;
             const hasValidContent = fileSize > 100; // Minimum size for a valid header
 
-            // Success Condition: Code 0 (or null if signal killed it but file is good?) AND File exists with content
-            // Usually code 0 means success. Signal means killed.
-            // If code is null, it failed (crashed or killed).
-            const isSuccess = (code === 0 && hasValidContent);
+            // Success Condition: Code 0 AND File exists with content
+            // OR if Code != 0 but file seems valid (resilient check for mobile streams)
+            const isSuccess = (code === 0 && hasValidContent) || (fileSize > 1024 && hasValidContent);
 
             if (isSuccess) {
                 console.log(`[Job ${jobId}] Success. Size: ${fileSize} bytes`);
@@ -153,10 +152,9 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
                 jobs[jobId].progress = 100;
                 jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
             } else {
-                const errorMsg = `FFmpeg exited with code ${code} and signal ${signal}. File Size: ${fileSize}`;
-                console.error(`[Job ${jobId}] Failed. ${errorMsg}`, stderr);
+                console.error(`[Job ${jobId}] Failed. Code: ${code}. File Size: ${fileSize}`, stderr);
                 jobs[jobId].status = 'failed';
-                jobs[jobId].error = errorMsg + (stderr ? ` Details: ${stderr.slice(-200)}` : '');
+                jobs[jobId].error = `Erro ao renderizar. Código: ${code}. ` + (stderr.slice(-100) || "Verifique logs.");
                 // Cleanup partial file
                 if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
             }
@@ -211,7 +209,7 @@ app.post('/api/export/start', uploadAny, (req, res) => {
     setTimeout(() => {
         handleExportVideo(jobs[jobId], uploadDir, (id, args, dur) => {
             // Buffer de segurança para evitar corrupção de áudio em conexões lentas
-            const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
+            const safeArgs = [...args, '-max_muxing_queue_size', '1024'];
             createFFmpegJob(id, safeArgs, dur);
         }).catch(err => {
             if (jobs[jobId]) {
