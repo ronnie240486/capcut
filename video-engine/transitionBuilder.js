@@ -1,4 +1,4 @@
-import fs from 'fs';
+
 import presetGenerator from './presetGenerator.js';
 
 // Helper to escape text for drawtext filter
@@ -256,7 +256,8 @@ export default {
         if (mainTrackVideoStream) {
             const compLabel = `comp_base`;
             // Base stream is already setsar=1, mainTrack is setsar=1
-            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
+            // Adding FIFO to main stream before overlay
+            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass,fifo[${compLabel}];`;
             finalComp = `[${compLabel}]`;
         }
 
@@ -300,12 +301,7 @@ export default {
                  }
                  
                  const fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"; 
-                 let fontArg = '';
-                 if (fs.existsSync(fontFile)) {
-                     fontArg = `:fontfile='${fontFile}'`;
-                 } else {
-                     fontArg = ":font='Sans'"; 
-                 }
+                 const fontArg = `:fontfile='${fontFile}'`;
 
                  const txtLabel = `txt_${i}`;
                  const finalTxt = escapedTxt || ' ';
@@ -352,10 +348,9 @@ export default {
                  const scaleVal = clip.properties.transform?.scale || 0.5;
                  const targetW = Math.max(2, Math.floor(targetRes.w * scaleVal / 2) * 2);
                  // Robust scaling for overlays with alpha preservation and SAR normalization
-                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p`);
+                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p,fifo`);
 
-                 const validFilters = filters.filter(f => f && f.trim().length > 0);
-                 filterChain += `${rawLabel}${validFilters.join(',')}[${processedLabel}];`;
+                 filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
                  overlayInputLabel = `[${processedLabel}]`;
             }
 
@@ -375,7 +370,8 @@ export default {
 
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            filterChain += `[${finalComp.replace(/[\[\]]/g, '')}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
+            
+            filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
 
