@@ -2,7 +2,7 @@
 export default {
     getVideoArgs: () => [
         '-c:v', 'libx264',
-        '-preset', 'ultrafast', 
+        '-preset', 'veryfast', 
         '-profile:v', 'high',
         '-level', '4.1',
         '-pix_fmt', 'yuv420p',
@@ -89,7 +89,7 @@ export default {
         let postFilters = [];
 
         // 1. Zoom Logic
-        if (id.includes('zoom') || id.includes('dolly')) {
+        if (id.includes('zoom') || id.includes('dolly') || id.includes('kenBurns')) {
             if (id.includes('crash-in')) z = `min(zoom+0.15,3.0)`;
             else if (id.includes('crash-out')) z = `max(3.0-0.15*on,1.0)`;
             else if (id.includes('slow-in')) z = `1.0 + (0.2 * on / ${frames})`; 
@@ -104,6 +104,11 @@ export default {
             else if (id.includes('twist-in')) { z = `min(zoom+0.02,1.5)`; postFilters.push(`rotate=a='(t*1)':c=none:ow=rotw(iw):oh=roth(ih)`); }
             else if (id.includes('twist-out')) { z = `max(1.5-0.02*on,1.0)`; postFilters.push(`rotate=a='-(t*1)':c=none:ow=rotw(iw):oh=roth(ih)`); }
             else if (id.includes('dolly')) z = `1.0 + 0.4*sin(PI*on/${frames})`;
+            else if (id === 'kenBurns') {
+                const startScale = config.startScale || 1.0;
+                const endScale = config.endScale || 1.35;
+                z = `${startScale}+(${endScale}-${startScale})*on/${frames}`;
+            }
             else z = `min(zoom+0.0015,1.2)`;
         }
 
@@ -141,10 +146,10 @@ export default {
         }
 
         // 5. Entrada / Loop / Outros
-        if (id.includes('slide-in')) {
-            if (id.includes('left')) { x = `(iw-ow)/2 - (iw)*(1-min(${time}*2,1))`; }
-            else if (id.includes('right')) { x = `(iw-ow)/2 + (iw)*(1-min(${time}*2,1))`; }
-            else if (id.includes('bottom')) { y = `(ih-oh)/2 + (ih)*(1-min(${time}*2,1))`; }
+        if (id.includes('slide-in') || id.includes('entrar')) {
+            if (id.includes('left') || id.includes('esq')) { x = `(iw-ow)/2 - (iw)*(1-min(${time}*2,1))`; }
+            else if (id.includes('right') || id.includes('dir')) { x = `(iw-ow)/2 + (iw)*(1-min(${time}*2,1))`; }
+            else if (id.includes('bottom') || id.includes('baixo')) { y = `(ih-oh)/2 + (ih)*(1-min(${time}*2,1))`; }
             z = '1.0';
         } else if (id === 'pop-in') {
             z = `if(lt(on,15), max(0.1, on/15), 1.0)`;
