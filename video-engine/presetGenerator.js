@@ -231,3 +231,4 @@ export default {
         };
         return map[id] || 'fade';
     }
+};
