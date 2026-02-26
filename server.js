@@ -103,7 +103,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     const improvedArgs = [];
     for(let i=0; i<args.length; i++) {
         if(args[i] === '-i') {
-            improvedArgs.push('-thread_queue_size', '512'); 
+            improvedArgs.push('-thread_queue_size', '1024'); 
         }
         improvedArgs.push(args[i]);
     }
@@ -115,37 +115,60 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     try {
         const ffmpeg = spawn('ffmpeg', finalArgs);
         
+        // Prevent pipe clogging by draining stdout
+        ffmpeg.stdout.on('data', () => {});
+
         let stderr = '';
         ffmpeg.stderr.on('data', d => {
             const line = d.toString();
             stderr += line;
+            
+            // Log errors for debugging
+            if (line.toLowerCase().includes('error')) {
+                console.warn(`[Job ${jobId}] FFmpeg Stderr: ${line.trim()}`);
+            }
+
             const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
             if (timeMatch && expectedDuration > 0) {
                 const t = timeToSeconds(timeMatch[1]);
                 const p = Math.round((t / expectedDuration) * 100);
-                if (jobs[jobId]) jobs[jobId].progress = Math.min(99, Math.max(0, p));
+                if (jobs[jobId]) {
+                    // Allow progress to reach 100 on the UI if it's really close
+                    jobs[jobId].progress = Math.min(100, Math.max(0, p));
+                }
             }
         });
 
+        // Set a safety timeout (15 minutes)
+        const timeout = setTimeout(() => {
+            if (jobs[jobId] && jobs[jobId].status === 'processing') {
+                console.error(`[Job ${jobId}] Timeout reached. Killing process.`);
+                ffmpeg.kill('SIGKILL');
+                jobs[jobId].status = 'failed';
+                jobs[jobId].error = "Tempo limite de processamento excedido (15 min).";
+            }
+        }, 900000);
+
         ffmpeg.on('error', (err) => {
+            clearTimeout(timeout);
             console.error(`[Job ${jobId}] Spawn Error:`, err);
             if (jobs[jobId]) {
                 jobs[jobId].status = 'failed';
-                jobs[jobId].error = err.message;
+                jobs[jobId].error = `Falha ao iniciar processo: ${err.message}`;
             }
         });
 
-        ffmpeg.on('close', (code) => {
+        ffmpeg.on('close', (code, signal) => {
+            clearTimeout(timeout);
             if (!jobs[jobId]) return;
             
             // Validate File Existence & Size
             const fileExists = jobs[jobId].outputPath && fs.existsSync(jobs[jobId].outputPath);
             const fileSize = fileExists ? fs.statSync(jobs[jobId].outputPath).size : 0;
-            const hasValidContent = fileSize > 100; // Minimum size for a valid header
+            const hasValidContent = fileSize > 500; 
 
-            // Success Condition: Code 0 AND File exists with content
-            // OR if Code != 0 but file seems valid (resilient check for mobile streams)
-            const isSuccess = (code === 0 && hasValidContent) || (fileSize > 1024 && hasValidContent);
+            // Success Condition: Code 0 OR file seems valid enough
+            const isSuccess = (code === 0 && hasValidContent) || (fileSize > 5000 && hasValidContent);
 
             if (isSuccess) {
                 console.log(`[Job ${jobId}] Success. Size: ${fileSize} bytes`);
@@ -153,11 +176,19 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
                 jobs[jobId].progress = 100;
                 jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
             } else {
-                console.error(`[Job ${jobId}] Failed. Code: ${code}. File Size: ${fileSize}`, stderr);
+                const errorDetail = signal ? `Sinal: ${signal}` : `Código: ${code}`;
+                console.error(`[Job ${jobId}] Failed. ${errorDetail}. File Size: ${fileSize}. Last Stderr:`, stderr.slice(-300));
+                
                 jobs[jobId].status = 'failed';
-                jobs[jobId].error = `Erro ao renderizar. Código: ${code}. ` + (stderr.slice(-100) || "Verifique logs.");
-                // Cleanup partial file
-                if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
+                // Provide a more user-friendly error message based on common FFmpeg issues
+                let userError = `Erro no processamento (${errorDetail}).`;
+                if (signal === 'SIGKILL') userError = "Processo interrompido (possível falta de memória ou tempo limite).";
+                if (stderr.includes('No space left on device')) userError = "Espaço em disco insuficiente no servidor.";
+                
+                jobs[jobId].error = userError + " Verifique a complexidade do projeto.";
+                
+                // Cleanup partial file if it's definitely too small
+                if (fileExists && fileSize < 1000) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
             }
         });
     } catch (e) {
