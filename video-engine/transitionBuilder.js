@@ -40,6 +40,8 @@ export default {
         let filterChain = '';
         
         let inputIndexCounter = 0;
+        let labelCounter = 0;
+        const getNextLabel = (prefix = 'vtmp') => `${prefix}_${labelCounter++}`;
 
         // --- CONFIGURAÇÃO DE RESOLUÇÃO E FPS ---
         const resMap = {
@@ -89,10 +91,12 @@ export default {
         }
 
         // Audio Base (Full Duration Silence) - Critical for AMIX stability
-        let baseAudioStream = '[base_audio_silence]';
+        // We use a single anullsrc and split it if needed, or just trim from it.
         inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-        const silenceIdx = inputIndexCounter++;
-        filterChain += `[${silenceIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[base_audio_silence];`;
+        const silenceInputIdx = inputIndexCounter++;
+        const baseAudioSilenceLabel = 'base_audio_silence';
+        filterChain += `[${silenceInputIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${baseAudioSilenceLabel}];`;
+        let baseAudioStream = `[${baseAudioSilenceLabel}]`;
 
         // --- 1. PROCESSAR TRILHA PRINCIPAL (VIDEO) ---
         let mainTrackVideoStream = null;
@@ -119,7 +123,7 @@ export default {
                 
                 const addFilter = (filterText) => {
                     if (!filterText) return;
-                    const nextLabel = `vtmp${i}_${Math.random().toString(36).substr(2, 5)}`;
+                    const nextLabel = getNextLabel(`vtmp${i}`);
                     filterChain += `${currentV}${filterText}[${nextLabel}];`;
                     currentV = `[${nextLabel}]`;
                 };
@@ -192,10 +196,10 @@ export default {
                     mainTrackAudioSegments.push(`[${audioLabel}]`);
                 } else {
                     // Padding Audio (Silence for this clip duration)
+                    // Using anullsrc filter directly is much safer and doesn't count as an input file
                     const audioLabel = `a_pad_${i}`;
-                    const padIdx = inputIndexCounter++;
-                    inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-                    filterChain += `[${padIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${audioLabel}];`;
+                    const freshSilence = `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=${duration},asetpts=PTS-STARTPTS,aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp`;
+                    filterChain += `${freshSilence}[${audioLabel}];`;
                     mainTrackAudioSegments.push(`[${audioLabel}]`);
                 }
              });
@@ -256,19 +260,13 @@ export default {
         if (mainTrackVideoStream) {
             const compLabel = `comp_base`;
             // Base stream is already setsar=1, mainTrack is setsar=1
-            // Adding FIFO to main stream before overlay
-            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass,fifo[${compLabel}];`;
+            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
             finalComp = `[${compLabel}]`;
         }
 
         // --- 3. APLICAR OVERLAYS ---
         overlayClips.forEach((clip, i) => {
-            let overlayInputLabel = '';
-            
             if (clip.type === 'text') {
-                 const bgLabel = `txtbg_${i}`;
-                 filterChain += `color=c=black@0.0:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${clip.duration}[${bgLabel}];`;
-
                  let txt = (clip.properties.text || '');
                  const maxChars = targetRes.w > 1280 ? 50 : 30; 
                  txt = wrapText(txt, maxChars);
@@ -303,10 +301,13 @@ export default {
                  const fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"; 
                  const fontArg = `:fontfile='${fontFile}'`;
 
-                 const txtLabel = `txt_${i}`;
+                 const nextCompLabel = `comp_txt_${i}`;
+                 const startTime = parseFloat(clip.start.toFixed(4));
+                 const endTime = parseFloat((startTime + clip.duration).toFixed(4));
                  const finalTxt = escapedTxt || ' ';
-                 filterChain += `[${bgLabel}]drawtext=text='${finalTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}[${txtLabel}];`;
-                 overlayInputLabel = `[${txtLabel}]`;
+                 
+                 filterChain += `${finalComp}drawtext=text='${finalTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}:enable='between(t,${startTime},${endTime})'[${nextCompLabel}];`;
+                 finalComp = `[${nextCompLabel}]`;
 
             } else {
                  const filePath = fileMap[clip.fileName];
@@ -347,32 +348,28 @@ export default {
                  
                  const scaleVal = clip.properties.transform?.scale || 0.5;
                  const targetW = Math.max(2, Math.floor(targetRes.w * scaleVal / 2) * 2);
-                 // Robust scaling for overlays with alpha preservation and SAR normalization
-                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p,fifo`);
+                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p`);
 
                  filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
-                 overlayInputLabel = `[${processedLabel}]`;
-            }
+                 
+                 const nextCompLabel = `comp_ov_${i}`;
+                 const startTime = parseFloat(clip.start.toFixed(4));
+                 const endTime = parseFloat((startTime + clip.duration).toFixed(4));
+                 
+                 let overlayX = '(W-w)/2';
+                 let overlayY = '(H-h)/2';
+                 if (clip.properties.transform) {
+                      const t = clip.properties.transform;
+                      const scaleFactor = targetRes.w / 1280;
+                      if (t.x) overlayX += `+(${t.x}*${scaleFactor})`;
+                      if (t.y) overlayY += `+(${t.y}*${scaleFactor})`;
+                 }
 
-            const nextCompLabel = `comp_${i}`;
-            // Use fixed precision to avoid scientific notation in FFmpeg expressions
-            const startTime = parseFloat(clip.start.toFixed(4));
-            const endTime = parseFloat((startTime + clip.duration).toFixed(4));
-            
-            let overlayX = '(W-w)/2';
-            let overlayY = '(H-h)/2';
-            if (clip.type !== 'text' && clip.properties.transform) {
-                 const t = clip.properties.transform;
-                 const scaleFactor = targetRes.w / 1280;
-                 if (t.x) overlayX += `+(${t.x}*${scaleFactor})`;
-                 if (t.y) overlayY += `+(${t.y}*${scaleFactor})`;
+                 const shiftedLabel = `shift_${i}`;
+                 filterChain += `[${processedLabel}]setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
+                 filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
+                 finalComp = `[${nextCompLabel}]`;
             }
-
-            const shiftedLabel = `shift_${i}`;
-            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            
-            filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
-            finalComp = `[${nextCompLabel}]`;
         });
 
         // --- 4. MIXAGEM DE ÁUDIO (ROBUSTA) ---
@@ -436,10 +433,14 @@ export default {
             filterChain = filterChain.slice(0, -1);
         }
 
+        // Add a final FIFO to the video output for stability
+        const finalVideoLabel = 'final_video_out';
+        filterChain += `;${finalComp}fifo[${finalVideoLabel}]`;
+
         return {
             inputs,
             filterComplex: filterChain,
-            outputMapVideo: finalComp,
+            outputMapVideo: `[${finalVideoLabel}]`,
             outputMapAudio: finalAudio
         };
     }
