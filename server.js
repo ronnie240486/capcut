@@ -9,20 +9,22 @@ import { fileURLToPath } from 'url';
 import { handleExportVideo } from './exportVideo.js';
 import filterBuilder from './video-engine/filterBuilder.js';
 import https from 'https';
+import { createServer as createViteServer } from 'vite';
 
 // ES Module dirname fix
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = 3000;
 
-// Improved CORS
-app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token']
-}));
+async function startServer() {
+    // Improved CORS
+    app.use(cors({
+        origin: '*',
+        methods: ['GET', 'POST', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token']
+    }));
 
 // Increase limits significantly for 4K video projects
 app.use(express.json({ limit: '1gb' }));
@@ -236,11 +238,33 @@ app.get('/api/process/download/:jobId', (req, res) => {
     }
 });
 
-app.get('/api/check-ffmpeg', (req, res) => {
-    const check = spawn('ffmpeg', ['-version']);
-    check.on('error', () => res.status(500).send("FFmpeg Missing"));
-    check.on('close', (code) => {
-        if (code === 0) res.send("OK");
-        else res.status(500).send("FFmpeg Error");
+    app.get('/api/check-ffmpeg', (req, res) => {
+        const check = spawn('ffmpeg', ['-version']);
+        check.on('error', () => res.status(500).send("FFmpeg Missing"));
+        check.on('close', (code) => {
+            if (code === 0) res.send("OK");
+            else res.status(500).send("FFmpeg Error");
+        });
     });
+
+    // Vite middleware for development
+    if (process.env.NODE_ENV !== 'production') {
+        const vite = await createViteServer({
+            server: { middlewareMode: true },
+            appType: 'spa',
+        });
+        app.use(vite.middlewares);
+    } else {
+        // Serve static files in production
+        app.use(express.static(path.resolve(__dirname, 'dist')));
+        app.get('*', (req, res) => {
+            res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+        });
+    }
+
+    app.listen(PORT, '0.0.0.0', () => console.log(`Server running on ${PORT}`));
+}
+
+startServer().catch(err => {
+    console.error("Failed to start server:", err);
 });
