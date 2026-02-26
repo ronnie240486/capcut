@@ -9,14 +9,13 @@ import { fileURLToPath } from 'url';
 import { handleExportVideo } from './exportVideo.js';
 import filterBuilder from './video-engine/filterBuilder.js';
 import https from 'https';
-import { createServer as createViteServer } from 'vite';
 
 // ES Module dirname fix
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 async function startServer() {
     // Improved CORS
@@ -104,7 +103,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     const improvedArgs = [];
     for(let i=0; i<args.length; i++) {
         if(args[i] === '-i') {
-            improvedArgs.push('-thread_queue_size', '128'); 
+            improvedArgs.push('-thread_queue_size', '512'); 
         }
         improvedArgs.push(args[i]);
     }
@@ -249,6 +248,7 @@ app.get('/api/process/download/:jobId', (req, res) => {
 
     // Vite middleware for development
     if (process.env.NODE_ENV !== 'production') {
+        const { createServer: createViteServer } = await import('vite');
         const vite = await createViteServer({
             server: { middlewareMode: true },
             appType: 'spa',
