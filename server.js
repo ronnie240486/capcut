@@ -102,7 +102,7 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     const improvedArgs = [];
     for(let i=0; i<args.length; i++) {
         if(args[i] === '-i') {
-            improvedArgs.push('-thread_queue_size', '512'); 
+            improvedArgs.push('-thread_queue_size', '128'); 
         }
         improvedArgs.push(args[i]);
     }
@@ -244,5 +244,3 @@ app.get('/api/check-ffmpeg', (req, res) => {
         else res.status(500).send("FFmpeg Error");
     });
 });
-
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
