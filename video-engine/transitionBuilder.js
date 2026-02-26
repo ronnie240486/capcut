@@ -175,8 +175,8 @@ export default {
                 }
 
                 // Ensure properties match for XFADE (Critical: setsar=1, yuv420p)
-                // We re-apply safe scale logic with -1:-1 padding to handle odd dimensions correctly
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p`);
+                // The SCALE_FILTER already handled this, but we ensure format is correct after movements
+                addFilter(`format=yuv420p`);
 
                 mainTrackLabels.push({
                     label: currentV,
