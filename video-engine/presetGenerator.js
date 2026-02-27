@@ -190,15 +190,15 @@ export default {
         }
 
         // 4. Glitch & Chaos
-        else if (id.includes('glitch') || id.includes('shake-violent') || id.includes('jitter') || id.includes('chaos')) {
+        else if (id.includes('glitch') || id.includes('shake') || id.includes('jitter') || id.includes('chaos') || id.includes('tremor')) {
+            z = '1.2'; // Zoom in to allow shaking without black borders
             if (id.includes('snap')) {
-                z = `if(lt(mod(on,10),2), 1.5, 1.0)`;
+                z = `if(lt(mod(on,10),2), 1.5, 1.1)`;
             }
             else if (id.includes('skid')) {
                 x = `${centerX} + if(lt(mod(on,15),5), 100*${progressZP}, 0)`;
             }
-            else if (id.includes('violent')) {
-                z = '1.3';
+            else if (id.includes('violent') || id.includes('forte')) {
                 x = `${centerX} + 60*(random(1)-0.5)`;
                 y = `${centerY} + 60*(random(1)-0.5)`;
             }
@@ -208,6 +208,10 @@ export default {
             else if (id.includes('jitter-y')) {
                 y = `${centerY} + 40*(random(1)-0.5)`;
             }
+            else if (id.includes('jitter')) {
+                x = `${centerX} + 30*(random(1)-0.5)`;
+                y = `${centerY} + 30*(random(1)-0.5)`;
+            }
             else if (id.includes('rgb-shift')) {
                 postFilters.push(`chromashift=cbh=5:crv=5`);
             }
@@ -216,6 +220,11 @@ export default {
             }
             else if (id.includes('vhs')) {
                 postFilters.push(`noise=alls=20:allf=t+u,hue=s=0.5`);
+            }
+            else {
+                // Default shake
+                x = `${centerX} + 20*(random(1)-0.5)`;
+                y = `${centerY} + 20*(random(1)-0.5)`;
             }
         }
 
@@ -231,34 +240,45 @@ export default {
                 x = `${centerX} + 100*sin(PI*${progressZP})*exp(-${progressZP}*3)`;
             }
             else if (id.includes('rubber')) {
-                z = `1.0 + 0.2*sin(PI*${progressZP}*4)*exp(-${progressZP}*2)`;
+                z = `1.1 + 0.2*sin(PI*${progressZP}*4)*exp(-${progressZP}*2)`;
             }
             else if (id.includes('jelly')) {
-                z = `1.0 + 0.1*sin(PI*${progressZP}*5)`;
+                z = `1.1 + 0.1*sin(PI*${progressZP}*5)`;
             }
             else if (id.includes('spring-up')) {
                 y = `${centerY} + 50*sin(PI*${progressZP}*4)*exp(-${progressZP}*2)`;
             }
             else if (id.includes('pop-up')) {
-                z = `if(lt(on,10), 0.5+0.5*on/10, 1.0)`;
+                z = `if(lt(on,10), 0.5+0.5*on/10, 1.1)`;
             }
             else if (id.includes('tada')) {
-                z = `1.0 + 0.1*sin(PI*${progressZP}*6)`;
+                z = `1.1 + 0.1*sin(PI*${progressZP}*6)`;
                 postFilters.push(`rotate=a='sin(${progressOther}*PI*8)*0.1':c=none`);
             }
         }
 
         // 6. Handheld / Earthquake
-        else if (id.includes('handheld') || id.includes('earthquake')) {
+        else if (id.includes('handheld') || id.includes('earthquake') || id.includes('mao') || id.includes('instavel') || id.includes('suave')) {
              let intensity = 10;
-             if (id.includes('1')) intensity = 5;
-             if (id.includes('2')) intensity = 15;
-             if (id.includes('hard')) intensity = 30;
-             if (id.includes('earthquake')) intensity = 60;
-             z = '1.1'; 
-             const shakeX = `(iw-ow)/2 + (random(1)-0.5)*${intensity}`;
-             const shakeY = `(ih-oh)/2 + (random(1)-0.5)*${intensity}`;
-             postFilters.push(`crop=w=iw-${intensity}:h=ih-${intensity}:${shakeX}:${shakeY},scale=${w}:${h}`);
+             z = '1.15'; // Slightly more zoom for safety
+             
+             if (id.includes('suave') || id.includes('1')) intensity = 8;
+             else if (id.includes('instavel') || id.includes('2')) intensity = 20;
+             else if (id.includes('hard') || id.includes('forte')) intensity = 40;
+             else if (id.includes('earthquake') || id.includes('terremoto')) intensity = 80;
+             
+             // Handheld movement is smoother than jitter, using sin/cos with random phase
+             // But for simplicity and impact, we use random with a bit of persistence if possible
+             // Since we can't easily do persistence in zoompan expressions without complex math,
+             // we'll use multiple sin waves with different frequencies to simulate handheld.
+             if (id.includes('handheld') || id.includes('mao')) {
+                 x = `${centerX} + ${intensity}*sin(2*PI*${timeZP}*1.5) + ${intensity/2}*sin(2*PI*${timeZP}*2.7)`;
+                 y = `${centerY} + ${intensity}*cos(2*PI*${timeZP}*1.2) + ${intensity/2}*cos(2*PI*${timeZP}*3.1)`;
+             } else {
+                 // Earthquake/Shake is more erratic
+                 x = `${centerX} + ${intensity}*(random(1)-0.5)`;
+                 y = `${centerY} + ${intensity}*(random(1)-0.5)`;
+             }
         }
 
         // 7. Loops (Pulse, Float, etc)
