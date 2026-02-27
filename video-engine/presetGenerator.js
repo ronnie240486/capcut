@@ -84,96 +84,108 @@ export default {
         let z = '1.0';
         let x = centerX;
         let y = centerY;
-        const time = `(on/${fps})`;
-        const progress = `(on/${frames})`;
+        
+        // Variables for zoompan (on starts at 0)
+        const progressZP = `(on/${frames})`;
+        const timeZP = `(on/${fps})`;
+        
+        // Variables for other filters (n starts at 0)
+        const progressOther = `(n/${frames})`;
 
         let postFilters = [];
 
         // 1. Cinematic Pans
         if (id.includes('pan-')) {
-            z = '1.3'; // Zoom in a bit to allow panning
+            z = '1.3'; 
             const maxPanX = '(iw-iw/zoom)';
             const maxPanY = '(ih-ih/zoom)';
             
-            if (id.includes('slow-l')) x = `${maxPanX}*(1-${progress})`;
-            else if (id.includes('slow-r')) x = `${maxPanX}*${progress}`;
-            else if (id.includes('slow-u')) y = `${maxPanY}*(1-${progress})`;
-            else if (id.includes('slow-d')) y = `${maxPanY}*${progress}`;
-            else if (id.includes('fast-l')) x = `${maxPanX}*(1-min(1,1.5*${progress}))`;
-            else if (id.includes('fast-r')) x = `${maxPanX}*(min(1,1.5*${progress}))`;
-            else if (id.includes('diag-tl')) { x = `${maxPanX}*(1-${progress})`; y = `${maxPanY}*(1-${progress})`; }
-            else if (id.includes('diag-tr')) { x = `${maxPanX}*${progress}`; y = `${maxPanY}*(1-${progress})`; }
-            else if (id.includes('diag-bl')) { x = `${maxPanX}*(1-${progress})`; y = `${maxPanY}*${progress}`; }
-            else if (id.includes('diag-br')) { x = `${maxPanX}*${progress}`; y = `${maxPanY}*${progress}`; }
+            if (id.includes('slow-l')) x = `${maxPanX}*(1-${progressZP})`;
+            else if (id.includes('slow-r')) x = `${maxPanX}*${progressZP}`;
+            else if (id.includes('slow-u')) y = `${maxPanY}*(1-${progressZP})`;
+            else if (id.includes('slow-d')) y = `${maxPanY}*${progressZP}`;
+            else if (id.includes('fast-l')) x = `${maxPanX}*(1-min(1,1.5*${progressZP}))`;
+            else if (id.includes('fast-r')) x = `${maxPanX}*(min(1,1.5*${progressZP}))`;
+            else if (id.includes('diag-tl')) { x = `${maxPanX}*(1-${progressZP})`; y = `${maxPanY}*(1-${progressZP})`; }
+            else if (id.includes('diag-tr')) { x = `${maxPanX}*${progressZP}`; y = `${maxPanY}*(1-${progressZP})`; }
+            else if (id.includes('diag-bl')) { x = `${maxPanX}*(1-${progressZP})`; y = `${maxPanY}*${progressZP}`; }
+            else if (id.includes('diag-br')) { x = `${maxPanX}*${progressZP}`; y = `${maxPanY}*${progressZP}`; }
         }
 
         // 2. Dynamic Zooms
-        else if (id.includes('zoom-') || id.includes('dolly') || id === 'kenBurns') {
-            if (id.includes('crash-in')) z = `1.0 + 2.0*min(1, ${progress}*4)`;
-            else if (id.includes('crash-out')) z = `3.0 - 2.0*min(1, ${progress}*4)`;
+        else if (id.includes('zoom') || id.includes('dolly') || id === 'kenBurns') {
+            if (id.includes('crash-in')) z = `1.0 + 2.0*min(1, ${progressZP}*4)`;
+            else if (id.includes('crash-out')) z = `max(1.0, 3.0 - 2.0*min(1, ${progressZP}*4))`;
             else if (id.includes('twist-in')) { 
-                z = `1.0 + 0.5*${progress}`; 
-                postFilters.push(`rotate=a='${progress}*PI*0.5':c=none:ow=rotw(iw):oh=roth(ih)`); 
+                z = `1.0 + 0.5*${progressZP}`; 
+                postFilters.push(`rotate=a='${progressOther}*PI*0.5':c=none:ow=rotw(iw):oh=roth(ih)`); 
             }
             else if (id.includes('twist-out')) { 
-                z = `1.5 - 0.5*${progress}`; 
-                postFilters.push(`rotate=a='-${progress}*PI*0.5':c=none:ow=rotw(iw):oh=roth(ih)`); 
+                z = `max(1.0, 1.5 - 0.5*${progressZP})`; 
+                postFilters.push(`rotate=a='-${progressOther}*PI*0.5':c=none:ow=rotw(iw):oh=roth(ih)`); 
             }
-            else if (id.includes('bounce-in')) z = `1.0 + 0.3*abs(sin(PI*${progress}*2)) * exp(-${progress}*3)`;
-            else if (id.includes('pulse-slow')) z = `1.1 + 0.05*sin(2*PI*${time}/2)`;
-            else if (id.includes('pulse-fast')) z = `1.1 + 0.05*sin(2*PI*${time}*2)`;
+            else if (id.includes('bounce')) {
+                z = `1.0 + 0.3*abs(sin(PI*${progressZP}*2)) * exp(-${progressZP}*3)`;
+            }
+            else if (id.includes('pulse-slow') || id.includes('lento')) {
+                z = `1.1 + 0.05*sin(2*PI*${timeZP}/2)`;
+            }
+            else if (id.includes('pulse-fast') || id.includes('rapido')) {
+                z = `1.1 + 0.05*sin(2*PI*${timeZP}*2)`;
+            }
             else if (id.includes('wobble')) { 
                 z = `1.2`; 
-                x = `${centerX} + 40*sin(2*PI*${time})`; 
-                y = `${centerY} + 40*cos(2*PI*${time}*0.7)`; 
+                x = `${centerX} + 40*sin(2*PI*${timeZP})`; 
+                y = `${centerY} + 40*cos(2*PI*${timeZP}*0.7)`; 
             }
             else if (id.includes('shake')) { 
                 z = `1.2`; 
                 x = `${centerX} + 25*(random(1)-0.5)`; 
                 y = `${centerY} + 25*(random(1)-0.5)`; 
             }
-            else if (id.includes('dolly-vertigo')) {
-                // Dolly Zoom effect: zoom in while scaling down (or vice versa)
-                z = `1.0 + 0.5*${progress}`;
-                postFilters.push(`scale=iw/(1+0.5*${progress}):-1,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`);
+            else if (id.includes('dolly') || id.includes('vertigo')) {
+                z = `1.0 + 0.8*${progressZP}`;
             }
             else if (id === 'kenBurns') {
                 const startScale = config.startScale || 1.0;
                 const endScale = config.endScale || 1.35;
-                z = `${startScale}+(${endScale}-${startScale})*${progress}`;
+                z = `${startScale}+(${endScale}-${startScale})*${progressZP}`;
+            }
+            else {
+                // Default zoom in if nothing else matched
+                z = `1.0 + 0.3*${progressZP}`;
             }
         }
 
         // 3. 3D Transforms (Simulated)
         else if (id.includes('3d-')) {
             if (id.includes('flip-x')) {
-                postFilters.push(`rotate=a='${progress}*PI*2':c=none:ow=rotw(iw):oh=roth(ih)`);
+                postFilters.push(`rotate=a='${progressOther}*PI*2':c=none:ow=rotw(iw):oh=roth(ih)`);
             }
             else if (id.includes('flip-y')) {
-                postFilters.push(`rotate=a='${progress}*PI*2':c=none:ow=rotw(iw):oh=roth(ih)`); // Simplified
+                postFilters.push(`rotate=a='${progressOther}*PI*2':c=none:ow=rotw(iw):oh=roth(ih)`); 
             }
             else if (id.includes('tumble')) {
-                postFilters.push(`rotate=a='${progress}*PI':c=none,scale=iw*(1-0.3*sin(PI*${progress})):-1,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`);
+                postFilters.push(`rotate=a='${progressOther}*PI':c=none`);
             }
             else if (id.includes('roll')) {
-                postFilters.push(`rotate=a='${progress}*PI*2':c=none`);
+                postFilters.push(`rotate=a='${progressOther}*PI*2':c=none`);
             }
             else if (id.includes('spin-axis')) {
-                postFilters.push(`rotate=a='sin(${progress}*PI*2)*0.2':c=none`);
+                postFilters.push(`rotate=a='sin(${progressOther}*PI*2)*0.2':c=none`);
             }
             else if (id.includes('swing')) {
                 const dir = id.includes('-l') ? -1 : 1;
-                postFilters.push(`rotate=a='${dir}*0.2*sin(${progress}*PI)':c=none`);
+                postFilters.push(`rotate=a='${dir}*0.2*sin(${progressOther}*PI)':c=none`);
             }
             else if (id.includes('perspective')) {
                 const dir = id.includes('-u') ? 1 : -1;
-                // Simulating perspective with vertical scale
-                postFilters.push(`scale=iw:ih*(1-0.2*${progress}*${dir}),pad=${w}:${h}:0:(oh-ih)/2`);
+                postFilters.push(`pad=iw:ih*1.2:0:(oh-ih)/2,rotate=a='${dir}*0.1*${progressOther}':c=none`);
             }
             else if (id.includes('float')) {
                 z = '1.1';
-                y = `${centerY} + 30*sin(2*PI*${time}*0.5)`;
-                x = `${centerX} + 20*cos(2*PI*${time}*0.3)`;
+                y = `${centerY} + 30*sin(2*PI*${timeZP}*0.5)`;
+                x = `${centerX} + 20*cos(2*PI*${timeZP}*0.3)`;
             }
         }
 
@@ -183,7 +195,7 @@ export default {
                 z = `if(lt(mod(on,10),2), 1.5, 1.0)`;
             }
             else if (id.includes('skid')) {
-                x = `${centerX} + if(lt(mod(on,15),5), 100*${progress}, 0)`;
+                x = `${centerX} + if(lt(mod(on,15),5), 100*${progressZP}, 0)`;
             }
             else if (id.includes('violent')) {
                 z = '1.3';
@@ -210,29 +222,29 @@ export default {
         // 5. Elastic & Bounce
         else if (id.includes('bounce') || id.includes('elastic') || id.includes('rubber') || id.includes('jelly') || id.includes('spring') || id.includes('pop-up') || id.includes('tada')) {
             if (id.includes('drop')) {
-                y = `${centerY} - ${h}*(1-min(1,${progress}*2))*abs(cos(PI*${progress}*3))`;
+                y = `${centerY} - ${h}*(1-min(1,${progressZP}*2))*abs(cos(PI*${progressZP}*3))`;
             }
             else if (id.includes('snap-l')) {
-                x = `${centerX} - 100*sin(PI*${progress})*exp(-${progress}*3)`;
+                x = `${centerX} - 100*sin(PI*${progressZP})*exp(-${progressZP}*3)`;
             }
             else if (id.includes('snap-r')) {
-                x = `${centerX} + 100*sin(PI*${progress})*exp(-${progress}*3)`;
+                x = `${centerX} + 100*sin(PI*${progressZP})*exp(-${progressZP}*3)`;
             }
             else if (id.includes('rubber')) {
-                z = `1.0 + 0.2*sin(PI*${progress}*4)*exp(-${progress}*2)`;
+                z = `1.0 + 0.2*sin(PI*${progressZP}*4)*exp(-${progressZP}*2)`;
             }
             else if (id.includes('jelly')) {
-                postFilters.push(`scale=iw*(1+0.1*sin(PI*${progress}*5)):ih*(1-0.1*sin(PI*${progress}*5)),pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`);
+                z = `1.0 + 0.1*sin(PI*${progressZP}*5)`;
             }
             else if (id.includes('spring-up')) {
-                y = `${centerY} + 50*sin(PI*${progress}*4)*exp(-${progress}*2)`;
+                y = `${centerY} + 50*sin(PI*${progressZP}*4)*exp(-${progressZP}*2)`;
             }
             else if (id.includes('pop-up')) {
                 z = `if(lt(on,10), 0.5+0.5*on/10, 1.0)`;
             }
             else if (id.includes('tada')) {
-                z = `1.0 + 0.1*sin(PI*${progress}*6)`;
-                postFilters.push(`rotate=a='sin(${progress}*PI*8)*0.1':c=none`);
+                z = `1.0 + 0.1*sin(PI*${progressZP}*6)`;
+                postFilters.push(`rotate=a='sin(${progressOther}*PI*8)*0.1':c=none`);
             }
         }
 
@@ -251,30 +263,18 @@ export default {
 
         // 7. Loops (Pulse, Float, etc)
         else if (id === 'pulse' || id.includes('pulsar')) {
-            z = `1.05 + 0.05*sin(2*PI*${time})`;
+            z = `1.05 + 0.05*sin(2*PI*${timeZP})`;
         }
         else if (id === 'float' || id.includes('flutuar')) {
-            y = `${centerY} + 20*sin(PI*${time})`;
+            y = `${centerY} + 20*sin(PI*${timeZP})`;
         }
         else if (id === 'heartbeat') {
-            z = `1.0 + 0.1*abs(sin(2*PI*${time}*1.2))`;
-        }
-
-        // Fallback for simple zoom if nothing else matched but it has "zoom" in name
-        else if (id.includes('zoom')) {
-            if (id.includes('in')) z = `1.0 + 0.3*${progress}`;
-            else if (id.includes('out')) z = `1.3 - 0.3*${progress}`;
+            z = `1.0 + 0.1*abs(sin(2*PI*${timeZP}*1.2))`;
         }
 
         // Final Filter Construction
-        let filter = '';
-        if (isImage) {
-            // For images, we must specify d (duration in frames) to generate the sequence
-            filter = `zoompan=z='${z}':x='${x}':y='${y}':d=${frames}:s=${w}x${h}:fps=${fps}`;
-        } else {
-            // For video, d=1 processes one input frame to one output frame
-            filter = `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${fps}`;
-        }
+        // We use d=1 because the input is already a stream (looped images or video)
+        const filter = `zoompan=z='max(1.0,${z})':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${fps}`;
 
         postFilters.unshift('format=yuv420p');
         const validPostFilters = postFilters.filter(f => f && f.trim().length > 0);
