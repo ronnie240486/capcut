@@ -213,18 +213,18 @@ export default {
                 y = `${centerY} + 30*(random(1)-0.5)`;
             }
             else if (id.includes('rgb-shift') || id.includes('rgb')) {
-                // Better RGB Split using lutrgb and channel shifting
-                // We use a simpler version for postFilters compatibility: 
-                // chromatic aberration simulation
-                postFilters.push(`chromashift=cbh=10:crv=10:cbv=0:crh=0`);
+                // RGB Split using rgbashift (standard in modern FFmpeg)
+                // We shift Red horizontally and Blue vertically
+                postFilters.push(`rgbashift=rh=8:bv=-8`);
             }
             else if (id.includes('strobe')) {
-                postFilters.push(`drawbox=c=white@0.5:t=fill:enable='lt(mod(on,4),2)'`);
+                postFilters.push(`drawbox=c=white@0.5:t=fill:enable='lt(mod(n,4),2)'`);
             }
             else if (id.includes('vhs')) {
-                // VHS Tracking effect: noise + horizontal shift + color distortion
+                // VHS Tracking effect: noise + horizontal jitter + color distortion
+                // Using n for frame count in post-filters
                 postFilters.push(`noise=alls=20:allf=t+u,hue=s=0.5,curves=vintage`);
-                x = `${centerX} + 5*sin(2*PI*${timeZP}*10)`; // Micro-jitter for tracking feel
+                x = `${centerX} + 5*sin(2*PI*${timeZP}*10)`; 
             }
             else {
                 // Default shake
@@ -262,7 +262,8 @@ export default {
             }
             else if (id.includes('flash')) {
                 // Flash Foto / Flash Pulse: Bright white flash on specific intervals
-                postFilters.push(`eq=brightness='if(lt(mod(on,30),5), 0.5, 0)':saturation='if(lt(mod(on,30),5), 0.5, 1)'`);
+                // Using n (frame number) for eq filter
+                postFilters.push(`eq=brightness='if(lt(mod(n,30),5), 0.5, 0)':saturation='if(lt(mod(n,30),5), 0.5, 1)'`);
                 z = `if(lt(mod(on,30),5), 1.1, 1.0)`;
             }
         }
