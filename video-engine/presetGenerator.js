@@ -27,7 +27,7 @@ export default {
     getFFmpegFilterFromEffect: (effectId) => {
         if (!effectId) return null;
 
-        // Color Grading Procedural
+        // 1. Color Grading Procedural (cg-pro-*)
         const cgMatch = effectId.match(/^cg-pro-(\d+)$/);
         if (cgMatch) {
             const i = parseInt(cgMatch[1], 10);
@@ -37,23 +37,64 @@ export default {
             return `eq=contrast=${contrast.toFixed(2)}:saturation=${sat.toFixed(2)},hue=h=${hue}`;
         }
         
-        // Vintage Procedural
+        // 2. Vintage Procedural (vintage-style-*)
         const vinMatch = effectId.match(/^vintage-style-(\d+)$/);
         if (vinMatch) {
              const i = parseInt(vinMatch[1], 10);
              const sepia = 0.3 + (i%5)*0.1;
-             return `eq=contrast=0.9:brightness=1.1,colorbalance=rs=${sepia}:gs=${sepia/2}:bs=-${sepia}`;
+             return `sepia=s=${sepia.toFixed(2)},eq=contrast=0.9:brightness=1.1,colorbalance=rs=${sepia}:gs=${sepia/2}:bs=-${sepia}`;
         }
 
-        // Cyberpunk Procedural
+        // 3. Cyberpunk Procedural (cyber-neon-*)
         const cyberMatch = effectId.match(/^cyber-neon-(\d+)$/);
         if (cyberMatch) {
              const i = parseInt(cyberMatch[1], 10);
-             return `eq=contrast=1.3:saturation=1.5,hue=h=${i*10}`;
+             return `eq=contrast=1.3:saturation=1.5,hue=h=${i*10},curves=vintage`;
         }
 
-        // Standard Effects
+        // 4. Nature Procedural (nature-fresh-*)
+        const natureMatch = effectId.match(/^nature-fresh-(\d+)$/);
+        if (natureMatch) {
+            const i = parseInt(natureMatch[1], 10);
+            return `eq=saturation=1.4:brightness=1.05,hue=h=-${i*2}`;
+        }
+
+        // 5. Duotone Procedural (art-duo-*)
+        const duoMatch = effectId.match(/^art-duo-(\d+)$/);
+        if (duoMatch) {
+            const i = parseInt(duoMatch[1], 10);
+            return `hue=s=0,eq=contrast=1.5,sepia=s=1,hue=h=${i*12},eq=saturation=3`;
+        }
+
+        // 6. Noir Procedural (noir-style-*)
+        const noirMatch = effectId.match(/^noir-style-(\d+)$/);
+        if (noirMatch) {
+            const i = parseInt(noirMatch[1], 10);
+            const contrast = 1 + i * 0.05;
+            const brightness = 1 - i * 0.02;
+            return `hue=s=0,eq=contrast=${contrast.toFixed(2)}:brightness=${brightness.toFixed(2)}`;
+        }
+
+        // 7. Film Stock Procedural (film-stock-*)
+        const filmMatch = effectId.match(/^film-stock-(\d+)$/);
+        if (filmMatch) {
+            return `eq=contrast=1.1:saturation=0.8,sepia=s=0.2,eq=brightness=1.1`;
+        }
+
+        // Standard and Requested Effects
         const effects = {
+            // Cinematic & Pro
+            'cinematic-pro': 'colorbalance=rs=0.1:gs=0:bs=0.1:rm=0.1:gm=0:bm=0.1:rh=0.1:gh=0:bh=0.1,eq=contrast=1.2:saturation=1.3',
+            'cinematic-warm': 'colorbalance=rs=0.2:gs=0.1:bs=-0.1,eq=contrast=1.1:saturation=1.2',
+            'cinematic-cold': 'colorbalance=rs=-0.1:gs=0:bs=0.2,eq=contrast=1.1:saturation=1.1',
+            
+            // Horror & Dark
+            'horror-green': 'colorbalance=gs=0.3:rs=-0.1:bs=-0.1,eq=contrast=1.4:brightness=-0.1:saturation=0.8',
+            'horror-red': 'colorbalance=rs=0.4:gs=-0.2:bs=-0.2,eq=contrast=1.5:brightness=-0.1',
+            'vintage-horror': 'sepia=s=0.5,colorbalance=gs=0.2:rs=-0.1,eq=contrast=1.3:brightness=-0.1:saturation=0.7',
+            'dark-forest': 'colorbalance=gs=0.2:bs=0.1:rs=-0.2,eq=contrast=1.2:brightness=-0.2',
+            
+            // Basic Filters
             'glitch-scan': 'drawgrid=y=0:h=4:t=1:c=black@0.5,hue=H=2*PI*t:s=1.5',
             'chromatic': "geq=r='p(X+5,Y)':g='p(X,Y)':b='p(X-5,Y)':a='p(X,Y)'",
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2:gs=0:rm=0.2:gm=0:bm=-0.2:rh=0.2:gh=0:bh=-0.2,eq=saturation=1.3',
@@ -65,7 +106,16 @@ export default {
             'warm': 'colorbalance=rs=0.1:bs=-0.1,eq=saturation=1.1',
             'cool': 'colorbalance=bs=0.1:rs=-0.1,eq=saturation=1.1',
             'vivid': 'eq=saturation=1.5:contrast=1.1',
-            'mono': 'hue=s=0'
+            'mono': 'hue=s=0',
+            'sepia': 'sepia=s=1',
+            'grayscale': 'hue=s=0',
+            'invert': 'negate',
+            'brighten': 'eq=brightness=0.2',
+            'darken': 'eq=brightness=-0.2',
+            'high-contrast': 'eq=contrast=1.5',
+            'low-contrast': 'eq=contrast=0.7',
+            'oversaturated': 'eq=saturation=2',
+            'desaturated': 'eq=saturation=0.5'
         };
         
         return effects[effectId] || null;
