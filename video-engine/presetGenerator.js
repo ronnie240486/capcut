@@ -190,8 +190,8 @@ export default {
         }
 
         // 4. Glitch & Chaos
-        else if (id.includes('glitch') || id.includes('shake') || id.includes('jitter') || id.includes('chaos') || id.includes('tremor')) {
-            z = '1.2'; // Zoom in to allow shaking without black borders
+        else if (id.includes('glitch') || id.includes('shake') || id.includes('jitter') || id.includes('chaos') || id.includes('tremor') || id.includes('rgb') || id.includes('vhs')) {
+            z = '1.2'; 
             if (id.includes('snap')) {
                 z = `if(lt(mod(on,10),2), 1.5, 1.1)`;
             }
@@ -212,14 +212,19 @@ export default {
                 x = `${centerX} + 30*(random(1)-0.5)`;
                 y = `${centerY} + 30*(random(1)-0.5)`;
             }
-            else if (id.includes('rgb-shift')) {
-                postFilters.push(`chromashift=cbh=5:crv=5`);
+            else if (id.includes('rgb-shift') || id.includes('rgb')) {
+                // Better RGB Split using lutrgb and channel shifting
+                // We use a simpler version for postFilters compatibility: 
+                // chromatic aberration simulation
+                postFilters.push(`chromashift=cbh=10:crv=10:cbv=0:crh=0`);
             }
             else if (id.includes('strobe')) {
                 postFilters.push(`drawbox=c=white@0.5:t=fill:enable='lt(mod(on,4),2)'`);
             }
             else if (id.includes('vhs')) {
-                postFilters.push(`noise=alls=20:allf=t+u,hue=s=0.5`);
+                // VHS Tracking effect: noise + horizontal shift + color distortion
+                postFilters.push(`noise=alls=20:allf=t+u,hue=s=0.5,curves=vintage`);
+                x = `${centerX} + 5*sin(2*PI*${timeZP}*10)`; // Micro-jitter for tracking feel
             }
             else {
                 // Default shake
@@ -229,7 +234,7 @@ export default {
         }
 
         // 5. Elastic & Bounce
-        else if (id.includes('bounce') || id.includes('elastic') || id.includes('rubber') || id.includes('jelly') || id.includes('spring') || id.includes('pop-up') || id.includes('tada')) {
+        else if (id.includes('bounce') || id.includes('elastic') || id.includes('rubber') || id.includes('jelly') || id.includes('spring') || id.includes('pop-up') || id.includes('tada') || id.includes('flash')) {
             if (id.includes('drop')) {
                 y = `${centerY} - ${h}*(1-min(1,${progressZP}*2))*abs(cos(PI*${progressZP}*3))`;
             }
@@ -254,6 +259,11 @@ export default {
             else if (id.includes('tada')) {
                 z = `1.1 + 0.1*sin(PI*${progressZP}*6)`;
                 postFilters.push(`rotate=a='sin(${progressOther}*PI*8)*0.1':c=none`);
+            }
+            else if (id.includes('flash')) {
+                // Flash Foto / Flash Pulse: Bright white flash on specific intervals
+                postFilters.push(`eq=brightness='if(lt(mod(on,30),5), 0.5, 0)':saturation='if(lt(mod(on,30),5), 0.5, 1)'`);
+                z = `if(lt(mod(on,30),5), 1.1, 1.0)`;
             }
         }
 
