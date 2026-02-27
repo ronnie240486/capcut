@@ -232,34 +232,44 @@ export default {
         }
 
         // 5. Elastic & Bounce
-        else if (id.includes('bounce') || id.includes('elastic') || id.includes('rubber') || id.includes('jelly') || id.includes('spring') || id.includes('pop-up') || id.includes('tada') || id.includes('flash')) {
+        else if (id.includes('bounce') || id.includes('elastic') || id.includes('rubber') || id.includes('jelly') || id.includes('spring') || id.includes('pop-up') || id.includes('tada') || id.includes('flash') || id.includes('squash')) {
             if (id.includes('drop')) {
-                y = `${centerY} - ${h}*(1-min(1,${progressZP}*2))*abs(cos(PI*${progressZP}*3))`;
+                // Bounce Drop: Starts from top and bounces
+                y = `${centerY} - ${h}*0.5*max(0, (1-${progressZP}*2))*abs(cos(PI*${progressZP}*4))`;
             }
             else if (id.includes('snap-l')) {
-                x = `${centerX} - 100*sin(PI*${progressZP})*exp(-${progressZP}*3)`;
+                x = `${centerX} - 150*sin(PI*${progressZP})*exp(-${progressZP}*2)`;
             }
             else if (id.includes('snap-r')) {
-                x = `${centerX} + 100*sin(PI*${progressZP})*exp(-${progressZP}*3)`;
+                x = `${centerX} + 150*sin(PI*${progressZP})*exp(-${progressZP}*2)`;
             }
             else if (id.includes('rubber')) {
-                z = `1.1 + 0.2*sin(PI*${progressZP}*4)*exp(-${progressZP}*2)`;
+                z = `1.1 + 0.3*sin(PI*${progressZP}*4)*exp(-${progressZP}*2)`;
             }
             else if (id.includes('jelly')) {
-                z = `1.1 + 0.1*sin(PI*${progressZP}*5)`;
+                z = `1.1 + 0.15*sin(PI*${progressZP}*8)*exp(-${progressZP}*2)`;
             }
             else if (id.includes('spring-up')) {
-                y = `${centerY} + 50*sin(PI*${progressZP}*4)*exp(-${progressZP}*2)`;
+                y = `${centerY} + 80*sin(PI*${progressZP}*5)*exp(-${progressZP}*2)`;
             }
             else if (id.includes('pop-up')) {
-                z = `if(lt(on,10), 0.5+0.5*on/10, 1.1)`;
+                z = `if(lt(on,15), 0.1 + 0.9*on/15, 1.1)`;
+            }
+            else if (id.includes('squash')) {
+                // Squash & Stretch: Simulating with a fast zoom pulse that settles
+                z = `1.1 + 0.2*sin(PI*${progressZP}*6)*exp(-${progressZP}*3)`;
             }
             else if (id.includes('tada')) {
                 z = `1.1 + 0.1*sin(PI*${progressZP}*6)`;
                 postFilters.push(`rotate=a='sin(${progressOther}*PI*8)*0.1':c=none`);
             }
+            else if (id.includes('flash-pulse')) {
+                // Flash Pulse: Repeating flashes
+                postFilters.push(`eq=brightness='if(lt(mod(n,20),5), 0.4, 0)':saturation='if(lt(mod(n,20),5), 0.6, 1)'`);
+                z = `1.1 + 0.05*sin(PI*${timeZP}*4)`;
+            }
             else if (id.includes('flash')) {
-                // Flash Foto: Single bright flash at the beginning (first 10 frames)
+                // Flash Foto: Single bright flash
                 postFilters.push(`eq=brightness='if(lt(n,10), 0.5, 0)':saturation='if(lt(n,10), 0.5, 1)'`);
                 z = `if(lt(on,10), 1.15, 1.0)`;
             }
