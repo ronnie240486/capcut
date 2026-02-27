@@ -213,16 +213,14 @@ export default {
                 y = `${centerY} + 30*(random(1)-0.5)`;
             }
             else if (id.includes('rgb-shift') || id.includes('rgb')) {
-                // RGB Split using rgbashift (standard in modern FFmpeg)
-                // We shift Red horizontally and Blue vertically
-                postFilters.push(`rgbashift=rh=8:bv=-8`);
+                // More compatible RGB Split using geq filter
+                postFilters.push(`geq=r='p(X+8,Y)':g='p(X,Y)':b='p(X-8,Y)'`);
             }
             else if (id.includes('strobe')) {
                 postFilters.push(`drawbox=c=white@0.5:t=fill:enable='lt(mod(n,4),2)'`);
             }
             else if (id.includes('vhs')) {
                 // VHS Tracking effect: noise + horizontal jitter + color distortion
-                // Using n for frame count in post-filters
                 postFilters.push(`noise=alls=20:allf=t+u,hue=s=0.5,curves=vintage`);
                 x = `${centerX} + 5*sin(2*PI*${timeZP}*10)`; 
             }
@@ -261,10 +259,9 @@ export default {
                 postFilters.push(`rotate=a='sin(${progressOther}*PI*8)*0.1':c=none`);
             }
             else if (id.includes('flash')) {
-                // Flash Foto / Flash Pulse: Bright white flash on specific intervals
-                // Using n (frame number) for eq filter
-                postFilters.push(`eq=brightness='if(lt(mod(n,30),5), 0.5, 0)':saturation='if(lt(mod(n,30),5), 0.5, 1)'`);
-                z = `if(lt(mod(on,30),5), 1.1, 1.0)`;
+                // Flash Foto: Single bright flash at the beginning (first 10 frames)
+                postFilters.push(`eq=brightness='if(lt(n,10), 0.5, 0)':saturation='if(lt(n,10), 0.5, 1)'`);
+                z = `if(lt(on,10), 1.15, 1.0)`;
             }
         }
 
