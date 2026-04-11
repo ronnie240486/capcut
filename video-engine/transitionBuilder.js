@@ -40,8 +40,6 @@ export default {
         let filterChain = '';
         
         let inputIndexCounter = 0;
-        let labelCounter = 0;
-        const getNextLabel = (prefix = 'vtmp') => `${prefix}_${labelCounter++}`;
 
         // --- CONFIGURAÇÃO DE RESOLUÇÃO E FPS ---
         const resMap = {
@@ -67,13 +65,18 @@ export default {
         // SEPARAR TRILHAS
         const mainTrackClips = clips.filter(c => c.track === 'video').sort((a, b) => a.start - b.start);
         
+        const trackOrder = { camada: 1, camada2: 2, camada3: 3, text: 4, subtitle: 5 };
         const overlayClips = clips.filter(c => 
-            ['text', 'subtitle', 'camada'].includes(c.track)
-        ).sort((a, b) => a.start - b.start);
+            ['text', 'subtitle', 'camada', 'camada2', 'camada3'].includes(c.track)
+        ).sort((a, b) => {
+            const trackDiff = (trackOrder[a.track] || 0) - (trackOrder[b.track] || 0);
+            if (trackDiff !== 0) return trackDiff;
+            return a.start - b.start;
+        });
 
         const audioClips = clips.filter(c => 
             ['audio', 'narration', 'music', 'sfx'].includes(c.track) ||
-            (c.type === 'audio' && !['video', 'camada', 'text'].includes(c.track))
+            (c.type === 'audio' && !['video', 'camada', 'camada2', 'camada3', 'text'].includes(c.track))
         );
 
         // --- 0. GERAR BACKGROUND BASE (VIDEO & AUDIO) ---
@@ -91,12 +94,10 @@ export default {
         }
 
         // Audio Base (Full Duration Silence) - Critical for AMIX stability
-        // We use a single anullsrc and split it if needed, or just trim from it.
+        let baseAudioStream = '[base_audio_silence]';
         inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-        const silenceInputIdx = inputIndexCounter++;
-        const baseAudioSilenceLabel = 'base_audio_silence';
-        filterChain += `[${silenceInputIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${baseAudioSilenceLabel}];`;
-        let baseAudioStream = `[${baseAudioSilenceLabel}]`;
+        const silenceIdx = inputIndexCounter++;
+        filterChain += `[${silenceIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[base_audio_silence];`;
 
         // --- 1. PROCESSAR TRILHA PRINCIPAL (VIDEO) ---
         let mainTrackVideoStream = null;
@@ -123,7 +124,7 @@ export default {
                 
                 const addFilter = (filterText) => {
                     if (!filterText) return;
-                    const nextLabel = getNextLabel(`vtmp${i}`);
+                    const nextLabel = `vtmp${i}_${Math.random().toString(36).substr(2, 5)}`;
                     filterChain += `${currentV}${filterText}[${nextLabel}];`;
                     currentV = `[${nextLabel}]`;
                 };
@@ -175,8 +176,9 @@ export default {
                 }
 
                 // Ensure properties match for XFADE (Critical: setsar=1, yuv420p)
-                // The SCALE_FILTER already handled this, but we ensure format is correct after movements
-                addFilter(`format=yuv420p`);
+                // We re-apply safe scale logic with -1:-1 padding to handle odd dimensions correctly
+                // Adding FIFO buffer here to prevent "Resource temporarily unavailable"
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p,fifo`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -196,10 +198,10 @@ export default {
                     mainTrackAudioSegments.push(`[${audioLabel}]`);
                 } else {
                     // Padding Audio (Silence for this clip duration)
-                    // Using anullsrc filter directly is much safer and doesn't count as an input file
                     const audioLabel = `a_pad_${i}`;
-                    const freshSilence = `anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=${duration},asetpts=PTS-STARTPTS,aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp`;
-                    filterChain += `${freshSilence}[${audioLabel}];`;
+                    const padIdx = inputIndexCounter++;
+                    inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+                    filterChain += `[${padIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${audioLabel}];`;
                     mainTrackAudioSegments.push(`[${audioLabel}]`);
                 }
              });
@@ -234,14 +236,14 @@ export default {
                     const nextLabelA = `mix_a_${i}`;
                     
                     if (transDur > 0 && hasExplicitTrans) {
-                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
+                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset},fifo[${nextLabelV}];`;
                         filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
                         accumulatedDuration = offset + nextClip.duration;
                     } else {
                         // Simple Concatenation via Xfade (safe fallback to prevent flashes)
                         const safeDur = 0.04;
                         const safeOffset = Math.max(0, accumulatedDuration - safeDur);
-                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset}[${nextLabelV}];`;
+                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset},fifo[${nextLabelV}];`;
                          filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${safeDur}:c1=tri:c2=tri[${nextLabelA}];`;
                          accumulatedDuration = safeOffset + nextClip.duration;
                     }
@@ -260,13 +262,19 @@ export default {
         if (mainTrackVideoStream) {
             const compLabel = `comp_base`;
             // Base stream is already setsar=1, mainTrack is setsar=1
-            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
+            // Adding FIFO to main stream before overlay
+            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass,fifo[${compLabel}];`;
             finalComp = `[${compLabel}]`;
         }
 
         // --- 3. APLICAR OVERLAYS ---
         overlayClips.forEach((clip, i) => {
+            let overlayInputLabel = '';
+            
             if (clip.type === 'text') {
+                 const bgLabel = `txtbg_${i}`;
+                 filterChain += `color=c=black@0.0:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${clip.duration}[${bgLabel}];`;
+
                  let txt = (clip.properties.text || '');
                  const maxChars = targetRes.w > 1280 ? 50 : 30; 
                  txt = wrapText(txt, maxChars);
@@ -301,13 +309,10 @@ export default {
                  const fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"; 
                  const fontArg = `:fontfile='${fontFile}'`;
 
-                 const nextCompLabel = `comp_txt_${i}`;
-                 const startTime = parseFloat(clip.start.toFixed(4));
-                 const endTime = parseFloat((startTime + clip.duration).toFixed(4));
+                 const txtLabel = `txt_${i}`;
                  const finalTxt = escapedTxt || ' ';
-                 
-                 filterChain += `${finalComp}drawtext=text='${finalTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}:enable='between(t,${startTime},${endTime})'[${nextCompLabel}];`;
-                 finalComp = `[${nextCompLabel}]`;
+                 filterChain += `[${bgLabel}]drawtext=text='${finalTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}[${txtLabel}];`;
+                 overlayInputLabel = `[${txtLabel}]`;
 
             } else {
                  const filePath = fileMap[clip.fileName];
@@ -348,28 +353,33 @@ export default {
                  
                  const scaleVal = clip.properties.transform?.scale || 0.5;
                  const targetW = Math.max(2, Math.floor(targetRes.w * scaleVal / 2) * 2);
-                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p`);
+                 // Robust scaling for overlays with alpha preservation and SAR normalization
+                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p,fifo`);
 
                  filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
-                 
-                 const nextCompLabel = `comp_ov_${i}`;
-                 const startTime = parseFloat(clip.start.toFixed(4));
-                 const endTime = parseFloat((startTime + clip.duration).toFixed(4));
-                 
-                 let overlayX = '(W-w)/2';
-                 let overlayY = '(H-h)/2';
-                 if (clip.properties.transform) {
-                      const t = clip.properties.transform;
-                      const scaleFactor = targetRes.w / 1280;
-                      if (t.x) overlayX += `+(${t.x}*${scaleFactor})`;
-                      if (t.y) overlayY += `+(${t.y}*${scaleFactor})`;
-                 }
-
-                 const shiftedLabel = `shift_${i}`;
-                 filterChain += `[${processedLabel}]setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-                 filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
-                 finalComp = `[${nextCompLabel}]`;
+                 overlayInputLabel = `[${processedLabel}]`;
             }
+
+            const nextCompLabel = `comp_${i}`;
+            // Use fixed precision to avoid scientific notation in FFmpeg expressions
+            const startTime = parseFloat(clip.start.toFixed(4));
+            const endTime = parseFloat((startTime + clip.duration).toFixed(4));
+            
+            let overlayX = '(W-w)/2';
+            let overlayY = '(H-h)/2';
+            if (clip.type !== 'text' && clip.properties.transform) {
+                 const t = clip.properties.transform;
+                 const scaleFactor = targetRes.w / 1280;
+                 if (t.x) overlayX += `+(${t.x}*${scaleFactor})`;
+                 if (t.y) overlayY += `+(${t.y}*${scaleFactor})`;
+            }
+
+            const shiftedLabel = `shift_${i}`;
+            filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
+            // Add FIFO to main track before overlaying to ensure sync
+            filterChain += `${finalComp}fifo[main_fifo_${i}];`;
+            filterChain += `[main_fifo_${i}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
+            finalComp = `[${nextCompLabel}]`;
         });
 
         // --- 4. MIXAGEM DE ÁUDIO (ROBUSTA) ---
@@ -433,14 +443,10 @@ export default {
             filterChain = filterChain.slice(0, -1);
         }
 
-        // Add a final FIFO to the video output for stability
-        const finalVideoLabel = 'final_video_out';
-        filterChain += `;${finalComp}fifo[${finalVideoLabel}]`;
-
         return {
             inputs,
             filterComplex: filterChain,
-            outputMapVideo: `[${finalVideoLabel}]`,
+            outputMapVideo: finalComp,
             outputMapAudio: finalAudio
         };
     }
