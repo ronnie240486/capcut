@@ -9,21 +9,23 @@ import { fileURLToPath } from 'url';
 import { handleExportVideo } from './exportVideo.js';
 import filterBuilder from './video-engine/filterBuilder.js';
 import https from 'https';
+import http from 'http';
+import { createServer as createViteServer } from 'vite';
 
 // ES Module dirname fix
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 
 async function startServer() {
-    // Improved CORS
-    app.use(cors({
-        origin: '*',
-        methods: ['GET', 'POST', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token']
-    }));
+// Improved CORS
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token']
+}));
 
 // Increase limits significantly for 4K video projects
 app.use(express.json({ limit: '1gb' }));
@@ -39,6 +41,8 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // Global Error Handlers to prevent crash
+app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+
 process.on('uncaughtException', (err) => {
     console.error('CRITICAL ERROR (Uncaught Exception):', err);
 });
@@ -64,6 +68,19 @@ const uploadAny = multer({
         fileSize: 2048 * 1024 * 1024 // 2GB files
     }
 }).any();
+
+const uploadSingle = multer({ storage }).single('file');
+
+// Single file upload endpoint
+app.post('/api/upload', uploadSingle, (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    res.json({ 
+        success: true, 
+        filename: req.file.filename,
+        originalname: req.file.originalname,
+        path: req.file.path
+    });
+});
 
 // Job Store
 const jobs = {};
@@ -96,16 +113,14 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     if (res && !res.headersSent) res.status(202).json({ jobId });
 
     // Inject thread_queue_size for robustness
-    // Use info level to see more details before a potential crash
-    // Limit threads to 1 to minimize memory footprint
-    let finalArgs = ['-hide_banner', '-loglevel', 'info', '-stats', '-threads', '1'];
+    let finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats'];
     
-    // Inject thread_queue_size for robustness
+    // Scan args and inject thread_queue_size before every -i (input)
+    // to prevent "Resource temporarily unavailable" on reading
     const improvedArgs = [];
     for(let i=0; i<args.length; i++) {
         if(args[i] === '-i') {
-            // Reduced from 1024 to 128 to save memory in constrained environments
-            improvedArgs.push('-thread_queue_size', '128'); 
+            improvedArgs.push('-thread_queue_size', '1024'); 
         }
         improvedArgs.push(args[i]);
     }
@@ -117,60 +132,37 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     try {
         const ffmpeg = spawn('ffmpeg', finalArgs);
         
-        // Prevent pipe clogging by draining stdout
-        ffmpeg.stdout.on('data', () => {});
-
         let stderr = '';
         ffmpeg.stderr.on('data', d => {
             const line = d.toString();
             stderr += line;
-            
-            // Log errors for debugging
-            if (line.toLowerCase().includes('error')) {
-                console.warn(`[Job ${jobId}] FFmpeg Stderr: ${line.trim()}`);
-            }
-
             const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
             if (timeMatch && expectedDuration > 0) {
                 const t = timeToSeconds(timeMatch[1]);
                 const p = Math.round((t / expectedDuration) * 100);
-                if (jobs[jobId]) {
-                    // Allow progress to reach 100 on the UI if it's really close
-                    jobs[jobId].progress = Math.min(100, Math.max(0, p));
-                }
+                if (jobs[jobId]) jobs[jobId].progress = Math.min(99, Math.max(0, p));
             }
         });
 
-        // Set a safety timeout (15 minutes)
-        const timeout = setTimeout(() => {
-            if (jobs[jobId] && jobs[jobId].status === 'processing') {
-                console.error(`[Job ${jobId}] Timeout reached. Killing process.`);
-                ffmpeg.kill('SIGKILL');
-                jobs[jobId].status = 'failed';
-                jobs[jobId].error = "Tempo limite de processamento excedido (15 min).";
-            }
-        }, 900000);
-
         ffmpeg.on('error', (err) => {
-            clearTimeout(timeout);
             console.error(`[Job ${jobId}] Spawn Error:`, err);
             if (jobs[jobId]) {
                 jobs[jobId].status = 'failed';
-                jobs[jobId].error = `Falha ao iniciar processo: ${err.message}`;
+                jobs[jobId].error = err.message;
             }
         });
 
-        ffmpeg.on('close', (code, signal) => {
-            clearTimeout(timeout);
+        ffmpeg.on('close', (code) => {
             if (!jobs[jobId]) return;
             
             // Validate File Existence & Size
             const fileExists = jobs[jobId].outputPath && fs.existsSync(jobs[jobId].outputPath);
             const fileSize = fileExists ? fs.statSync(jobs[jobId].outputPath).size : 0;
-            const hasValidContent = fileSize > 500; 
+            const hasValidContent = fileSize > 100; // Minimum size for a valid header
 
-            // Success Condition: Code 0 OR file seems valid enough
-            const isSuccess = (code === 0 && hasValidContent) || (fileSize > 5000 && hasValidContent);
+            // Success Condition: Code 0 AND File exists with content
+            // OR if Code != 0 but file seems valid (resilient check for mobile streams)
+            const isSuccess = (code === 0 && hasValidContent) || (fileSize > 1024 && hasValidContent);
 
             if (isSuccess) {
                 console.log(`[Job ${jobId}] Success. Size: ${fileSize} bytes`);
@@ -178,19 +170,11 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
                 jobs[jobId].progress = 100;
                 jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
             } else {
-                const errorDetail = signal ? `Sinal: ${signal}` : `Código: ${code}`;
-                console.error(`[Job ${jobId}] Failed. ${errorDetail}. File Size: ${fileSize}. Last Stderr:`, stderr.slice(-300));
-                
+                console.error(`[Job ${jobId}] Failed. Code: ${code}. File Size: ${fileSize}`, stderr);
                 jobs[jobId].status = 'failed';
-                // Provide a more user-friendly error message based on common FFmpeg issues
-                let userError = `Erro no processamento (${errorDetail}).`;
-                if (signal === 'SIGKILL') userError = "Processo interrompido (possível falta de memória ou tempo limite).";
-                if (stderr.includes('No space left on device')) userError = "Espaço em disco insuficiente no servidor.";
-                
-                jobs[jobId].error = userError + " Verifique a complexidade do projeto.";
-                
-                // Cleanup partial file if it's definitely too small
-                if (fileExists && fileSize < 1000) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
+                jobs[jobId].error = `Erro ao renderizar. Código: ${code}. ` + (stderr.slice(-100) || "Verifique logs.");
+                // Cleanup partial file
+                if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
             }
         });
     } catch (e) {
@@ -243,7 +227,7 @@ app.post('/api/export/start', uploadAny, (req, res) => {
     setTimeout(() => {
         handleExportVideo(jobs[jobId], uploadDir, (id, args, dur) => {
             // Buffer de segurança para evitar corrupção de áudio em conexões lentas
-            const safeArgs = [...args, '-max_muxing_queue_size', '1024'];
+            const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
             createFFmpegJob(id, safeArgs, dur);
         }).catch(err => {
             if (jobs[jobId]) {
@@ -270,34 +254,143 @@ app.get('/api/process/download/:jobId', (req, res) => {
     }
 });
 
-    app.get('/api/check-ffmpeg', (req, res) => {
-        const check = spawn('ffmpeg', ['-version']);
-        check.on('error', () => res.status(500).send("FFmpeg Missing"));
-        check.on('close', (code) => {
-            if (code === 0) res.send("OK");
-            else res.status(500).send("FFmpeg Error");
-        });
+app.get('/api/check-ffmpeg', (req, res) => {
+    const check = spawn('ffmpeg', ['-version']);
+    check.on('error', () => res.status(500).send("FFmpeg Missing"));
+    check.on('close', (code) => {
+        if (code === 0) res.send("OK");
+        else res.status(500).send("FFmpeg Error");
     });
+});
 
-    // Vite middleware for development
-    if (process.env.NODE_ENV !== 'production') {
-        const { createServer: createViteServer } = await import('vite');
-        const vite = await createViteServer({
-            server: { middlewareMode: true },
-            appType: 'spa',
+app.get('/api/proxy/freesound', async (req, res) => {
+    const { q, token } = req.query;
+    console.log(`[Freesound Proxy] Query: ${q}, Token: ${token ? 'PROVIDED' : 'MISSING'}`);
+    if (!q) return res.status(400).send("Query missing");
+    
+    // Freesound API requires a token (Client Secret or API Key)
+    // If no token provided by user, we can't really search unless we have a default one
+    // But here we assume the user provides it via the 'token' param from App.tsx
+    
+    try {
+        const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q)}&token=${token}&fields=id,name,previews,duration,description&page_size=15`;
+        
+        https.get(url, (apiRes) => {
+            let data = '';
+            apiRes.on('data', chunk => data += chunk);
+            apiRes.on('end', () => {
+                try {
+                    if (apiRes.statusCode !== 200) {
+                        console.error(`[Freesound Proxy] API Error: ${apiRes.statusCode} - ${data}`);
+                        return res.status(apiRes.statusCode || 500).json({ error: "Freesound API Error", details: data });
+                    }
+                    const json = JSON.parse(data);
+                    res.json(json);
+                } catch (e) {
+                    console.error(`[Freesound Proxy] Parse Error: ${e.message}`);
+                    res.status(500).json({ error: "Parse error", details: data });
+                }
+            });
+        }).on('error', (e) => {
+            res.status(500).json({ error: "Freesound API error", details: e.message });
         });
-        app.use(vite.middlewares);
-    } else {
-        // Serve static files in production
-        app.use(express.static(path.resolve(__dirname, 'dist')));
-        app.get('*', (req, res) => {
-            res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-        });
+    } catch (e) {
+        res.status(500).json({ error: "Proxy error", details: e.message });
     }
+});
 
-    app.listen(PORT, '0.0.0.0', () => console.log(`Server running on ${PORT}`));
+app.get('/api/proxy/media', async (req, res) => {
+    const { url } = req.query;
+    if (!url) return res.status(400).send("URL missing");
+    
+    try {
+        const decodedUrl = decodeURIComponent(url);
+        console.log(`[Media Proxy] Fetching: ${decodedUrl}`);
+        
+        const protocol = decodedUrl.startsWith('https') ? https : http;
+        protocol.get(decodedUrl, (apiRes) => {
+            if (apiRes.statusCode !== 200) {
+                console.error(`[Media Proxy] Error: ${apiRes.statusCode}`);
+                return res.status(apiRes.statusCode || 500).send("Proxy error");
+            }
+            
+            if (apiRes.headers['content-type']) res.setHeader('Content-Type', apiRes.headers['content-type']);
+            if (apiRes.headers['content-length']) res.setHeader('Content-Length', apiRes.headers['content-length']);
+            
+            apiRes.pipe(res);
+        }).on('error', (err) => {
+            console.error(`[Media Proxy] Request Error: ${err.message}`);
+            res.status(500).send("Request error");
+        });
+    } catch (error) {
+        console.error(`[Media Proxy] Unexpected Error: ${error.message}`);
+        res.status(500).send("Unexpected error");
+    }
+});
+
+// Claude Proxy
+app.post('/api/proxy/claude', async (req, res) => {
+    const apiKey = req.headers['x-api-key'];
+    if (!apiKey) return res.status(400).json({ error: "Missing x-api-key header" });
+
+    try {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify(req.body)
+        });
+        const data = await response.json();
+        res.status(response.status).json(data);
+    } catch (error) {
+        console.error("Claude Proxy Error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GPT Proxy (Optional but safer for CORS)
+app.post('/api/proxy/gpt', async (req, res) => {
+    const apiKey = req.headers['authorization'];
+    if (!apiKey) return res.status(400).json({ error: "Missing Authorization header" });
+
+    try {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': apiKey
+            },
+            body: JSON.stringify(req.body)
+        });
+        const data = await response.json();
+        res.status(response.status).json(data);
+    } catch (error) {
+        console.error("GPT Proxy Error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Vite middleware setup
+if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+    });
+    app.use(vite.middlewares);
+} else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+    });
 }
 
-startServer().catch(err => {
-    console.error("Failed to start server:", err);
+app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
 });
+}
+
+startServer();
