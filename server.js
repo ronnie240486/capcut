@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
-import { handleExportVideo } from './exportVideo.js';
+import { handleExportVideo } from './video-engine/exportVideo.js';
 import filterBuilder from './video-engine/filterBuilder.js';
 import https from 'https';
 import http from 'http';
@@ -28,8 +28,8 @@ app.use(cors({
 }));
 
 // Increase limits significantly for 4K video projects
-app.use(express.json({ limit: '1gb' }));
-app.use(express.urlencoded({ extended: true, limit: '1gb' }));
+app.use(express.json({ limit: '2gb' }));
+app.use(express.urlencoded({ extended: true, limit: '2gb' }));
 
 const uploadDir = path.resolve(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
@@ -64,23 +64,10 @@ const storage = multer.diskStorage({
 const uploadAny = multer({ 
     storage,
     limits: {
-        fieldSize: 100 * 1024 * 1024, // 100MB json state
-        fileSize: 2048 * 1024 * 1024 // 2GB files
+        fieldSize: 500 * 1024 * 1024, // 500MB json state
+        fileSize: 4096 * 1024 * 1024 // 4GB files
     }
 }).any();
-
-const uploadSingle = multer({ storage }).single('file');
-
-// Single file upload endpoint
-app.post('/api/upload', uploadSingle, (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    res.json({ 
-        success: true, 
-        filename: req.file.filename,
-        originalname: req.file.originalname,
-        path: req.file.path
-    });
-});
 
 // Job Store
 const jobs = {};
@@ -374,13 +361,16 @@ app.post('/api/proxy/gpt', async (req, res) => {
 });
 
 // Vite middleware setup
-if (process.env.NODE_ENV !== "production") {
+const isDev = process.env.NODE_ENV !== "production";
+if (isDev) {
+    console.log(">>> STARTING VITE IN DEVELOPMENT MODE <<<");
     const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: "spa",
     });
     app.use(vite.middlewares);
 } else {
+    console.log(">>> STARTING IN PRODUCTION MODE (SERVING DIST) <<<");
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
@@ -389,8 +379,13 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 app.listen(PORT, "0.0.0.0", () => {
+    console.log(`>>> SERVER STARTING ON PORT ${PORT} <<<`);
+    console.log(`>>> NODE_ENV: ${process.env.NODE_ENV} <<<`);
     console.log(`Server running on http://localhost:${PORT}`);
 });
 }
 
-startServer();
+startServer().catch(err => {
+    console.error("CRITICAL SERVER ERROR:", err);
+    process.exit(1);
+});
