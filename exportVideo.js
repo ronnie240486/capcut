@@ -2,7 +2,7 @@
 import path from 'path';
 import fs from 'fs';
 import { exec } from 'child_process';
-import transitionBuilder from './video-engine/transitionBuilder.js';
+import transitionBuilder from './transitionBuilder.js';
 
 function validateAndProbe(filePath) {
     return new Promise((resolve) => {
@@ -74,7 +74,7 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             
             // FORÇAR SINCRONIA DE VÍDEO
             '-r', String(fps), // Força output FPS constante
-            '-fps_mode', 'cfr',     // Vital para evitar drift
+            '-vsync', '1',     // CFR (Constant Frame Rate) - vital para evitar drift
             
             // Codec de Áudio Otimizado
             '-c:a', 'aac',
@@ -95,3 +95,4 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
         throw e;
     }
 };
+
