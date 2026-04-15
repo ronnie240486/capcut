@@ -95,4 +95,3 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
         throw e;
     }
 };
-
