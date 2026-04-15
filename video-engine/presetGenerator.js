@@ -311,10 +311,38 @@ export default {
             postFilters.push(`perspective=x0='iw/10*sin(t)':y0=0:x1='iw-iw/10*sin(t)':y1=0:x2=0:y2=ih:x3=iw:y3=ih`);
         } else if (id === 'mov-ai-cinematic-shake') {
             z = `1.05`;
-            const shakeX = `(iw/100)*sin(2*PI*t/2)`;
-            const shakeY = `(ih/100)*cos(2*PI*t/1.5)`;
+            const shakeX = `(iw/100)*${intensity}*sin(2*PI*t/2)`;
+            const shakeY = `(ih/100)*${intensity}*cos(2*PI*t/1.5)`;
             x = `(iw/2)-(iw/zoom/2) + ${shakeX}`;
             y = `(ih/2)-(ih/zoom/2) + ${shakeY}`;
+        } else if (id === 'mov-glitch-vortex') {
+            postFilters.push(`rotate=a='${speed}*t*sin(${speed}*t)':c=none`);
+            postFilters.push(`noise=alls=${20 * intensity}:allf=t+u`);
+        } else if (id === 'mov-mirage-wave') {
+            const wave = `${10 * intensity}*sin(${speed}*Y/20+t*5)`;
+            postFilters.push(`geq=r='p(X+${wave},Y)':g='p(X+${wave},Y)':b='p(X+${wave},Y)'`);
+        } else if (id === 'mov-kaleidoscope') {
+            postFilters.push(`rotate=a='2*PI*t*${speed}/10':c=none`);
+            postFilters.push(`perspective=x0='iw/4':y0=0:x1='3*iw/4':y1=0:x2=iw:y2=ih:x3=0:y3=ih`);
+        } else if (id === 'mov-zoom-warp') {
+            z = `1.0 + 0.5*sin(${speed}*t)`;
+            postFilters.push(`lenscorrection=k1=${0.1 * intensity}:k2=${0.1 * intensity}`);
+        } else if (id === 'mov-chromatic-pulse') {
+            const shift = `${10 * intensity}*sin(${speed}*t*5)`;
+            postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)'`);
+        } else if (id === 'mov-scanline-flicker') {
+            postFilters.push(`eq=brightness='0.1*sin(60*t)*${intensity}':contrast=${1 + 0.1 * intensity}`);
+            postFilters.push(`noise=alls=${10 * intensity}:allf=t`);
+        } else if (id === 'mov-vignette-pulse') {
+            postFilters.push(`vignette='PI/4+0.2*sin(${speed}*t*3)*${intensity}'`);
+        } else if (id === 'mov-edge-glow') {
+            postFilters.push(`unsharp=7:7:${2 * intensity}:7:7:0,eq=saturation=${1 + intensity}`);
+        } else if (id === 'mov-pixel-drift') {
+            const drift = `mod(T*${100 * speed},iw)*${intensity}`;
+            postFilters.push(`geq=r='p(X+${drift},Y)':g='p(X+${drift},Y)':b='p(X+${drift},Y)'`);
+        } else if (id === 'mov-spiral-zoom') {
+            z = `1.1 + 0.3*sin(${speed}*t*2)`;
+            postFilters.push(`rotate=a='${speed}*t*2':c=none`);
         }
 
         // =========================================================================
