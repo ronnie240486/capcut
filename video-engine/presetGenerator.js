@@ -205,6 +205,7 @@ export default {
             else if (id.includes('tumble')) { z = `1.0+0.5*sin(${speed}*${time})`; postFilters.push(`rotate=a='${speed}*t':c=black`); }
             else if (id.includes('float')) { z = '1.05'; x = `${centerX} + ${20 * intensity}*sin(${speed}*${time})`; y = `${centerY} + ${20 * intensity}*cos(${speed}*${time})`; }
             else if (id.includes('spin-axis')) { z = '1.2'; postFilters.push(`rotate=a='${2 * speed}*PI*t/5':c=none`); }
+            else if (id.includes('roll')) { z = '1.1'; postFilters.push(`rotate=a='${speed}*2*PI*t':c=none`); }
             else if (id.includes('swing-l')) { z = '1.2'; x = `${centerX} - ${40 * intensity}*sin(${speed}*${time})`; }
             else if (id.includes('swing-r')) { z = '1.2'; x = `${centerX} + ${40 * intensity}*sin(${speed}*${time})`; }
             else if (id.includes('perspective-u')) { z = '1.2'; y = `${centerY} - ${40 * intensity}*sin(${speed}*${time})`; }
@@ -247,23 +248,33 @@ export default {
             else if (id.includes('out')) postFilters.push(`boxblur=20:1:enable='between(t,${Math.max(0, durationSec-0.5)},${durationSec})'`);
             else if (id.includes('pulse')) postFilters.push(`boxblur=10:1:enable='lt(mod(t,1),0.3)'`);
             else if (id.includes('zoom')) { z = 'min(zoom+0.005,1.2)'; postFilters.push(`boxblur=10:1`); }
+            else if (id.includes('motion')) { postFilters.push(`gblur=sigma=${5 * intensity}:steps=3`); }
             else postFilters.push(`boxblur=10:1`);
         
-        } else if (id.includes('shake') || id.includes('handheld') || id.includes('earthquake')) {
-             let intensity = 10;
-             if (id.includes('handheld-1')) intensity = 5;
-             if (id.includes('handheld-2')) intensity = 15;
-             if (id.includes('shake-hard')) intensity = 30;
-             if (id.includes('earthquake')) intensity = 50;
-             
-             z = '1.1'; 
-             const shakeExpr = `x='(iw-ow)/2 + (random(1)-0.5)*${intensity}':y='(ih-oh)/2 + (random(1)-0.5)*${intensity}'`;
-             postFilters.push(`crop=w=iw-${intensity}:h=ih-${intensity}:${shakeExpr},scale=${w}:${h}`);
-        
         } else if (id === 'pulse') {
-            z = `1.05+0.05*sin(2*PI*${time})`;
+            z = `1.05 + 0.05*${intensity}*sin(2*PI*${time}*${speed})`;
         } else if (id === 'heartbeat') {
-            z = `1.0 + 0.1*abs(sin(3*PI*${time}))`;
+            z = `1.0 + 0.1*${intensity}*abs(sin(3*PI*${time}*${speed}))`;
+        } else if (id === 'wiggle') {
+            postFilters.push(`rotate=a='0.05*${intensity}*sin(10*t*${speed})':c=none`);
+        } else if (id === 'float') {
+            y = `${centerY} + ${20 * intensity}*sin(2*PI*${time}*${speed}/2)`;
+        } else if (id === 'spin-slow') {
+            postFilters.push(`rotate=a='2*PI*t*${speed}/10':c=none`);
+        } else if (id === 'pendulum') {
+            postFilters.push(`rotate=a='0.2*${intensity}*sin(2*PI*t*${speed}/2)':c=none`);
+        } else if (id === 'jitter' || id.includes('shake') || id.includes('handheld') || id.includes('earthquake')) {
+             let baseIntensity = 10;
+             if (id.includes('handheld-1')) baseIntensity = 5;
+             if (id.includes('handheld-2')) baseIntensity = 15;
+             if (id.includes('shake-hard')) baseIntensity = 30;
+             if (id.includes('earthquake')) baseIntensity = 50;
+             if (id === 'jitter') baseIntensity = 10;
+             
+             const finalIntensity = baseIntensity * intensity;
+             z = '1.1'; 
+             const shakeExpr = `x='(iw-ow)/2 + (random(1)-0.5)*${finalIntensity}':y='(ih-oh)/2 + (random(1)-0.5)*${finalIntensity}'`;
+             postFilters.push(`crop=w=iw-${finalIntensity}:h=ih-${finalIntensity}:${shakeExpr},scale=${w}:${h}`);
         } else if (id === 'mov-cinematic-bloom') {
             postFilters.push(`unsharp=5:5:1.0:5:5:0.0,eq=brightness=0.05:contrast=1.1`);
         } else if (id === 'mov-vhs-pro') {
