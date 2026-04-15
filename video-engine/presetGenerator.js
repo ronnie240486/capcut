@@ -178,17 +178,19 @@ export default {
         // 4. DISTORTION & ART EFFECTS
         // =========================================================================
         } else if (id === 'mov-glitch-vortex') {
-            z = '1.1';
-            postFilters.push(`vortex=angle='${0.2 * intensity}*sin(${speed}*t)':r=0.5`);
+            z = '1.2';
+            postFilters.push(`lenscorrection=k1=${0.2 * intensity}*sin(${speed}*t)`);
         } else if (id === 'mov-mirage-wave') {
             postFilters.push(`geq=r='p(X+${15 * intensity}*sin(Y/20+${speed}*T),Y)':g='p(X,Y)':b='p(X-${15 * intensity}*sin(Y/20+${speed}*T),Y)'`);
         } else if (id === 'mov-kaleidoscope') {
-            postFilters.push(`kaleidoscope=n=${Math.round(6 * intensity)}:angle='${speed}*t'`);
+            z = '1.2';
+            postFilters.push(`crop=iw/2:ih/2:0:0,split=4[a][b][c][d];[b]hflip[b1];[c]vflip[c1];[d]hflip,vflip[d1];[a][b1]hstack[top];[c1][d1]hstack[bottom];[top][bottom]vstack,scale=${w}:${h}`);
         } else if (id === 'mov-zoom-warp') {
             z = `1.0 + ${0.2 * intensity}*sin(${speed}*t)`;
             postFilters.push(`lenscorrection=k1=${0.1 * intensity}*sin(${speed}*t):k2=${0.05 * intensity}*cos(${speed}*t)`);
         } else if (id === 'mov-chromatic-pulse') {
-            postFilters.push(`chromashift=cbh=${10 * intensity}*sin(${speed}*t):crv=${10 * intensity}*cos(${speed}*t)`);
+            const shift = `${5 * intensity}*sin(${speed}*T)`;
+            postFilters.push(`geq=r='p(X+${shift},Y)':g='p(X,Y)':b='p(X-${shift},Y)'`);
         } else if (id === 'mov-scanline-flicker') {
             postFilters.push(`drawgrid=w=iw:h=2:c=black@0.5:t=1`);
             postFilters.push(`eq=brightness='${0.1 * intensity}*sin(50*t*${speed})'`);
@@ -197,10 +199,11 @@ export default {
         } else if (id === 'mov-edge-glow') {
             postFilters.push(`edgedetect=low=0.1:high=0.4,format=rgba,colorchannelmixer=rr=${1 + intensity}:gg=${1 + intensity}:bb=${1 + intensity}`);
         } else if (id === 'mov-pixel-drift') {
-            postFilters.push(`pixelize=w='${10 * intensity}+5*sin(${speed}*t)':h='${10 * intensity}+5*sin(${speed}*t)'`);
+            const pSize = Math.max(2, Math.round(10 * intensity));
+            postFilters.push(`scale=iw/${pSize}:-1,scale=${w}:${h}:flags=neighbor`);
         } else if (id === 'mov-spiral-zoom') {
             z = `1.0 + ${0.5 * intensity}*t/${durationSec}`;
-            postFilters.push(`rotate=a='${speed}*t*t':c=none:ow=rotw(iw):oh=roth(ih)`);
+            postFilters.push(`rotate=a='${speed}*t*t':c=black@0:ow=iw:oh=ih`);
 
         // =========================================================================
         // 5. BLUR EFFECTS
@@ -229,8 +232,8 @@ export default {
             else if (id.includes('pulse-fast')) z = `1.1 + ${0.05 * intensity}*sin(2*PI*on/(${30 / speed}*0.5))`;
             else if (id.includes('wobble')) { z = `1.2`; x = `${centerX} + ${30 * intensity}*sin(2*PI*on/${60 / speed})`; y = `${centerY} + ${30 * intensity}*cos(2*PI*on/${90 / speed})`; }
             else if (id.includes('shake')) { z = `1.2`; x = `${centerX} + ${20 * intensity}*(random(1)-0.5)`; y = `${centerY} + ${20 * intensity}*(random(1)-0.5)`; }
-            else if (id.includes('twist-in')) { z = `min(zoom+${0.02 * speed},1.5)`; postFilters.push(`rotate=a='(t*${speed})':c=none:ow=rotw(iw):oh=roth(ih)`); }
-            else if (id.includes('twist-out')) { z = `max(1.5-${0.02 * speed}*on,1.0)`; postFilters.push(`rotate=a='-(t*${speed})':c=none:ow=rotw(iw):oh=roth(ih)`); }
+            else if (id.includes('twist-in')) { z = `min(zoom+${0.02 * speed},1.5)`; postFilters.push(`rotate=a='(t*${speed})':c=black@0:ow=iw:oh=ih`); }
+            else if (id.includes('twist-out')) { z = `max(1.5-${0.02 * speed}*on,1.0)`; postFilters.push(`rotate=a='-(t*${speed})':c=black@0:ow=iw:oh=ih`); }
             else if (id === 'dolly-zoom' || id === 'mov-dolly-vertigo') { z = `1.0 + ${0.5 * intensity}*sin(PI*on/(${frames / speed}))`; }
 
         // =========================================================================
@@ -258,7 +261,7 @@ export default {
             else if (id === 'slide-in-bottom') { y = `(ih-oh)/2 + (ih)*(1-min(${time}/dur,1))`; z = '1.0'; }
             else if (id === 'pop-in') { z = `if(lt(on,${dur * fps}), max(0.1, on/(${dur * fps})), 1.0)`; }
             else if (id === 'fade-in') { postFilters.push(`fade=t=in:st=0:d=${dur}`); }
-            else if (id === 'swing-in') { postFilters.push(`rotate=a='if(lt(t,${dur}), -10*(1-t/${dur})*PI/180, 0)':c=none:ow=rotw(iw):oh=roth(ih)`); }
+            else if (id === 'swing-in') { z = '1.1'; postFilters.push(`rotate=a='if(lt(t,${dur}), -10*(1-t/${dur})*PI/180, 0)':c=black@0:ow=iw:oh=ih`); }
         } else if (id.includes('elastic') || id.includes('bounce') || id.includes('jelly') || id.includes('spring') || id.includes('squash') || id === 'mov-tada') {
             z = '1.2'; 
             if (id === 'mov-bounce-drop') { const amp = 200 * intensity; y = `${centerY} - ${amp}*exp(-3*${time}*${speed})*cos(15*${time}*${speed})`; } 
@@ -381,7 +384,6 @@ export default {
         } else if (isImage && !id) {
             z = `min(zoom+0.0015,1.5)`; 
         }
-}
 
         const dVal = isImage ? frames : 1;
         zoomPanFilter = `zoompan=z='${z}':x='${x}':y='${y}':d=${dVal}:s=${w}x${h}:fps=${fps}`;
