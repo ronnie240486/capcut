@@ -104,7 +104,6 @@ export default {
             'mono': 'hue=s=0',
             'vintage': 'sepia=0.6,eq=contrast=0.9:brightness=0.1',
             'vintage-cool': 'colorbalance=bs=0.3:rs=-0.2,eq=saturation=0.8:contrast=1.1',
-            'dreamy': 'gblur=sigma=1,eq=brightness=0.2:saturation=0.8',
             // Missing Effects from constants.ts
             'matrix': 'hue=h=90,eq=contrast=1.2:brightness=-0.1:saturation=1.5',
             'cool-morning': 'hue=h=180,sepia,eq=brightness=0.1',
@@ -128,18 +127,18 @@ export default {
             'low-light': 'eq=brightness=-0.5:contrast=1.5',
             'overexposed': 'eq=brightness=0.5:contrast=0.8',
             'radioactive': 'hue=h=90,eq=saturation=3',
-            'deep-fried': 'eq=contrast=2:saturation=3,unsharp=5:5:1.0:5:5:0.0',
+            'deep-fried': 'eq=contrast=2:saturation=3,unsharp=5:5:2.0:5:5:0.0',
             'ethereal': 'eq=brightness=0.3:contrast=0.8:saturation=0.5',
-            'dv-cam': 'sepia,eq=contrast=1.1',
-            'bling': 'eq=brightness=0.1',
-            'soft-angel': 'eq=brightness=0.2:contrast=0.9,gblur=sigma=0.5',
-            'sharpen': 'eq=contrast=1.4:saturation=1.2,unsharp',
-            'dreamy': 'gblur=sigma=1,eq=brightness=0.2:saturation=0.8',
+            'dv-cam': 'sepia=0.2,eq=contrast=1.1,noise=alls=10:allf=t',
+            'bling': 'eq=brightness=1.1,unsharp=3:3:1.5',
+            'soft-angel': 'eq=brightness=1.2:contrast=0.9,boxblur=luma_radius=1:luma_power=1',
+            'sharpen': 'unsharp=5:5:1.5:5:5:0.0,eq=contrast=1.4:saturation=1.2',
+            'dreamy': 'boxblur=luma_radius=2:luma_power=1,eq=brightness=0.2:saturation=0.8',
             // Glitch & Distorção
             'glitch-pro-1': 'drawgrid=y=0:h=4:t=1:c=black@0.5,hue=H=2*PI*t:s=1.5',
-            'glitch-pro-2': 'scale=iw/20:-1,scale=iw*20:-1:flags=neighbor',
-            'vhs-distort': 'noise=alls=20:allf=t+u,eq=brightness=0.05:contrast=1.1',
-            'bad-signal': 'noise=alls=30:allf=t,eq=brightness=-0.1:contrast=1.2',
+            'glitch-pro-2': 'boxblur=luma_radius=\'if(lt(mod(t,0.2),0.1),20,0)\':luma_power=1',
+            'vhs-distort': 'noise=alls=20:allf=t+u,eq=saturation=1.5:contrast=1.2',
+            'bad-signal': 'noise=alls=30:allf=t,eq=brightness=0.1:contrast=1.5',
             'pixelate': 'scale=iw/10:-1,scale=iw*10:-1:flags=neighbor',
             // Retro & Filme
             'old-film': 'sepia,noise=alls=20:allf=t+u,drawbox=y=0:w=1:h=ih:c=black@0.3:t=fill',
@@ -319,20 +318,20 @@ export default {
         } else if (id.includes('blur') || id.includes('defocus')) {
             const blurVal = Math.max(1, Math.round(10 * intensity));
             if (id.includes('in') || id.includes('focus')) {
-                postFilters.push(`gblur=sigma='if(lt(t,0.5), ${blurVal}*(1-t/0.5), 0)'`);
+                postFilters.push(`boxblur=luma_radius='if(lt(t,0.5), ${blurVal}*(1-t/0.5), 0)':luma_power=1`);
             } else if (id.includes('out') || id.includes('defocus')) {
-                postFilters.push(`gblur=sigma='if(gt(t,${durationSec}-0.5), ${blurVal}*(t-(${durationSec}-0.5))/0.5, 0)'`);
+                postFilters.push(`boxblur=luma_radius='if(gt(t,${durationSec}-0.5), ${blurVal}*(t-(${durationSec}-0.5))/0.5, 0)':luma_power=1`);
             } else if (id.includes('pulse')) {
-                postFilters.push(`gblur=sigma='${blurVal/2}*(1+sin(2*PI*t*${speed}))'`);
+                postFilters.push(`boxblur=luma_radius='${blurVal/2}*(1+sin(2*PI*t*${speed}))':luma_power=1`);
             } else if (id.includes('zoom')) {
                 z = `min(zoom+${0.005 * speed},1.5)`;
-                postFilters.push(`gblur=sigma=${Math.round(5 * intensity)}`);
+                postFilters.push(`boxblur=luma_radius=${Math.round(5 * intensity)}:luma_power=1`);
             } else if (id.includes('motion')) {
-                postFilters.push(`gblur=sigma=${Math.round(8 * intensity)}`);
+                postFilters.push(`boxblur=luma_radius=${Math.round(8 * intensity)}:luma_power=1`);
             } else if (id === 'mov-dreamy-blur') {
-                postFilters.push(`gblur=sigma=5,eq=brightness=0.1:saturation=1.5`);
+                postFilters.push(`boxblur=luma_radius=5:luma_power=1,eq=brightness=0.1:saturation=1.5`);
             } else {
-                postFilters.push(`gblur=sigma=${Math.round(5 * intensity)}`);
+                postFilters.push(`boxblur=luma_radius=${Math.round(5 * intensity)}:luma_power=1`);
             }
 
         // =========================================================================
@@ -349,7 +348,12 @@ export default {
             else if (id.includes('pulse-slow')) z = `1.1 + ${0.05 * intensity}*sin(2*PI*on/(${30 / speed}*2))`;
             else if (id.includes('pulse-fast')) z = `1.1 + ${0.05 * intensity}*sin(2*PI*on/(${30 / speed}*0.5))`;
             else if (id.includes('wobble')) { z = `1.2`; x = `${centerX} + ${30 * intensity}*sin(2*PI*on/${60 / speed})`; y = `${centerY} + ${30 * intensity}*cos(2*PI*on/${90 / speed})`; }
-            else if (id.includes('shake')) { z = `1.2`; x = `${centerX} + ${20 * intensity}*(random(1)-0.5)`; y = `${centerY} + ${20 * intensity}*(random(1)-0.5)`; }
+            else if (id.includes('shake')) { z = `1.2`; x = `${centerX} + ${20 * intensity}*(random(0,1)-0.5)`; y = `${centerY} + ${20 * intensity}*(random(0,1)-0.5)`; }
+            else if (id === 'handheld-1') { z = '1.1'; x = `${centerX} + ${10 * intensity}*sin(2*PI*t*0.5)`; y = `${centerY} + ${10 * intensity}*cos(2*PI*t*0.7)`; }
+            else if (id === 'handheld-2') { z = '1.15'; x = `${centerX} + ${20 * intensity}*sin(2*PI*t*1.2)`; y = `${centerY} + ${20 * intensity}*cos(2*PI*t*1.5)`; }
+            else if (id === 'shake-hard') { z = '1.2'; x = `${centerX} + ${40 * intensity}*sin(2*PI*t*5)`; y = `${centerY} + ${40 * intensity}*cos(2*PI*t*7)`; }
+            else if (id === 'earthquake') { z = '1.3'; x = `${centerX} + ${60 * intensity}*sin(2*PI*t*15)`; y = `${centerY} + ${60 * intensity}*cos(2*PI*t*18)`; }
+            else if (id === 'jitter') { z = '1.1'; x = `${centerX} + ${15 * intensity}*floor(sin(2*PI*t*20))`; y = `${centerY} + ${15 * intensity}*floor(cos(2*PI*t*25))`; }
             else if (id.includes('twist-in')) { z = `min(zoom+${0.02 * speed},1.5)`; postFilters.push(`rotate=a='(t*${speed})':c=black@0:ow=iw:oh=ih`); }
             else if (id.includes('twist-out')) { z = `max(1.5-${0.02 * speed}*on,1.0)`; postFilters.push(`rotate=a='-(t*${speed})':c=black@0:ow=iw:oh=ih`); }
             else if (id === 'dolly-zoom' || id === 'mov-dolly-vertigo') { z = `1.0 + ${0.5 * intensity}*sin(PI*on/(${frames / speed}))`; }
