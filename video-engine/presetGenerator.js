@@ -513,7 +513,9 @@ export default {
         }
 
         const dVal = isImage ? frames : 1;
-        zoomPanFilter = `zoompan=z='${z}':x='${x}':y='${y}':d=${dVal}:s=${w}x${h}:fps=${fps}`;
+        // For video, we scale first to target resolution to make zoompan more predictable and avoid aspect ratio issues
+        const preScale = !isImage ? `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},` : '';
+        zoomPanFilter = `${preScale}zoompan=z='${z}':x='${x}':y='${y}':d=${dVal}:s=${w}x${h}:fps=${fps}`;
         
         const validPostFilters = postFilters.filter(f => f && f.trim().length > 0);
         const filterChain = validPostFilters.length > 0 
