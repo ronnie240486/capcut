@@ -103,6 +103,7 @@ export default {
             'vivid': 'eq=saturation=1.5:contrast=1.1',
             'mono': 'hue=s=0',
             'vintage': 'sepia=0.6,eq=contrast=0.9:brightness=0.1',
+            'vintage-cool': 'colorbalance=bs=0.3:rs=-0.2,eq=saturation=0.8:contrast=1.1',
             'dreamy': 'gblur=sigma=1,eq=brightness=0.2:saturation=0.8',
             // Missing Effects from constants.ts
             'matrix': 'hue=h=90,eq=contrast=1.2:brightness=-0.1:saturation=1.5',
@@ -289,6 +290,25 @@ export default {
         } else if (id === 'mov-pixel-drift') {
             const pSize = Math.max(2, Math.round(10 * intensity));
             postFilters.push(`scale=iw/${pSize}:-1,scale=${w}:${h}:flags=neighbor`);
+        } else if (id.includes('mov-glitch-vortex')) {
+            postFilters.push(`hue=h='t*90',vignette,rotate=a='sin(t)*0.1':c=black@0:ow=iw:oh=ih`);
+        } else if (id.includes('mov-mirage-wave')) {
+            postFilters.push(`vignette,hue=h='sin(t*2)*20'`);
+        } else if (id.includes('mov-kaleidoscope')) {
+            postFilters.push(`hue=h='t*45',eq=saturation=2`);
+        } else if (id.includes('mov-zoom-warp')) {
+            z = `1.0 + 0.5*sin(t*${speed})`;
+            postFilters.push(`gblur=sigma=2`);
+        } else if (id.includes('mov-chromatic-pulse')) {
+            postFilters.push(`eq=saturation=${1.5 * intensity},hue=h='sin(t*5)*30'`);
+        } else if (id.includes('mov-scanline-flicker')) {
+            postFilters.push(`noise=alls=10:allf=t,eq=brightness='sin(t*20)*0.1'`);
+        } else if (id.includes('mov-vignette-pulse')) {
+            postFilters.push(`vignette='PI/4 + sin(t*2)*PI/8'`);
+        } else if (id.includes('mov-edge-glow')) {
+            postFilters.push(`unsharp=7:7:2.5,eq=contrast=1.2`);
+        } else if (id.includes('mov-pixel-drift')) {
+            x = `${centerX} + t*10`;
         } else if (id === 'mov-spiral-zoom') {
             z = `1.0 + ${0.5 * intensity}*t/${durationSec}`;
             postFilters.push(`rotate=a='${speed}*t*t':c=black@0:ow=iw:oh=ih`);
@@ -297,22 +317,22 @@ export default {
         // 5. BLUR EFFECTS
         // =========================================================================
         } else if (id.includes('blur') || id.includes('defocus')) {
-            const blurVal = Math.max(1, Math.round(20 * intensity));
+            const blurVal = Math.max(1, Math.round(10 * intensity));
             if (id.includes('in') || id.includes('focus')) {
-                postFilters.push(`boxblur=luma_radius='min(${blurVal}, ${blurVal}*(1-t/0.5))':luma_power=1:enable='between(t,0,0.5)'`);
+                postFilters.push(`gblur=sigma='if(lt(t,0.5), ${blurVal}*(1-t/0.5), 0)'`);
             } else if (id.includes('out') || id.includes('defocus')) {
-                postFilters.push(`boxblur=luma_radius='min(${blurVal}, ${blurVal}*(t/0.5))':luma_power=1:enable='between(t,0,0.5)'`);
+                postFilters.push(`gblur=sigma='if(gt(t,${durationSec}-0.5), ${blurVal}*(t-(${durationSec}-0.5))/0.5, 0)'`);
             } else if (id.includes('pulse')) {
-                postFilters.push(`boxblur=luma_radius='${blurVal/2}*(1+sin(2*PI*t*${speed}))':luma_power=1`);
+                postFilters.push(`gblur=sigma='${blurVal/2}*(1+sin(2*PI*t*${speed}))'`);
             } else if (id.includes('zoom')) {
                 z = `min(zoom+${0.005 * speed},1.5)`;
-                postFilters.push(`boxblur=luma_radius=${Math.round(10 * intensity)}:luma_power=1`);
+                postFilters.push(`gblur=sigma=${Math.round(5 * intensity)}`);
             } else if (id.includes('motion')) {
-                postFilters.push(`boxblur=luma_radius=${Math.round(15 * intensity)}:luma_power=1`);
+                postFilters.push(`gblur=sigma=${Math.round(8 * intensity)}`);
             } else if (id === 'mov-dreamy-blur') {
                 postFilters.push(`gblur=sigma=5,eq=brightness=0.1:saturation=1.5`);
             } else {
-                postFilters.push(`boxblur=luma_radius=${Math.round(10 * intensity)}:luma_power=1`);
+                postFilters.push(`gblur=sigma=${Math.round(5 * intensity)}`);
             }
 
         // =========================================================================
@@ -432,6 +452,11 @@ export default {
         } else if (id === 'mov-flash-pulse') {
             z = '1.0';
             postFilters.push(`eq=eval=frame:brightness='${0.2 * intensity}+${0.2 * intensity}*sin(${10 * speed}*t)'`);
+        } else if (id === 'rgb-split-anim') {
+            postFilters.push(`hue=h='sin(t*10)*30',eq=saturation=1.5`);
+        } else if (id === 'mov-vhs-tracking') {
+            postFilters.push(`noise=alls=20:allf=t+u,eq=contrast=1.2,hue=h='sin(t*5)*10'`);
+            x = `${centerX} + 2*sin(t*30)`;
 
         // =========================================================================
         // 10. SHAKE & HANDHELD
