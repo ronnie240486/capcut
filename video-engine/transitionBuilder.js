@@ -149,6 +149,12 @@ export default {
                     if (fx) addFilter(fx);
                 }
                 
+                // --- DEEP-SYNC SENSORIAL (CLIP LEVEL) ---
+                if (clip.properties && clip.properties.audioDeepSync) {
+                    // Visual pulse matched to bass (simulated with 2Hz sine for now)
+                    addFilter("eq=contrast='1+0.2*abs(sin(2*PI*t*2))':brightness='0.05*abs(sin(2*PI*t*2))'");
+                }
+                
                 if (clip.properties && clip.properties.adjustments) {
                     const adj = clip.properties.adjustments;
                     let eqParts = [];
@@ -192,9 +198,14 @@ export default {
                     const audioLabel = `a_main_${i}`;
                     const start = clip.mediaStartOffset || 0;
                     const vol = clip.properties.volume !== undefined ? clip.properties.volume : 1;
-                    const audioFormatFilter = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp,aresample=async=1';
                     
-                    filterChain += `[${idx}:a]${audioFormatFilter},atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${vol}[${audioLabel}];`;
+                    // Deep-Sync Audio Enhancement
+                    let audioFilters = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp,aresample=async=1';
+                    if (clip.properties && clip.properties.audioDeepSync) {
+                        audioFilters += ',bass=g=15,volume=1.5';
+                    }
+
+                    filterChain += `[${idx}:a]${audioFilters},atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${vol}[${audioLabel}];`;
                     mainTrackAudioSegments.push(`[${audioLabel}]`);
                 } else {
                     // Padding Audio (Silence for this clip duration)
