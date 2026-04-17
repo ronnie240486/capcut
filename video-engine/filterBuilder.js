@@ -94,6 +94,18 @@ export default {
                 outputOptions = ['-c:v', 'copy'];
                 break;
 
+            case 'deep-sync-real':
+                // Deep-Sync Sensorial: Visual pulsing + bass boost
+                // Only apply audio filters if audio is detected
+                if (params.hasAudio) {
+                    filterComplex = "[0:v]eq=contrast='1+0.2*abs(sin(2*PI*t*2))':brightness='0.05*abs(sin(2*PI*t*2))'[v];[0:a]bass=g=15,volume=1.5[a]";
+                    mapArgs = ['-map', '[v]', '-map', '[a]'];
+                } else {
+                    filterComplex = "[0:v]eq=contrast='1+0.2*abs(sin(2*PI*t*2))':brightness='0.05*abs(sin(2*PI*t*2))'[v]";
+                    mapArgs = ['-map', '[v]'];
+                }
+                break;
+
             default:
                 // Safe default: Ensure dimensions are divisible by 2 and at least 2px
                 // Scale filter: width=max(2,trunc(iw/2)*2), height=max(2,trunc(ih/2)*2)
