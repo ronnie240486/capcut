@@ -482,27 +482,31 @@ export default {
         // 11. KEN BURNS & PARALLAX
         // =========================================================================
         } else if (id === 'kenBurns') {
-            // Linear progress for Ken Burns
-            const startScale = Math.max(1.1, config.startScale || 1.1);
-            const endScale = config.endScale || 1.5;
-            const progress = `(${time}/${durationSec})`;
-            z = `${startScale} + (${endScale} - ${startScale}) * ${progress} * ${intensity}`;
-            
-            const sX = config.startX || 0; const eX = config.endX || 0;
-            const sY = config.startY || 0; const eY = config.endY || 0;
-            
-            // Scaled movement to make it significant
-            x = `${centerX} + (iw/50) * (${sX} + (${eX} - ${sX}) * ${progress} * ${intensity})`;
-            y = `${centerY} + (ih/50) * (${sY} + (${eY} - ${sY}) * ${progress} * ${intensity})`;
-
+            const startScale = config.startScale || 1.0;
+            const endScale = config.endScale || 1.35;
+            const period = 6 / speed;
+            const midScale = (startScale + endScale) / 2;
+            const ampScale = ((endScale - startScale) / 2) * intensity;
+            z = `${midScale} + ${ampScale} * sin(2*PI*${time}/${period} - PI/2)`;
+            if (config.startX !== undefined || config.endX !== undefined) {
+                 const sX = config.startX || 0; const eX = config.endX || 0;
+                 const midX = (sX + eX) / 2; const ampX = ((eX - sX) / 2) * intensity;
+                 x = `${centerX} + (iw/100) * (${midX} + ${ampX} * sin(2*PI*${time}/${period} - PI/2))`;
+            }
+            if (config.startY !== undefined || config.endY !== undefined) {
+                 const sY = config.startY || 0; const eY = config.endY || 0;
+                 const midY = (sY + eY) / 2; const ampY = ((eY - sY) / 2) * intensity;
+                 y = `${centerY} + (ih/100) * (${midY} + ${ampY} * sin(2*PI*${time}/${period} - PI/2))`;
+            }
         } else if (id === 'parallax') {
-            const pIntensity = (config.intensity || 10) * intensity * 25; 
+            const pIntensity = (config.intensity || 25) * intensity;
             const direction = (config.direction || 0) * (Math.PI / 180);
             const moveX = Math.cos(direction) * pIntensity;
             const moveY = Math.sin(direction) * pIntensity;
-            z = '1.5'; // High base zoom to allow significant movement (approx 33% of screen size) without black edges
-            x = `${centerX} + ${moveX} * sin(PI*${time}/${durationSec})`;
-            y = `${centerY} + ${moveY} * sin(PI*${time}/${durationSec})`;
+            z = '1.2';
+            const period = 6 / speed;
+            x = `${centerX} + ${moveX} * sin(2*PI*${time}/${period})`;
+            y = `${centerY} + ${moveY} * sin(2*PI*${time}/${period})`;
         
         } else if (isImage && !id) {
             z = `min(zoom+0.0015,1.5)`; 
