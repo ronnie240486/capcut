@@ -1,2 +1,2 @@
-import { handleExportVideo } from './video_engine/exportVideo.js';
+import { handleExportVideo } from './videoengine/exportVideo.js';
 console.log('Import successful:', typeof handleExportVideo);
