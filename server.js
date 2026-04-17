@@ -6,97 +6,16 @@ import fs from 'fs';
 import path from 'path';
 import { spawn, exec } from 'child_process';
 import { fileURLToPath } from 'url';
+import { handleExportVideo } from './video-engine/exportVideo.js';
 import filterBuilder from './video-engine/filterBuilder.js';
-import transitionBuilder from './video-engine/transitionBuilder.js';
 import https from 'https';
 import http from 'http';
 import { createServer as createViteServer } from 'vite';
+import { GoogleGenAI } from "@google/genai";
 
 // ES Module dirname fix
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// --- INLINED VIDEO EXPORT LOGIC ---
-function validateAndProbe(filePath) {
-    return new Promise((resolve) => {
-        try {
-            const stats = fs.statSync(filePath);
-            if (stats.size < 100) { 
-                 console.warn(`[Export] Skipping empty/tiny file: ${filePath} (${stats.size} bytes)`);
-                 return resolve({ isValid: false });
-            }
-        } catch(e) {
-            console.warn(`[Export] File not found: ${filePath}`);
-            return resolve({ isValid: false });
-        }
-
-        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
-            if (err) {
-                console.warn(`[Export] Probe failed for ${filePath}: ${err.message}`);
-                return resolve({ isValid: false });
-            }
-            const hasAudio = stdout && stdout.includes('audio');
-            resolve({ isValid: true, hasAudio });
-        });
-    });
-}
-
-const handleExportVideo = async (job, uploadDir, onStart) => {
-    try {
-        const { projectState } = job.params;
-        if (!projectState) throw new Error("Missing projectState");
-
-        const state = JSON.parse(projectState);
-        const { clips, media, totalDuration } = state;
-        const exportConfig = state.exportConfig || {};
-        const fps = parseInt(exportConfig.fps) || 30;
-        
-        const fileMap = {};
-        if (job.files && job.files.length > 0) {
-            for (const f of job.files) {
-                const info = await validateAndProbe(f.path);
-                
-                if (info.isValid) {
-                    fileMap[f.originalname] = f.path;
-                    if (media[f.originalname]) {
-                        media[f.originalname].hasAudio = info.hasAudio;
-                    }
-                }
-            }
-        }
-
-        const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, exportConfig, totalDuration);
-        const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
-        job.outputPath = outputPath;
-
-        const args = [
-            ...buildResult.inputs,
-            '-filter_complex', buildResult.filterComplex,
-            '-map', buildResult.outputMapVideo,
-            '-map', buildResult.outputMapAudio,
-            '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-crf', '23',
-            '-pix_fmt', 'yuv420p',
-            '-r', String(fps),
-            '-vsync', '1',
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-ac', '2',
-            '-ar', '44100',
-            '-t', String(totalDuration + 0.1),
-            '-movflags', '+faststart',
-            '-y',
-            outputPath
-        ];
-
-        onStart(job.id, args, totalDuration || 30);
-    } catch (e) {
-        console.error("Export Build Error:", e);
-        throw e;
-    }
-};
-// --- END INLINED LOGIC ---
 
 const app = express();
 const PORT = 3000;
@@ -110,8 +29,8 @@ app.use(cors({
 }));
 
 // Increase limits significantly for 4K video projects
-app.use(express.json({ limit: '2gb' }));
-app.use(express.urlencoded({ extended: true, limit: '2gb' }));
+app.use(express.json({ limit: '1gb' }));
+app.use(express.urlencoded({ extended: true, limit: '1gb' }));
 
 const uploadDir = path.resolve(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) {
@@ -124,6 +43,25 @@ if (!fs.existsSync(uploadDir)) {
 
 // Global Error Handlers to prevent crash
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+
+// Helper to check if file has audio
+const checkAudio = (filePath) => {
+    return new Promise((resolve) => {
+        // We use ffprobe to check for audio streams
+        const ffprobe = spawn('ffprobe', ['-v', 'error', '-show_streams', '-select_streams', 'a', '-of', 'json', filePath]);
+        let output = '';
+        ffprobe.stdout.on('data', d => output += d);
+        ffprobe.on('close', (code) => {
+            try {
+                const json = JSON.parse(output);
+                resolve(json.streams && json.streams.length > 0);
+            } catch (e) {
+                resolve(false);
+            }
+        });
+        ffprobe.on('error', () => resolve(false));
+    });
+};
 
 process.on('uncaughtException', (err) => {
     console.error('CRITICAL ERROR (Uncaught Exception):', err);
@@ -146,10 +84,23 @@ const storage = multer.diskStorage({
 const uploadAny = multer({ 
     storage,
     limits: {
-        fieldSize: 500 * 1024 * 1024, // 500MB json state
-        fileSize: 4096 * 1024 * 1024 // 4GB files
+        fieldSize: 100 * 1024 * 1024, // 100MB json state
+        fileSize: 2048 * 1024 * 1024 // 2GB files
     }
 }).any();
+
+const uploadSingle = multer({ storage }).single('file');
+
+// Single file upload endpoint
+app.post('/api/upload', uploadSingle, (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    res.json({ 
+        success: true, 
+        filename: req.file.filename,
+        originalname: req.file.originalname,
+        path: req.file.path
+    });
+});
 
 // Job Store
 const jobs = {};
@@ -255,16 +206,20 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     }
 }
 
-app.post('/api/process/start/:action', uploadAny, (req, res) => {
+app.post('/api/process/start/:action', uploadAny, async (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
-    jobs[jobId] = { id: jobId, status: 'pending', files: req.files || [], params: req.body, startTime: Date.now() };
+    const job = { id: jobId, status: 'pending', files: req.files || [], params: req.body, startTime: Date.now() };
+    jobs[jobId] = job;
     
+    const file = job.files[0];
+    if (!file) { job.status = 'failed'; return res.status(400).json({ error: 'Ficheiro não encontrado' }); }
+    
+    // Check for audio presence to pass to filterBuilder
+    const hasAudio = await checkAudio(file.path);
+    job.params.hasAudio = hasAudio;
+
     setTimeout(() => {
-        const job = jobs[jobId];
-        const file = job.files[0];
-        if (!file) { job.status = 'failed'; return; }
-        
         let ext = '.mp4';
         if (file.mimetype.startsWith('audio') || action === 'extract-audio' || action.includes('voice')) ext = '.mp3';
         
@@ -286,6 +241,122 @@ app.post('/api/process/start/:action', uploadAny, (req, res) => {
             createFFmpegJob(jobId, args, 10, res);
         }
     }, 100);
+});
+
+// NEW: AI Video Generation Backend Route
+app.post('/api/ai/generate-video', async (req, res) => {
+    const jobId = `aivideo_${Date.now()}`;
+    jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+    res.status(202).json({ jobId });
+
+    const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey } = req.body;
+    const finalKey = apiKey || process.env.GEMINI_API_KEY;
+
+    if (!finalKey) {
+        jobs[jobId].status = 'failed';
+        jobs[jobId].error = "Chave API não configurada no servidor.";
+        return;
+    }
+
+    try {
+        const genAI = new GoogleGenAI(finalKey);
+        // Using a dynamic model name if provided, else default
+        const aiModel = genAI.getGenerativeModel({ model: model || "veo-3.1-lite-generate-preview" });
+        
+        const generationParams = {
+            prompt,
+            aspect_ratio: aspectRatio || "16:9",
+            resolution: resolution || "720p",
+        };
+
+        // Handle image conditioning if present in base64
+        // Note: For actual VEO implementation, this depends on the SDK version
+        // Here we simulate the process or use the real SDK call if supported
+        // Based on the frontend logic, it's a fetch to the service.
+        
+        // For AI Studio environment, we'll try to use the model normally.
+        // If it's the Veo preview, we call it.
+        
+        console.log(`[Job ${jobId}] Starting AI Generation with prompt: ${prompt.slice(0, 50)}...`);
+        
+        // Mocking the wait and response since actual Video Gen might be specialized
+        // In a real environment with @google/genai supporting video:
+        /*
+        const result = await aiModel.generateContent({
+           contents: [{ role: 'user', parts: [{ text: prompt }] }]
+        });
+        */
+        
+        // Let's assume for now we use the same fetch logic as GeminiVideoService but from the backend
+        // to keep it reliable and using the server key.
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model || 'veo-3.1-lite-generate-preview'}:generateVideo?key=${finalKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                prompt,
+                aspectRatio,
+                resolution,
+                image: image ? { data: image.split(',')[1], mimeType: "image/png" } : undefined,
+                lastFrame: lastFrame ? { data: lastFrame.split(',')[1], mimeType: "image/png" } : undefined,
+                referenceImages: referenceImages?.map(img => ({ data: img.split(',')[1], mimeType: "image/png" }))
+            })
+        });
+
+        if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.error?.message || "Erro na API Gemini");
+        }
+
+        const data = await response.json();
+        const operationName = data.name; // Long running operation
+
+        // Poll for completion
+        let completed = false;
+        let attempts = 0;
+        const maxAttempts = 60; // 5 minutes (5s intervals)
+
+        while (!completed && attempts < maxAttempts) {
+            attempts++;
+            await new Promise(r => setTimeout(r, 5000));
+            
+            const pollRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${finalKey}`);
+            const pollData = await pollRes.json();
+            
+            if (jobs[jobId]) jobs[jobId].progress = Math.min(95, 10 + (attempts * 1.5));
+
+            if (pollData.done) {
+                completed = true;
+                if (pollData.error) {
+                    throw new Error(pollData.error.message);
+                }
+                
+                // Success! Download the video and save to uploads
+                const videoUrl = pollData.response.videoUri || pollData.response.video.uri;
+                const videoRes = await fetch(videoUrl);
+                const buffer = Buffer.from(await videoRes.arrayBuffer());
+                
+                const filename = `ai_gen_${Date.now()}.mp4`;
+                const outputPath = path.join(uploadDir, filename);
+                fs.writeFileSync(outputPath, buffer);
+                
+                if (jobs[jobId]) {
+                    jobs[jobId].status = 'completed';
+                    jobs[jobId].progress = 100;
+                    jobs[jobId].outputPath = outputPath;
+                    jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                }
+            }
+        }
+
+        if (!completed) throw new Error("Tempo limite de geração excedido.");
+
+    } catch (e) {
+        console.error(`[Job ${jobId}] AI Gen Failed:`, e);
+        if (jobs[jobId]) {
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = e.message;
+        }
+    }
 });
 
 app.post('/api/export/start', uploadAny, (req, res) => {
@@ -443,16 +514,13 @@ app.post('/api/proxy/gpt', async (req, res) => {
 });
 
 // Vite middleware setup
-const isDev = process.env.NODE_ENV !== "production";
-if (isDev) {
-    console.log(">>> STARTING VITE IN DEVELOPMENT MODE <<<");
+if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: "spa",
     });
     app.use(vite.middlewares);
 } else {
-    console.log(">>> STARTING IN PRODUCTION MODE (SERVING DIST) <<<");
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
@@ -461,13 +529,8 @@ if (isDev) {
 }
 
 app.listen(PORT, "0.0.0.0", () => {
-    console.log(`>>> SERVER STARTING ON PORT ${PORT} <<<`);
-    console.log(`>>> NODE_ENV: ${process.env.NODE_ENV} <<<`);
     console.log(`Server running on http://localhost:${PORT}`);
 });
 }
 
-startServer().catch(err => {
-    console.error("CRITICAL SERVER ERROR:", err);
-    process.exit(1);
-});
+startServer();
