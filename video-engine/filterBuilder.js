@@ -96,14 +96,37 @@ export default {
 
             case 'deep-sync-real':
                 // Deep-Sync Sensorial: Visual pulsing + bass boost
-                // Only apply audio filters if audio is detected
+                // Using a more robust scaling and format conversion to prevent blank frames
+                const visualFilter = "scale=iw:-2,format=yuv420p,eq=contrast='1+0.15*abs(sin(2*PI*t*1.5))':brightness='0.03*abs(sin(2*PI*t*1.5))'";
                 if (params.hasAudio) {
-                    filterComplex = "[0:v]eq=contrast='1+0.2*abs(sin(2*PI*t*2))':brightness='0.05*abs(sin(2*PI*t*2))'[v];[0:a]bass=g=15,volume=1.5[a]";
+                    filterComplex = `[0:v]${visualFilter}[v];[0:a]bass=g=12,volume=1.2[a]`;
                     mapArgs = ['-map', '[v]', '-map', '[a]'];
                 } else {
-                    filterComplex = "[0:v]eq=contrast='1+0.2*abs(sin(2*PI*t*2))':brightness='0.05*abs(sin(2*PI*t*2))'[v]";
+                    filterComplex = `[0:v]${visualFilter}[v]`;
                     mapArgs = ['-map', '[v]'];
                 }
+                break;
+
+            case 'morpheus-real':
+                // Neural Morphing Simulation: Complex stylistic filters
+                const style = params.style || 'Vidro Líquido';
+                let styleFilter = '';
+                
+                if (style === 'Vidro Líquido') {
+                    // Refractive, fluid look
+                    styleFilter = "scale=iw:-2,format=yuv420p,boxblur=1:1,unsharp=5:5:1.0:5:5:0.0,vignette=0.3,curves=m='0/0 0.4/0.5 1/1'";
+                } else if (style === 'Éter Quântico') {
+                    // Ethereal, glowing, high-contrast
+                    styleFilter = "scale=iw:-2,format=yuv420p,colortemperature=4500,hue=s=0.5:h=10,unsharp=7:7:2.5,cas=0.5";
+                } else if (style === 'Cyberpunk Orgânico') {
+                    // Neon, high saturation, sharp edges
+                    styleFilter = "scale=iw:-2,format=yuv420p,hue=s=1.8:h=320,curves=m='0/0 0.3/0.1 0.7/0.9 1/1',unsharp=5:5:1.5";
+                } else {
+                    styleFilter = "scale=iw:-2,format=yuv420p,unsharp=3:3:1.0";
+                }
+
+                filterComplex = `[0:v]${styleFilter}[v]`;
+                mapArgs = ['-map', '[v]', '-map', '0:a?'];
                 break;
 
             default:
