@@ -96,8 +96,9 @@ export default {
 
             case 'deep-sync-real':
                 // Deep-Sync Sensorial: Visual pulsing + bass boost
-                // Using a more robust scaling and format conversion to prevent blank frames
-                const visualFilter = "scale=iw:-2,format=yuv420p,eq=contrast='1+0.15*abs(sin(2*PI*t*1.5))':brightness='0.03*abs(sin(2*PI*t*1.5))'";
+                // Using trunc(iw/2)*2 for even dimensions, essential for many encoders
+                const dsPrep = "scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p";
+                const visualFilter = `${dsPrep},eq=contrast='1+0.15*abs(sin(2*PI*t*1.5))':brightness='0.03*abs(sin(2*PI*t*1.5))'`;
                 if (params.hasAudio) {
                     filterComplex = `[0:v]${visualFilter}[v];[0:a]bass=g=12,volume=1.2[a]`;
                     mapArgs = ['-map', '[v]', '-map', '[a]'];
@@ -112,17 +113,20 @@ export default {
                 const style = params.style || 'Vidro Líquido';
                 let styleFilter = '';
                 
+                // Using trunc(iw/2)*2 to ensure even dimensions
+                const basePrep = "scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p";
+
                 if (style === 'Vidro Líquido') {
-                    // Refractive, fluid look
-                    styleFilter = "scale=iw:-2,format=yuv420p,boxblur=1:1,unsharp=5:5:1.0:5:5:0.0,vignette=0.3,curves=m='0/0 0.4/0.5 1/1'";
+                    // Refractive, fluid look: using boxblur, glow effect (unsharp + curves), and vignette
+                    styleFilter = `${basePrep},boxblur=2:1,unsharp=5:5:1.0:5:5:0.0,vignette=0.3,curves=preset=lighter`;
                 } else if (style === 'Éter Quântico') {
-                    // Ethereal, glowing, high-contrast
-                    styleFilter = "scale=iw:-2,format=yuv420p,colortemperature=4500,hue=s=0.5:h=10,unsharp=7:7:2.5,cas=0.5";
+                    // Ethereal, glowing, high-contrast: using hue for blue tint, gblur for glow, and eq
+                    styleFilter = `${basePrep},hue=h=200:s=0.5,gblur=sigma=1.5,eq=contrast=1.4:brightness=0.08,unsharp=7:7:2.5`;
                 } else if (style === 'Cyberpunk Orgânico') {
-                    // Neon, high saturation, sharp edges
-                    styleFilter = "scale=iw:-2,format=yuv420p,hue=s=1.8:h=320,curves=m='0/0 0.3/0.1 0.7/0.9 1/1',unsharp=5:5:1.5";
+                    // Neon, high saturation, sharp edges: using hue for magenta/cyan shift, sharpen, and dark vignette
+                    styleFilter = `${basePrep},hue=s=2.0:h=300,eq=contrast=1.5:brightness=-0.05,unsharp=5:5:1.5,vignette=0.5`;
                 } else {
-                    styleFilter = "scale=iw:-2,format=yuv420p,unsharp=3:3:1.0";
+                    styleFilter = `${basePrep},unsharp=3:3:1.0`;
                 }
 
                 filterComplex = `[0:v]${styleFilter}[v]`;
