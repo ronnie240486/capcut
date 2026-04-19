@@ -18,7 +18,7 @@ function getAtempoFilter(speed) {
     return filters.join(',');
 }
 
-export default {
+module.exports = {
     /**
      * Builds the filter graph based on the action type.
      */
@@ -31,31 +31,21 @@ export default {
             case 'interpolate-real':
                 const speed = parseFloat(params.speed) || 0.5;
                 const factor = 1 / speed;
-                if (params.hasVideo) {
-                    filterComplex = `[0:v]scale='min(1280,trunc(iw/2)*2)':-2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
-                    mapArgs = ['-map', '[v]'];
-                }
+                // Mininterpolate + Scale to safe dimensions (1280 width, height divisible by 2)
+                filterComplex = `[0:v]scale='min(1280,iw)':-2,pad=ceil(iw/2)*2:ceil(ih/2)*2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
+                mapArgs = ['-map', '[v]'];
+                // We ignore audio for slow motion interpolation usually, or we'd need to stretch it too
                 break;
 
             case 'upscale-real':
                 // Lanczos scaling to 1080p
-                if (params.hasVideo) {
-                    filterComplex = `[0:v]scale=1920:1080:flags=lanczos,setsar=1[v]`;
-                    mapArgs = params.hasAudio ? ['-map', '[v]', '-map', '0:a'] : ['-map', '[v]'];
-                }
+                filterComplex = `[0:v]scale=1920:1080:flags=lanczos,setsar=1[v]`;
+                mapArgs = ['-map', '[v]', '-map', '0:a?']; // Keep audio if exists
                 break;
 
             case 'reverse-real':
-                if (params.hasVideo && params.hasAudio) {
-                    filterComplex = `[0:v]reverse[v];[0:a]areverse[a]`;
-                    mapArgs = ['-map', '[v]', '-map', '[a]'];
-                } else if (params.hasVideo) {
-                    filterComplex = `[0:v]reverse[v]`;
-                    mapArgs = ['-map', '[v]'];
-                } else if (params.hasAudio) {
-                    filterComplex = `[0:a]areverse[a]`;
-                    mapArgs = ['-map', '[a]'];
-                }
+                filterComplex = `[0:v]reverse[v];[0:a]areverse[a]`;
+                mapArgs = ['-map', '[v]', '-map', '[a]'];
                 break;
 
             case 'reduce-noise-real':
@@ -124,59 +114,10 @@ export default {
                 }
                 break;
 
-            case 'deep-sync-real':
-                // Deep-Sync Sensorial: Visual pulsing + bass boost
-                // Using trunc(iw/2)*2 for even dimensions, essential for many encoders
-                const dsPrep = "scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p";
-                const visualFilter = `${dsPrep},eq=contrast='1+0.15*abs(sin(2*PI*t*1.5))':brightness='0.03*abs(sin(2*PI*t*1.5))'`;
-                
-                if (params.hasVideo && params.hasAudio) {
-                    filterComplex = `[0:v]${visualFilter}[v];[0:a]bass=g=12,volume=1.2[a]`;
-                    mapArgs = ['-map', '[v]', '-map', '[a]'];
-                } else if (params.hasVideo) {
-                    filterComplex = `[0:v]${visualFilter}[v]`;
-                    mapArgs = ['-map', '[v]'];
-                } else if (params.hasAudio) {
-                    filterComplex = `[0:a]bass=g=12,volume=1.2[a]`;
-                    mapArgs = ['-map', '[a]'];
-                }
-                break;
-
-            case 'morpheus-real':
-                // Neural Morphing Simulation: Complex stylistic filters
-                const style = params.style || 'Vidro Líquido';
-                let styleFilter = '';
-                
-                // Using trunc(iw/2)*2 to ensure even dimensions
-                const basePrep = "scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p";
-
-                if (style === 'Vidro Líquido') {
-                    styleFilter = `${basePrep},boxblur=2:1,unsharp=5:5:1.0:5:5:0.0,vignette=0.3,curves=preset=lighter`;
-                } else if (style === 'Éter Quântico') {
-                    styleFilter = `${basePrep},hue=h=200:s=0.5,gblur=sigma=1.5,eq=contrast=1.4:brightness=0.08,unsharp=7:7:2.5`;
-                } else if (style === 'Cyberpunk Orgânico') {
-                    styleFilter = `${basePrep},hue=s=2.0:h=300,eq=contrast=1.5:brightness=-0.05,unsharp=5:5:1.5,vignette=0.5`;
-                } else {
-                    styleFilter = `${basePrep},unsharp=3:3:1.0`;
-                }
-
-                if (params.hasVideo) {
-                    filterComplex = `[0:v]${styleFilter}[v]`;
-                    mapArgs = params.hasAudio ? ['-map', '[v]', '-map', '0:a'] : ['-map', '[v]'];
-                } else if (params.hasAudio) {
-                    mapArgs = ['-map', '0:a'];
-                }
-                break;
-
             default:
-                // Safe default: Ensure dimensions are divisible by 2 and at least 2px
-                // Scale filter: width=max(2,trunc(iw/2)*2), height=max(2,trunc(ih/2)*2)
-                if (params.hasVideo) {
-                    filterComplex = `[0:v]scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',unsharp=5:5:1.0:5:5:0.0[v]`;
-                    mapArgs = params.hasAudio ? ['-map', '[v]', '-map', '0:a'] : ['-map', '[v]'];
-                } else if (params.hasAudio) {
-                    mapArgs = ['-map', '0:a'];
-                }
+                // Safe default: Ensure dimensions are divisible by 2
+                filterComplex = `[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,unsharp=5:5:1.0:5:5:0.0[v]`;
+                mapArgs = ['-map', '[v]', '-map', '0:a?'];
         }
 
         return { filterComplex, mapArgs, outputOptions };
