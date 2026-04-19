@@ -31,51 +31,74 @@ export default {
             case 'interpolate-real':
                 const speed = parseFloat(params.speed) || 0.5;
                 const factor = 1 / speed;
-                // Mininterpolate requires even dimensions for MCI/OBMC modes.
-                // scale='min(1280,trunc(iw/2)*2)':-2 ensures width <= 1280 and even height (due to -2).
-                // But we must also ensure width is even, which trunc(iw/2)*2 does.
-                filterComplex = `[0:v]scale='min(1280,trunc(iw/2)*2)':-2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
-                mapArgs = ['-map', '[v]'];
-                // We ignore audio for slow motion interpolation usually, or we'd need to stretch it too
+                if (params.hasVideo) {
+                    filterComplex = `[0:v]scale='min(1280,trunc(iw/2)*2)':-2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
+                    mapArgs = ['-map', '[v]'];
+                }
                 break;
 
             case 'upscale-real':
                 // Lanczos scaling to 1080p
-                filterComplex = `[0:v]scale=1920:1080:flags=lanczos,setsar=1[v]`;
-                mapArgs = ['-map', '[v]', '-map', '0:a?']; // Keep audio if exists
+                if (params.hasVideo) {
+                    filterComplex = `[0:v]scale=1920:1080:flags=lanczos,setsar=1[v]`;
+                    mapArgs = params.hasAudio ? ['-map', '[v]', '-map', '0:a'] : ['-map', '[v]'];
+                }
                 break;
 
             case 'reverse-real':
-                filterComplex = `[0:v]reverse[v];[0:a]areverse[a]`;
-                mapArgs = ['-map', '[v]', '-map', '[a]'];
+                if (params.hasVideo && params.hasAudio) {
+                    filterComplex = `[0:v]reverse[v];[0:a]areverse[a]`;
+                    mapArgs = ['-map', '[v]', '-map', '[a]'];
+                } else if (params.hasVideo) {
+                    filterComplex = `[0:v]reverse[v]`;
+                    mapArgs = ['-map', '[v]'];
+                } else if (params.hasAudio) {
+                    filterComplex = `[0:a]areverse[a]`;
+                    mapArgs = ['-map', '[a]'];
+                }
                 break;
 
             case 'reduce-noise-real':
                 // Highpass/Lowpass + Afftdn (Audio FFT Denoise)
-                filterComplex = `[0:a]highpass=f=200,lowpass=f=3000,afftdn[a]`;
-                mapArgs = ['-map', '0:v', '-map', '[a]']; // Pass video through
-                outputOptions = ['-c:v', 'copy']; // Don't re-encode video
+                if (params.hasAudio) {
+                    filterComplex = `[0:a]highpass=f=200,lowpass=f=3000,afftdn[a]`;
+                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[a]'] : ['-map', '[a]'];
+                    if (params.hasVideo) outputOptions = ['-c:v', 'copy'];
+                } else {
+                    if (params.hasVideo) {
+                        mapArgs = ['-map', '0:v'];
+                        outputOptions = ['-c:v', 'copy'];
+                    }
+                }
                 break;
 
             case 'remove-silence-real':
                 const stopDur = params.duration || 0.5;
                 const thresh = params.threshold || -30;
-                filterComplex = `[0:a]silenceremove=stop_periods=-1:stop_duration=${stopDur}:stop_threshold=${thresh}dB[a]`;
-                mapArgs = ['-map', '0:v', '-map', '[a]'];
-                // Video sync is tricky with silenceremove on audio only. 
-                // Usually this requires complex syncing or dropping video frames which ffmpeg does automatically if V is mapped but A is shortened?
-                // For safety in this MVP, we might desync if we don't trim video. 
-                // A safer 'jump cut' requires analyzing timestamps first. 
-                // For now, we apply to audio and let FFmpeg try to match or just process audio.
-                // Assuming this is mostly for audio clips based on the app usage.
-                outputOptions = ['-c:v', 'copy'];
+                if (params.hasAudio) {
+                    filterComplex = `[0:a]silenceremove=stop_periods=-1:stop_duration=${stopDur}:stop_threshold=${thresh}dB[a]`;
+                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[a]'] : ['-map', '[a]'];
+                    if (params.hasVideo) outputOptions = ['-c:v', 'copy'];
+                } else {
+                    if (params.hasVideo) {
+                        mapArgs = ['-map', '0:v'];
+                        outputOptions = ['-c:v', 'copy'];
+                    }
+                }
                 break;
 
             case 'isolate-voice-real':
                 // Simple EQ Isolation
-                filterComplex = `[0:a]highpass=f=200,lowpass=f=3000,afftdn[a]`;
-                mapArgs = ['-map', '0:v', '-map', '[a]'];
-                outputOptions = ['-c:v', 'copy'];
+                if (params.hasAudio) {
+                    filterComplex = `[0:a]highpass=f=200,lowpass=f=3000,afftdn[a]`;
+                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[a]'] : ['-map', '[a]'];
+                    if (params.hasVideo) outputOptions = ['-c:v', 'copy'];
+                } else {
+                    if (params.hasVideo) {
+                        mapArgs = ['-map', '0:v'];
+                        outputOptions = ['-c:v', 'copy'];
+                    }
+                }
                 break;
             
             case 'voice-fx-real':
@@ -89,9 +112,16 @@ export default {
                 else if(p === 'radio') af = "highpass=f=500,lowpass=f=3000,afftdn";
                 else af = "anull"; // Default
                 
-                filterComplex = `[0:a]${af}[a]`;
-                mapArgs = ['-map', '0:v?', '-map', '[a]'];
-                outputOptions = ['-c:v', 'copy'];
+                if (params.hasAudio) {
+                    filterComplex = `[0:a]${af}[a]`;
+                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[a]'] : ['-map', '[a]'];
+                    if (params.hasVideo) outputOptions = ['-c:v', 'copy'];
+                } else {
+                    if (params.hasVideo) {
+                        mapArgs = ['-map', '0:v'];
+                        outputOptions = ['-c:v', 'copy'];
+                    }
+                }
                 break;
 
             case 'deep-sync-real':
@@ -99,12 +129,16 @@ export default {
                 // Using trunc(iw/2)*2 for even dimensions, essential for many encoders
                 const dsPrep = "scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p";
                 const visualFilter = `${dsPrep},eq=contrast='1+0.15*abs(sin(2*PI*t*1.5))':brightness='0.03*abs(sin(2*PI*t*1.5))'`;
-                if (params.hasAudio) {
+                
+                if (params.hasVideo && params.hasAudio) {
                     filterComplex = `[0:v]${visualFilter}[v];[0:a]bass=g=12,volume=1.2[a]`;
                     mapArgs = ['-map', '[v]', '-map', '[a]'];
-                } else {
+                } else if (params.hasVideo) {
                     filterComplex = `[0:v]${visualFilter}[v]`;
                     mapArgs = ['-map', '[v]'];
+                } else if (params.hasAudio) {
+                    filterComplex = `[0:a]bass=g=12,volume=1.2[a]`;
+                    mapArgs = ['-map', '[a]'];
                 }
                 break;
 
@@ -117,27 +151,32 @@ export default {
                 const basePrep = "scale='trunc(iw/2)*2':'trunc(ih/2)*2',format=yuv420p";
 
                 if (style === 'Vidro Líquido') {
-                    // Refractive, fluid look: using boxblur, glow effect (unsharp + curves), and vignette
                     styleFilter = `${basePrep},boxblur=2:1,unsharp=5:5:1.0:5:5:0.0,vignette=0.3,curves=preset=lighter`;
                 } else if (style === 'Éter Quântico') {
-                    // Ethereal, glowing, high-contrast: using hue for blue tint, gblur for glow, and eq
                     styleFilter = `${basePrep},hue=h=200:s=0.5,gblur=sigma=1.5,eq=contrast=1.4:brightness=0.08,unsharp=7:7:2.5`;
                 } else if (style === 'Cyberpunk Orgânico') {
-                    // Neon, high saturation, sharp edges: using hue for magenta/cyan shift, sharpen, and dark vignette
                     styleFilter = `${basePrep},hue=s=2.0:h=300,eq=contrast=1.5:brightness=-0.05,unsharp=5:5:1.5,vignette=0.5`;
                 } else {
                     styleFilter = `${basePrep},unsharp=3:3:1.0`;
                 }
 
-                filterComplex = `[0:v]${styleFilter}[v]`;
-                mapArgs = ['-map', '[v]', '-map', '0:a?'];
+                if (params.hasVideo) {
+                    filterComplex = `[0:v]${styleFilter}[v]`;
+                    mapArgs = params.hasAudio ? ['-map', '[v]', '-map', '0:a'] : ['-map', '[v]'];
+                } else if (params.hasAudio) {
+                    mapArgs = ['-map', '0:a'];
+                }
                 break;
 
             default:
                 // Safe default: Ensure dimensions are divisible by 2 and at least 2px
                 // Scale filter: width=max(2,trunc(iw/2)*2), height=max(2,trunc(ih/2)*2)
-                filterComplex = `[0:v]scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',unsharp=5:5:1.0:5:5:0.0[v]`;
-                mapArgs = ['-map', '[v]', '-map', '0:a?'];
+                if (params.hasVideo) {
+                    filterComplex = `[0:v]scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',unsharp=5:5:1.0:5:5:0.0[v]`;
+                    mapArgs = params.hasAudio ? ['-map', '[v]', '-map', '0:a'] : ['-map', '[v]'];
+                } else if (params.hasAudio) {
+                    mapArgs = ['-map', '0:a'];
+                }
         }
 
         return { filterComplex, mapArgs, outputOptions };
