@@ -2,7 +2,6 @@
 import path from 'path';
 import fs from 'fs';
 import { exec } from 'child_process';
-import ffprobe from 'ffprobe-static';
 import transitionBuilder from './transitionBuilder.js';
 
 function validateAndProbe(filePath) {
@@ -20,7 +19,7 @@ function validateAndProbe(filePath) {
         }
 
         // 2. FFprobe Check
-        exec(`"${ffprobe.path}" -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
+        exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
             if (err) {
                 console.warn(`[Export] Probe failed for ${filePath}: ${err.message}`);
                 return resolve({ isValid: false });
