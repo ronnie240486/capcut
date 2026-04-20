@@ -3,9 +3,9 @@
  * Helper to generate 'atempo' filters for speed adjustment.
  * FFmpeg atempo filter is limited between 0.5 and 2.0, so we chain them.
  */
-function getAtempoFilter(speed) {
+function getAtempoFilter(speed: number): string {
     let s = speed;
-    const filters = [];
+    const filters: string[] = [];
     while (s < 0.5) {
         filters.push('atempo=0.5');
         s /= 0.5;
@@ -22,10 +22,10 @@ export default {
     /**
      * Builds the filter graph based on the action type.
      */
-    build: (action, params, videoPath) => {
+    build: (action: string, params: any, _videoPath?: string) => {
         let filterComplex = '';
-        let mapArgs = [];
-        let outputOptions = [];
+        let mapArgs: string[] = [];
+        let outputOptions: string[] = [];
 
         switch (action) {
             case 'interpolate-real':
@@ -34,7 +34,6 @@ export default {
                 // Mininterpolate + Scale to safe dimensions (1280 width, height divisible by 2)
                 filterComplex = `[0:v]scale='min(1280,iw)':-2,pad=ceil(iw/2)*2:ceil(ih/2)*2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
                 mapArgs = ['-map', '[v]'];
-                // We ignore audio for slow motion interpolation usually, or we'd need to stretch it too
                 break;
 
             case 'upscale-real':
