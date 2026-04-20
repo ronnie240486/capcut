@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-body: 'Inter', sans-serif;
+  --font-special: 'Permanent Marker', cursive;
+  --yellow-primary: #facc15;
+  --yellow-secondary: #fde047;
+  --text-neutral-200: #e5e7eb;
+  --text-neutral-400: #9ca3af;
+  --text-neutral-500: #6b7280;
+  --text-neutral-700: #374151;
+}
+
+body {
+  background-color: #18191a;
+  color: #e4e6eb;
+  overflow: hidden;
+  touch-action: manipulation;
+}
+
+/* Previne zoom acidental em inputs no iOS */
+input, select, textarea {
+    font-size: 16px !important;
+}
+
+/* Oculta scrollbars mantendo funcionalidade */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* --- ICON ANIMATIONS --- */
+@keyframes icon-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+.animate-icon-bounce { animation: icon-bounce 1s infinite cubic-bezier(0.280, 0.840, 0.420, 1); }
+
+@keyframes icon-shake { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-10deg); } 75% { transform: rotate(10deg); } }
+.animate-icon-shake { animation: icon-shake 0.4s infinite linear; }
+
+@keyframes icon-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
+.animate-icon-pulse { animation: icon-pulse 1.5s infinite ease-in-out; }
+
+@keyframes icon-float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-5px); } }
+.animate-icon-float { animation: icon-float 3s ease-in-out infinite; }
+
+/* --- TRANSITIONS ENGINE --- */
+.preview-layer-transition {
+    --trans-dur: 1s;
+    animation-duration: var(--trans-dur);
+    animation-fill-mode: both;
+    animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+}
+
+/* Efeitos de Texto e Animações customizadas de index.html mantidos via injeção global */
