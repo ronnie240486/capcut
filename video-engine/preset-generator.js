@@ -1,6 +1,6 @@
 
 export default {
-    getVideoArgs: () => [
+    getVideoArgs: (): string[] => [
         '-c:v', 'libx264',
         '-preset', 'ultrafast', 
         '-profile:v', 'high',
@@ -11,20 +11,20 @@ export default {
         '-r', '30'
     ],
 
-    getAudioArgs: () => [
+    getAudioArgs: (): string[] => [
         '-c:a', 'aac',
         '-b:a', '192k',
         '-ar', '44100',
         '-ac', '2'
     ],
 
-    getAudioExtractArgs: () => [
+    getAudioExtractArgs: (): string[] => [
         '-vn',
         '-acodec', 'libmp3lame',
         '-q:a', '2'
     ],
 
-    getFFmpegFilterFromEffect: (effectId) => {
+    getFFmpegFilterFromEffect: (effectId: string): string | null => {
         if (!effectId) return null;
 
         // Color Grading Procedural
@@ -89,7 +89,7 @@ export default {
         }
 
         // Standard Effects
-        const effects = {
+        const effects: Record<string, string> = {
             'glitch-scan': 'drawgrid=y=0:h=4:t=1:c=black@0.5,hue=H=2*PI*t:s=1.5',
             'chromatic': "geq=r='p(X+5,Y)':g='p(X,Y)':b='p(X-5,Y)':a='p(X,Y)'",
             'teal-orange': 'colorbalance=rs=0.2:bs=-0.2:gs=0:rm=0.2:gm=0:bm=-0.2:rh=0.2:gh=0:bh=-0.2,eq=saturation=1.3',
@@ -104,7 +104,6 @@ export default {
             'mono': 'hue=s=0',
             'vintage': 'sepia=0.6,eq=contrast=0.9:brightness=0.1',
             'vintage-cool': 'colorbalance=bs=0.3:rs=-0.2,eq=saturation=0.8:contrast=1.1',
-            // Missing Effects from constants.ts
             'matrix': 'hue=h=90,eq=contrast=1.2:brightness=-0.1:saturation=1.5',
             'cool-morning': 'hue=h=180,sepia,eq=brightness=0.1',
             'horror': 'hue=s=0.2,eq=contrast=1.5:brightness=-0.3,sepia',
@@ -134,20 +133,17 @@ export default {
             'soft-angel': 'eq=brightness=1.2:contrast=0.9,boxblur=luma_radius=1:luma_power=1',
             'sharpen': 'unsharp=5:5:1.5:5:5:0.0,eq=contrast=1.4:saturation=1.2',
             'dreamy': 'boxblur=luma_radius=2:luma_power=1,eq=brightness=0.2:saturation=0.8',
-            // Glitch & Distorção
             'glitch-pro-1': 'drawgrid=y=0:h=4:t=1:c=black@0.5,hue=H=2*PI*t:s=1.5',
             'glitch-pro-2': 'boxblur=luma_radius=\'if(lt(mod(t,0.2),0.1),20,0)\':luma_power=1',
             'vhs-distort': 'noise=alls=20:allf=t+u,eq=saturation=1.5:contrast=1.2',
             'bad-signal': 'noise=alls=30:allf=t,eq=brightness=0.1:contrast=1.5',
             'pixelate': 'scale=iw/10:-1,scale=iw*10:-1:flags=neighbor',
-            // Retro & Filme
             'old-film': 'sepia,noise=alls=20:allf=t+u,drawbox=y=0:w=1:h=ih:c=black@0.3:t=fill',
             'dust': 'noise=alls=15:allf=t+u',
             'grain': 'noise=alls=10:allf=t+u',
             'vignette': 'vignette=angle=PI/3',
             'super8': 'sepia,eq=contrast=1.2,vignette',
             'noise': 'noise=alls=25:allf=t+u',
-            // Atmosfera & Luz
             'light-leak-1': 'colorbalance=rs=0.3:gs=0.1:bs=0,vignette',
             'light-leak-2': 'colorbalance=rs=0.1:gs=0.3:bs=0.2,vignette',
             'sun-flare': 'eq=brightness=0.1,vignette',
@@ -159,32 +155,28 @@ export default {
         return effects[effectId] || null;
     },
 
-    getMovementFilter: (moveId, durationSec = 5, isImage = false, config = {}, targetRes = {w:1280, h:720}, targetFps = 30) => {
+    getMovementFilter: (moveId: string, durationSec: number = 5, isImage: boolean = false, config: any = {}, targetRes: any = {w:1280, h:720}, targetFps: number = 30): string => {
         const fps = targetFps || 30;
         const frames = Math.max(1, Math.ceil(durationSec * fps));
         const w = targetRes.w;
         const h = targetRes.h;
         
         let zoomPanFilter = '';
-        let postFilters = [];
+        let postFilters: string[] = [];
         
         const id = moveId || '';
         const speed = config.speed || 1;
         const intensity = config.intensity || 1;
         
-        const centerX = `(iw/2)-(iw/zoom/2)`;
-        const centerY = `(ih/2)-(ih/zoom/2)`;
+        const centerX = `(iw/2)-(iw/zoom/2)`.replace(/\s+/g, '');
+        const centerY = `(ih/2)-(ih/zoom/2)`.replace(/\s+/g, '');
         
         let z = '1.0';
         let x = centerX;
         let y = centerY;
 
-        // Helper for time in zoompan (VERIFIED)
         const time = `(on/${fps})`;
 
-        // =========================================================================
-        // 1. LOOP & CONTINUOUS ANIMATIONS
-        // =========================================================================
         if (id === 'pulse') {
             z = `1.0 + ${0.05 * intensity}*sin(2*PI*${time}*${speed})`;
         } else if (id === 'heartbeat') {
@@ -204,10 +196,6 @@ export default {
         } else if (id === 'mov-strobe-move') {
             z = '1.05'; 
             postFilters.push(`eq=eval=frame:brightness='if(lt(mod(t,${0.15 / speed}),${0.075 / speed}),${0.4 * intensity},${-0.2 * intensity})'`);
-        
-        // =========================================================================
-        // 2. GLITCH, VHS & CHAOS
-        // =========================================================================
         } else if (id === 'mov-vhs-tracking') {
             z = '1.05';
             y = `${centerY} + ${20 * intensity}*sin(0.5*${time}) + ${5 * intensity}*sin(${50 * speed}*${time})`;
@@ -242,10 +230,6 @@ export default {
         } else if (id === 'mov-digital-tear') {
             z = '1.05';
             postFilters.push(`geq=r='if(gt(sin(Y/10+t*10),0),p(X+${20 * intensity},Y),p(X,Y))':g='p(X,Y)':b='if(lt(sin(Y/10+t*10),0),p(X-${20 * intensity},Y),p(X,Y))'`);
-        
-        // =========================================================================
-        // 3. CINEMATIC PANS
-        // =========================================================================
         } else if (id.includes('mov-pan-')) {
             z = '1.2'; 
             const dur = frames / speed;
@@ -261,10 +245,6 @@ export default {
             else if (id.includes('diag-tr')) { x = `${rightX}*(on/${dur})`; y = `${bottomY}*(1-on/${dur})`; }
             else if (id.includes('diag-bl')) { x = `${rightX}*(1-on/${dur})`; y = `${bottomY}*(on/${dur})`; }
             else if (id.includes('diag-br')) { x = `${rightX}*(on/${dur})`; y = `${bottomY}*(on/${dur})`; }
-
-        // =========================================================================
-        // 4. DISTORTION & ART EFFECTS
-        // =========================================================================
         } else if (id === 'mov-glitch-vortex') {
             z = '1.2';
             postFilters.push(`lenscorrection=k1=${0.2 * intensity}*sin(${speed}*t)`);
@@ -289,32 +269,9 @@ export default {
         } else if (id === 'mov-pixel-drift') {
             const pSize = Math.max(2, Math.round(10 * intensity));
             postFilters.push(`scale=iw/${pSize}:-1,scale=${w}:${h}:flags=neighbor`);
-        } else if (id.includes('mov-glitch-vortex')) {
-            postFilters.push(`hue=h='t*90',vignette,rotate=a='sin(t)*0.1':c=black@0:ow=iw:oh=ih`);
-        } else if (id.includes('mov-mirage-wave')) {
-            postFilters.push(`vignette,hue=h='sin(t*2)*20'`);
-        } else if (id.includes('mov-kaleidoscope')) {
-            postFilters.push(`hue=h='t*45',eq=saturation=2`);
-        } else if (id.includes('mov-zoom-warp')) {
-            z = `1.0 + 0.5*sin(t*${speed})`;
-            postFilters.push(`gblur=sigma=2`);
-        } else if (id.includes('mov-chromatic-pulse')) {
-            postFilters.push(`eq=saturation=${1.5 * intensity},hue=h='sin(t*5)*30'`);
-        } else if (id.includes('mov-scanline-flicker')) {
-            postFilters.push(`noise=alls=10:allf=t,eq=brightness='sin(t*20)*0.1'`);
-        } else if (id.includes('mov-vignette-pulse')) {
-            postFilters.push(`vignette='PI/4 + sin(t*2)*PI/8'`);
-        } else if (id.includes('mov-edge-glow')) {
-            postFilters.push(`unsharp=7:7:2.5,eq=contrast=1.2`);
-        } else if (id.includes('mov-pixel-drift')) {
-            x = `${centerX} + t*10`;
         } else if (id === 'mov-spiral-zoom') {
             z = `1.0 + ${0.5 * intensity}*t/${durationSec}`;
             postFilters.push(`rotate=a='${speed}*t*t':c=black@0:ow=iw:oh=ih`);
-
-        // =========================================================================
-        // 5. BLUR EFFECTS
-        // =========================================================================
         } else if (id.includes('blur') || id.includes('defocus')) {
             const blurVal = Math.max(1, Math.round(10 * intensity));
             if (id.includes('in') || id.includes('focus')) {
@@ -333,10 +290,6 @@ export default {
             } else {
                 postFilters.push(`boxblur=luma_radius=${Math.round(5 * intensity)}:luma_power=1`);
             }
-
-        // =========================================================================
-        // 6. DYNAMIC ZOOMS
-        // =========================================================================
         } else if (id.includes('zoom') || id === 'dolly-zoom' || id === 'mov-dolly-vertigo') {
             z = `min(zoom+${0.0015 * speed},1.2)`;
             if (id.includes('crash-in')) z = `min(zoom+${0.15 * speed * intensity},4.0)`;
@@ -357,10 +310,6 @@ export default {
             else if (id.includes('twist-in')) { z = `min(zoom+${0.02 * speed},1.5)`; postFilters.push(`rotate=a='(t*${speed})':c=black@0:ow=iw:oh=ih`); }
             else if (id.includes('twist-out')) { z = `max(1.5-${0.02 * speed}*on,1.0)`; postFilters.push(`rotate=a='-(t*${speed})':c=black@0:ow=iw:oh=ih`); }
             else if (id === 'dolly-zoom' || id === 'mov-dolly-vertigo') { z = `1.0 + ${0.5 * intensity}*sin(PI*on/(${frames / speed}))`; }
-
-        // =========================================================================
-        // 7. 3D TRANSFORMS
-        // =========================================================================
         } else if (id.includes('mov-3d-')) {
             if (id.includes('flip-x')) { z = '1.1'; postFilters.push(`rotate=a='${2 * speed}*PI*t':c=black@0:ow=iw:oh=ih`); }
             else if (id.includes('flip-y')) { z = '1.1'; postFilters.push(`rotate=a='${2 * speed}*PI*t':c=black@0:ow=iw:oh=ih`); }
@@ -372,10 +321,6 @@ export default {
             else if (id.includes('perspective-u')) { z = '1.2'; y = `${centerY} - ${40 * intensity}*sin(${speed}*${time})`; }
             else if (id.includes('perspective-d')) { z = '1.2'; y = `${centerY} + ${40 * intensity}*sin(${speed}*${time})`; }
             else if (id.includes('float')) { z = `1.1 + ${0.1 * intensity}*sin(${speed}*${time})`; postFilters.push(`rotate=a='${0.05 * intensity}*sin(${speed}*${time})':c=black@0:ow=iw:oh=ih`); }
-
-        // =========================================================================
-        // 8. ENTRANCE & FUN MOVEMENTS
-        // =========================================================================
         } else if (id.includes('slide-in') || id === 'pop-in' || id === 'fade-in' || id === 'swing-in') {
             const dur = (config.duration || 1) / speed;
             if (id === 'slide-in-left') { x = `(iw-ow)/2 - (iw)*(1-min(${time}/dur,1))`; z = '1.0'; }
@@ -397,10 +342,6 @@ export default {
             else if (id === 'mov-pop-up') { z = `1.0 + ${0.5 * intensity}*sin(PI*min(${time}*${speed},0.5))`; }
             else if (id === 'mov-squash-stretch') { z = `1.2 + ${0.1 * intensity}*sin(8*${time}*${speed})`; }
             else if (id === 'mov-tada') { z = '1.2'; postFilters.push(`rotate=a='${0.1 * intensity}*sin(10*t*${speed})*min(1,t)':c=black@0:ow=iw:oh=ih`); }
-
-        // =========================================================================
-        // 9. AI & PREMIUM EFFECTS
-        // =========================================================================
         } else if (id === 'mov-cinematic-bloom') {
             postFilters.push(`unsharp=5:5:${1.0 * intensity}:5:5:0.0,eq=brightness=${0.05 * intensity}:contrast=${1 + 0.1 * intensity}`);
         } else if (id === 'mov-vhs-pro') {
@@ -461,10 +402,6 @@ export default {
         } else if (id === 'mov-vhs-tracking') {
             postFilters.push(`noise=alls=20:allf=t+u,eq=contrast=1.2,hue=h='sin(t*5)*10'`);
             x = `${centerX} + 2*sin(t*30)`;
-
-        // =========================================================================
-        // 10. SHAKE & HANDHELD
-        // =========================================================================
         } else if (id.includes('shake') || id.includes('handheld') || id.includes('earthquake') || id === 'jitter') {
              let sIntensity = 10;
              if (id.includes('handheld-1')) sIntensity = 5;
@@ -475,12 +412,8 @@ export default {
              
              const finalIntensity = sIntensity * intensity;
              z = '1.1'; 
-             const shakeExpr = `x='(iw-ow)/2 + (random(1)-0.5)*${finalIntensity}':y='(ih-oh)/2 + (random(1)-0.5)*${finalIntensity}'`;
+             const shakeExpr = `x='(iw-ow)/2+(random(1)-0.5)*${finalIntensity}':y='(ih-oh)/2+(random(1)-0.5)*${finalIntensity}'`;
              postFilters.push(`crop=w=iw-${finalIntensity}:h=ih-${finalIntensity}:${shakeExpr},scale=${w}:${h}`);
-
-        // =========================================================================
-        // 11. KEN BURNS & PARALLAX
-        // =========================================================================
         } else if (id === 'kenBurns') {
             const startScale = config.startScale || 1.0;
             const endScale = config.endScale || 1.35;
@@ -499,21 +432,19 @@ export default {
                  y = `${centerY} + (ih/100) * (${midY} + ${ampY} * sin(2*PI*${time}/${period} - PI/2))`;
             }
         } else if (id === 'parallax') {
-            const pIntensity = (config.intensity || 25) * intensity;
+            const pIntensity = (config.intensity || 60) * intensity;
             const direction = (config.direction || 0) * (Math.PI / 180);
             const moveX = Math.cos(direction) * pIntensity;
             const moveY = Math.sin(direction) * pIntensity;
-            z = '1.2';
+            z = '1.4';
             const period = 6 / speed;
             x = `${centerX} + ${moveX} * sin(2*PI*${time}/${period})`;
             y = `${centerY} + ${moveY} * sin(2*PI*${time}/${period})`;
-        
         } else if (isImage && !id) {
             z = `min(zoom+0.0015,1.5)`; 
         }
 
         const dVal = isImage ? frames : 1;
-        // For video, we scale first to target resolution to make zoompan more predictable and avoid aspect ratio issues
         const preScale = !isImage ? `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},` : '';
         zoomPanFilter = `${preScale}zoompan=z='${z}':x='${x}':y='${y}':d=${dVal}:s=${w}x${h}:fps=${fps}`;
         
@@ -522,12 +453,11 @@ export default {
             ? `${zoomPanFilter},${validPostFilters.join(',')}` 
             : zoomPanFilter;
         
-        // Force yuv420p for maximum compatibility across all devices (PC/Mobile)
         return `${filterChain},format=yuv420p`;
     },
 
-    getTransitionXfade: (id) => {
-        const map = {
+    getTransitionXfade: (id: string): string => {
+        const map: Record<string, string> = {
             'fade': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'dissolve': 'dissolve',
             'blur-dissolve': 'distance', 'filter-blur': 'distance',
             'black': 'fadeblack', 'white': 'fadewhite', 'flash': 'fadewhite',
