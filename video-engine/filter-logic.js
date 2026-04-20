@@ -33,14 +33,14 @@ export default {
                 break;
 
             case 'reverse-real':
-                filterComplex = `[0:v]reverse[v];[0:a]areverse[a]`;
-                mapArgs = ['-map', '[v]', '-map', '[a]'];
+                filterComplex = `[0:v]reverse[v];[0:a]areverse[aout]`;
+                mapArgs = ['-map', '[v]', '-map', '[aout]'];
                 break;
 
             case 'reduce-noise-real':
                 if (params.hasAudio) {
-                    filterComplex = `[0:a]highpass=f=200,lowpass=f=3000,afftdn[a]`;
-                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[a]'] : ['-map', '[a]'];
+                    filterComplex = `[0:a]highpass=f=200,lowpass=f=3000,afftdn[aout]`;
+                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[aout]'] : ['-map', '[aout]'];
                     if (params.hasVideo) outputOptions = ['-c:v', 'copy'];
                 } else {
                     if (params.hasVideo) {
@@ -54,8 +54,8 @@ export default {
                 const stopDur = params.duration || 0.5;
                 const thresh = params.threshold || -30;
                 if (params.hasAudio) {
-                    filterComplex = `[0:a]silenceremove=stop_periods=-1:stop_duration=${stopDur}:stop_threshold=${thresh}dB[a]`;
-                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[a]'] : ['-map', '[a]'];
+                    filterComplex = `[0:a]silenceremove=stop_periods=-1:stop_duration=${stopDur}:stop_threshold=${thresh}dB[aout]`;
+                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[aout]'] : ['-map', '[aout]'];
                     if (params.hasVideo) outputOptions = ['-c:v', 'copy'];
                 } else {
                     if (params.hasVideo) {
@@ -67,8 +67,8 @@ export default {
 
             case 'isolate-voice-real':
                 if (params.hasAudio) {
-                    filterComplex = `[0:a]highpass=f=200,lowpass=f=3000,afftdn[a]`;
-                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[a]'] : ['-map', '[a]'];
+                    filterComplex = `[0:a]highpass=f=200,lowpass=f=3000,afftdn[aout]`;
+                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[aout]'] : ['-map', '[aout]'];
                     if (params.hasVideo) outputOptions = ['-c:v', 'copy'];
                 } else {
                     if (params.hasVideo) {
@@ -89,8 +89,8 @@ export default {
                 else af = "anull";
 
                 if (params.hasAudio) {
-                    filterComplex = `[0:a]${af}[a]`;
-                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[a]'] : ['-map', '[a]'];
+                    filterComplex = `[0:a]${af}[aout]`;
+                    mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[aout]'] : ['-map', '[aout]'];
                     if (params.hasVideo) outputOptions = ['-c:v', 'copy'];
                 } else {
                     if (params.hasVideo) {
