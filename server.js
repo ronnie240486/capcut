@@ -208,6 +208,46 @@ function createFFmpegJob(jobId, args, expectedDuration, res) {
     }
 }
 
+app.post('/api/process/start/audio-merge-real', uploadAny, async (req, res) => {
+    const jobId = `audiomerge_${Date.now()}`;
+    const params = req.body;
+    const job = { id: jobId, status: 'processing', progress: 0, startTime: Date.now() };
+    jobs[jobId] = job;
+    res.status(202).json({ jobId });
+
+    try {
+        const files = req.files || [];
+        if (files.length === 0) throw new Error("Nenhum arquivo enviado para mixagem.");
+
+        const outputPath = path.join(uploadDir, `sonora_${Date.now()}.wav`);
+        job.outputPath = outputPath;
+
+        let inputs = [];
+        let filterItems = [];
+        const clipsInfo = params.clips ? JSON.parse(params.clips) : [];
+
+        files.forEach((file, i) => {
+            inputs.push('-i', file.path);
+            const clipData = clipsInfo.find(c => c.fileName === file.originalname) || {};
+            const delayMs = Math.round((clipData.start || 0) * 1000);
+            const volume = clipData.volume !== undefined ? clipData.volume : 1;
+            const trimStart = clipData.mediaStartOffset || 0;
+            const trimDur = clipData.duration || 10;
+
+            filterItems.push(`[${i}:a]atrim=start=${trimStart}:duration=${trimDur},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delayMs}|${delayMs},aformat=sample_rates=44100:channel_layouts=stereo[a${i}]`);
+        });
+
+        const filterComplex = `${filterItems.join(';')};${filterItems.map((_, i) => `[a${i}]`).join('')}amix=inputs=${files.length}:duration=longest:dropout_transition=0:normalize=0[out]`;
+        const args = [...inputs, '-filter_complex', filterComplex, '-map', '[out]', '-c:a', 'pcm_s16le', '-ar', '44100', '-y', outputPath];
+        const totalDuration = clipsInfo.reduce((max, c) => Math.max(max, (c.start || 0) + (c.duration || 0)), 10);
+        createFFmpegJob(jobId, args, totalDuration);
+    } catch (e) {
+        console.error("[Audio Merge] Failed:", e);
+        jobs[jobId].status = 'failed';
+        jobs[jobId].error = e.message;
+    }
+});
+
 app.post('/api/process/start/:action', uploadAny, async (req, res) => {
     const action = req.params.action;
     const jobId = `${action}_${Date.now()}`;
