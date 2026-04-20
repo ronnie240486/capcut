@@ -2,7 +2,7 @@
 import path from 'path';
 import fs from 'fs';
 import { exec } from 'child_process';
-import transitionBuilder from './transition-builder.js';
+import transitionBuilder from './transitionBuilder.js';
 
 function validateAndProbe(filePath) {
     return new Promise((resolve) => {
