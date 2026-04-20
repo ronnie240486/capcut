@@ -1,11 +1,6 @@
-
-/**
- * Helper to generate 'atempo' filters for speed adjustment.
- * FFmpeg atempo filter is limited between 0.5 and 2.0, so we chain them.
- */
-function getAtempoFilter(speed: number): string {
+function getAtempoFilter(speed) {
     let s = speed;
-    const filters: string[] = [];
+    const filters = [];
     while (s < 0.5) {
         filters.push('atempo=0.5');
         s /= 0.5;
@@ -19,27 +14,22 @@ function getAtempoFilter(speed: number): string {
 }
 
 export default {
-    /**
-     * Builds the filter graph based on the action type.
-     */
-    build: (action: string, params: any, _videoPath?: string) => {
+    build: (action, params, _videoPath) => {
         let filterComplex = '';
-        let mapArgs: string[] = [];
-        let outputOptions: string[] = [];
+        let mapArgs = [];
+        let outputOptions = [];
 
         switch (action) {
             case 'interpolate-real':
                 const speed = parseFloat(params.speed) || 0.5;
                 const factor = 1 / speed;
-                // Mininterpolate + Scale to safe dimensions (1280 width, height divisible by 2)
                 filterComplex = `[0:v]scale='min(1280,iw)':-2,pad=ceil(iw/2)*2:ceil(ih/2)*2,setpts=${factor}*PTS,minterpolate=fps=30:mi_mode=mci:mc_mode=obmc[v]`;
                 mapArgs = ['-map', '[v]'];
                 break;
 
             case 'upscale-real':
-                // Lanczos scaling to 1080p
                 filterComplex = `[0:v]scale=1920:1080:flags=lanczos,setsar=1[v]`;
-                mapArgs = ['-map', '[v]', '-map', '0:a?']; // Keep audio if exists
+                mapArgs = ['-map', '[v]', '-map', '0:a?'];
                 break;
 
             case 'reverse-real':
@@ -48,7 +38,6 @@ export default {
                 break;
 
             case 'reduce-noise-real':
-                // Highpass/Lowpass + Afftdn (Audio FFT Denoise)
                 if (params.hasAudio) {
                     filterComplex = `[0:a]highpass=f=200,lowpass=f=3000,afftdn[a]`;
                     mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[a]'] : ['-map', '[a]'];
@@ -77,7 +66,6 @@ export default {
                 break;
 
             case 'isolate-voice-real':
-                // Simple EQ Isolation
                 if (params.hasAudio) {
                     filterComplex = `[0:a]highpass=f=200,lowpass=f=3000,afftdn[a]`;
                     mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[a]'] : ['-map', '[a]'];
@@ -89,18 +77,17 @@ export default {
                     }
                 }
                 break;
-            
+
             case 'voice-fx-real':
-                // Presets for voice effects
                 const p = params.preset;
                 let af = '';
-                if(p === 'robot') af = "asetrate=44100*0.9,atempo=1.1,chorus=0.5:0.9:50|60|40:0.4|0.32|0.3:0.25|0.4|0.3:2|2.3|1.3";
-                else if(p === 'squirrel') af = "asetrate=44100*1.4,atempo=0.7"; // Chipmunk
-                else if(p === 'monster') af = "asetrate=44100*0.6,atempo=1.6"; // Deep
-                else if(p === 'echo') af = "aecho=0.8:0.9:1000:0.3";
-                else if(p === 'radio') af = "highpass=f=500,lowpass=f=3000,afftdn";
-                else af = "anull"; // Default
-                
+                if (p === 'robot') af = "asetrate=44100*0.9,atempo=1.1,chorus=0.5:0.9:50|60|40:0.4|0.32|0.3:0.25|0.4|0.3:2|2.3|1.3";
+                else if (p === 'squirrel') af = "asetrate=44100*1.4,atempo=0.7";
+                else if (p === 'monster') af = "asetrate=44100*0.6,atempo=1.6";
+                else if (p === 'echo') af = "aecho=0.8:0.9:1000:0.3";
+                else if (p === 'radio') af = "highpass=f=500,lowpass=f=3000,afftdn";
+                else af = "anull";
+
                 if (params.hasAudio) {
                     filterComplex = `[0:a]${af}[a]`;
                     mapArgs = params.hasVideo ? ['-map', '0:v', '-map', '[a]'] : ['-map', '[a]'];
@@ -114,7 +101,6 @@ export default {
                 break;
 
             default:
-                // Safe default: Ensure dimensions are divisible by 2
                 filterComplex = `[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,unsharp=5:5:1.0:5:5:0.0[v]`;
                 mapArgs = ['-map', '[v]', '-map', '0:a?'];
         }
