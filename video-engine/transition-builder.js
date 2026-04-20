@@ -1,5 +1,5 @@
 
-import presetGenerator from './preset-generator.js';
+import presetGenerator from './presetGenerator.js';
 
 // Helper to escape text for drawtext filter
 function escapeDrawText(text) {
