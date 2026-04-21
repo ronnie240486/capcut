@@ -1,4 +1,3 @@
-
 export const BACKEND_URL = "";
 export const TRACK_LABEL_OFFSET = 38;
 
@@ -1047,6 +1046,18 @@ export const RESOURCES = {
             'deep-fried': { name: 'Deep Fried', filter: 'contrast(2) saturate(3) sharpen(2)' },
             'ethereal': { name: 'Ethereal', filter: 'brightness(1.3) contrast(0.8) saturate(0.5)' }
         },
+        '🔥 CapCut Viral (Exclusivo)': {
+            'capcut-retro': { name: 'Retro CapCut', filter: 'sepia(0.3) contrast(1.1) saturate(0.75)', overlayClass: 'effect-capcut-retro' },
+            'capcut-aura': { name: 'Aura Glow', filter: 'brightness(1.15) saturate(1.4) blur(0.3px)', overlayClass: 'effect-capcut-aura' },
+            'capcut-punch': { name: 'Punch Color', filter: 'contrast(1.6) saturate(2.0)', overlayClass: 'effect-capcut-punch' },
+            'capcut-dream': { name: 'Dream Filter', filter: 'brightness(1.1) saturate(1.3) hue-rotate(10deg) blur(0.4px)', overlayClass: 'effect-capcut-dream' },
+            'capcut-fire': { name: 'Fire Tone', filter: 'saturate(2.0) contrast(1.4) hue-rotate(-15deg)', overlayClass: 'effect-capcut-fire' },
+            'capcut-ice': { name: 'Ice Blue', filter: 'saturate(1.3) contrast(1.1) hue-rotate(30deg)', overlayClass: 'effect-capcut-ice' },
+            'capcut-gold': { name: 'Gold Rush', filter: 'saturate(1.8) contrast(1.2) sepia(0.3)', overlayClass: 'effect-capcut-gold' },
+            'capcut-dark': { name: 'Dark Mode', filter: 'brightness(0.7) contrast(1.5) saturate(1.4)', overlayClass: 'effect-capcut-dark' },
+            'capcut-pink': { name: 'Pink Vibes', filter: 'saturate(1.5) brightness(1.05) hue-rotate(-20deg)', overlayClass: 'effect-capcut-pink' },
+            'capcut-matrix': { name: 'Matrix', filter: 'grayscale(1) contrast(1.4)', overlayClass: 'effect-capcut-matrix' }
+        },
         'Tendência': {
             'dv-cam': { name: 'DV Cam', filter: 'sepia(0.2) contrast(1.1)', overlayClass: 'effect-dv-cam' },
             'bling': { name: 'Bling', filter: 'brightness(1.1)', overlayClass: 'effect-bling' },
@@ -1100,6 +1111,20 @@ export const RESOURCES = {
         ...generatedEffects // Appending 200+ new effects here
     },
     transitions: {
+        '⚡ Novidades 2025 (Viral)': {
+            'zoom-crash-in': { name: 'Crash Zoom In', iconClass: 'trans-zoom-crash-in', icon: 'fa-compress' },
+            'zoom-crash-out': { name: 'Crash Zoom Out', iconClass: 'trans-zoom-crash-out', icon: 'fa-expand' },
+            'whip-diagonal-3': { name: 'Whip Diagonal ↗', iconClass: 'trans-whip-d3', icon: 'fa-location-arrow' },
+            'whip-diagonal-4': { name: 'Whip Diagonal ↙', iconClass: 'trans-whip-d4', icon: 'fa-location-arrow' },
+            'glitch-rgb-hard': { name: 'RGB Hard Glitch', iconClass: 'trans-rgb-hard', icon: 'fa-tv' },
+            'smoke-burst': { name: 'Smoke Burst', iconClass: 'trans-smoke-burst', icon: 'fa-smog' },
+            'light-speed': { name: 'Light Speed', iconClass: 'trans-light-speed', icon: 'fa-bolt' },
+            'morph-dissolve': { name: 'Morph Dissolve', iconClass: 'trans-morph-dis', icon: 'fa-bezier-curve' },
+            'ink-drop': { name: 'Ink Drop', iconClass: 'trans-ink-drop', icon: 'fa-fill-drip' },
+            'static-shock': { name: 'Static Shock', iconClass: 'trans-static', icon: 'fa-plug' },
+            'vhs-rewind': { name: 'VHS Rewind', iconClass: 'trans-vhs-rewind', icon: 'fa-backward' },
+            'hologram-glitch': { name: 'Hologram Glitch', iconClass: 'trans-holo', icon: 'fa-wifi' }
+        },
         '🔥 Tendência CapCut': {
             'blood-mist': { name: 'Névoa de Sangue', iconClass: 'trans-blood-mist', icon: 'fa-skull' },
             'black-smoke': { name: 'Fumaça Preta', iconClass: 'trans-black-smoke', icon: 'fa-smog' },
@@ -1365,6 +1390,20 @@ export const RESOURCES = {
             'photo-flash': { name: 'Flash Foto', type: 'animation', controls: { speed: { min: 0.1, max: 5, step: 0.1, default: 1 } } },
             'rgb-split-anim': { name: 'RGB Split', type: 'animation', controls: { speed: { min: 0.1, max: 5, step: 0.1, default: 1 }, intensity: { min: 0.1, max: 5, step: 0.1, default: 1 } } },
             'mov-vhs-tracking': { name: 'VHS Tracking', type: 'animation', controls: { speed: { min: 0.1, max: 5, step: 0.1, default: 1 }, intensity: { min: 0.1, max: 5, step: 0.1, default: 1 } } }
+        },
+        '🔥 CapCut Moves (Viral)': {
+            'zoom-crash-in': { name: 'Crash Zoom In', type: 'animation', controls: { speed: { min: 0.5, max: 5, step: 0.1, default: 2 }, intensity: { min: 0.5, max: 3, step: 0.1, default: 1 } } },
+            'zoom-crash-out': { name: 'Crash Zoom Out', type: 'animation', controls: { speed: { min: 0.5, max: 5, step: 0.1, default: 2 }, intensity: { min: 0.5, max: 3, step: 0.1, default: 1 } } },
+            'mov-bounce-drop': { name: 'Bounce Drop', type: 'animation', controls: { speed: { min: 0.5, max: 5, step: 0.1, default: 1.5 }, intensity: { min: 0.5, max: 3, step: 0.1, default: 1 } } },
+            'mov-elastic-snap-l': { name: 'Elastic Snap ←', type: 'animation', controls: { speed: { min: 0.5, max: 5, step: 0.1, default: 2 }, intensity: { min: 0.5, max: 3, step: 0.1, default: 1 } } },
+            'mov-elastic-snap-r': { name: 'Elastic Snap →', type: 'animation', controls: { speed: { min: 0.5, max: 5, step: 0.1, default: 2 }, intensity: { min: 0.5, max: 3, step: 0.1, default: 1 } } },
+            'mov-rubber-band': { name: 'Rubber Band', type: 'animation', controls: { speed: { min: 0.5, max: 5, step: 0.1, default: 1.5 }, intensity: { min: 0.5, max: 3, step: 0.1, default: 1 } } },
+            'mov-tada': { name: 'Tada! ✨', type: 'animation', controls: { speed: { min: 0.5, max: 5, step: 0.1, default: 1.5 }, intensity: { min: 0.5, max: 3, step: 0.1, default: 1 } } },
+            'mov-shake-violent': { name: 'Shake Violento', type: 'animation', controls: { speed: { min: 0.5, max: 5, step: 0.1, default: 2 }, intensity: { min: 0.5, max: 5, step: 0.1, default: 2 } } },
+            'mov-digital-tear': { name: 'Digital Tear', type: 'animation', controls: { speed: { min: 0.1, max: 3, step: 0.1, default: 1 }, intensity: { min: 0.5, max: 5, step: 0.1, default: 1 } } },
+            'mov-glitch-snap': { name: 'Glitch Snap', type: 'animation', controls: { speed: { min: 0.5, max: 5, step: 0.1, default: 2 }, intensity: { min: 0.5, max: 5, step: 0.1, default: 1 } } },
+            'mov-flash-pulse': { name: 'Flash Beat Sync', type: 'animation', controls: { speed: { min: 0.5, max: 10, step: 0.5, default: 3 }, intensity: { min: 0.5, max: 3, step: 0.1, default: 1 } } },
+            'mov-strobe-move': { name: 'Strobe Sync', type: 'animation', controls: { speed: { min: 1, max: 15, step: 0.5, default: 5 }, intensity: { min: 0.5, max: 3, step: 0.1, default: 1 } } }
         },
         ...generatedMovements // Appending 50+ new movements here
     }
