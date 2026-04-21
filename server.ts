@@ -3,7 +3,7 @@ import cors from 'cors';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
-import { spawn, exec } from 'child_process';
+import { spawn, exec, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
@@ -198,9 +198,26 @@ async function startServer() {
     app.post('/api/autopilot/generate-tts', async (req: any, res: any) => {
         console.log("[Autopilot] generate-tts request received");
         try {
-            const { text: ttsText, voice, accentPrompt } = req.body;
+            const { text: ttsText, voice, accentPrompt, nuance } = req.body;
             const apiKey = getGeminiKey(req);
             
+            // Nuance mapping
+            const NUANCES: Record<string, string> = {
+                'breath': 'Include deep natural breaths between sentences.',
+                'cough': 'Add occasional light throat clears.',
+                'throat': 'Clear your throat slightly before starting.',
+                'chuckle': 'Include subtle chuckles when appropriate.',
+                'sigh': 'Add audible weary sighs.',
+                'hesitate': 'Add natural "um" or slight pauses as if thinking.',
+                'smack': 'Add subtle lip smacking.',
+                'mutter': 'Slightly mutter at the ends of sentences.',
+                'panting': 'Speak as if out of breath.',
+                'stutter': 'Add very light occasional stuttering.'
+            };
+
+            const selectedNuance = nuance && NUANCES[nuance] ? NUANCES[nuance] : "";
+            const finalPrompt = `Prompt: ${accentPrompt}. ${selectedNuance}\nText to say: ${ttsText}`;
+
             if (!apiKey) {
                 return res.status(401).json({ 
                     error: "Chave Gemini não encontrada para narração.",
@@ -214,7 +231,7 @@ async function startServer() {
                 model: "gemini-3.1-flash-tts-preview",
                 contents: [{
                     role: 'user',
-                    parts: [{ text: `Say with ${accentPrompt}: ${ttsText}` }]
+                    parts: [{ text: finalPrompt }]
                 }],
                 config: {
                     responseModalities: ["AUDIO"],
@@ -780,7 +797,22 @@ async function startServer() {
                 mapArgs.push('-map', `${narrationInputIdx}:a`);
             }
 
-            const totalDuration = plan.scenes.reduce((s: number, sc: any) => s + (sc.duration || 3), 0);
+            let totalDuration = plan.scenes.reduce((s: number, sc: any) => s + (sc.duration || 3), 0);
+
+            // Se existir narração, garantir que a duração total do vídeo coincida com a narração para não cortar o final
+            if (narrationPath && fs.existsSync(narrationPath)) {
+                try {
+                    const durationStr = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${narrationPath}"`).toString().trim();
+                    const audioDuration = parseFloat(durationStr);
+                    if (!isNaN(audioDuration) && audioDuration > 0) {
+                        console.log(`[Autopilot] Narration duration detected: ${audioDuration}s (Plan was ${totalDuration}s)`);
+                        totalDuration = Math.max(audioDuration, totalDuration);
+                    }
+                } catch (err) {
+                    console.error("[Autopilot] Failed to probe narration duration:", err);
+                }
+            }
+
             const args = [
                 ...inputs,
                 '-filter_complex', filterComplex,
