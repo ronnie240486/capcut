@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI, Modality, Type } from "@google/genai";
+import { GoogleGenAI, Modality } from "@google/genai";
 
 // Engine Imports
 import { handleExportVideo } from './video-engine/export-video.js';
@@ -118,13 +118,14 @@ async function startServer() {
                     console.log(`[Proxy] Generated: ${path.basename(proxyPath)}`);
                     resolve(true);
                 } else {
-                    console.warn(`[Proxy] Failed to generate for ${path.basename(inputPath)}. Code: ${code}. Error: ${stderr}`);
+                    console.warn(`[Proxy] Failed to generate for ${path.basename(inputPath)}. Code: ${code}.`);
+                    if (stderr) console.warn(`[Proxy] FFmpeg stderr: ${stderr.slice(-500)}`);
                     if (fs.existsSync(proxyPath)) fs.unlinkSync(proxyPath);
                     resolve(false);
                 }
             });
             ffmpeg.on('error', (err) => {
-                console.error("[Proxy] FFmpeg spawn error:", err);
+                console.error("[Proxy] FFmpeg spawn error (verifique se o ffmpeg está instalado no servidor):", err.message);
                 resolve(false);
             });
         });
@@ -474,40 +475,13 @@ async function startServer() {
                 contents: {
                     parts: [
                         { text: prompt },
-                        ...(imageParts.length > 0 ? imageParts : [])
+                        ...imageParts
                     ]
                 },
-                config: { 
-                    responseMimeType: "application/json",
-                    responseSchema: {
-                        type: Type.OBJECT,
-                        properties: {
-                            script: { type: Type.STRING },
-                            scenes: {
-                                type: Type.ARRAY,
-                                items: {
-                                    type: Type.OBJECT,
-                                    properties: {
-                                        time: { type: Type.STRING },
-                                        action: { type: Type.STRING },
-                                        stockTopic: { type: Type.STRING }
-                                    },
-                                    required: ["time", "action"]
-                                }
-                            },
-                            sfx: {
-                                type: Type.ARRAY,
-                                items: { type: Type.STRING }
-                            }
-                        },
-                        required: ["script", "scenes"]
-                    }
-                }
+                config: { responseMimeType: "application/json" }
             });
 
-            const text = scriptResponse.text;
-            if (!text) throw new Error("A IA retornou uma resposta vazia.");
-            
+            const text = scriptResponse.text || "{}";
             // Strip markdown blocks if present (sometimes happens despite mimeType)
             const jsonStr = text.replace(/```json\n?|```/g, '').trim();
             
@@ -515,11 +489,7 @@ async function startServer() {
                 res.json(JSON.parse(jsonStr));
             } catch (err) {
                 console.error("[Autopilot Plan] JSON Parse Error. Raw Text:", text);
-                res.status(500).json({ 
-                    error: "A resposta da IA não está em um formato válido.", 
-                    details: err instanceof Error ? err.message : String(err),
-                    raw: text.slice(0, 500) 
-                });
+                res.status(500).json({ error: "A resposta da IA não está em um formato válido.", raw: text.slice(0, 500) });
             }
         } catch (e: any) {
             console.error('[Autopilot Plan] Failed:', e);
