@@ -199,7 +199,7 @@ async function startServer() {
     app.post('/api/autopilot/generate-tts', async (req: any, res: any) => {
         console.log("[Autopilot] generate-tts request received");
         try {
-            const { text: ttsText, voice, accentPrompt, nuance } = req.body;
+            const { text: ttsText, voice, accentPrompt, nuance, emotion } = req.body;
             const apiKey = getGeminiKey(req);
             
             // Nuance mapping
@@ -213,11 +213,33 @@ async function startServer() {
                 'smack': 'Add subtle lip smacking.',
                 'mutter': 'Slightly mutter at the ends of sentences.',
                 'panting': 'Speak as if out of breath.',
-                'stutter': 'Add very light occasional stuttering.'
+                'stutter': 'Add very light occasional stuttering.',
+                'whisper': 'Speak in a very low, quiet whisper.',
+                'shout': 'Speak loudly, with high energy and intensity.',
+                'cry': 'Speak with a trembling, tearful voice.',
+                'laugh': 'Speak with constant joyful laughter embedded.',
+                'scared': 'Speak with a fearful, trembling tone.',
+                'angry': 'Speak with a sharp, aggressive, angry tone.',
+                'serious': 'Speak with a very deep, professional, serious tone.',
+                'friendly': 'Speak with a warm, welcoming, friendly tone.',
+                'robotic': 'Speak with a monotone, rhythmic robotic cadence.',
+                'childish': 'Speak with a high-pitched, playful childish voice.'
+            };
+
+            const EMOTIONS: Record<string, string> = {
+                'neutral': 'Natural and balanced tone.',
+                'happy': 'Cheerful, upbeat, and joyful tone.',
+                'sad': 'Melancholic, low-energy, and sorrowful tone.',
+                'angry': 'Aggressive, sharp, and forceful tone.',
+                'surprised': 'Shocked, high-pitch, and wide-eyed tone.',
+                'fearful': 'Trembling, fast-paced, and scared tone.',
+                'disgusted': 'Repelled, sharp, and negative tone.',
+                'calm': 'Peaceful, steady, and relaxing tone.'
             };
 
             const selectedNuance = nuance && NUANCES[nuance] ? NUANCES[nuance] : "";
-            const finalPrompt = `Prompt: ${accentPrompt}. ${selectedNuance}\nText to say: ${ttsText}`;
+            const selectedEmotion = emotion && EMOTIONS[emotion] ? ` Emotion/Style: ${EMOTIONS[emotion]}` : "";
+            const finalPrompt = `Prompt: ${accentPrompt}. ${selectedEmotion} ${selectedNuance}\nText to say: ${ttsText}`;
 
             if (!apiKey) {
                 return res.status(401).json({ 
