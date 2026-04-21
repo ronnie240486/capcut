@@ -51,32 +51,35 @@ async function startServer() {
     process.on('unhandledRejection', (reason) => { console.error('CRITICAL ERROR (Unhandled Rejection):', reason); });
 
     // ─── UTILS ────────────────────────────────────────────────────────────────
-    const getGeminiKey = () => {
-        // AI Studio Environment Key Prioritization
-        const key = (
-            process.env.GEMINI_API_KEY || 
-            process.env.API_KEY || 
-            process.env.GOOGLE_API_KEY || 
-            process.env.NEXT_PUBLIC_GEMINI_API_KEY ||
-            ""
-        ).trim();
-
-        if (key && key !== "undefined" && key !== "null") {
-            const hint = key.length > 8 ? `...${key.slice(-4)}` : "too short";
-            console.log(`[Key Diagnostic] Using environment key ending in ${hint}`);
-            return key;
+    const getGeminiKey = (req?: express.Request) => {
+        // 1. Check for key passed from frontend (for AI Studio selected keys)
+        const headerKey = req?.headers['x-gemini-api-key'] || req?.headers['authorization']?.toString().replace('Bearer ', '');
+        if (headerKey && headerKey.length > 20 && !headerKey.toUpperCase().includes("YOUR_")) {
+            return headerKey.toString();
         }
 
-        // Search for any key starting with AIza if standard ones are missing
-        for (const k in process.env) {
+        const envKeys = Object.keys(process.env);
+        
+        // 2. Try to find any key starting with AIza (real Google API key) in env
+        for (const k of envKeys) {
             const val = (process.env[k] || "").trim();
             if (val.startsWith("AIza") && val.length >= 35) {
-                console.log(`[Key Diagnostic] Found real Google key in alternative var: ${k}`);
                 return val;
             }
         }
 
-        console.log(`[Key Diagnostic] No Gemini API key found in environment.`);
+        // 3. System variables
+        const key = (
+            process.env.GEMINI_API_KEY || 
+            process.env.API_KEY || 
+            process.env.GOOGLE_API_KEY || 
+            ""
+        ).trim();
+
+        if (key && !key.toUpperCase().includes("YOUR_") && !key.endsWith("_KEY")) {
+            return key;
+        }
+
         return "";
     };
 
@@ -99,12 +102,12 @@ async function startServer() {
         console.log("[Autopilot] generate-plan request received");
         try {
             const { prompt, images, viralMode } = req.body;
-            const apiKey = getGeminiKey();
+            const apiKey = getGeminiKey(req);
             
             if (!apiKey) {
-                return res.status(500).json({ 
-                    error: "Nenhuma chave Gemini válida encontrada no servidor.",
-                    details: "As chaves detectadas no ambiente parecem ser 'placeholders' (ex: YOUR_GEMINI_API_KEY). Por favor, selecione uma Chave de API válida no menu do AI Studio."
+                return res.status(401).json({ 
+                    error: "Nenhuma chave Gemini válida encontrada.",
+                    details: "Se você estiver no AI Studio, selecione uma chave no menu de configurações (ícone de engrenagem). No servidor, as chaves detectadas parecem ser placeholders."
                 });
             }
             
@@ -184,12 +187,12 @@ async function startServer() {
         console.log("[Autopilot] generate-tts request received");
         try {
             const { text: ttsText, voice, accentPrompt } = req.body;
-            const apiKey = getGeminiKey();
+            const apiKey = getGeminiKey(req);
             
             if (!apiKey) {
-                return res.status(500).json({ 
-                    error: "Nenhuma chave Gemini válida encontrada no servidor para a narração.",
-                    details: "A chave detectada parece ser um 'placeholder'. Por favor, forneça uma chave real."
+                return res.status(401).json({ 
+                    error: "Chave Gemini não encontrada para narração.",
+                    details: "Certifique-se de que uma Chave de API válida esteja selecionada ou configurada."
                 });
             }
             const ai = new GoogleGenAI({ apiKey });
