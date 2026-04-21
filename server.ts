@@ -52,46 +52,42 @@ async function startServer() {
 
     // ─── UTILS ────────────────────────────────────────────────────────────────
     const getGeminiKey = () => {
-        // AI Studio usually provides AIza... keys for Google APIs
-        let realKeyCandidate = "";
-        let candidateSourceName = "";
+        const envKeys = Object.keys(process.env);
         
-        // 1. Scan ALL environment variables for something that looks like a real Google API key
-        Object.keys(process.env).forEach(k => {
+        // 1. FIRST PRIORITY: Find a key that actually looks like a real Google API key (starts with AIza)
+        for (const k of envKeys) {
             const val = (process.env[k] || "").trim();
             if (val.startsWith("AIza") && val.length > 30) {
-                if (!realKeyCandidate) {
-                    realKeyCandidate = val;
-                    candidateSourceName = k;
-                }
+                console.log(`[Key Diagnostic] Found platform key in: ${k}`);
+                return val;
             }
-        });
-
-        if (realKeyCandidate) {
-            console.log(`[Key Diagnostic] Found a real-looking Google API key in environment variable: ${candidateSourceName}`);
-            return realKeyCandidate;
         }
 
-        // 2. Fallback to specific known names, filtering out placeholders
+        // 2. SECOND PRIORITY: Check standard names but AGGRESSIVELY filter out placeholders
         const standardNames = ['GEMINI_API_KEY', 'API_KEY', 'GOOGLE_API_KEY', 'VITE_GEMINI_API_KEY'];
         for (const name of standardNames) {
             const val = (process.env[name] || "").trim();
-            const isPlaceholder = !val || val === "undefined" || val === "null" || 
-                                 val.toUpperCase().includes("YOUR_") || 
-                                 val.toUpperCase().includes("MY_") ||
-                                 val.length < 10;
+            if (!val) continue;
+
+            const isPlaceholder = 
+                val.toUpperCase().includes("YOUR_") || 
+                val.toUpperCase().includes("MY_") ||
+                val.toUpperCase().includes("REPLACE") ||
+                val === "undefined" || 
+                val === "null" ||
+                val.length < 15;
             
-            if (val && !isPlaceholder) {
-                console.log(`[Key Diagnostic] Using fallback candidate: ${name}`);
+            if (!isPlaceholder) {
+                console.log(`[Key Diagnostic] Found non-placeholder key in: ${name}`);
                 return val;
             }
         }
         
-        // 3. Absolute last resort (even if it looks like a placeholder)
-        const lastResort = (process.env.GEMINI_API_KEY || process.env.API_KEY || "").trim();
-        const finalKey = realKeyCandidate || lastResort;
-        console.log(`[Key Diagnostic] USING KEY: ${finalKey ? finalKey.slice(0, 5) + '...' : 'NONE'}`);
-        return finalKey;
+        // 3. LAST RESORT: If we are here, we might have no key.
+        // In AI Studio, GEMINI_API_KEY is usually provided.
+        const fallback = (process.env.GEMINI_API_KEY || process.env.API_KEY || "").trim();
+        console.log(`[Key Diagnostic] No valid patterns found. Fallback Key: ${fallback ? fallback.slice(0, 5) + '...' : 'NONE'}`);
+        return fallback;
     };
 
     // ─── HEALTH ────────────────────────────────────────────────────────────────
@@ -115,16 +111,27 @@ async function startServer() {
             const { prompt, images, viralMode } = req.body;
             const apiKey = getGeminiKey();
             
-            if (!apiKey) throw new Error("Chave Gemini não configurada no servidor.");
-            
-            // Re-initialize for every request to be safe with the latest env vars
-            const ai = new GoogleGenAI({ apiKey });
+            if (!apiKey) {
+                return res.status(500).json({ error: "Chave Gemini não configurada no servidor." });
+            }
 
+            const isPlaceholder = apiKey.toUpperCase().includes("MY_") || apiKey.toUpperCase().includes("YOUR_") || apiKey.length < 15;
+            
+            if (isPlaceholder) {
+                console.warn("[Autopilot] Warning: The current API key appears to be a placeholder.");
+                return res.status(400).json({ 
+                    error: "A chave de API configurada é inválida (placeholder detectado).",
+                    details: "Por favor, configure uma chave Gemini real nas 'Settings' do AI Studio (GEMINI_API_KEY).",
+                    keyHint: apiKey.slice(0, 6) + "..."
+                });
+            }
+            
+            const ai = new GoogleGenAI({ apiKey });
             const imageParts = images ? images.map((f: string) => ({
                 inlineData: { mimeType: 'image/jpeg', data: f }
             })) : [];
 
-            console.log(`[Autopilot Plan] Calling Gemini 2.0 Flash with ${imageParts.length} images`);
+            console.log(`[Autopilot Plan] Calling Gemini with key ending in ...${apiKey.slice(-4)}`);
             const scriptResponse = await ai.models.generateContent({
                 model: 'gemini-2.0-flash',
                 contents: [{
