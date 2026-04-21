@@ -53,46 +53,33 @@ async function startServer() {
 
     // ─── UTILS ────────────────────────────────────────────────────────────────
     const getGeminiKey = (req?: express.Request) => {
-        const isPlaceholder = (v: string) => {
-            const up = (v || "").toUpperCase();
-            return (
-                !v ||
-                up.includes("YOUR_") || 
-                up.includes("REPLACE") || 
-                (up.includes("API_KEY") && up.length < 20) || 
-                up.includes("/") || 
-                up.endsWith("_KEY") ||
-                up === "UNDEFINED" ||
-                up === "NULL"
-            );
-        };
-
         // 1. Header Priority (from Frontend - AI Studio selected keys)
         const headerKey = (req?.headers['x-gemini-api-key'] || req?.headers['authorization']?.toString().replace('Bearer ', '') || "").toString().trim();
+        
+        const isPlaceholder = (v: string) => {
+            const up = (v || "").toUpperCase();
+            return !v || up.includes("YOUR_") || up.includes("REPLACE") || up === "UNDEFINED" || up === "NULL";
+        };
+
         if (headerKey && !isPlaceholder(headerKey)) {
-            const hint = headerKey.length > 8 ? `${headerKey.slice(0, 4)}...${headerKey.slice(-4)}` : "too short";
-            console.log(`[Key Diagnostic] Using key from headers: ${hint}`);
             return headerKey;
         }
 
-        // 2. Env priority
+        // 2. Direct Env Variable (Priority)
+        const directKey = (process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || "").trim();
+        if (directKey && !isPlaceholder(directKey)) {
+            return directKey;
+        }
+
+        // 3. Scan all Env Variables for anything starting with AIza
         const envKeys = Object.keys(process.env);
         for (const k of envKeys) {
             const val = (process.env[k] || "").trim();
             if (val.startsWith("AIza") && val.length >= 35) {
-                console.log(`[Key Diagnostic] Using real Google key from env: ${k}`);
                 return val;
             }
         }
 
-        // 3. Fallback
-        const fallback = (process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || "").trim();
-        if (fallback && !isPlaceholder(fallback)) {
-            console.log(`[Key Diagnostic] Using fallback env key: ${fallback.slice(0, 4)}...${fallback.slice(-4)}`);
-            return fallback;
-        }
-
-        console.log(`[Key Diagnostic] No valid key found. Headers had: ${headerKey ? "present" : "empty"}`);
         return "";
     };
 
@@ -120,7 +107,7 @@ async function startServer() {
             if (!apiKey) {
                 return res.status(401).json({ 
                     error: "Nenhuma chave Gemini válida encontrada.",
-                    details: "Se você estiver no AI Studio, selecione uma chave no menu de configurações (ícone de engrenagem). No servidor, as chaves detectadas parecem ser placeholders."
+                    details: "Para resolver: 1. No AI Studio, clique no ícone de engrenagem e selecione uma chave API. 2. Se estiver rodando localmente/firebase, defina a variável de ambiente GEMINI_API_KEY com sua chave do Google AI Studio."
                 });
             }
             
@@ -144,22 +131,25 @@ async function startServer() {
                     responseSchema: {
                         type: Type.OBJECT,
                         properties: {
-                            script: { type: Type.STRING },
+                            script: { type: Type.STRING, description: "Full narration script" },
+                            nuance: { type: Type.STRING, description: "Selected human nuance ID" },
                             scenes: {
                                 type: Type.ARRAY,
                                 items: {
                                     type: Type.OBJECT,
                                     properties: {
-                                        time: { type: Type.STRING },
-                                        action: { type: Type.STRING },
-                                        stockTopic: { type: Type.STRING }
+                                        duration: { type: Type.NUMBER, description: "Duration in seconds" },
+                                        action: { type: Type.STRING, description: "Description of visuals" },
+                                        fileIndex: { type: Type.NUMBER, description: "Index of user file to use" },
+                                        filter: { type: Type.STRING, description: "Visual filter to apply" },
+                                        transition: { type: Type.STRING, description: "Transition type (fade, zoom, none)" },
+                                        movement: { type: Type.STRING, description: "Movement type (zoom_in, zoom_out, pan_left, pan_right, static)" },
+                                        subtitle: { type: Type.STRING, description: "Concise subtitle for this scene" },
+                                        sfx: { type: Type.STRING, description: "Sound effect description" },
+                                        stockTopic: { type: Type.STRING, description: "Topic for stock footage if user clip is missing" }
                                     },
-                                    required: ["time", "action"]
+                                    required: ["duration", "action", "subtitle"]
                                 }
-                            },
-                            sfx: {
-                                type: Type.ARRAY,
-                                items: { type: Type.STRING }
                             }
                         },
                         required: ["script", "scenes"]
@@ -243,8 +233,8 @@ async function startServer() {
 
             if (!apiKey) {
                 return res.status(401).json({ 
-                    error: "Chave Gemini não encontrada para narração.",
-                    details: "Certifique-se de que uma Chave de API válida esteja selecionada ou configurada."
+                    error: "Nenhuma chave Gemini válida encontrada.",
+                    details: "Para resolver: 1. No AI Studio, clique no ícone de engrenagem e selecione uma chave API. 2. Se estiver rodando localmente/firebase, defina a variável de ambiente GEMINI_API_KEY com sua chave do Google AI Studio."
                 });
             }
             const ai = new GoogleGenAI({ apiKey });
@@ -806,14 +796,19 @@ async function startServer() {
 
                 // Legendas (Subtitles) - Burn-in
                 if (scene.subtitle) {
-                    // Escape special characters for FFmpeg drawtext
+                    // Robust escaping for FFmpeg drawtext
                     const cleanSub = scene.subtitle
-                        .replace(/[\\'"]/g, '\\$&') // Escape \, ', "
+                        .replace(/\\/g, '\\\\\\\\') // Escape \
+                        .replace(/'/g, "'\\''")      // Escape '
                         .replace(/:/g, '\\:')       // Escape :
                         .toUpperCase();
                     
-                    // Subtitle at bottom - y=h-100 is closer to bottom than h-120
-                    filterChain += `,drawtext=text='${cleanSub}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.7:boxborderw=12:x=(w-text_w)/2:y=h-text_h-60:fix_bounds=1`;
+                    // fontfile fallback - common paths in Linux
+                    const fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
+                    const fontArg = fs.existsSync(fontPath) ? `:fontfile='${fontPath}'` : '';
+                    
+                    // Subtitle at bottom with a robust box
+                    filterChain += `,drawtext=text='${cleanSub}'${fontArg}:fontcolor=white:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=15:line_spacing=5:x=(w-text_w)/2:y=h-text_h-100:fix_bounds=1`;
                 }
 
                 filterParts.push(`${filterChain}[${sceneLabel}]`);
