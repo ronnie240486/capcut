@@ -215,6 +215,12 @@ const calculateEffectiveVolume = (clip: Clip, currentTime: number) => {
 const VideoElement = React.memo(({ clip, media, active, currentTime, isPlaying, objectFit, style, volume }: any) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const isSyncing = useRef<boolean>(false);
+    const [useFallback, setUseFallback] = useState(false);
+
+    // Reset fallback se a mídia mudar
+    useEffect(() => {
+        setUseFallback(false);
+    }, [media.url, media.originalUrl]);
 
     useEffect(() => {
         const el = videoRef.current;
@@ -265,13 +271,17 @@ const VideoElement = React.memo(({ clip, media, active, currentTime, isPlaying, 
         }
     }, [currentTime, isPlaying, active, clip, media, volume]);
 
+    const videoSrc = useFallback ? (media.originalUrl || media.url) : (media.url || undefined);
+
     return (
         <video 
             ref={videoRef} 
-            src={media.url || undefined} 
+            src={videoSrc} 
             playsInline 
             muted={volume === 0}
             preload="auto" 
+            crossOrigin="anonymous"
+            referrerPolicy="no-referrer"
             className="w-full h-full block" 
             style={{ 
                 objectFit, 
@@ -280,6 +290,12 @@ const VideoElement = React.memo(({ clip, media, active, currentTime, isPlaying, 
                 backfaceVisibility: 'hidden',
                 WebkitOverflowScrolling: 'touch'
             }} 
+            onError={() => {
+                if (!useFallback && media.originalUrl && media.url !== media.originalUrl) {
+                    console.warn(`[Video] Proxy falhou, usando original: ${media.name}`);
+                    setUseFallback(true);
+                }
+            }}
         />
     );
 });
