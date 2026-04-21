@@ -54,11 +54,15 @@ async function startServer() {
     const getGeminiKey = () => {
         const envKeys = Object.keys(process.env);
         
+        // Log all possible key names for diagnostics (only keys, not values)
+        const possibleKeys = envKeys.filter(k => k.toLowerCase().includes('api') || k.toLowerCase().includes('key'));
+        console.log(`[Key Diagnostic] Environment keys found: ${possibleKeys.join(', ')}`);
+
         // 1. FIRST PRIORITY: Find a key that actually looks like a real Google API key (starts with AIza)
         for (const k of envKeys) {
             const val = (process.env[k] || "").trim();
             if (val.startsWith("AIza") && val.length > 30) {
-                console.log(`[Key Diagnostic] Found platform key in: ${k}`);
+                console.log(`[Key Diagnostic] Found platform key in: ${k} (Type: AIza)`);
                 return val;
             }
         }
@@ -69,24 +73,19 @@ async function startServer() {
             const val = (process.env[name] || "").trim();
             if (!val) continue;
 
-            const isPlaceholder = 
-                val.toUpperCase().includes("YOUR_") || 
-                val.toUpperCase().includes("MY_") ||
-                val.toUpperCase().includes("REPLACE") ||
-                val === "undefined" || 
-                val === "null" ||
-                val.length < 15;
+            const isPlaceholder = false; // User requested not to block placeholder names in this environment
             
             if (!isPlaceholder) {
-                console.log(`[Key Diagnostic] Found non-placeholder key in: ${name}`);
+                console.log(`[Key Diagnostic] Found valid-looking key in: ${name}`);
                 return val;
+            } else {
+                console.log(`[Key Diagnostic] Found placeholder key in: ${name} (Value: ${val.slice(0, 5)}...)`);
             }
         }
         
         // 3. LAST RESORT: If we are here, we might have no key.
-        // In AI Studio, GEMINI_API_KEY is usually provided.
         const fallback = (process.env.GEMINI_API_KEY || process.env.API_KEY || "").trim();
-        console.log(`[Key Diagnostic] No valid patterns found. Fallback Key: ${fallback ? fallback.slice(0, 5) + '...' : 'NONE'}`);
+        console.log(`[Key Diagnostic] No valid patterns found. Fallback: ${fallback ? fallback.slice(0, 5) + '...' : 'NONE'}`);
         return fallback;
     };
 
@@ -115,7 +114,7 @@ async function startServer() {
                 return res.status(500).json({ error: "Chave Gemini não configurada no servidor." });
             }
 
-            const isPlaceholder = apiKey.toUpperCase().includes("MY_") || apiKey.toUpperCase().includes("YOUR_") || apiKey.length < 15;
+            const isPlaceholder = false; // Disable proactive blocking in AI Studio to use platform keys directly
             
             if (isPlaceholder) {
                 console.warn("[Autopilot] Warning: The current API key appears to be a placeholder.");
