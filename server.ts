@@ -52,34 +52,46 @@ async function startServer() {
 
     // ─── UTILS ────────────────────────────────────────────────────────────────
     const getGeminiKey = (req?: express.Request) => {
-        // 1. Check for key passed from frontend (for AI Studio selected keys)
-        const headerKey = req?.headers['x-gemini-api-key'] || req?.headers['authorization']?.toString().replace('Bearer ', '');
-        if (headerKey && headerKey.length > 20 && !headerKey.toUpperCase().includes("YOUR_")) {
-            return headerKey.toString();
+        const isPlaceholder = (v: string) => {
+            const up = (v || "").toUpperCase();
+            return (
+                !v ||
+                up.includes("YOUR_") || 
+                up.includes("REPLACE") || 
+                (up.includes("API_KEY") && up.length < 20) || 
+                up.includes("/") || 
+                up.endsWith("_KEY") ||
+                up === "UNDEFINED" ||
+                up === "NULL"
+            );
+        };
+
+        // 1. Header Priority (from Frontend - AI Studio selected keys)
+        const headerKey = (req?.headers['x-gemini-api-key'] || req?.headers['authorization']?.toString().replace('Bearer ', '') || "").toString().trim();
+        if (headerKey && !isPlaceholder(headerKey)) {
+            const hint = headerKey.length > 8 ? `${headerKey.slice(0, 4)}...${headerKey.slice(-4)}` : "too short";
+            console.log(`[Key Diagnostic] Using key from headers: ${hint}`);
+            return headerKey;
         }
 
+        // 2. Env priority
         const envKeys = Object.keys(process.env);
-        
-        // 2. Try to find any key starting with AIza (real Google API key) in env
         for (const k of envKeys) {
             const val = (process.env[k] || "").trim();
             if (val.startsWith("AIza") && val.length >= 35) {
+                console.log(`[Key Diagnostic] Using real Google key from env: ${k}`);
                 return val;
             }
         }
 
-        // 3. System variables
-        const key = (
-            process.env.GEMINI_API_KEY || 
-            process.env.API_KEY || 
-            process.env.GOOGLE_API_KEY || 
-            ""
-        ).trim();
-
-        if (key && !key.toUpperCase().includes("YOUR_") && !key.endsWith("_KEY")) {
-            return key;
+        // 3. Fallback
+        const fallback = (process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || "").trim();
+        if (fallback && !isPlaceholder(fallback)) {
+            console.log(`[Key Diagnostic] Using fallback env key: ${fallback.slice(0, 4)}...${fallback.slice(-4)}`);
+            return fallback;
         }
 
+        console.log(`[Key Diagnostic] No valid key found. Headers had: ${headerKey ? "present" : "empty"}`);
         return "";
     };
 
@@ -116,7 +128,7 @@ async function startServer() {
                 inlineData: { mimeType: 'image/jpeg', data: f }
             })) : [];
 
-            console.log(`[Autopilot Plan] Calling Gemini with key ending in ...${apiKey.slice(-4)}`);
+            console.log(`[Autopilot Plan] Calling Gemini 3 Flash Preview`);
             const scriptResponse = await ai.models.generateContent({
                 model: 'gemini-3-flash-preview',
                 contents: [{
@@ -197,7 +209,7 @@ async function startServer() {
             }
             const ai = new GoogleGenAI({ apiKey });
 
-            console.log(`[Autopilot TTS] Calling Gemini 2.0 Flash for TTS: ${voice}`);
+            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${voice}`);
             const ttsResponse = await ai.models.generateContent({
                 model: "gemini-3.1-flash-tts-preview",
                 contents: [{
