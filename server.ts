@@ -44,7 +44,14 @@ async function startServer() {
     process.on('unhandledRejection', (reason) => { console.error('CRITICAL ERROR (Unhandled Rejection):', reason); });
 
     // ─── HEALTH ────────────────────────────────────────────────────────────────
-    app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+    app.get('/api/health', (req, res) => {
+        const key = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
+        res.json({ 
+            status: 'ok', 
+            hasKey: key.length > 0,
+            keyPrefix: key ? `${key.substring(0, 4)}...${key.substring(key.length - 4)}` : null
+        });
+    });
 
     // ─── FFPROBE HELPER ────────────────────────────────────────────────────────
     const getStreamInfo = (filePath: string): Promise<{ hasAudio: boolean; hasVideo: boolean }> => {
