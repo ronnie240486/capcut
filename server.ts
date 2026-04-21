@@ -13,6 +13,7 @@ import { GoogleGenAI, Modality, Type } from "@google/genai";
 // Engine Imports
 import { handleExportVideo } from './video-engine/export-video.js';
 import filterBuilder from './video-engine/filter-logic.js';
+import voiceAutomation from './video-engine/voice-automation.js';
 
 // ES Module dirname fix
 const __filename = fileURLToPath(import.meta.url);
@@ -567,24 +568,27 @@ async function startServer() {
             job.outputPath = outputPath;
 
             let args: string[] = [];
-            if (action.includes('extract-audio')) {
-                args = ['-i', file.path, '-vn', '-acodec', 'libmp3lame', '-q:a', '2', '-y', outputPath];
-                createFFmpegJob(jobId, args, 10, res);
+            const { filterComplex: fc, mapArgs, outputOptions } = filterBuilder.build(action, job.params, file.path);
+
+            if (ext === '.mp3') {
+                // Completely rebuild args for MP3 to avoid mapping errors
+                const mp3Args = ['-i', file.path];
+                if (fc) {
+                    mp3Args.push('-filter_complex', fc, '-map', '[a]');
+                } else {
+                    mp3Args.push('-map', '0:a?');
+                }
+                mp3Args.push('-vn', '-acodec', 'libmp3lame', '-q:a', '2', '-y', outputPath);
+                createFFmpegJob(jobId, mp3Args, 10, res);
             } else {
-                const { filterComplex, mapArgs, outputOptions } = filterBuilder.build(action, job.params, file.path);
                 args = ['-i', file.path];
-                if (filterComplex) args.push('-filter_complex', filterComplex);
+                if (fc) args.push('-filter_complex', fc);
                 if (mapArgs && mapArgs.length) args.push(...mapArgs);
-                else if (!filterComplex) {
+                else {
                     if (streamInfo.hasVideo) args.push('-c:v', 'copy');
                     if (streamInfo.hasAudio) args.push('-c:a', 'copy');
                 }
                 if (outputOptions && outputOptions.length) args.push(...outputOptions);
-                if (ext === '.mp3') {
-                    args = args.filter((a: string) => a !== '0:v' && a !== '-map');
-                    if (filterComplex && !args.includes('-map')) args.push('-map', '[a]');
-                    args.push('-vn');
-                }
                 args.push('-y', outputPath);
                 createFFmpegJob(jobId, args, 10, res);
             }
@@ -732,6 +736,7 @@ async function startServer() {
 
                 if (!filePath || !fs.existsSync(filePath)) continue;
 
+                const streamInfo = await getStreamInfo(filePath);
                 inputs.push('-i', filePath);
                 const vIdx = inputIdx++;
 
@@ -740,7 +745,13 @@ async function startServer() {
                 const sceneLabel = `scene_v${i}`;
 
                 // Aplicar trim, scale, efeito e formato
-                let filterChain = `[${vIdx}:v]trim=start=${startTime}:duration=${duration},setpts=PTS-STARTPTS`;
+                let filterChain = "";
+                if (streamInfo.hasVideo) {
+                    filterChain = `[${vIdx}:v]trim=start=${startTime}:duration=${duration},setpts=PTS-STARTPTS`;
+                } else {
+                    // Fallback para áudio-only ou arquivos sem vídeo: fundo preto de 1280x720
+                    filterChain = `color=c=black:s=1280x720:d=${duration}[vbg${i}];[vbg${i}]setsar=1`;
+                }
 
                 // Movimentos Cinematográficos (Zoom/Pan)
                 if (scene.movement === 'zoom_in') {
@@ -779,7 +790,8 @@ async function startServer() {
                         .replace(/:/g, '\\:')       // Escape :
                         .toUpperCase();
                     
-                    filterChain += `,drawtext=text='${cleanSub}':fontcolor=white:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=15:line_spacing=10:x=(w-text_w)/2:y=h-120:fix_bounds=1`;
+                    // Subtitle at bottom - y=h-100 is closer to bottom than h-120
+                    filterChain += `,drawtext=text='${cleanSub}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.7:boxborderw=12:x=(w-text_w)/2:y=h-text_h-60:fix_bounds=1`;
                 }
 
                 filterParts.push(`${filterChain}[${sceneLabel}]`);
