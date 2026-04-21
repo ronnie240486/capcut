@@ -52,7 +52,14 @@ async function startServer() {
 
     // ─── UTILS ────────────────────────────────────────────────────────────────
     const getGeminiKey = () => {
-        const key = process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || "";
+        let key = (process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || "").trim();
+        // Check for common 'empty' placeholders
+        if (key === "undefined" || key === "null" || key === "your_key_here") key = "";
+        
+        if (!key) {
+            console.log(`[Key Diagnostic] GEMINI_API_KEY not found. Availables: ${Object.keys(process.env).filter(k => k.includes('KEY') || k.includes('TOKEN')).join(', ')}`);
+        }
+        
         console.log(`[Key Diagnostic] Found key: ${key ? (key.slice(0, 4) + '...' + key.slice(-4)) : 'NOT FOUND'}`);
         return key;
     };
@@ -79,6 +86,8 @@ async function startServer() {
             const apiKey = getGeminiKey();
             
             if (!apiKey) throw new Error("Chave Gemini não configurada no servidor.");
+            
+            // Re-initialize for every request to be safe with the latest env vars
             const ai = new GoogleGenAI({ apiKey });
 
             const imageParts = images ? images.map((f: string) => ({
@@ -140,7 +149,15 @@ async function startServer() {
             }
         } catch (e: any) {
             console.error('[Autopilot Plan] Failed:', e);
-            res.status(500).json({ error: e.message });
+            // If e contains a JSON error from Google, try to parse it to make it more readable
+            let errorMsg = e.message;
+            try {
+                if (errorMsg.startsWith('{')) {
+                    const parsed = JSON.parse(errorMsg);
+                    if (parsed.error?.message) errorMsg = parsed.error.message;
+                }
+            } catch(ex) {}
+            res.status(500).json({ error: errorMsg });
         }
     });
 
@@ -178,7 +195,14 @@ async function startServer() {
             res.json({ audioBase64 });
         } catch (e: any) {
             console.error('[Autopilot TTS] Failed:', e);
-            res.status(500).json({ error: e.message });
+            let errorMsg = e.message;
+            try {
+                if (errorMsg.startsWith('{')) {
+                    const parsed = JSON.parse(errorMsg);
+                    if (parsed.error?.message) errorMsg = parsed.error.message;
+                }
+            } catch(ex) {}
+            res.status(500).json({ error: errorMsg });
         }
     });
 
