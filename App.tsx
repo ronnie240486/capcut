@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI, GenerateContentResponse, Modality } from "@google/genai";
 import { Header } from './components/Header';
 import { BrowserPanel } from './components/BrowserPanel';
@@ -16,6 +17,9 @@ import {
 } from './types';
 import { BACKEND_URL, RESOURCES, TEXT_RESOURCES, IMAGE_STYLE_CATEGORIES } from './constants';
 import { GeminiVideoService, generateMusic } from './services/geminiService';
+import MagicAutopilot from './components/MagicAutopilot';
+import { getGeminiKey } from './lib/keys';
+import { safeJson } from './lib/utils';
 
 // DB Helper functions
 const getDB = () => {
@@ -70,6 +74,25 @@ const base64ToUint8Array = (base64: string) => {
         bytes[i] = binaryString.charCodeAt(i);
     }
     return bytes;
+};
+
+// ── DETECÇÃO DE BACKEND ──────────────────────────────────────────────────────
+// Verifica uma vez se o servidor local está disponível (ex: rodando com npm run dev).
+// Resultado cacheado para não repetir a cada import.
+let _backendAvailable: boolean | null = null;
+const checkBackendAvailable = async (): Promise<boolean> => {
+    if (_backendAvailable !== null) return _backendAvailable;
+    try {
+        const ctrl = new AbortController();
+        const timeout = setTimeout(() => ctrl.abort(), 1500); // 1.5s timeout
+        const res = await fetch(`${BACKEND_URL}/api/health`, { signal: ctrl.signal });
+        clearTimeout(timeout);
+        _backendAvailable = res.ok;
+    } catch {
+        _backendAvailable = false;
+    }
+    console.log(`[Backend] Disponível: ${_backendAvailable}`);
+    return _backendAvailable;
 };
 
 const blobToBase64 = (blob: globalThis.Blob): Promise<string> => {
@@ -398,15 +421,7 @@ const mapVoiceIdToGeminiName = (uiId: string): { voice: string, prompt: string }
     return { voice, prompt: stylePrompt };
 };
 
-const getUserKey = (): string => {
-    try {
-        const keys = JSON.parse(localStorage.getItem('proedit_api_keys') || '{}');
-        // Prefer user key if provided, otherwise use system key
-        return (keys.googleApiKey as string) || (process.env.GEMINI_API_KEY as string) || (process.env.API_KEY as string) || '';
-    } catch {
-        return (process.env.GEMINI_API_KEY as string) || (process.env.API_KEY as string) || '';
-    }
-};
+const getUserKey = (): string => getGeminiKey();
 
 const getGPTKey = (): string => {
     try {
@@ -431,6 +446,9 @@ async function callGeminiSafe<T>(
     onRetry?: () => void
 ): Promise<T> {
     const primaryKey = getUserKey();
+    if (!primaryKey) {
+        throw new Error("Chave de API do Gemini não encontrada. Verifique as configurações ou as variáveis de ambiente.");
+    }
     const ai = new GoogleGenAI({ apiKey: primaryKey });
     
     try {
@@ -704,6 +722,7 @@ const App: React.FC = () => {
     const [mobileTab, setMobileTab] = useState<'timeline' | 'browser' | 'inspector'>('timeline');
     const [activeTool, setActiveTool] = useState<'cursor' | 'magic-eraser'>('cursor');
     const [magicSyncLoading, setMagicSyncLoading] = useState(false);
+    const [magicMode, setMagicMode] = useState(false);
     const [magicEraserBrushSize, setMagicEraserBrushSize] = useState(20);
     const [maskPaths, setMaskPaths] = useState<{points: {x: number, y: number}[], dims: {width: number, height: number}}[]>([]);
     const [ttsPreviewLoading, setTtsPreviewLoading] = useState(false);
@@ -1307,7 +1326,7 @@ const App: React.FC = () => {
                 const clip = state.clips.find(c => c.id === activeClipId)!; 
                 const media = state.media[clip.fileName]; 
                 if (media) formData.append('files', await getFileFromDB(media.name) || await (await fetch(media.url)).blob(), media.name); 
-            } Object.keys(params).forEach(k => formData.append(k, typeof params[k] === 'object' ? JSON.stringify(params[k]) : String(params[k]))); if (endpoint.includes('export')) { const cleanState = { media: state.media, clips: state.clips, totalDuration: state.totalDuration, projectAspectRatio: state.projectAspectRatio, backgroundColor: state.backgroundColor, }; formData.append('projectState', JSON.stringify({ ...cleanState, exportConfig: options.exportConfig })); const realFileNames = Array.from(new Set(state.clips .filter(c => c.type !== 'text' && c.fileName !== 'Text Layer') .map(c => c.fileName) )) as string[]; for (const name of realFileNames) { const blob = await getFileFromDB(name); if (blob) { formData.append('files', blob, name); } else if (state.media[name]?.url) { try { const res = await fetch(state.media[name].url); if (res.ok) { const b = await res.blob(); formData.append('files', b, name); } } catch(e) { console.warn("Failed to retrieve media for export:", name, e); } } } } const startRes = await fetch(`${BACKEND_URL}${endpoint.startsWith('/api') ? endpoint : '/api/process/start/' + endpoint}`, { method: 'POST', body: formData }); if (!startRes.ok) throw new Error(await startRes.text()); const { jobId } = await startRes.json(); const poll = setInterval(async () => { const statusRes = await fetch(`${BACKEND_URL}/api/process/status/${jobId}`); const status = await statusRes.json() as any; if (status.progress !== undefined) setLoadingState(p => ({ ...p!, progress: status.progress })); if (status.status === 'completed') { clearInterval(poll); const blob = await (await fetch(`${BACKEND_URL}${status.downloadUrl}`)).blob(); 
+            } Object.keys(params).forEach(k => formData.append(k, typeof params[k] === 'object' ? JSON.stringify(params[k]) : String(params[k]))); if (endpoint.includes('export')) { const cleanState = { media: state.media, clips: state.clips, totalDuration: state.totalDuration, projectAspectRatio: state.projectAspectRatio, backgroundColor: state.backgroundColor, }; formData.append('projectState', JSON.stringify({ ...cleanState, exportConfig: options.exportConfig })); const realFileNames = Array.from(new Set(state.clips .filter(c => c.type !== 'text' && c.fileName !== 'Text Layer') .map(c => c.fileName) )) as string[]; for (const name of realFileNames) { const blob = await getFileFromDB(name); if (blob) { formData.append('files', blob, name); } else if (state.media[name]?.url) { try { const res = await fetch(state.media[name].originalUrl || state.media[name].url); if (res.ok) { const b = await res.blob(); formData.append('files', b, name); } } catch(e) { console.warn("Failed to retrieve media for export:", name, e); } } } } const startRes = await fetch(`${BACKEND_URL}${endpoint.startsWith('/api') ? endpoint : '/api/process/start/' + endpoint}`, { method: 'POST', body: formData }); if (!startRes.ok) throw new Error(await startRes.text()); const { jobId } = await startRes.json(); const poll = setInterval(async () => { const statusRes = await fetch(`${BACKEND_URL}/api/process/status/${jobId}`); const status = await statusRes.json() as any; if (status.progress !== undefined) setLoadingState(p => ({ ...p!, progress: status.progress })); if (status.status === 'completed') { clearInterval(poll); const blob = await (await fetch(`${BACKEND_URL}${status.downloadUrl}`)).blob(); 
         if (blob.size < 100) {
             setLoadingState(null);
             throw new Error("Arquivo gerado vazio ou inválido.");
@@ -1346,16 +1365,36 @@ const App: React.FC = () => {
                     await storeFileInDB(name, file); 
                     const url = URL.createObjectURL(file); 
                     const meta = (type === 'video' || type === 'audio') ? await getMediaMetadata(url, type) : { duration: 5, hasAudio: false }; 
-                    const thumb = (type === 'video' && !forceType) ? await getVideoThumbnail(file) : url; 
-                    
+                    const thumb = (type === 'video' && !forceType) ? await getVideoThumbnail(file) : url;
+
+                    // ── PROXY: tenta gerar versão 360p se o backend local estiver disponível ──
+                    // Em ambientes sem backend (AI Studio, browser puro) usa o arquivo original.
+                    let proxyUrl: string | undefined = undefined;
+                    if (type === 'video' && await checkBackendAvailable()) {
+                        try {
+                            setLoadingState({ message: `Gerando proxy para preview (${i+1}/${fileArray.length})...`, progress: Math.round((i/fileArray.length)*100) });
+                            const proxyForm = new FormData();
+                            proxyForm.append('files', file, file.name);
+                            const proxyRes = await fetch(`${BACKEND_URL}/api/proxy/generate`, { method: 'POST', body: proxyForm });
+                            if (proxyRes.ok) {
+                                const proxyData = await proxyRes.json();
+                                if (proxyData.proxyUrl) proxyUrl = `${BACKEND_URL}${proxyData.proxyUrl}`;
+                            }
+                        } catch (e) {
+                            console.warn('[Proxy] Geração falhou (não crítico):', e);
+                        }
+                    }
+
                     item = { 
                         name: name, 
-                        url, 
+                        url: proxyUrl || url,
+                        originalUrl: url,
                         type: type as any, 
                         duration: meta.duration, 
                         isUserFile: true, 
                         thumbnail: thumb, 
-                        hasAudio: meta.hasAudio 
+                        hasAudio: meta.hasAudio,
+                        proxyUrl
                     }; 
                     newMediaItems.push(item);
                 }
@@ -1593,14 +1632,17 @@ const App: React.FC = () => {
             });
 
             if (response.status === 202) {
-                const { jobId } = await response.json();
+                const data = await safeJson(response);
+                if (!data || !data.jobId) throw new Error("Servidor não retornou ID do trabalho.");
+                const { jobId } = data;
                 
                 // Poll for Job Status
                 let completed = false;
                 while (!completed) {
                     await new Promise(r => setTimeout(r, 3000));
                     const pollRes = await fetch(`/api/process/status/${jobId}`);
-                    const job = await pollRes.json();
+                    const job = await safeJson(pollRes);
+                    if (!job) continue; // Skip if empty or failed, retry
                     
                     if (job.status === 'completed') {
                         completed = true;
@@ -1626,8 +1668,8 @@ const App: React.FC = () => {
                     }
                 }
             } else {
-                const err = await response.json();
-                throw new Error(err.error || "Falha ao iniciar geração AI.");
+                const err = await safeJson(response);
+                throw new Error(err?.error || "Falha ao iniciar geração AI.");
             }
             
         } catch (e: any) { 
@@ -3738,6 +3780,7 @@ const App: React.FC = () => {
                 onExport={handleHeaderExport}
                 onSave={handleSaveProject}
                 onLoad={handleLoadProjectData}
+                onMagicAutopilot={() => setMagicMode(true)}
                 onModalChange={(isOpen) => { /* Optional: disable shortcuts */ }}
              />
              
@@ -3781,7 +3824,45 @@ const App: React.FC = () => {
                 </div>
 
                 {/* Desktop Layout */}
-                <div className="hidden md:flex w-full h-full">
+                <div className="hidden md:flex w-full h-full relative">
+                    <AnimatePresence>
+                        {magicMode && (
+                        <motion.div 
+                            initial={{ opacity: 0, scale: 0.9 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            exit={{ opacity: 0, scale: 1.1 }}
+                            className="absolute inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-10"
+                        >
+                            <MagicAutopilot 
+                                onComplete={async (url) => {
+                                    const res = await fetch(url);
+                                    const blob = await res.blob();
+                                    const file = new File([blob], `video_ia_${Date.now()}.mp4`, { type: 'video/mp4' });
+                                    
+                                    // Construct a fake FileList-like object
+                                    const dataTransfer = new DataTransfer();
+                                    dataTransfer.items.add(file);
+                                    
+                                    onImportHandler(dataTransfer.files, 'video', 'video');
+                                    setMagicMode(false);
+                                    addToast("Vídeo gerado com sucesso!", 'success');
+                                    
+                                    // Celebrate
+                                    import('canvas-confetti').then(confetti => {
+                                        confetti.default({
+                                            particleCount: 150,
+                                            spread: 70,
+                                            origin: { y: 0.6 },
+                                            colors: ['#EAB308', '#FCD34D', '#FFFFFF']
+                                        });
+                                    });
+                                }}
+                                onCancel={() => setMagicMode(false)}
+                            />
+                        </motion.div>
+                        )}
+                    </AnimatePresence>
+
                     <div className="w-[360px] border-r border-zinc-800 bg-zinc-900/95 flex flex-col">
                         <BrowserPanel 
                             mediaLibrary={state.media}
@@ -3823,6 +3904,7 @@ const App: React.FC = () => {
                                     return {...s, media: newMedia};
                                 });
                             }}
+                            onMagicAutopilot={() => setMagicMode(true)}
                             onReplace={onImportHandler} // Simplified replacement logic usually involves selected clip
                             onFreeze={handleFreeze}
                             onUpdateClip={(id, updates) => setState(s => ({ ...s, clips: s.clips.map(c => c.id === id ? { ...c, ...updates } : c) }))}
