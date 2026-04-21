@@ -65,7 +65,7 @@ async function startServer() {
         });
     };
 
-    const sanitizeFilename = (name: string) => name.replace(/[^a-z0-9.]/gi, '_').replace(/_{2,}/g, '_');
+    const sanitizeFilename = (name: string) => name.replace(/[^a-z0-9._-]/gi, '_').replace(/_{2,}/g, '_');
 
     const storage = multer.diskStorage({
         destination: (req, file, cb) => cb(null, uploadDir),
@@ -81,16 +81,17 @@ async function startServer() {
 
     // ─── PROXY VIDEO GENERATOR ─────────────────────────────────────────────────
     // Gera uma versão 360p comprimida do vídeo para uso no preview (como CapCut)
-    const generateVideoProxy = (inputPath: string, proxyPath: string): Promise<void> => {
-        return new Promise((resolve, reject) => {
+    const generateVideoProxy = (inputPath: string, proxyPath: string): Promise<boolean> => {
+        return new Promise((resolve) => {
             const args = [
                 '-i', inputPath,
-                '-vf', 'scale=-2:360',         // 360p mantendo proporção
+                '-vf', 'scale=-2:360',
                 '-c:v', 'libx264',
-                '-preset', 'ultrafast',         // Rápido para não travar o upload
-                '-crf', '28',                   // Qualidade menor = arquivo menor
+                '-pix_fmt', 'yuv420p',
+                '-preset', 'ultrafast',
+                '-crf', '28',
                 '-c:a', 'aac',
-                '-b:a', '64k',                  // Áudio comprimido
+                '-b:a', '64k',
                 '-movflags', '+faststart',
                 '-y', proxyPath
             ];
@@ -98,13 +99,17 @@ async function startServer() {
             ffmpeg.on('close', (code) => {
                 if (code === 0 && fs.existsSync(proxyPath) && fs.statSync(proxyPath).size > 100) {
                     console.log(`[Proxy] Generated: ${path.basename(proxyPath)}`);
-                    resolve();
+                    resolve(true);
                 } else {
                     console.warn(`[Proxy] Failed to generate for ${path.basename(inputPath)}`);
-                    reject(new Error('Proxy generation failed'));
+                    if (fs.existsSync(proxyPath)) fs.unlinkSync(proxyPath);
+                    resolve(false);
                 }
             });
-            ffmpeg.on('error', reject);
+            ffmpeg.on('error', (err) => {
+                console.error("[Proxy] FFmpeg error:", err);
+                resolve(false);
+            });
         });
     };
 
@@ -127,12 +132,13 @@ async function startServer() {
             const proxyFilename = `proxy_${req.file.filename}`;
             const proxyPath = path.join(proxyDir, proxyFilename);
             try {
-                await generateVideoProxy(req.file.path, proxyPath);
-                result.proxyUrl = `/api/proxy/video/${proxyFilename}`;
-                result.proxyPath = proxyPath;
+                const success = await generateVideoProxy(req.file.path, proxyPath);
+                if (success) {
+                    result.proxyUrl = `/api/proxy/video/${proxyFilename}`;
+                    result.proxyPath = proxyPath;
+                }
             } catch (e) {
                 console.warn('[Proxy] Generation skipped (non-critical):', e);
-                // Continua sem proxy — não bloqueia o upload
             }
         }
 
@@ -143,28 +149,19 @@ async function startServer() {
     app.get('/api/proxy/video/:filename', (req: any, res: any) => {
         const filename = sanitizeFilename(req.params.filename);
         const proxyPath = path.join(proxyDir, filename);
-        if (!fs.existsSync(proxyPath)) return res.status(404).send('Proxy not found');
-        res.setHeader('Content-Type', 'video/mp4');
-        res.setHeader('Accept-Ranges', 'bytes');
-        const stat = fs.statSync(proxyPath);
-        const range = req.headers.range;
-        if (range) {
-            const parts = range.replace(/bytes=/, '').split('-');
-            const start = parseInt(parts[0], 10);
-            const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
-            const chunksize = end - start + 1;
-            const fileStream = fs.createReadStream(proxyPath, { start, end });
-            res.writeHead(206, {
-                'Content-Range': `bytes ${start}-${end}/${stat.size}`,
-                'Accept-Ranges': 'bytes',
-                'Content-Length': chunksize,
-                'Content-Type': 'video/mp4'
-            });
-            fileStream.pipe(res);
-        } else {
-            res.setHeader('Content-Length', stat.size);
-            fs.createReadStream(proxyPath).pipe(res);
+
+        if (!fs.existsSync(proxyPath)) {
+            return res.status(404).send('Proxy not found');
         }
+
+        // res.sendFile lida automaticamente com Accept-Ranges: bytes e compressão
+        res.sendFile(proxyPath, {
+            maxAge: 3600000, // cache 1h
+            headers: {
+                'Content-Type': 'video/mp4',
+                'Access-Control-Allow-Origin': '*'
+            }
+        });
     });
 
     // ─── GERAR PROXY PARA ARQUIVO JÁ EXISTENTE ────────────────────────────────
@@ -180,8 +177,15 @@ async function startServer() {
         const proxyPath = path.join(proxyDir, proxyFilename);
 
         try {
-            await generateVideoProxy(file.path, proxyPath);
-            res.json({ proxyUrl: `/api/proxy/video/${proxyFilename}`, success: true });
+            const success = await generateVideoProxy(file.path, proxyPath);
+            // Cleanup temp file uploaded for proxy generation
+            try { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); } catch(e) {}
+            
+            if (success) {
+                res.json({ proxyUrl: `/api/proxy/video/${proxyFilename}`, success: true });
+            } else {
+                res.json({ proxyUrl: null, success: false, message: 'Falha na geração do proxy' });
+            }
         } catch (e: any) {
             res.status(500).json({ error: e.message });
         }
