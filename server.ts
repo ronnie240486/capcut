@@ -51,62 +51,32 @@ async function startServer() {
     process.on('unhandledRejection', (reason) => { console.error('CRITICAL ERROR (Unhandled Rejection):', reason); });
 
     // ─── UTILS ────────────────────────────────────────────────────────────────
-    const isActuallyPlaceholder = (val: string) => {
-        if (!val) return true;
-        const v = val.toUpperCase();
-        // Check for placeholder patterns
-        if (v.includes("YOUR_") || v.includes("REPLACE") || v.includes("MY_API") || v.endsWith("_KEY") || v === "UNDEFINED" || v === "NULL") return true;
-        // API keys don't contain slashes or spaces
-        if (val.includes("/") || val.includes("\\") || val.includes(" ")) return true;
-        // Standard Google bits
-        if (val.length < 20) return true;
-        return false;
-    };
-
     const getGeminiKey = () => {
-        const envKeys = Object.keys(process.env);
-        
-        // 1. FIRST PRIORITY: Find any key that actually looks like a real Google API key (starts with AIza)
-        for (const k of envKeys) {
+        // AI Studio Environment Key Prioritization
+        const key = (
+            process.env.GEMINI_API_KEY || 
+            process.env.API_KEY || 
+            process.env.GOOGLE_API_KEY || 
+            process.env.NEXT_PUBLIC_GEMINI_API_KEY ||
+            ""
+        ).trim();
+
+        if (key && key !== "undefined" && key !== "null") {
+            const hint = key.length > 8 ? `...${key.slice(-4)}` : "too short";
+            console.log(`[Key Diagnostic] Using environment key ending in ${hint}`);
+            return key;
+        }
+
+        // Search for any key starting with AIza if standard ones are missing
+        for (const k in process.env) {
             const val = (process.env[k] || "").trim();
             if (val.startsWith("AIza") && val.length >= 35) {
-                console.log(`[Key Diagnostic] Found real Google platform key in: ${k}`);
+                console.log(`[Key Diagnostic] Found real Google key in alternative var: ${k}`);
                 return val;
             }
         }
 
-        // 2. SECOND PRIORITY: Check standard names with strict placeholder and path filtering
-        const standardNames = [
-            'GEMINI_API_KEY', 
-            'API_KEY', 
-            'GOOGLE_API_KEY', 
-            'VITE_GEMINI_API_KEY', 
-            'NEXT_PUBLIC_GEMINI_API_KEY'
-        ];
-
-        for (const name of standardNames) {
-            const val = (process.env[name] || "").trim();
-            if (!val) continue;
-
-            if (!isActuallyPlaceholder(val)) {
-                console.log(`[Key Diagnostic] Found valid-looking key in: ${name}`);
-                return val;
-            } else {
-                console.log(`[Key Diagnostic] Skipping invalid/placeholder in: ${name}`);
-            }
-        }
-        
-        // 3. LAST RESORT: Check if ANY env var contains a valid-looking key (starts with AIza or is random enough)
-        for (const k of envKeys) {
-            if (k.includes("PATH") || k.includes("DIR") || k.includes("HOME")) continue;
-            const val = (process.env[k] || "").trim();
-            if (val.length >= 35 && !isActuallyPlaceholder(val) && /^[a-zA-Z0-9_\-]+$/.test(val)) {
-                console.log(`[Key Diagnostic] Found unexpected valid-looking key in: ${k}`);
-                return val;
-            }
-        }
-
-        console.log(`[Key Diagnostic] No valid API keys found in environment.`);
+        console.log(`[Key Diagnostic] No Gemini API key found in environment.`);
         return "";
     };
 
