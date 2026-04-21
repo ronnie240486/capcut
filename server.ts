@@ -723,20 +723,41 @@ async function startServer() {
                 const sceneLabel = `scene_v${i}`;
 
                 // Aplicar trim, scale, efeito e formato
-                let filterChain = `[${vIdx}:v]trim=start=${startTime}:duration=${duration},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:-1:-1:color=black,setsar=1,fps=30,format=yuv420p`;
+                let filterChain = `[${vIdx}:v]trim=start=${startTime}:duration=${duration},setpts=PTS-STARTPTS`;
+
+                // Movimentos Cinematográficos (Zoom/Pan)
+                if (scene.movement === 'zoom_in') {
+                    filterChain += `,scale=8000:-1,zoompan=z='min(zoom+0.0015,1.5)':d=125:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720`;
+                } else if (scene.movement === 'zoom_out') {
+                    filterChain += `,scale=8000:-1,zoompan=z='max(1.5-0.0015*on,1)':d=125:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720`;
+                } else if (scene.movement === 'pan_left') {
+                    filterChain += `,scale=8000:-1,zoompan=z=1.3:x='(iw-iw/zoom)-(on/125)*(iw-iw/zoom)':y='ih/2-(ih/zoom/2)':d=125:s=1280x720`;
+                } else if (scene.movement === 'pan_right') {
+                    filterChain += `,scale=8000:-1,zoompan=z=1.3:x='(on/125)*(iw-iw/zoom)':y='ih/2-(ih/zoom/2)':d=125:s=1280x720`;
+                } else {
+                    filterChain += `,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:-1:-1:color=black`;
+                }
+
+                filterChain += `,setsar=1,fps=30,format=yuv420p`;
 
                 // Aplicar filtro de efeito se existir
-                if (scene.filter) {
-                    const effectMap: Record<string, string> = {
-                        'vivid': 'eq=saturation=1.5:contrast=1.1',
-                        'noir': 'hue=s=0,eq=contrast=1.5',
-                        'warm': 'colorbalance=rs=0.1:bs=-0.1',
-                        'cool': 'colorbalance=bs=0.1:rs=-0.1',
-                        'vintage': 'sepia=0.6,eq=contrast=0.9',
-                        'dreamy': 'boxblur=luma_radius=2:luma_power=1',
-                        'sharp': 'unsharp=5:5:1.5:5:5:0.0'
-                    };
-                    if (effectMap[scene.filter]) filterChain += `,${effectMap[scene.filter]}`;
+                const effectMap: Record<string, string> = {
+                    'vivid': 'eq=saturation=1.5:contrast=1.1',
+                    'noir': 'hue=s=0,eq=contrast=1.5',
+                    'warm': 'colorbalance=rs=0.1:bs=-0.1',
+                    'cool': 'colorbalance=bs=0.1:rs=-0.1',
+                    'vintage': 'sepia=0.6,eq=contrast=0.9',
+                    'dreamy': 'boxblur=luma_radius=2:luma_power=1',
+                    'sharp': 'unsharp=5:5:1.5:5:5:0.0'
+                };
+                if (scene.filter && effectMap[scene.filter]) {
+                    filterChain += `,${effectMap[scene.filter]}`;
+                }
+
+                // Legendas (Subtitles) - Burn-in
+                if (scene.subtitle) {
+                    const cleanSub = scene.subtitle.replace(/'/g, '').replace(/:/g, '');
+                    filterChain += `,drawtext=text='${cleanSub.toUpperCase()}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=h-100`;
                 }
 
                 filterParts.push(`${filterChain}[${sceneLabel}]`);
