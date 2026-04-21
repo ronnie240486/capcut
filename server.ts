@@ -759,10 +759,12 @@ async function startServer() {
                 mapArgs.push('-map', `${narrationInputIdx}:a`);
             }
 
+            const totalDuration = plan.scenes.reduce((s: number, sc: any) => s + (sc.duration || 3), 0);
             const args = [
                 ...inputs,
                 '-filter_complex', filterComplex,
                 ...mapArgs,
+                '-t', totalDuration.toFixed(2),
                 '-c:v', 'libx264',
                 '-preset', 'ultrafast',
                 '-crf', '23',
@@ -778,7 +780,7 @@ async function startServer() {
                 '-y', outputPath
             ];
 
-            createFFmpegJob(jobId, args, plan.scenes.reduce((s: number, sc: any) => s + (sc.duration || 3), 0));
+            createFFmpegJob(jobId, args, totalDuration);
 
         } catch (e: any) {
             console.error('[Autopilot] Failed:', e);
