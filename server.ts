@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
 
 // Engine Imports
 import { handleExportVideo } from './video-engine/export-video.js';
@@ -99,7 +99,7 @@ async function startServer() {
         return new Promise((resolve) => {
             const args = [
                 '-i', inputPath,
-                '-vf', 'scale=-2:360',
+                '-vf', 'scale=trunc(oh*a/2)*2:360',
                 '-c:v', 'libx264',
                 '-pix_fmt', 'yuv420p',
                 '-preset', 'ultrafast',
@@ -109,7 +109,7 @@ async function startServer() {
                 '-movflags', '+faststart',
                 '-y', proxyPath
             ];
-            const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...args]);
+            const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'warning', ...args]);
             let stderr = '';
             ffmpeg.stderr.on('data', (d) => stderr += d.toString());
             
@@ -470,17 +470,44 @@ async function startServer() {
             }));
 
             const scriptResponse = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
+                model: 'gemini-2.0-flash',
                 contents: {
                     parts: [
                         { text: prompt },
-                        ...imageParts
+                        ...(imageParts.length > 0 ? imageParts : [])
                     ]
                 },
-                config: { responseMimeType: "application/json" }
+                config: { 
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.OBJECT,
+                        properties: {
+                            script: { type: Type.STRING },
+                            scenes: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        time: { type: Type.STRING },
+                                        action: { type: Type.STRING },
+                                        stockTopic: { type: Type.STRING }
+                                    },
+                                    required: ["time", "action"]
+                                }
+                            },
+                            sfx: {
+                                type: Type.ARRAY,
+                                items: { type: Type.STRING }
+                            }
+                        },
+                        required: ["script", "scenes"]
+                    }
+                }
             });
 
-            const text = scriptResponse.text || "{}";
+            const text = scriptResponse.text;
+            if (!text) throw new Error("A IA retornou uma resposta vazia.");
+            
             // Strip markdown blocks if present (sometimes happens despite mimeType)
             const jsonStr = text.replace(/```json\n?|```/g, '').trim();
             
@@ -488,7 +515,11 @@ async function startServer() {
                 res.json(JSON.parse(jsonStr));
             } catch (err) {
                 console.error("[Autopilot Plan] JSON Parse Error. Raw Text:", text);
-                res.status(500).json({ error: "A resposta da IA não está em um formato válido.", raw: text.slice(0, 500) });
+                res.status(500).json({ 
+                    error: "A resposta da IA não está em um formato válido.", 
+                    details: err instanceof Error ? err.message : String(err),
+                    raw: text.slice(0, 500) 
+                });
             }
         } catch (e: any) {
             console.error('[Autopilot Plan] Failed:', e);
@@ -506,7 +537,7 @@ async function startServer() {
             const ai = new GoogleGenAI({ apiKey });
 
             const ttsResponse = await ai.models.generateContent({
-                model: "gemini-3.1-flash-tts-preview",
+                model: "gemini-2.5-flash-preview-tts",
                 contents: [{ parts: [{ text: `Say with ${accentPrompt}: ${text}` }] }],
                 config: {
                     responseModalities: ["AUDIO"],
