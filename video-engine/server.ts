@@ -144,7 +144,7 @@ async function startServer() {
                                         filter: { type: Type.STRING, description: "Visual filter to apply" },
                                         transition: { type: Type.STRING, description: "Transition type (fade, zoom, none)" },
                                         movement: { type: Type.STRING, description: "Movement type (zoom_in, zoom_out, pan_left, pan_right, static)" },
-                                        subtitle: { type: Type.STRING, description: "Concise subtitle for this scene" },
+                                        subtitle: { type: Type.STRING, description: "The EXACT text from the 'script' spoken during this scene. Do not summarize." },
                                         sfx: { type: Type.STRING, description: "Sound effect description" },
                                         stockTopic: { type: Type.STRING, description: "Topic for stock footage if user clip is missing" }
                                     },
