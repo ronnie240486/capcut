@@ -199,7 +199,11 @@ export default function MagicAutopilot({ onComplete, onCancel }: MagicAutopilotP
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ audioData: audioBase64, filename: `magic_narration_${Date.now()}.wav` })
       });
-      const { filename: audioFile } = await saveRes.json();
+      const saveText = await saveRes.text();
+      let saveData: any = {};
+      try { saveData = JSON.parse(saveText); } catch(e) { throw new Error('Falha ao salvar áudio no servidor: ' + saveText.slice(0, 100)); }
+      if (!saveData.filename) throw new Error('Servidor não retornou nome do arquivo de áudio.');
+      const audioFile = saveData.filename;
 
       // Phase 3: Final Assemble (Server Side)
       setStatus('Renderizando obra-prima...');
@@ -217,8 +221,18 @@ export default function MagicAutopilot({ onComplete, onCancel }: MagicAutopilotP
         method: 'POST',
         body: formData
       });
-      
-      const { jobId } = await exportRes.json();
+
+      const exportText = await exportRes.text();
+      let exportData: any = {};
+      try {
+        exportData = JSON.parse(exportText);
+      } catch (e) {
+        throw new Error(`Servidor retornou resposta inválida: ${exportText.slice(0, 200)}`);
+      }
+      if (!exportRes.ok || !exportData.jobId) {
+        throw new Error(exportData.error || `Erro HTTP ${exportRes.status}: ${exportText.slice(0, 200)}`);
+      }
+      const { jobId } = exportData;
 
       // Poll for job
       const poll = setInterval(async () => {
