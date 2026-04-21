@@ -425,6 +425,150 @@ async function startServer() {
         }
     });
 
+    // ─── PILOTO AUTOMÁTICO (MagicAutopilot) ───────────────────────────────────
+    // Recebe os arquivos do usuário + plano gerado pela IA e monta o vídeo final
+    app.post('/api/autopilot/render', uploadAny, async (req: any, res: any) => {
+        const jobId = `autopilot_${Date.now()}`;
+        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        res.status(202).json({ jobId });
+
+        try {
+            const files: any[] = (req as any).files || [];
+            const plan = JSON.parse(req.body.plan || '{}');
+            const stockFiles = JSON.parse(req.body.stockFiles || '[]');
+            const narrationFile = req.body.narrationFile; // filename salvo em uploads/
+
+            if (!plan.scenes || plan.scenes.length === 0) {
+                throw new Error('Plano de cenas inválido ou vazio.');
+            }
+
+            const uploadedDir = uploadDir;
+            const outputPath = path.join(uploadedDir, `autopilot_${Date.now()}.mp4`);
+            jobs[jobId].outputPath = outputPath;
+
+            // Mapear arquivos enviados pelo index
+            const fileMap: Record<number, string> = {};
+            files.forEach((f: any, i: number) => { fileMap[i] = f.path; });
+
+            // Mapear stock files pelo nome
+            const stockMap: Record<string, string> = {};
+            stockFiles.forEach((s: any) => {
+                if (s && s.filename) {
+                    stockMap[s.originalname || s.filename] = path.join(uploadedDir, s.filename);
+                }
+            });
+
+            // Narração
+            const narrationPath = narrationFile ? path.join(uploadedDir, narrationFile) : null;
+
+            // Construir inputs e filter_complex para o FFmpeg
+            const inputs: string[] = [];
+            const filterParts: string[] = [];
+            const videoLabels: string[] = [];
+            let inputIdx = 0;
+
+            // Adicionar narração primeiro se existir
+            let narrationInputIdx = -1;
+            if (narrationPath && fs.existsSync(narrationPath)) {
+                inputs.push('-i', narrationPath);
+                narrationInputIdx = inputIdx++;
+            }
+
+            // Processar cada cena do plano
+            for (let i = 0; i < plan.scenes.length; i++) {
+                const scene = plan.scenes[i];
+                let filePath = '';
+
+                // Tentar usar arquivo do usuário pelo índice
+                if (scene.fileIndex !== undefined && fileMap[scene.fileIndex]) {
+                    filePath = fileMap[scene.fileIndex];
+                }
+                // Fallback: tentar stock file pelo tópico
+                if (!filePath && scene.stockTopic) {
+                    const stockKey = Object.keys(stockMap).find(k =>
+                        k.toLowerCase().includes(scene.stockTopic?.toLowerCase() || '')
+                    );
+                    if (stockKey) filePath = stockMap[stockKey];
+                }
+                // Fallback: qualquer arquivo disponível
+                if (!filePath && Object.keys(fileMap).length > 0) {
+                    filePath = fileMap[i % Object.keys(fileMap).length];
+                }
+
+                if (!filePath || !fs.existsSync(filePath)) continue;
+
+                inputs.push('-i', filePath);
+                const vIdx = inputIdx++;
+
+                const startTime = scene.startTime || 0;
+                const duration = scene.duration || 3;
+                const sceneLabel = `scene_v${i}`;
+
+                // Aplicar trim, scale, efeito e formato
+                let filterChain = `[${vIdx}:v]trim=start=${startTime}:duration=${duration},setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:-1:-1:color=black,setsar=1,fps=30,format=yuv420p`;
+
+                // Aplicar filtro de efeito se existir
+                if (scene.filter) {
+                    const effectMap: Record<string, string> = {
+                        'vivid': 'eq=saturation=1.5:contrast=1.1',
+                        'noir': 'hue=s=0,eq=contrast=1.5',
+                        'warm': 'colorbalance=rs=0.1:bs=-0.1',
+                        'cool': 'colorbalance=bs=0.1:rs=-0.1',
+                        'vintage': 'sepia=0.6,eq=contrast=0.9',
+                        'dreamy': 'boxblur=luma_radius=2:luma_power=1',
+                        'sharp': 'unsharp=5:5:1.5:5:5:0.0'
+                    };
+                    if (effectMap[scene.filter]) filterChain += `,${effectMap[scene.filter]}`;
+                }
+
+                filterParts.push(`${filterChain}[${sceneLabel}]`);
+                videoLabels.push(`[${sceneLabel}]`);
+            }
+
+            if (videoLabels.length === 0) throw new Error('Nenhuma cena válida para renderizar.');
+
+            jobs[jobId].progress = 30;
+
+            // Concatenar todas as cenas
+            const concatLabel = '[final_v]';
+            filterParts.push(`${videoLabels.join('')}concat=n=${videoLabels.length}:v=1:a=0${concatLabel}`);
+
+            let filterComplex = filterParts.join(';');
+            const mapArgs: string[] = ['-map', concatLabel];
+
+            // Adicionar narração se disponível
+            if (narrationInputIdx >= 0) {
+                mapArgs.push('-map', `${narrationInputIdx}:a`);
+            }
+
+            const args = [
+                ...inputs,
+                '-filter_complex', filterComplex,
+                ...mapArgs,
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast',
+                '-crf', '23',
+                '-pix_fmt', 'yuv420p',
+                '-r', '30',
+                '-vsync', '1',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-ac', '2',
+                '-ar', '44100',
+                '-movflags', '+faststart',
+                '-max_muxing_queue_size', '4096',
+                '-y', outputPath
+            ];
+
+            createFFmpegJob(jobId, args, plan.scenes.reduce((s: number, sc: any) => s + (sc.duration || 3), 0));
+
+        } catch (e: any) {
+            console.error('[Autopilot] Failed:', e);
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = e.message;
+        }
+    });
+
     // ─── EXPORT ───────────────────────────────────────────────────────────────
     app.post('/api/export/start', uploadAny, (req: any, res: any) => {
         const jobId = `export_${Date.now()}`;
