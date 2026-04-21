@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
 import { createServer as createViteServer } from 'vite';
+import { GoogleGenAI, Modality } from "@google/genai";
 
 // Engine Imports
 import { handleExportVideo } from './video-engine/export-video.js';
@@ -453,6 +454,82 @@ async function startServer() {
     });
 
     // ─── PILOTO AUTOMÁTICO (MagicAutopilot) ───────────────────────────────────
+    // ─── PILOTO AUTOMÁTICO (MagicAutopilot Helpers) ───────────────────────────
+    
+    // Gera o roteiro e o plano de edição via IA no servidor para não depender de chave no browser
+    app.post('/api/autopilot/generate-plan', async (req: any, res: any) => {
+        try {
+            const { prompt, images, viralMode } = req.body;
+            const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+            
+            if (!apiKey) throw new Error("Chave Gemini não configurada no servidor.");
+            const ai = new GoogleGenAI({ apiKey });
+
+            const imageParts = images.map((f: string) => ({
+                inlineData: { mimeType: 'image/jpeg', data: f }
+            }));
+
+            const scriptResponse = await ai.models.generateContent({
+                model: 'gemini-3-flash-preview',
+                contents: {
+                    parts: [
+                        { text: prompt },
+                        ...imageParts
+                    ]
+                },
+                config: { responseMimeType: "application/json" }
+            });
+
+            const text = scriptResponse.text || "{}";
+            // Strip markdown blocks if present (sometimes happens despite mimeType)
+            const jsonStr = text.replace(/```json\n?|```/g, '').trim();
+            
+            try {
+                res.json(JSON.parse(jsonStr));
+            } catch (err) {
+                console.error("[Autopilot Plan] JSON Parse Error. Raw Text:", text);
+                res.status(500).json({ error: "A resposta da IA não está em um formato válido.", raw: text.slice(0, 500) });
+            }
+        } catch (e: any) {
+            console.error('[Autopilot Plan] Failed:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    // Gera o áudio da narração (TTS) via IA no servidor
+    app.post('/api/autopilot/generate-tts', async (req: any, res: any) => {
+        try {
+            const { text, voice, accentPrompt } = req.body;
+            const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+            
+            if (!apiKey) throw new Error("Chave Gemini não configurada no servidor.");
+            const ai = new GoogleGenAI({ apiKey });
+
+            const ttsResponse = await ai.models.generateContent({
+                model: "gemini-3.1-flash-tts-preview",
+                contents: [{ parts: [{ text: `Say with ${accentPrompt}: ${text}` }] }],
+                config: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: voice || 'Kore' },
+                        },
+                    },
+                },
+            });
+
+            const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+            const audioBase64 = audioPart?.inlineData?.data;
+
+            if (!audioBase64) throw new Error("A IA gerou uma narração vazia.");
+
+            res.json({ audioBase64 });
+        } catch (e: any) {
+            console.error('[Autopilot TTS] Failed:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
     // Recebe os arquivos do usuário + plano gerado pela IA e monta o vídeo final
     app.post('/api/autopilot/render', uploadAny, async (req: any, res: any) => {
         const jobId = `autopilot_${Date.now()}`;
