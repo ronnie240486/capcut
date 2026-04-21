@@ -89,46 +89,96 @@ async function startServer() {
 
     // ─── PROXY VIDEO GENERATOR ─────────────────────────────────────────────────
     // Gera uma versão 360p comprimida do vídeo para uso no preview (como CapCut)
-    const generateVideoProxy = async (inputPath: string, proxyPath: string): Promise<boolean> => {
-        const streamInfo = await getStreamInfo(inputPath);
-        if (!streamInfo.hasVideo) {
-            console.log(`[Proxy] Skipping proxy for ${path.basename(inputPath)}: No video stream found.`);
-            return false;
-        }
-
+    // Detecta o codec de vídeo do arquivo via ffprobe
+    const getVideoCodec = (filePath: string): Promise<string> => {
         return new Promise((resolve) => {
-            const args = [
-                '-i', inputPath,
-                '-vf', 'scale=trunc(oh*a/2)*2:360',
-                '-c:v', 'libx264',
-                '-pix_fmt', 'yuv420p',
-                '-preset', 'ultrafast',
-                '-crf', '28',
-                '-c:a', 'aac',
-                '-b:a', '64k',
-                '-movflags', '+faststart',
-                '-y', proxyPath
-            ];
+            const ffprobe = spawn('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', filePath]);
+            let output = '';
+            ffprobe.stdout.on('data', (d: Buffer) => output += d.toString());
+            ffprobe.on('close', () => resolve(output.trim().toLowerCase()));
+            ffprobe.on('error', () => resolve('unknown'));
+        });
+    };
+
+    const runFFmpegProxy = (args: string[], proxyPath: string, inputName: string): Promise<boolean> => {
+        return new Promise((resolve) => {
             const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'warning', ...args]);
             let stderr = '';
-            ffmpeg.stderr.on('data', (d) => stderr += d.toString());
-            
+            ffmpeg.stderr.on('data', (d: Buffer) => stderr += d.toString());
             ffmpeg.on('close', (code) => {
                 if (code === 0 && fs.existsSync(proxyPath) && fs.statSync(proxyPath).size > 100) {
-                    console.log(`[Proxy] Generated: ${path.basename(proxyPath)}`);
+                    console.log(`[Proxy] Gerado com sucesso: ${path.basename(proxyPath)}`);
                     resolve(true);
                 } else {
-                    console.warn(`[Proxy] Failed to generate for ${path.basename(inputPath)}. Code: ${code}.`);
-                    if (stderr) console.warn(`[Proxy] FFmpeg stderr: ${stderr.slice(-500)}`);
-                    if (fs.existsSync(proxyPath)) fs.unlinkSync(proxyPath);
+                    console.warn(`[Proxy] Falha ao gerar proxy para ${inputName}. Code: ${code}.`);
+                    if (stderr) console.warn(`[Proxy] FFmpeg stderr: ${stderr.slice(-800)}`);
+                    if (fs.existsSync(proxyPath)) try { fs.unlinkSync(proxyPath); } catch(e) {}
                     resolve(false);
                 }
             });
-            ffmpeg.on('error', (err) => {
-                console.error("[Proxy] FFmpeg spawn error (verifique se o ffmpeg está instalado no servidor):", err.message);
+            ffmpeg.on('error', (err: Error) => {
+                console.error('[Proxy] FFmpeg não encontrado. Instale com: sudo apt-get install -y ffmpeg', err.message);
                 resolve(false);
             });
         });
+    };
+
+    const generateVideoProxy = async (inputPath: string, proxyPath: string): Promise<boolean> => {
+        const streamInfo = await getStreamInfo(inputPath);
+        if (!streamInfo.hasVideo) {
+            console.log(`[Proxy] Ignorando proxy para ${path.basename(inputPath)}: sem stream de vídeo.`);
+            return false;
+        }
+
+        const codec = await getVideoCodec(inputPath);
+        console.log(`[Proxy] Codec detectado: ${codec} — ${path.basename(inputPath)}`);
+
+        // Flags de decodificação para codecs problemáticos (HEVC, VP9, AV1)
+        const decodeFlags: string[] = [];
+        if (['hevc', 'h265', 'vp9', 'av1'].includes(codec)) {
+            // Força decodificação por software para garantir compatibilidade
+            decodeFlags.push('-c:v', codec === 'vp9' ? 'vp9' : codec === 'av1' ? 'libaom-av1' : 'hevc');
+        }
+
+        // Tentativa 1: transcodificação padrão com libx264
+        const args1 = [
+            ...decodeFlags,
+            '-i', inputPath,
+            '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,scale=-2:min(360\\,trunc(ih/2)*2)',
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'ultrafast',
+            '-crf', '28',
+            '-c:a', 'aac',
+            '-b:a', '64k',
+            '-movflags', '+faststart',
+            '-y', proxyPath
+        ];
+
+        const ok1 = await runFFmpegProxy(args1, proxyPath, path.basename(inputPath));
+        if (ok1) return true;
+
+        console.warn(`[Proxy] Tentativa 1 falhou. Tentando modo de compatibilidade máxima...`);
+
+        // Tentativa 2: modo de compatibilidade máxima — copia stream diretamente e só escala
+        const args2 = [
+            '-i', inputPath,
+            '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:-1:-1:color=black,format=yuv420p',
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-preset', 'ultrafast',
+            '-tune', 'fastdecode',
+            '-crf', '30',
+            '-an',
+            '-movflags', '+faststart',
+            '-y', proxyPath
+        ];
+
+        const ok2 = await runFFmpegProxy(args2, proxyPath, path.basename(inputPath));
+        if (ok2) return true;
+
+        console.warn(`[Proxy] Tentativa 2 falhou. Proxy não será gerado — preview usará arquivo original.`);
+        return false;
     };
 
     // ─── UPLOAD COM PROXY ──────────────────────────────────────────────────────
@@ -803,6 +853,38 @@ async function startServer() {
         const check = spawn('ffmpeg', ['-version']);
         check.on('error', () => res.status(500).send('FFmpeg Missing'));
         check.on('close', (code: number) => { if (code === 0) res.send('OK'); else res.status(500).send('FFmpeg Error'); });
+    });
+
+    // ─── CHECK FFMPEG CODECS (diagnóstico de proxy) ───────────────────────────
+    app.get('/api/check-ffmpeg-codecs', (req: any, res: any) => {
+        const check = spawn('ffmpeg', ['-codecs']);
+        let output = '';
+        check.stdout.on('data', (d: Buffer) => output += d.toString());
+        check.on('error', () => res.status(500).json({ ok: false, error: 'FFmpeg não encontrado. Instale com: sudo apt-get install -y ffmpeg' }));
+        check.on('close', (code: number) => {
+            if (code !== 0) return res.status(500).json({ ok: false, error: 'FFmpeg retornou erro' });
+            res.json({
+                ok: true,
+                libx264: output.includes('libx264'),
+                hevc: output.includes('hevc') || output.includes('libx265'),
+                vp9: output.includes('vp9'),
+                aac: output.includes('aac'),
+            });
+        });
+    });
+
+    // ─── DIAGNÓSTICO DE PROXY PARA UM ARQUIVO ────────────────────────────────
+    app.get('/api/proxy/status/:filename', (req: any, res: any) => {
+        const filename = sanitizeFilename(req.params.filename);
+        const proxyPath = path.join(proxyDir, `proxy_${filename}`);
+        const exists = fs.existsSync(proxyPath);
+        res.json({
+            filename,
+            proxyExists: exists,
+            proxyPath: exists ? proxyPath : null,
+            size: exists ? fs.statSync(proxyPath).size : 0,
+            proxyUrl: exists ? `/api/proxy/video/proxy_${filename}` : null
+        });
     });
 
     // ─── FRONTEND ─────────────────────────────────────────────────────────────
