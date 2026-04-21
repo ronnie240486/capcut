@@ -65,7 +65,7 @@ async function startServer() {
         });
     };
 
-    const sanitizeFilename = (name: string) => name.replace(/[^a-z0-9._-]/gi, '_').replace(/_{2,}/g, '_');
+    const sanitizeFilename = (name: string) => name.replace(/[^a-z0-9._-]/gi, '_');
 
     const storage = multer.diskStorage({
         destination: (req, file, cb) => cb(null, uploadDir),
@@ -81,7 +81,13 @@ async function startServer() {
 
     // ─── PROXY VIDEO GENERATOR ─────────────────────────────────────────────────
     // Gera uma versão 360p comprimida do vídeo para uso no preview (como CapCut)
-    const generateVideoProxy = (inputPath: string, proxyPath: string): Promise<boolean> => {
+    const generateVideoProxy = async (inputPath: string, proxyPath: string): Promise<boolean> => {
+        const streamInfo = await getStreamInfo(inputPath);
+        if (!streamInfo.hasVideo) {
+            console.log(`[Proxy] Skipping proxy for ${path.basename(inputPath)}: No video stream found.`);
+            return false;
+        }
+
         return new Promise((resolve) => {
             const args = [
                 '-i', inputPath,
@@ -96,18 +102,21 @@ async function startServer() {
                 '-y', proxyPath
             ];
             const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...args]);
+            let stderr = '';
+            ffmpeg.stderr.on('data', (d) => stderr += d.toString());
+            
             ffmpeg.on('close', (code) => {
                 if (code === 0 && fs.existsSync(proxyPath) && fs.statSync(proxyPath).size > 100) {
                     console.log(`[Proxy] Generated: ${path.basename(proxyPath)}`);
                     resolve(true);
                 } else {
-                    console.warn(`[Proxy] Failed to generate for ${path.basename(inputPath)}`);
+                    console.warn(`[Proxy] Failed to generate for ${path.basename(inputPath)}. Code: ${code}. Error: ${stderr}`);
                     if (fs.existsSync(proxyPath)) fs.unlinkSync(proxyPath);
                     resolve(false);
                 }
             });
             ffmpeg.on('error', (err) => {
-                console.error("[Proxy] FFmpeg error:", err);
+                console.error("[Proxy] FFmpeg spawn error:", err);
                 resolve(false);
             });
         });
@@ -155,11 +164,18 @@ async function startServer() {
         }
 
         // res.sendFile lida automaticamente com Accept-Ranges: bytes e compressão
+        const stats = fs.statSync(proxyPath);
         res.sendFile(proxyPath, {
             maxAge: 3600000, // cache 1h
             headers: {
                 'Content-Type': 'video/mp4',
-                'Access-Control-Allow-Origin': '*'
+                'Content-Length': stats.size,
+                'Access-Control-Allow-Origin': '*',
+                'Accept-Ranges': 'bytes'
+            }
+        }, (err) => {
+            if (err) {
+                console.error(`[Proxy] Erro ao enviar proxy ${filename}:`, err);
             }
         });
     });
