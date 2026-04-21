@@ -52,16 +52,46 @@ async function startServer() {
 
     // ─── UTILS ────────────────────────────────────────────────────────────────
     const getGeminiKey = () => {
-        let key = (process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || "").trim();
-        // Check for common 'empty' placeholders
-        if (key === "undefined" || key === "null" || key === "your_key_here") key = "";
+        // AI Studio usually provides AIza... keys for Google APIs
+        let realKeyCandidate = "";
+        let candidateSourceName = "";
         
-        if (!key) {
-            console.log(`[Key Diagnostic] GEMINI_API_KEY not found. Availables: ${Object.keys(process.env).filter(k => k.includes('KEY') || k.includes('TOKEN')).join(', ')}`);
+        // 1. Scan ALL environment variables for something that looks like a real Google API key
+        Object.keys(process.env).forEach(k => {
+            const val = (process.env[k] || "").trim();
+            if (val.startsWith("AIza") && val.length > 30) {
+                if (!realKeyCandidate) {
+                    realKeyCandidate = val;
+                    candidateSourceName = k;
+                }
+            }
+        });
+
+        if (realKeyCandidate) {
+            console.log(`[Key Diagnostic] Found a real-looking Google API key in environment variable: ${candidateSourceName}`);
+            return realKeyCandidate;
+        }
+
+        // 2. Fallback to specific known names, filtering out placeholders
+        const standardNames = ['GEMINI_API_KEY', 'API_KEY', 'GOOGLE_API_KEY', 'VITE_GEMINI_API_KEY'];
+        for (const name of standardNames) {
+            const val = (process.env[name] || "").trim();
+            const isPlaceholder = !val || val === "undefined" || val === "null" || 
+                                 val.toUpperCase().includes("YOUR_") || 
+                                 val.toUpperCase().includes("MY_") ||
+                                 val.length < 10;
+            
+            if (val && !isPlaceholder) {
+                console.log(`[Key Diagnostic] Using fallback candidate: ${name}`);
+                return val;
+            }
         }
         
-        console.log(`[Key Diagnostic] Found key: ${key ? (key.slice(0, 4) + '...' + key.slice(-4)) : 'NOT FOUND'}`);
-        return key;
+        // 3. Absolute last resort (even if it looks like a placeholder)
+        const lastResort = (process.env.GEMINI_API_KEY || process.env.API_KEY || "").trim();
+        const finalKey = realKeyCandidate || lastResort;
+        console.log(`[Key Diagnostic] USING KEY: ${finalKey ? finalKey.slice(0, 5) + '...' : 'NONE'}`);
+        return finalKey;
     };
 
     // ─── HEALTH ────────────────────────────────────────────────────────────────
