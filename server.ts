@@ -615,53 +615,6 @@ async function startServer() {
         }).on('error', () => res.status(500).send('Request error'));
     });
 
-    // ─── FREESOUND PROXY ──────────────────────────────────────────────────────
-    app.get('/api/proxy/freesound', async (req: any, res: any) => {
-        const { q, token } = req.query;
-        if (!q) return res.status(400).send('Query missing');
-        try {
-            const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,description&page_size=15`;
-            https.get(url, (apiRes: any) => {
-                let data = '';
-                apiRes.on('data', (chunk: any) => data += chunk);
-                apiRes.on('end', () => {
-                    try {
-                        if (apiRes.statusCode !== 200) return res.status(apiRes.statusCode || 500).json({ error: 'Freesound API Error', details: data });
-                        res.json(JSON.parse(data));
-                    } catch (e: any) { res.status(500).json({ error: 'Parse error', details: data }); }
-                });
-            }).on('error', (e: any) => res.status(500).json({ error: 'Freesound API error', details: e.message }));
-        } catch (e: any) { res.status(500).json({ error: 'Proxy error', details: e.message }); }
-    });
-
-    // ─── CLAUDE PROXY ─────────────────────────────────────────────────────────
-    app.post('/api/proxy/claude', async (req: any, res: any) => {
-        const apiKey = req.headers['x-api-key'] as string;
-        if (!apiKey) return res.status(400).json({ error: 'Missing x-api-key header' });
-        try {
-            const response = await fetch('https://api.anthropic.com/v1/messages', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-                body: JSON.stringify(req.body)
-            });
-            res.status(response.status).json(await response.json());
-        } catch (e: any) { res.status(500).json({ error: e.message }); }
-    });
-
-    // ─── GPT PROXY ────────────────────────────────────────────────────────────
-    app.post('/api/proxy/gpt', async (req: any, res: any) => {
-        const apiKey = req.headers['authorization'] as string;
-        if (!apiKey) return res.status(400).json({ error: 'Missing Authorization header' });
-        try {
-            const response = await fetch('https://api.openai.com/v1/chat/completions', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': apiKey },
-                body: JSON.stringify(req.body)
-            });
-            res.status(response.status).json(await response.json());
-        } catch (e: any) { res.status(500).json({ error: e.message }); }
-    });
-
     // ─── STOCK DOWNLOAD ───────────────────────────────────────────────────────
     app.get('/api/stock/download', async (req: any, res: any) => {
         const { query, type = 'video' } = req.query;
