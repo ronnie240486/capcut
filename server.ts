@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
 
 // Engine Imports
 import { handleExportVideo } from './video-engine/export-video.js';
@@ -31,6 +31,12 @@ async function startServer() {
     app.use(express.json({ limit: '1gb' }));
     app.use(express.urlencoded({ extended: true, limit: '1gb' }));
 
+    // Diagnostic to see if the autopilot routes are actually reached
+    app.all('/api/autopilot/*', (req, res, next) => {
+        console.log(`[Autopilot Route Debug] ${req.method} ${req.url} from ${req.ip}`);
+        next();
+    });
+
     const uploadDir = path.resolve(__dirname, 'uploads');
     const proxyDir = path.resolve(__dirname, 'uploads', 'proxies');
 
@@ -50,8 +56,119 @@ async function startServer() {
         res.json({ 
             status: 'ok', 
             hasKey: key.length > 0,
-            keyPrefix: key ? `${key.substring(0, 4)}...${key.substring(key.length - 4)}` : null
+            keyPrefix: key ? `${key.substring(0, 4)}...${key.substring(key.length - 4)}` : null,
+            uptime: process.uptime(),
+            env: process.env.NODE_ENV
         });
+    });
+
+    // ─── AUTOPILOT ROUTES ──────────────────────────────────────────────────────
+    // Diagnostic - already at line 35
+    
+    app.post('/api/autopilot/generate-plan', async (req: any, res: any) => {
+        console.log("[Autopilot] generate-plan request received");
+        try {
+            const { prompt, images, viralMode } = req.body;
+            const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+            
+            if (!apiKey) throw new Error("Chave Gemini não configurada no servidor.");
+            const ai = new GoogleGenAI({ apiKey });
+
+            const imageParts = images ? images.map((f: string) => ({
+                inlineData: { mimeType: 'image/jpeg', data: f }
+            })) : [];
+
+            console.log(`[Autopilot Plan] Calling Gemini 2.0 Flash with ${imageParts.length} images`);
+            const scriptResponse = await ai.models.generateContent({
+                model: 'gemini-2.0-flash',
+                contents: {
+                    parts: [
+                        { text: prompt },
+                        ...imageParts
+                    ]
+                },
+                config: { 
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.OBJECT,
+                        properties: {
+                            script: { type: Type.STRING },
+                            scenes: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        time: { type: Type.STRING },
+                                        action: { type: Type.STRING },
+                                        stockTopic: { type: Type.STRING }
+                                    },
+                                    required: ["time", "action"]
+                                }
+                            },
+                            sfx: {
+                                type: Type.ARRAY,
+                                items: { type: Type.STRING }
+                            }
+                        },
+                        required: ["script", "scenes"]
+                    }
+                }
+            });
+
+            const text = scriptResponse.text;
+            if (!text) throw new Error("A IA retornou uma resposta vazia.");
+            
+            const jsonStr = text.replace(/```json\n?|```/g, '').trim();
+            
+            try {
+                res.json(JSON.parse(jsonStr));
+            } catch (err) {
+                console.error("[Autopilot Plan] JSON Parse Error. Raw Text:", text);
+                res.status(500).json({ 
+                    error: "A resposta da IA não está em um formato válido.", 
+                    details: err instanceof Error ? err.message : String(err),
+                    raw: text.slice(0, 500) 
+                });
+            }
+        } catch (e: any) {
+            console.error('[Autopilot Plan] Failed:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post('/api/autopilot/generate-tts', async (req: any, res: any) => {
+        console.log("[Autopilot] generate-tts request received");
+        try {
+            const { text: ttsText, voice, accentPrompt } = req.body;
+            const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+            
+            if (!apiKey) throw new Error("Chave Gemini não configurada no servidor.");
+            const ai = new GoogleGenAI({ apiKey });
+
+            console.log(`[Autopilot TTS] Calling Gemini 2.0 Flash for TTS: ${voice}`);
+            const ttsResponse = await ai.models.generateContent({
+                model: "gemini-2.0-flash",
+                contents: { parts: [{ text: `Say with ${accentPrompt}: ${ttsText}` }] },
+                config: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: voice || 'live' },
+                        },
+                    },
+                },
+            });
+
+            const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+            const audioBase64 = audioPart?.inlineData?.data;
+
+            if (!audioBase64) throw new Error("A IA gerou uma narração vazia.");
+
+            res.json({ audioBase64 });
+        } catch (e: any) {
+            console.error('[Autopilot TTS] Failed:', e);
+            res.status(500).json({ error: e.message });
+        }
     });
 
     // ─── FFPROBE HELPER ────────────────────────────────────────────────────────
@@ -89,104 +206,45 @@ async function startServer() {
 
     // ─── PROXY VIDEO GENERATOR ─────────────────────────────────────────────────
     // Gera uma versão 360p comprimida do vídeo para uso no preview (como CapCut)
-    // Detecta o codec de vídeo do arquivo via ffprobe
-    const getVideoCodec = (filePath: string): Promise<string> => {
-        return new Promise((resolve) => {
-            const ffprobe = spawn('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', filePath]);
-            let output = '';
-            ffprobe.stdout.on('data', (d: Buffer) => output += d.toString());
-            ffprobe.on('close', () => resolve(output.trim().toLowerCase()));
-            ffprobe.on('error', () => resolve('unknown'));
-        });
-    };
-
-    const runFFmpegProxy = (args: string[], proxyPath: string, inputName: string): Promise<boolean> => {
-        return new Promise((resolve) => {
-            console.log(`[Proxy] Executando: ffmpeg ${args.join(' ')}`);
-            const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'warning', ...args]);
-            let stderr = '';
-            ffmpeg.stderr.on('data', (d: Buffer) => stderr += d.toString());
-            ffmpeg.on('close', (code) => {
-                if (code === 0 && fs.existsSync(proxyPath) && fs.statSync(proxyPath).size > 100) {
-                    console.log(`[Proxy] ✓ Gerado com sucesso: ${path.basename(proxyPath)} (${fs.statSync(proxyPath).size} bytes)`);
-                    resolve(true);
-                } else {
-                    console.warn(`[Proxy] ✗ Falha para "${inputName}". Exit code: ${code}.`);
-                    if (stderr) console.warn(`[Proxy] FFmpeg stderr:\n${stderr}`);
-                    if (fs.existsSync(proxyPath)) try { fs.unlinkSync(proxyPath); } catch(e) {}
-                    resolve(false);
-                }
-            });
-            ffmpeg.on('error', (err: Error) => {
-                console.error('[Proxy] FFmpeg não encontrado no PATH do servidor.');
-                console.error('[Proxy] Para instalar: sudo apt-get install -y ffmpeg  (Ubuntu/Debian)');
-                console.error('[Proxy] Erro:', err.message);
-                resolve(false);
-            });
-        });
-    };
-
     const generateVideoProxy = async (inputPath: string, proxyPath: string): Promise<boolean> => {
         const streamInfo = await getStreamInfo(inputPath);
         if (!streamInfo.hasVideo) {
-            console.log(`[Proxy] Ignorando proxy para ${path.basename(inputPath)}: sem stream de vídeo.`);
+            console.log(`[Proxy] Skipping proxy for ${path.basename(inputPath)}: No video stream found.`);
             return false;
         }
 
-        const codec = await getVideoCodec(inputPath);
-        console.log(`[Proxy] Codec detectado: "${codec}" — ${path.basename(inputPath)}`);
-
-        // Tentativa 1: escala mantendo aspect ratio, compatível com H.264/HEVC/VP9/AV1
-        // scale=-2:360 falha com dimensões ímpares; usamos scale com força de divisão por 2
-        const args1 = [
-            '-i', inputPath,
-            '-vf', 'scale=iw*min(1\\,360/ih):-2',
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-preset', 'ultrafast',
-            '-crf', '28',
-            '-c:a', 'aac',
-            '-b:a', '64k',
-            '-movflags', '+faststart',
-            '-y', proxyPath
-        ];
-
-        const ok1 = await runFFmpegProxy(args1, proxyPath, path.basename(inputPath));
-        if (ok1) return true;
-
-        console.warn('[Proxy] Tentativa 1 falhou. Tentando escala simples 640x360...');
-
-        // Tentativa 2: resolução fixa 640x360 com padding, sem áudio (mais compatível)
-        const args2 = [
-            '-i', inputPath,
-            '-vf', 'scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p',
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-preset', 'ultrafast',
-            '-crf', '30',
-            '-an',
-            '-movflags', '+faststart',
-            '-y', proxyPath
-        ];
-
-        const ok2 = await runFFmpegProxy(args2, proxyPath, path.basename(inputPath));
-        if (ok2) return true;
-
-        console.warn('[Proxy] Tentativa 2 falhou. Tentando cópia direta de stream...');
-
-        // Tentativa 3: cópia direta sem transcodificação (fallback absoluto)
-        const args3 = [
-            '-i', inputPath,
-            '-c', 'copy',
-            '-movflags', '+faststart',
-            '-y', proxyPath
-        ];
-
-        const ok3 = await runFFmpegProxy(args3, proxyPath, path.basename(inputPath));
-        if (ok3) return true;
-
-        console.warn('[Proxy] Todas as tentativas falharam. Preview usará arquivo original.');
-        return false;
+        return new Promise((resolve) => {
+            const args = [
+                '-i', inputPath,
+                '-vf', 'scale=trunc(oh*a/2)*2:360',
+                '-c:v', 'libx264',
+                '-pix_fmt', 'yuv420p',
+                '-preset', 'ultrafast',
+                '-crf', '28',
+                '-c:a', 'aac',
+                '-b:a', '64k',
+                '-movflags', '+faststart',
+                '-y', proxyPath
+            ];
+            const ffmpeg = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'warning', ...args]);
+            let stderr = '';
+            ffmpeg.stderr.on('data', (d) => stderr += d.toString());
+            
+            ffmpeg.on('close', (code) => {
+                if (code === 0 && fs.existsSync(proxyPath) && fs.statSync(proxyPath).size > 100) {
+                    console.log(`[Proxy] Generated: ${path.basename(proxyPath)}`);
+                    resolve(true);
+                } else {
+                    console.warn(`[Proxy] Failed to generate for ${path.basename(inputPath)}. Code: ${code}. Error: ${stderr}`);
+                    if (fs.existsSync(proxyPath)) fs.unlinkSync(proxyPath);
+                    resolve(false);
+                }
+            });
+            ffmpeg.on('error', (err) => {
+                console.error("[Proxy] FFmpeg spawn error:", err);
+                resolve(false);
+            });
+        });
     };
 
     // ─── UPLOAD COM PROXY ──────────────────────────────────────────────────────
@@ -253,13 +311,8 @@ async function startServer() {
         const file = files[0];
         if (!file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
 
-        console.log(`[Proxy] Recebido: "${file.originalname}" | mimetype: ${file.mimetype} | size: ${file.size} bytes | path: ${file.path}`);
-
-        const isVideo = file.mimetype.startsWith('video/') || file.originalname.match(/\.(mp4|mov|avi|mkv|webm|m4v|3gp|flv)$/i);
-        if (!isVideo) {
-            console.log(`[Proxy] Ignorando: não é vídeo (mimetype: ${file.mimetype})`);
-            return res.json({ proxyUrl: null, message: 'Não é vídeo, proxy não necessário' });
-        }
+        const isVideo = file.mimetype.startsWith('video/');
+        if (!isVideo) return res.json({ proxyUrl: null, message: 'Não é vídeo, proxy não necessário' });
 
         const proxyFilename = `proxy_${file.filename}`;
         const proxyPath = path.join(proxyDir, proxyFilename);
@@ -270,14 +323,11 @@ async function startServer() {
             try { if (fs.existsSync(file.path)) fs.unlinkSync(file.path); } catch(e) {}
             
             if (success) {
-                console.log(`[Proxy] ✓ Proxy disponível em: /api/proxy/video/${proxyFilename}`);
                 res.json({ proxyUrl: `/api/proxy/video/${proxyFilename}`, success: true });
             } else {
-                console.warn(`[Proxy] ✗ Não foi possível gerar proxy para "${file.originalname}". Veja os logs acima para o motivo.`);
-                res.json({ proxyUrl: null, success: false, message: 'FFmpeg não conseguiu transcodificar. Verifique os logs do servidor.' });
+                res.json({ proxyUrl: null, success: false, message: 'Falha na geração do proxy' });
             }
         } catch (e: any) {
-            console.error('[Proxy] Erro inesperado:', e);
             res.status(500).json({ error: e.message });
         }
     });
@@ -517,83 +567,6 @@ async function startServer() {
         } catch (e: any) {
             console.error(`[Job ${jobId}] AI Gen Failed:`, e);
             if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = e.message; }
-        }
-    });
-
-    // ─── PILOTO AUTOMÁTICO (MagicAutopilot) ───────────────────────────────────
-    // ─── PILOTO AUTOMÁTICO (MagicAutopilot Helpers) ───────────────────────────
-    
-    // Gera o roteiro e o plano de edição via IA no servidor para não depender de chave no browser
-    app.post('/api/autopilot/generate-plan', async (req: any, res: any) => {
-        try {
-            const { prompt, images, viralMode } = req.body;
-            const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-            
-            if (!apiKey) throw new Error("Chave Gemini não configurada no servidor.");
-            const ai = new GoogleGenAI({ apiKey });
-
-            const imageParts = images.map((f: string) => ({
-                inlineData: { mimeType: 'image/jpeg', data: f }
-            }));
-
-            const scriptResponse = await ai.models.generateContent({
-                model: 'gemini-2.0-flash',
-                contents: {
-                    parts: [
-                        { text: prompt },
-                        ...imageParts
-                    ]
-                },
-                config: { responseMimeType: "application/json" }
-            });
-
-            const text = scriptResponse.text || "{}";
-            // Strip markdown blocks if present (sometimes happens despite mimeType)
-            const jsonStr = text.replace(/```json\n?|```/g, '').trim();
-            
-            try {
-                res.json(JSON.parse(jsonStr));
-            } catch (err) {
-                console.error("[Autopilot Plan] JSON Parse Error. Raw Text:", text);
-                res.status(500).json({ error: "A resposta da IA não está em um formato válido.", raw: text.slice(0, 500) });
-            }
-        } catch (e: any) {
-            console.error('[Autopilot Plan] Failed:', e);
-            res.status(500).json({ error: e.message });
-        }
-    });
-
-    // Gera o áudio da narração (TTS) via IA no servidor
-    app.post('/api/autopilot/generate-tts', async (req: any, res: any) => {
-        try {
-            const { text, voice, accentPrompt } = req.body;
-            const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-            
-            if (!apiKey) throw new Error("Chave Gemini não configurada no servidor.");
-            const ai = new GoogleGenAI({ apiKey });
-
-            const ttsResponse = await ai.models.generateContent({
-                model: "gemini-2.5-flash-preview-tts",
-                contents: [{ parts: [{ text: `Say with ${accentPrompt}: ${text}` }] }],
-                config: {
-                    responseModalities: ["AUDIO"],
-                    speechConfig: {
-                        voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: voice || 'Kore' },
-                        },
-                    },
-                },
-            });
-
-            const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-            const audioBase64 = audioPart?.inlineData?.data;
-
-            if (!audioBase64) throw new Error("A IA gerou uma narração vazia.");
-
-            res.json({ audioBase64 });
-        } catch (e: any) {
-            console.error('[Autopilot TTS] Failed:', e);
-            res.status(500).json({ error: e.message });
         }
     });
 
@@ -869,38 +842,6 @@ async function startServer() {
         const check = spawn('ffmpeg', ['-version']);
         check.on('error', () => res.status(500).send('FFmpeg Missing'));
         check.on('close', (code: number) => { if (code === 0) res.send('OK'); else res.status(500).send('FFmpeg Error'); });
-    });
-
-    // ─── CHECK FFMPEG CODECS (diagnóstico de proxy) ───────────────────────────
-    app.get('/api/check-ffmpeg-codecs', (req: any, res: any) => {
-        const check = spawn('ffmpeg', ['-codecs']);
-        let output = '';
-        check.stdout.on('data', (d: Buffer) => output += d.toString());
-        check.on('error', () => res.status(500).json({ ok: false, error: 'FFmpeg não encontrado. Instale com: sudo apt-get install -y ffmpeg' }));
-        check.on('close', (code: number) => {
-            if (code !== 0) return res.status(500).json({ ok: false, error: 'FFmpeg retornou erro' });
-            res.json({
-                ok: true,
-                libx264: output.includes('libx264'),
-                hevc: output.includes('hevc') || output.includes('libx265'),
-                vp9: output.includes('vp9'),
-                aac: output.includes('aac'),
-            });
-        });
-    });
-
-    // ─── DIAGNÓSTICO DE PROXY PARA UM ARQUIVO ────────────────────────────────
-    app.get('/api/proxy/status/:filename', (req: any, res: any) => {
-        const filename = sanitizeFilename(req.params.filename);
-        const proxyPath = path.join(proxyDir, `proxy_${filename}`);
-        const exists = fs.existsSync(proxyPath);
-        res.json({
-            filename,
-            proxyExists: exists,
-            proxyPath: exists ? proxyPath : null,
-            size: exists ? fs.statSync(proxyPath).size : 0,
-            proxyUrl: exists ? `/api/proxy/video/proxy_${filename}` : null
-        });
     });
 
     // ─── FRONTEND ─────────────────────────────────────────────────────────────
