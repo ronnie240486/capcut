@@ -773,8 +773,13 @@ async function startServer() {
 
                 // Legendas (Subtitles) - Burn-in
                 if (scene.subtitle) {
-                    const cleanSub = scene.subtitle.replace(/'/g, '').replace(/:/g, '');
-                    filterChain += `,drawtext=text='${cleanSub.toUpperCase()}':fontcolor=white:fontsize=48:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-text_w)/2:y=h-100`;
+                    // Escape special characters for FFmpeg drawtext
+                    const cleanSub = scene.subtitle
+                        .replace(/[\\'"]/g, '\\$&') // Escape \, ', "
+                        .replace(/:/g, '\\:')       // Escape :
+                        .toUpperCase();
+                    
+                    filterChain += `,drawtext=text='${cleanSub}':fontcolor=white:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=15:line_spacing=10:x=(w-text_w)/2:y=h-120:fix_bounds=1`;
                 }
 
                 filterParts.push(`${filterChain}[${sceneLabel}]`);
