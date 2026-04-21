@@ -50,13 +50,20 @@ async function startServer() {
     process.on('uncaughtException', (err) => { console.error('CRITICAL ERROR (Uncaught Exception):', err); });
     process.on('unhandledRejection', (reason) => { console.error('CRITICAL ERROR (Unhandled Rejection):', reason); });
 
+    // ─── UTILS ────────────────────────────────────────────────────────────────
+    const getGeminiKey = () => {
+        const key = process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY || "";
+        console.log(`[Key Diagnostic] Found key: ${key ? (key.slice(0, 4) + '...' + key.slice(-4)) : 'NOT FOUND'}`);
+        return key;
+    };
+
     // ─── HEALTH ────────────────────────────────────────────────────────────────
     app.get('/api/health', (req, res) => {
-        const key = process.env.GEMINI_API_KEY || process.env.API_KEY || "";
+        const key = getGeminiKey();
         res.json({ 
             status: 'ok', 
             hasKey: key.length > 0,
-            keyPrefix: key ? `${key.substring(0, 4)}...${key.substring(key.length - 4)}` : null,
+            keyNamesChecked: ['GEMINI_API_KEY', 'API_KEY', 'GOOGLE_API_KEY'],
             uptime: process.uptime(),
             env: process.env.NODE_ENV
         });
@@ -69,7 +76,7 @@ async function startServer() {
         console.log("[Autopilot] generate-plan request received");
         try {
             const { prompt, images, viralMode } = req.body;
-            const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+            const apiKey = getGeminiKey();
             
             if (!apiKey) throw new Error("Chave Gemini não configurada no servidor.");
             const ai = new GoogleGenAI({ apiKey });
@@ -81,12 +88,13 @@ async function startServer() {
             console.log(`[Autopilot Plan] Calling Gemini 2.0 Flash with ${imageParts.length} images`);
             const scriptResponse = await ai.models.generateContent({
                 model: 'gemini-2.0-flash',
-                contents: {
+                contents: [{
+                    role: 'user',
                     parts: [
                         { text: prompt },
                         ...imageParts
                     ]
-                },
+                }],
                 config: { 
                     responseMimeType: "application/json",
                     responseSchema: {
@@ -140,7 +148,7 @@ async function startServer() {
         console.log("[Autopilot] generate-tts request received");
         try {
             const { text: ttsText, voice, accentPrompt } = req.body;
-            const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+            const apiKey = getGeminiKey();
             
             if (!apiKey) throw new Error("Chave Gemini não configurada no servidor.");
             const ai = new GoogleGenAI({ apiKey });
@@ -148,7 +156,10 @@ async function startServer() {
             console.log(`[Autopilot TTS] Calling Gemini 2.0 Flash for TTS: ${voice}`);
             const ttsResponse = await ai.models.generateContent({
                 model: "gemini-2.0-flash",
-                contents: { parts: [{ text: `Say with ${accentPrompt}: ${ttsText}` }] },
+                contents: [{
+                    role: 'user',
+                    parts: [{ text: `Say with ${accentPrompt}: ${ttsText}` }]
+                }],
                 config: {
                     responseModalities: ["AUDIO"],
                     speechConfig: {
@@ -507,7 +518,7 @@ async function startServer() {
         res.status(202).json({ jobId });
 
         const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey } = req.body;
-        const finalKey = apiKey || process.env.GEMINI_API_KEY;
+        const finalKey = apiKey || getGeminiKey();
 
         if (!finalKey) {
             jobs[jobId].status = 'failed';
