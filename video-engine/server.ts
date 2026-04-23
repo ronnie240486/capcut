@@ -505,8 +505,8 @@ async function startServer() {
         if (res && !res.headersSent) res.status(202).json({ jobId });
 
         // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
-        // Limitation: Limit threads to avoid OOM on shared environments
-        let finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', '-threads', '2'];
+        // Limitation: Limit threads and memory footprint for Cloud Run stability
+        let finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', '-threads', '1', '-reinit_filter', '0', '-hwaccel', 'none'];
         const processedArgs: string[] = [];
         let filterScriptPath: string | null = null;
 
@@ -518,12 +518,11 @@ async function startServer() {
                 processedArgs.push('-filter_complex_script', filterScriptPath);
                 i++; // Skip the next arg as we handled it
             } else if (args[i] === '-i') {
-                processedArgs.push('-thread_queue_size', '1024', '-i');
+                processedArgs.push('-thread_queue_size', '64', '-i');
             } else {
                 processedArgs.push(args[i]);
             }
         }
-        
         finalArgs = [...finalArgs, ...processedArgs];
 
         console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
@@ -534,7 +533,9 @@ async function startServer() {
             
             ffmpeg.stderr.on('data', (d: Buffer) => {
                 const line = d.toString();
-                stderr += line;
+                // Limit stderr size to last 4KB to prevent OOM
+                stderr = (stderr + line).slice(-4096);
+                
                 const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
                 if (timeMatch && expectedDuration > 0) {
                     const t = timeToSeconds(timeMatch[1]);
@@ -549,7 +550,7 @@ async function startServer() {
                 if (filterScriptPath && fs.existsSync(filterScriptPath)) fs.unlinkSync(filterScriptPath);
             });
 
-            ffmpeg.on('close', (code: number) => {
+            ffmpeg.on('close', (code: number, signal: string) => {
                 if (filterScriptPath && fs.existsSync(filterScriptPath)) {
                     try { fs.unlinkSync(filterScriptPath); } catch(e) {}
                 }
@@ -558,7 +559,10 @@ async function startServer() {
                 const fileExists = jobs[jobId].outputPath && fs.existsSync(jobs[jobId].outputPath);
                 const fileSize = fileExists ? fs.statSync(jobs[jobId].outputPath).size : 0;
                 const hasValidContent = fileSize > 100;
-                const isSuccess = (code === 0 && hasValidContent) || (fileSize > 1024 && hasValidContent);
+                
+                // If code is null and signal is present, it means the process was terminated (often SIGKILL/OOM)
+                const wasKilled = code === null && !!signal;
+                const isSuccess = (code === 0 && hasValidContent) || (fileSize > 1024 && hasValidContent && !wasKilled);
 
                 if (isSuccess) {
                     console.log(`[Job ${jobId}] Success. Size: ${fileSize} bytes`);
@@ -566,9 +570,10 @@ async function startServer() {
                     jobs[jobId].progress = 100;
                     jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
                 } else {
-                    console.error(`[Job ${jobId}] Failed. Code: ${code}. File Size: ${fileSize}`, stderr);
+                    const errorMsg = wasKilled ? `Processo encerrado pelo sistema (${signal}). Tente reduzir a complexidade do vídeo.` : stderr.trim();
+                    console.error(`[Job ${jobId}] Failed. Code: ${code}. Signal: ${signal}. File Size: ${fileSize}`, errorMsg);
                     jobs[jobId].status = 'failed';
-                    jobs[jobId].error = `Erro ao renderizar. Código: ${code}. ` + (stderr.slice(-200).trim() || 'Verifique sua timeline.');
+                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
                     if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
                 }
             });
