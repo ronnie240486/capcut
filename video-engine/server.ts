@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI, Modality, Type } from "@google/genai";
+import { GoogleGenAI, SchemaType } from "@google/genai";
 
 // Engine Imports
 import { handleExportVideo } from './video-engine/export-video.js';
@@ -111,14 +111,17 @@ async function startServer() {
                 });
             }
             
-            const ai = new GoogleGenAI({ apiKey });
+            const genAI = new GoogleGenAI(apiKey);
+            const model = genAI.getGenerativeModel({ 
+                model: 'gemini-1.5-flash', // Use stable flash model for Autopilot
+            });
+            
             const imageParts = images ? images.map((f: string) => ({
                 inlineData: { mimeType: 'image/jpeg', data: f }
             })) : [];
 
-            console.log(`[Autopilot Plan] Calling Gemini 3 Flash Preview`);
-            const scriptResponse = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
+            console.log(`[Autopilot Plan] Calling Gemini 1.5 Flash`);
+            const result = await model.generateContent({
                 contents: [{
                     role: 'user',
                     parts: [
@@ -126,27 +129,27 @@ async function startServer() {
                         ...imageParts
                     ]
                 }],
-                config: { 
+                generationConfig: { 
                     responseMimeType: "application/json",
                     responseSchema: {
-                        type: Type.OBJECT,
+                        type: SchemaType.OBJECT,
                         properties: {
-                            script: { type: Type.STRING, description: "Full narration script" },
-                            nuance: { type: Type.STRING, description: "Selected human nuance ID" },
+                            script: { type: SchemaType.STRING, description: "Full narration script" },
+                            nuance: { type: SchemaType.STRING, description: "Selected human nuance ID" },
                             scenes: {
-                                type: Type.ARRAY,
+                                type: SchemaType.ARRAY,
                                 items: {
-                                    type: Type.OBJECT,
+                                    type: SchemaType.OBJECT,
                                     properties: {
-                                        duration: { type: Type.NUMBER, description: "Duration in seconds" },
-                                        action: { type: Type.STRING, description: "Description of visuals" },
-                                        fileIndex: { type: Type.NUMBER, description: "Index of user file to use" },
-                                        filter: { type: Type.STRING, description: "Visual filter to apply" },
-                                        transition: { type: Type.STRING, description: "Transition type (fade, zoom, none)" },
-                                        movement: { type: Type.STRING, description: "Movement type (zoom_in, zoom_out, pan_left, pan_right, static)" },
-                                        subtitle: { type: Type.STRING, description: "The EXACT text from the 'script' spoken during this scene. Do not summarize." },
-                                        sfx: { type: Type.STRING, description: "Sound effect description" },
-                                        stockTopic: { type: Type.STRING, description: "Topic for stock footage if user clip is missing" }
+                                        duration: { type: SchemaType.NUMBER, description: "Duration in seconds" },
+                                        action: { type: SchemaType.STRING, description: "Description of visuals" },
+                                        fileIndex: { type: SchemaType.NUMBER, description: "Index of user file to use" },
+                                        filter: { type: SchemaType.STRING, description: "Visual filter to apply" },
+                                        transition: { type: SchemaType.STRING, description: "Transition type (fade, zoom, none)" },
+                                        movement: { type: SchemaType.STRING, description: "Movement type (zoom_in, zoom_out, pan_left, pan_right, static)" },
+                                        subtitle: { type: SchemaType.STRING, description: "The EXACT text from the 'script' spoken during this scene. Do not summarize." },
+                                        sfx: { type: SchemaType.STRING, description: "Sound effect description" },
+                                        stockTopic: { type: SchemaType.STRING, description: "Topic for stock footage if user clip is missing" }
                                     },
                                     required: ["duration", "action", "subtitle"]
                                 }
@@ -157,9 +160,10 @@ async function startServer() {
                 }
             });
 
-            const text = scriptResponse.text;
+            const text = result.response.text();
             if (!text) throw new Error("A IA retornou uma resposta vazia.");
             
+            // JSON cleaning in case of markdown wrap (though responseMimeType should prevent it)
             const jsonStr = text.replace(/```json\n?|```/g, '').trim();
             
             try {
@@ -237,26 +241,26 @@ async function startServer() {
                     details: "Para resolver: 1. No AI Studio, clique no ícone de engrenagem e selecione uma chave API. 2. Se estiver rodando localmente/firebase, defina a variável de ambiente GEMINI_API_KEY com sua chave do Google AI Studio."
                 });
             }
-            const ai = new GoogleGenAI({ apiKey });
+            const genAI = new GoogleGenAI(apiKey);
+            const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${voice}`);
-            const ttsResponse = await ai.models.generateContent({
-                model: "gemini-3.1-flash-tts-preview",
+            console.log(`[Autopilot TTS] Calling Gemini 2.0 Flash for TTS: ${voice}`);
+            const result = await model.generateContent({
                 contents: [{
                     role: 'user',
                     parts: [{ text: finalPrompt }]
                 }],
-                config: {
+                generationConfig: {
                     responseModalities: ["AUDIO"],
                     speechConfig: {
                         voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: voice || 'live' },
+                            prebuiltVoiceConfig: { voiceName: voice || 'Aoide' }, // Use valid voice name or default
                         },
                     },
                 },
             });
 
-            const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+            const audioPart = result.response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
             const audioBase64 = audioPart?.inlineData?.data;
 
             if (!audioBase64) throw new Error("A IA gerou uma narração vazia.");
