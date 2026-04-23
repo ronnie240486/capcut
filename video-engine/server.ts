@@ -511,7 +511,8 @@ async function startServer() {
         let filterScriptPath: string | null = null;
 
         for (let i = 0; i < args.length; i++) {
-            if (args[i] === '-filter_complex' && args[i+1] && args[i+1].length > 1000) {
+            // Lower threshold to 100 characters to ensure stability even with moderate filters
+            if (args[i] === '-filter_complex' && args[i+1] && args[i+1].length > 100) {
                 const filterContent = args[i+1];
                 filterScriptPath = path.join(uploadDir, `filter_${jobId}_${Date.now()}.txt`);
                 fs.writeFileSync(filterScriptPath, filterContent);
