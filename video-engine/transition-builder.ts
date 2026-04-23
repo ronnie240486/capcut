@@ -2,7 +2,7 @@
 import presetGenerator from './preset-generator.js';
 
 // Helper to escape text for drawtext filter
-function escapeDrawText(text: string): string {
+function escapeDrawText(text) {
     if (!text) return '';
     return text
         .replace(/\\/g, '\\\\')
@@ -16,10 +16,10 @@ function escapeDrawText(text: string): string {
 }
 
 // Helper to wrap text manually since drawtext wrapping can be finicky
-function wrapText(text: string, maxCharsPerLine: number): string {
+function wrapText(text, maxCharsPerLine) {
     if (!text) return '';
     const words = text.split(' ');
-    let lines: string[] = [];
+    let lines = [];
     let currentLine = words[0];
 
     for (let i = 1; i < words.length; i++) {
@@ -35,14 +35,14 @@ function wrapText(text: string, maxCharsPerLine: number): string {
 }
 
 export default {
-    buildTimeline: (clips: any[], fileMap: Record<string, string>, mediaLibrary: any, exportConfig: any = {}, explicitTotalDuration: number = 30) => {
-        let inputs: string[] = [];
+    buildTimeline: (clips, fileMap, mediaLibrary, exportConfig = {}, explicitTotalDuration = 30) => {
+        let inputs = [];
         let filterChain = '';
         
         let inputIndexCounter = 0;
 
         // --- CONFIGURAÇÃO DE RESOLUÇÃO E FPS ---
-        const resMap: Record<string, {w: number, h: number}> = {
+        const resMap = {
             '720p': { w: 1280, h: 720 },
             '1080p': { w: 1920, h: 1080 },
             '4k': { w: 3840, h: 2160 }
@@ -53,11 +53,11 @@ export default {
         
         const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
 
-        const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0);
+        const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + (parseFloat(c.duration) || 5)), 0);
         const projectDuration = Math.max(explicitTotalDuration, maxClipEnd, 1);
 
         const mainTrackClips = clips.filter(c => c.track === 'video').sort((a, b) => a.start - b.start);
-        const trackOrder: Record<string, number> = { camada: 1, camada2: 2, camada3: 3, text: 4, subtitle: 5 };
+        const trackOrder = { camada: 1, camada2: 2, camada3: 3, text: 4, subtitle: 5 };
         const overlayClips = clips.filter(c => 
             ['text', 'subtitle', 'camada', 'camada2', 'camada3'].includes(c.track)
         ).sort((a, b) => {
@@ -93,8 +93,8 @@ export default {
         let mainTrackAudioStream = null;
         
         if (mainTrackClips.length > 0) {
-             let mainTrackLabels: any[] = [];
-             let mainTrackAudioSegments: string[] = [];
+             let mainTrackLabels = [];
+             let mainTrackAudioSegments = [];
              
              mainTrackClips.forEach((clip, i) => {
                 const filePath = fileMap[clip.fileName];
@@ -111,7 +111,7 @@ export default {
                 const idx = inputIndexCounter++;
                 let currentV = `[${idx}:v]`;
                 
-                const addFilter = (filterText: string) => {
+                const addFilter = (filterText) => {
                     if (!filterText) return;
                     const nextLabel = `vtmp${i}_${Math.random().toString(36).substr(2, 5)}`;
                     filterChain += `${currentV}${filterText}[${nextLabel}];`;
@@ -143,7 +143,7 @@ export default {
                 
                 if (clip.properties && clip.properties.adjustments) {
                     const adj = clip.properties.adjustments;
-                    let eqParts: string[] = [];
+                    let eqParts = [];
                     if (adj.brightness !== 1) eqParts.push(`brightness=${(adj.brightness - 1).toFixed(2)}`);
                     if (adj.contrast !== 1) eqParts.push(`contrast=${adj.contrast.toFixed(2)}`);
                     if (adj.saturate !== 1) eqParts.push(`saturation=${adj.saturate.toFixed(2)}`);
@@ -167,7 +167,7 @@ export default {
                     addFilter(staticMove);
                 }
 
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p,fifo`);
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -220,13 +220,13 @@ export default {
                     const nextLabelA = `mix_a_${i}`;
                     
                     if (transDur > 0 && hasExplicitTrans) {
-                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset},fifo[${nextLabelV}];`;
+                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset}[${nextLabelV}];`;
                         filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
                         accumulatedDuration = offset + nextClip.duration;
                     } else {
                         const safeDur = 0.04;
                         const safeOffset = Math.max(0, accumulatedDuration - safeDur);
-                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset},fifo[${nextLabelV}];`;
+                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset}[${nextLabelV}];`;
                          filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${safeDur}:c1=tri:c2=tri[${nextLabelA}];`;
                          accumulatedDuration = safeOffset + nextClip.duration;
                     }
@@ -276,6 +276,24 @@ export default {
                  }
                  
                  let styles = '';
+                 let alpha = '1.0';
+                 let animType = 'none';
+
+                 if (clip.properties.textDesign?.animation) {
+                     const anim = clip.properties.textDesign.animation;
+                     const animDur = 0.5;
+                     
+                     if (anim.in === 'fade-in' || anim.id === 'fade-in') {
+                         alpha = `min(t/${animDur},1)`;
+                     }
+                     if (anim.out === 'fade-out') {
+                         alpha = `if(lt(t,${clip.duration - animDur}),${alpha},min((d-t)/${animDur},1))`;
+                     }
+                     if (anim.loop === 'pulse') {
+                         alpha = `(${alpha})*(0.8+0.2*sin(2*PI*t))`;
+                     }
+                 }
+
                  if (clip.properties.textDesign?.stroke) {
                      const s = clip.properties.textDesign.stroke;
                      if (s.width > 0) styles += `:borderw=${s.width * scaleFactor}:bordercolor=${s.color || 'black'}`;
@@ -288,10 +306,21 @@ export default {
                  const fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"; 
                  const fontArg = `:fontfile='${fontFile}'`;
 
-                 const txtLabel = `txt_${i}`;
+                 const txtLabel = `txt_base_${i}`;
                  const finalTxt = escapedTxt || ' ';
-                 filterChain += `[${bgLabel}]drawtext=text='${finalTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}[${txtLabel}];`;
+                 filterChain += `[${bgLabel}]drawtext=text='${finalTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}:alpha='${alpha}'${styles}[${txtLabel}];`;
                  overlayInputLabel = `[${txtLabel}]`;
+
+                 // PROGRESS BAR LOGIC
+                 if (clip.properties.textDesign?.isProgressBar) {
+                     const pbLabel = `txt_pb_${i}`;
+                     const pbColor = clip.properties.textDesign?.color || 'white';
+                     const pbH = Math.round(15 * scaleFactor);
+                     const pbY = targetRes.h - pbH - Math.round(40 * scaleFactor);
+                     const progressExpr = `(t+${clip.start})/${projectDuration}`;
+                     filterChain += `${overlayInputLabel}drawbox=x=0:y=${pbY}:w=iw*${progressExpr}:h=${pbH}:color=${pbColor}:t=fill[${pbLabel}];`;
+                     overlayInputLabel = `[${pbLabel}]`;
+                 }
 
             } else {
                  const filePath = fileMap[clip.fileName];
@@ -307,7 +336,7 @@ export default {
                  const rawLabel = `[${idx}:v]`;
                  const processedLabel = `ov_proc_${i}`;
                  
-                 let filters: string[] = [];
+                 let filters = [];
                  
                  if (clip.type === 'video') {
                      const start = clip.mediaStartOffset || 0;
@@ -353,8 +382,8 @@ export default {
 
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            filterChain += `${finalComp}fifo[main_fifo_${i}];`;
-            filterChain += `[main_fifo_${i}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
+            // Removed redundant fifo buffer per overlay to save memory on Cloud Run
+            filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
 
