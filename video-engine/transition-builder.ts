@@ -108,9 +108,12 @@ export default {
                 const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
 
                 if (clip.type === 'image') {
-                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-s', `${targetRes.w}x${targetRes.h}`, '-i', filePath); 
+                    // Using -video_size for more explicit demuxer-level scaling
+                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-video_size', `${targetRes.w}x${targetRes.h}`, '-i', filePath); 
                 } else {
-                    inputs.push('-i', filePath);
+                    // Limit input reading to duration + buffer to save memory
+                    const seek = clip.mediaStartOffset || 0;
+                    inputs.push('-ss', seek.toString(), '-t', (duration + 2).toString(), '-i', filePath);
                 }
 
                 const idx = inputIndexCounter++;
@@ -126,8 +129,7 @@ export default {
                 addFilter(SCALE_FILTER);
 
                 if (clip.type !== 'image') {
-                    const start = clip.mediaStartOffset || 0;
-                    addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
+                    addFilter(`setpts=PTS-STARTPTS`);
                 } else {
                     addFilter(`setpts=PTS-STARTPTS`);
                 }
