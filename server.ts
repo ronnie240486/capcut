@@ -506,13 +506,13 @@ async function startServer() {
 
         // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
         // Limitation: Limit threads and memory footprint for Cloud Run stability
-        // Adding -max_alloc and probe limits to prevent runaway memory
+        // Removing max_alloc as it might cause aborts, adding per-input thread limits
         let finalArgs = [
             '-hide_banner', '-loglevel', 'error', '-stats', 
             '-threads', '1', 
-            '-max_alloc', '400M', 
-            '-probesize', '1M', 
-            '-analyzeduration', '1M',
+            '-filter_threads', '1',
+            '-probesize', '2M', 
+            '-analyzeduration', '2M',
             '-reinit_filter', '0', 
             '-hwaccel', 'none'
         ];
@@ -528,15 +528,15 @@ async function startServer() {
                 processedArgs.push('-filter_complex_script', filterScriptPath);
                 i++; // Skip the next arg as we handled it
             } else if (args[i] === '-i') {
-                // Minimum possible to keep decoded packets sitting in RAM
-                processedArgs.push('-thread_queue_size', '2', '-i');
+                // Absolute minimum queue and threads per input
+                processedArgs.push('-threads', '1', '-thread_queue_size', '1', '-i');
             } else {
                 processedArgs.push(args[i]);
             }
         }
         finalArgs = [...finalArgs, ...processedArgs];
 
-        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
+        console.log(`[Job ${jobId}] Spawning FFmpeg. Command Size: ${finalArgs.length}`);
 
         try {
             const ffmpeg = spawn('ffmpeg', finalArgs);
@@ -583,8 +583,19 @@ async function startServer() {
                 } else {
                     const errorMsg = wasKilled ? `Processo encerrado pelo sistema (${signal}). Tente reduzir a complexidade do vídeo.` : stderr.trim();
                     console.error(`[Job ${jobId}] Failed. Code: ${code}. Signal: ${signal}. File Size: ${fileSize}`, errorMsg);
-                    jobs[jobId].status = 'failed';
-                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
+                    
+                    // Log filter hint if it's an immediate fail
+                    if (filterScriptPath && fs.existsSync(filterScriptPath) && fileSize === 0) {
+                        try {
+                            const hint = fs.readFileSync(filterScriptPath, 'utf8').slice(0, 500);
+                            console.error(`[Job ${jobId}] Filter Script Hint: ${hint}...`);
+                        } catch(e) {}
+                    }
+
+                    if (jobs[jobId]) {
+                        jobs[jobId].status = 'failed';
+                        jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
+                    }
                     if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
                 }
             });
