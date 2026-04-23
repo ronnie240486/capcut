@@ -506,8 +506,16 @@ async function startServer() {
 
         // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
         // Limitation: Limit threads and memory footprint for Cloud Run stability
-        // Adding -max_alloc to prevent some runaway memory allocations
-        let finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', '-threads', '1', '-max_alloc', '400M', '-reinit_filter', '0', '-hwaccel', 'none'];
+        // Adding -max_alloc and probe limits to prevent runaway memory
+        let finalArgs = [
+            '-hide_banner', '-loglevel', 'error', '-stats', 
+            '-threads', '1', 
+            '-max_alloc', '400M', 
+            '-probesize', '1M', 
+            '-analyzeduration', '1M',
+            '-reinit_filter', '0', 
+            '-hwaccel', 'none'
+        ];
         const processedArgs: string[] = [];
         let filterScriptPath: string | null = null;
 
@@ -520,8 +528,8 @@ async function startServer() {
                 processedArgs.push('-filter_complex_script', filterScriptPath);
                 i++; // Skip the next arg as we handled it
             } else if (args[i] === '-i') {
-                // Reduced even further to 4 to save memory on large timelines
-                processedArgs.push('-thread_queue_size', '4', '-i');
+                // Minimum possible to keep decoded packets sitting in RAM
+                processedArgs.push('-thread_queue_size', '2', '-i');
             } else {
                 processedArgs.push(args[i]);
             }
@@ -1127,6 +1135,21 @@ async function startServer() {
     }
 
     app.listen(PORT, '0.0.0.0', () => console.log(`Server running on http://localhost:${PORT}`));
+
+    // ─── UTILS & CLEANER ──────────────────────────────────────────────────────
+    setInterval(() => {
+        const now = Date.now();
+        Object.keys(jobs).forEach(id => {
+            if (now - (jobs[id].startTime || 0) > 30 * 60 * 1000) { 
+                console.log(`[Cleaner] Removing expired job: ${id}`);
+                const outputPath = jobs[id].outputPath;
+                if (outputPath && fs.existsSync(outputPath)) {
+                    try { fs.unlinkSync(outputPath); } catch(e) {}
+                }
+                delete jobs[id];
+            }
+        });
+    }, 15 * 60 * 1000);
 }
 
 startServer();
