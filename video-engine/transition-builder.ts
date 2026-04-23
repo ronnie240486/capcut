@@ -43,6 +43,8 @@ export default {
 
         // --- CONFIGURAÇÃO DE RESOLUÇÃO E FPS ---
         const resMap = {
+            '360p': { w: 640, h: 360 },
+            '480p': { w: 854, h: 480 },
             '720p': { w: 1280, h: 720 },
             '1080p': { w: 1920, h: 1080 },
             '4k': { w: 3840, h: 2160 }
@@ -51,7 +53,7 @@ export default {
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
         const targetFps = parseInt(exportConfig.fps) || 30;
         
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=fast_bilinear,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
 
         const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + (parseFloat(c.duration) || 5)), 0);
         const projectDuration = Math.max(explicitTotalDuration, maxClipEnd, 1);
@@ -75,9 +77,9 @@ export default {
         let baseVideoStream = '[bg_base]';
         const bgFile = fileMap['background']; 
         if (bgFile) {
-             inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', bgFile);
+             inputs.push('-loop', '1', '-t', projectDuration.toString(), '-s', `${targetRes.w}x${targetRes.h}`, '-i', bgFile);
              const bgIdx = inputIndexCounter++;
-             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
+             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
         } else {
              inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
              baseVideoStream = `[${inputIndexCounter++}:v]`;
@@ -106,7 +108,7 @@ export default {
                 const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
 
                 if (clip.type === 'image') {
-                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath); 
+                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-s', `${targetRes.w}x${targetRes.h}`, '-i', filePath); 
                 } else {
                     inputs.push('-i', filePath);
                 }
@@ -169,8 +171,6 @@ export default {
                     const staticMove = presetGenerator.getMovementFilter('', duration, true, {}, targetRes, targetFps);
                     addFilter(staticMove);
                 }
-
-                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p`);
 
                 mainTrackLabels.push({
                     label: currentV,
@@ -428,6 +428,7 @@ export default {
         
         if (amixInputs > 0) {
             // Using a single amix at the end is MUCH more RAM-efficient than chaining
+            // Added dropout_transition=0 and normalize=0 to minimize processing
             filterChain += `${finalAudioSegments.join('')}amix=inputs=${amixInputs}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
             filterChain += `${baseAudioStream}acopy[final_audio_out];`;
