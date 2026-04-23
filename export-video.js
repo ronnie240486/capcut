@@ -6,7 +6,6 @@ import transitionBuilder from './transition-builder.js';
 
 function validateAndProbe(filePath) {
     return new Promise((resolve) => {
-        // 1. Basic Size Check
         try {
             const stats = fs.statSync(filePath);
             if (stats.size < 100) { 
@@ -18,7 +17,6 @@ function validateAndProbe(filePath) {
             return resolve({ isValid: false });
         }
 
-        // 2. FFprobe Check
         exec(`ffprobe -v error -show_entries stream=codec_type -of csv=p=0 "${filePath}"`, (err, stdout) => {
             if (err) {
                 console.warn(`[Export] Probe failed for ${filePath}: ${err.message}`);
@@ -32,15 +30,101 @@ function validateAndProbe(filePath) {
 
 export const handleExportVideo = async (job, uploadDir, onStart) => {
     try {
-        const { projectState } = job.params;
-        if (!projectState) throw new Error("Missing projectState");
+        const { projectState, plan, narrationFile } = job.params;
+        let totalDuration = 0;
+        let clips = [];
+        let media = {};
+        let exportConfig = {};
 
-        const state = JSON.parse(projectState);
-        const { clips, media, totalDuration } = state;
-        const exportConfig = state.exportConfig || {};
+        if (plan) {
+            const p = JSON.parse(plan);
+            const stockFilesParsed = job.params.stockFiles ? JSON.parse(job.params.stockFiles) : [];
+            const assembledClips = [];
+            
+            p.scenes.forEach((s, i) => {
+                let fileName = '';
+                if (s.stockTopic) {
+                    const stock = stockFilesParsed.shift();
+                    if (stock) {
+                        fileName = stock.originalname;
+                        if (!job.files.some(f => f.originalname === fileName)) {
+                            job.files.push({
+                                originalname: fileName,
+                                path: stock.path
+                            });
+                        }
+                    }
+                }
+                
+                if (!fileName) {
+                    fileName = job.files[s.fileIndex]?.originalname || '';
+                }
+
+                assembledClips.push({
+                    id: `magic_${i}`,
+                    fileName: fileName,
+                    start: s.startTime,
+                    duration: s.duration,
+                    effects: s.filter ? [s.filter] : [],
+                    transition: s.transition || 'fade',
+                    track: 'video'
+                });
+
+                if (s.subtitles) {
+                    assembledClips.push({
+                        id: `magic_sub_${i}`,
+                        type: 'text',
+                        track: 'subtitle',
+                        start: s.startTime,
+                        duration: s.duration,
+                        properties: {
+                            text: s.subtitles,
+                            textDesign: { 
+                                color: 'white', 
+                                stroke: { width: 2, color: 'black' },
+                                animation: { in: 'fade-in', out: 'fade-out', duration: 0.5 }
+                            },
+                            transform: { y: 280, scale: 0.75 }
+                        }
+                    });
+                }
+            });
+
+            // Handle SFX
+            if (p.sfx && Array.isArray(p.sfx)) {
+                p.sfx.forEach((s, i) => {
+                    const sfxName = `${s.type}.mp3`;
+                    const sfxPath = path.join(uploadDir, '..', 'assets', 'sfx', sfxName);
+                    
+                    if (fs.existsSync(sfxPath)) {
+                        assembledClips.push({
+                            id: `magic_sfx_${i}`,
+                            type: 'audio',
+                            track: 'sfx',
+                            fileName: sfxName,
+                            start: s.time,
+                            duration: 2,
+                            properties: { volume: s.volume || 0.8 }
+                        });
+                        fileMap[sfxName] = sfxPath;
+                    }
+                });
+            }
+
+            clips = assembledClips;
+            totalDuration = clips.reduce((sum, c) => Math.max(sum, c.start + (c.duration || 0)), 0);
+            job.files.forEach(f => media[f.originalname] = { type: 'video' });
+        } else if (projectState) {
+            const state = JSON.parse(projectState);
+            clips = state.clips;
+            media = state.media;
+            totalDuration = state.totalDuration;
+            exportConfig = state.exportConfig || {};
+        } else {
+            throw new Error("Missing projectState or plan");
+        }
+
         const fps = parseInt(exportConfig.fps) || 30;
-        
-        // Mapeamento de arquivos
         const fileMap = {};
         if (job.files && job.files.length > 0) {
             for (const f of job.files) {
@@ -55,35 +139,91 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             }
         }
 
-        // Pass totalDuration to buildTimeline
+        const sanitizeFilename = (name) => name.replace(/[^a-z0-9._-]/gi, '_');
+
+        // Also check uploadDir for pre-uploaded files (from chunked upload)
+        if (media) {
+            for (const name of Object.keys(media)) {
+                if (!fileMap[name]) {
+                    const possiblePath = path.join(uploadDir, name);
+                    const sanitizedPath = path.join(uploadDir, sanitizeFilename(name));
+                    
+                    if (fs.existsSync(possiblePath)) {
+                        const info = await validateAndProbe(possiblePath);
+                        if (info.isValid) {
+                            fileMap[name] = possiblePath;
+                            media[name].hasAudio = info.hasAudio;
+                        }
+                    } else if (fs.existsSync(sanitizedPath)) {
+                        const info = await validateAndProbe(sanitizedPath);
+                        if (info.isValid) {
+                            fileMap[name] = sanitizedPath;
+                            media[name].hasAudio = info.hasAudio;
+                        }
+                    }
+                }
+            }
+        }
+
         const buildResult = transitionBuilder.buildTimeline(clips, fileMap, media, exportConfig, totalDuration);
+        
+        let inputs = [...buildResult.inputs];
+        let filterComplex = buildResult.filterComplex;
+        let outputMapVideo = buildResult.outputMapVideo || '[v]';
+        let outputMapAudio = buildResult.outputMapAudio || '[a]';
+
+        if (narrationFile) {
+            const narrationPath = path.join(uploadDir, narrationFile);
+            const info = await validateAndProbe(narrationPath);
+            
+            if (info.isValid && info.hasAudio) {
+                // Count how many -i flags are already in inputs
+                let inputCount = 0;
+                for (let i = 0; i < inputs.length; i++) {
+                    if (inputs[i] === '-i') inputCount++;
+                }
+                
+                const narrationIdx = inputCount;
+                inputs.push('-i', narrationPath);
+                
+                // Mix narration into the final audio
+                // Use a safer label for the narration
+                const narrLabel = `narr_${Date.now()}`;
+                filterComplex += `;[${narrationIdx}:a]volume=1.8[${narrLabel}];${outputMapAudio}[${narrLabel}]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[mixeda]`;
+                outputMapAudio = '[mixeda]';
+                console.log(`[Export] Integrated narration file: ${narrationFile} at index ${narrationIdx}`);
+            } else {
+                console.warn(`[Export] Narration file invalid or missing audio: ${narrationFile}`);
+            }
+        }
+
         const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
         job.outputPath = outputPath;
 
         const args = [
-            ...buildResult.inputs,
-            '-filter_complex', buildResult.filterComplex,
-            '-map', buildResult.outputMapVideo,
-            '-map', buildResult.outputMapAudio,
+            ...inputs,
+            '-filter_complex', filterComplex,
+            '-map', outputMapVideo,
+            '-map', outputMapAudio,
             
-            // Codec de Vídeo Otimizado
             '-c:v', 'libx264',
-            '-preset', 'ultrafast', // Rápido para UX, mas seguro
-            '-crf', '23', // Boa qualidade visual
-            '-pix_fmt', 'yuv420p', // Compatibilidade máxima
-            
-            // FORÇAR SINCRONIA DE VÍDEO
-            '-r', String(fps), // Força output FPS constante
-            '-vsync', '1',     // CFR (Constant Frame Rate) - vital para evitar drift
-            
-            // Codec de Áudio Otimizado
+            '-preset', 'ultrafast',
+            '-crf', '24',
+            '-x264-params', 'ref=1:bframes=0:rc-lookahead=0:weightp=0', // Minimum memory footprint
+            '-maxrate', '6M',
+            '-bufsize', '3M',
+            '-pix_fmt', 'yuv420p',
+            '-r', String(fps),
+            '-vsync', 'cfr', // Use CFR for better stability on heavy timelines
+            '-max_muxing_queue_size', '256',
+            '-profile:v', 'main',
+            '-level', '3.1',
             '-c:a', 'aac',
-            '-b:a', '192k',
+            '-b:a', '128k',
             '-ac', '2',
             '-ar', '44100',
-            
-            // Duração e Container
-            '-t', String(totalDuration + 0.1), // Garante que não corte o último frame
+            '-tune', 'fastdecode',
+            '-t', String(totalDuration + 0.1),
             '-movflags', '+faststart',
             '-y',
             outputPath
