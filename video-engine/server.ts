@@ -51,6 +51,59 @@ async function startServer() {
     process.on('uncaughtException', (err) => { console.error('CRITICAL ERROR (Uncaught Exception):', err); });
     process.on('unhandledRejection', (reason) => { console.error('CRITICAL ERROR (Unhandled Rejection):', reason); });
 
+    app.get('/api/proxy/freesound', async (req: any, res: any) => {
+        try {
+            const { q, token } = req.query;
+            const url = `https://www.freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,description`;
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`Freesound API failed with status ${response.status}`);
+            const data = await response.json();
+            res.json(data);
+        } catch (e: any) {
+            console.error('[Freesound Proxy] Error:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    // Generic Proxy Download to avoid CORS errors in browser
+    app.post('/api/util/proxy-download', async (req: any, res: any) => {
+        const { url, type } = req.body;
+        if (!url) return res.status(400).json({ error: 'URL required' });
+
+        try {
+            const originalName = path.basename(new URL(url).pathname) || `download_${Date.now()}`;
+            const filename = `proxy_dl_${Date.now()}_${sanitizeFilename(originalName)}${type === 'video' ? '.mp4' : type === 'audio' ? '.mp3' : '.jpg'}`;
+            const filePath = path.join(uploadDir, filename);
+
+            const apiKey = getGeminiKey(req);
+            const headers: any = {};
+            if (url.includes('googleapis.com')) {
+                headers['x-goog-api-key'] = apiKey;
+            }
+
+            const response = await fetch(url, { headers });
+            if (!response.ok) throw new Error(`Download failed with status ${response.status}`);
+
+            const buffer = Buffer.from(await response.arrayBuffer());
+            fs.writeFileSync(filePath, buffer);
+            
+            res.json({ success: true, filename, originalname: originalName, path: filePath });
+        } catch (e: any) {
+            console.error('[Proxy Download] Failed:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.get('/api/process/download-file/:filename', (req, res) => {
+        const filename = sanitizeFilename(req.params.filename);
+        const filePath = path.join(uploadDir, filename);
+        if (fs.existsSync(filePath)) {
+            res.sendFile(filePath);
+        } else {
+            res.status(404).send('File not found');
+        }
+    });
+
     // ─── UTILS ────────────────────────────────────────────────────────────────
     const getGeminiKey = (req?: express.Request) => {
         // 1. Header Priority (from Frontend - AI Studio selected keys)
@@ -246,6 +299,12 @@ async function startServer() {
                     role: 'user',
                     parts: [{ text: finalPrompt }]
                 }],
+                safetySettings: [
+                  { category: 'HATE_SPEECH', threshold: 'BLOCK_NONE' },
+                  { category: 'SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+                  { category: 'HARASSMENT', threshold: 'BLOCK_NONE' },
+                  { category: 'DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }
+                ],
                 config: {
                     responseModalities: ["AUDIO"],
                     speechConfig: {
@@ -254,9 +313,17 @@ async function startServer() {
                         },
                     },
                 },
-            });
+            } as any);
 
-            const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+            const candidate = ttsResponse.candidates?.[0];
+            if (candidate?.finishReason && !['STOP', 'MAX_TOKENS'].includes(candidate.finishReason)) {
+                if (candidate.finishReason === 'OTHER') {
+                    throw new Error("TTS failed with finish reason: OTHER. This often means the text had unsupported characters or triggered a model policy. Try simplifying the text.");
+                }
+                throw new Error(`TTS failed with reason: ${candidate.finishReason}`);
+            }
+
+            const audioPart = candidate?.content?.parts?.find(p => p.inlineData);
             const audioBase64 = audioPart?.inlineData?.data;
 
             if (!audioBase64) throw new Error("A IA gerou uma narração vazia.");
@@ -350,6 +417,45 @@ async function startServer() {
             });
         });
     };
+
+    // ─── CHUNKED UPLOAD TO BYPASS CLOUD RUN 32MB LIMIT ──────────────────────
+    app.post('/api/upload-chunk', uploadAny, (req: any, res: any) => {
+        try {
+            const file = req.files && req.files.length > 0 ? req.files[0] : null;
+            const filename = sanitizeFilename(req.body.filename);
+            const index = parseInt(req.body.index);
+            const total = parseInt(req.body.total);
+            
+            if (!file || !filename || isNaN(index) || isNaN(total)) {
+                return res.status(400).json({ error: 'Missing parameters' });
+            }
+
+            const targetPath = path.join(uploadDir, filename);
+            const chunkBuffer = fs.readFileSync(file.path);
+            
+            if (index === 0 && fs.existsSync(targetPath)) {
+                fs.unlinkSync(targetPath); // Clear existing on first chunk
+            }
+
+            fs.appendFileSync(targetPath, chunkBuffer);
+            fs.unlinkSync(file.path); // Remove temp chunk
+
+            res.json({ success: true, index, total, complete: index === total - 1 });
+        } catch (e: any) {
+            console.error('[Chunk Upload] Error:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.get('/api/check-file/:name', (req, res) => {
+        const filePath = path.join(uploadDir, sanitizeFilename(req.params.name));
+        if (fs.existsSync(filePath)) {
+            const stats = fs.statSync(filePath);
+            res.json({ exists: true, size: stats.size });
+        } else {
+            res.json({ exists: false, size: 0 });
+        }
+    });
 
     // ─── UPLOAD COM PROXY ──────────────────────────────────────────────────────
     // Nova rota: faz upload e gera proxy automaticamente para vídeos
@@ -565,17 +671,43 @@ async function startServer() {
         const job: any = { id: jobId, status: 'pending', files: (req as any).files || [], params: req.body, startTime: Date.now() };
         jobs[jobId] = job;
 
-        const file = job.files[0];
-        if (!file) { job.status = 'failed'; return res.status(400).json({ error: 'Ficheiro não encontrado' }); }
+        let file = job.files[0];
+        if (!file && job.params.targetFileName) {
+            const preUploadedPath = path.join(uploadDir, job.params.targetFileName);
+            if (fs.existsSync(preUploadedPath)) {
+                let ext = path.extname(job.params.targetFileName).toLowerCase();
+                let mimetype = 'video/mp4';
+                if (['.mp3', '.wav', '.ogg', '.m4a'].includes(ext)) mimetype = 'audio/mp3';
+                else if (['.jpg', '.jpeg', '.png'].includes(ext)) mimetype = 'image/jpeg';
+                
+                file = {
+                    path: preUploadedPath,
+                    filename: job.params.targetFileName,
+                    originalname: job.params.targetFileName,
+                    mimetype: mimetype
+                };
+                job.files.push(file);
+            }
+        }
 
-        const streamInfo = await getStreamInfo(file.path);
-        job.params.hasAudio = streamInfo.hasAudio;
-        job.params.hasVideo = streamInfo.hasVideo;
+        if (!job.files.length && !action.includes('export') && !action.includes('unify-real')) {
+             job.status = 'failed'; 
+             return res.status(400).json({ error: 'Ficheiro não encontrado: ' + job.params.targetFileName }); 
+        }
+
+        let streamInfo = { hasAudio: false, hasVideo: false };
+        if (file && !action.includes('export') && !action.includes('unify-real')) {
+            const si = await getStreamInfo(file.path);
+            streamInfo.hasAudio = si.hasAudio;
+            streamInfo.hasVideo = si.hasVideo;
+            job.params.hasAudio = streamInfo.hasAudio;
+            job.params.hasVideo = streamInfo.hasVideo;
+        }
 
         setTimeout(() => {
             let ext = '.mp4';
             const isAudioAction = action === 'extract-audio' || action.includes('voice') || action.includes('noise') || action.includes('silence');
-            if (file.mimetype.startsWith('audio') || (isAudioAction && !streamInfo.hasVideo)) ext = '.mp3';
+            if ((file && file.mimetype && file.mimetype.startsWith('audio')) || (isAudioAction && !streamInfo.hasVideo)) ext = '.mp3';
             const outputPath = path.join(uploadDir, `${action}-${Date.now()}${ext}`);
             job.outputPath = outputPath;
 
@@ -687,6 +819,7 @@ async function startServer() {
             const files: any[] = (req as any).files || [];
             const plan = JSON.parse(req.body.plan || '{}');
             const stockFiles = JSON.parse(req.body.stockFiles || '[]');
+            const sfxFiles = JSON.parse(req.body.sfxFiles || '[]');
             const narrationFile = req.body.narrationFile; // filename salvo em uploads/
 
             if (!plan.scenes || plan.scenes.length === 0) {
@@ -709,6 +842,14 @@ async function startServer() {
                 }
             });
 
+            // Mapear sfx files pelo query/nome
+            const sfxMap: Record<string, string> = {};
+            sfxFiles.forEach((s: any) => {
+                if (s && s.filename) {
+                    sfxMap[s.originalname || s.filename] = path.join(uploadedDir, s.filename);
+                }
+            });
+
             // Narração
             const narrationPath = narrationFile ? path.join(uploadedDir, narrationFile) : null;
 
@@ -716,6 +857,7 @@ async function startServer() {
             const inputs: string[] = [];
             const filterParts: string[] = [];
             const videoLabels: string[] = [];
+            const audioMixLabels: string[] = [];
             let inputIdx = 0;
 
             // Adicionar narração primeiro se existir
@@ -723,11 +865,15 @@ async function startServer() {
             if (narrationPath && fs.existsSync(narrationPath)) {
                 inputs.push('-i', narrationPath);
                 narrationInputIdx = inputIdx++;
+                filterParts.push(`[${narrationInputIdx}:a]volume=1.0[narration]`);
+                audioMixLabels.push('[narration]');
             }
 
             // Processar cada cena do plano
+            let currentSceneTime = 0;
             for (let i = 0; i < plan.scenes.length; i++) {
                 const scene = plan.scenes[i];
+                const sceneDuration = scene.duration || 3;
                 let filePath = '';
 
                 // Tentar usar arquivo do usuário pelo índice
@@ -778,6 +924,12 @@ async function startServer() {
                     filterChain += `,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:-1:-1:color=black`;
                 }
 
+                // Velocidade (Speed) adjustment for Autopilot
+                const sceneSpeed = parseFloat(scene.speed) || 1.0;
+                if (sceneSpeed !== 1.0 && sceneSpeed > 0) {
+                    filterChain += `,setpts=PTS/${sceneSpeed}`;
+                }
+
                 filterChain += `,setsar=1,fps=30,format=yuv420p`;
 
                 // Aplicar filtro de efeito se existir
@@ -813,6 +965,34 @@ async function startServer() {
 
                 filterParts.push(`${filterChain}[${sceneLabel}]`);
                 videoLabels.push(`[${sceneLabel}]`);
+
+                // Adicionar SFX se existir para esta cena
+                const hasSfx = !!scene.sfx;
+                if (hasSfx || scene.stockTopic) {
+                    const searchTerms = [
+                        scene.sfx?.toLowerCase(),
+                        scene.stockTopic?.toLowerCase(),
+                        'sfx',
+                        'sound'
+                    ].filter(Boolean);
+
+                    // Tentar encontrar um SFX que combine com a cena
+                    const sfxKey = Object.keys(sfxMap).find(k => {
+                        const lowK = k.toLowerCase();
+                        return searchTerms.some(term => lowK.includes(term!));
+                    });
+                    
+                    if (sfxKey && fs.existsSync(sfxMap[sfxKey])) {
+                        inputs.push('-i', sfxMap[sfxKey]);
+                        const sfxIdx = inputIdx++;
+                        const sfxLabel = `sfx${i}`;
+                        // Delay o SFX para começar no tempo da cena, adjust volume slightly lower for SFX
+                        filterParts.push(`[${sfxIdx}:a]atrim=duration=${duration},adelay=${Math.round(currentSceneTime * 1000)}|${Math.round(currentSceneTime * 1000)},volume=0.3[${sfxLabel}]`);
+                        audioMixLabels.push(`[${sfxLabel}]`);
+                    }
+                }
+                
+                currentSceneTime += sceneDuration;
             }
 
             if (videoLabels.length === 0) throw new Error('Nenhuma cena válida para renderizar.');
@@ -823,12 +1003,20 @@ async function startServer() {
             const concatLabel = '[final_v]';
             filterParts.push(`${videoLabels.join('')}concat=n=${videoLabels.length}:v=1:a=0${concatLabel}`);
 
+            // Mixagem de áudio (Narração + SFX)
+            let audioMapLabel = '';
+            if (audioMixLabels.length > 0) {
+              audioMapLabel = '[final_a]';
+              filterParts.push(`${audioMixLabels.join('')}amix=inputs=${audioMixLabels.length}:dropout_transition=0:normalize=0${audioMapLabel}`);
+            }
+
             let filterComplex = filterParts.join(';');
             const mapArgs: string[] = ['-map', concatLabel];
 
-            // Adicionar narração se disponível
-            if (narrationInputIdx >= 0) {
-                mapArgs.push('-map', `${narrationInputIdx}:a`);
+            if (audioMapLabel) {
+              mapArgs.push('-map', audioMapLabel);
+            } else if (narrationInputIdx >= 0) {
+              mapArgs.push('-map', `[narration]`);
             }
 
             let totalDuration = plan.scenes.reduce((s: number, sc: any) => s + (sc.duration || 3), 0);
@@ -924,30 +1112,45 @@ async function startServer() {
 
     // ─── STOCK DOWNLOAD ───────────────────────────────────────────────────────
     app.get('/api/stock/download', async (req: any, res: any) => {
-        const { query, type = 'video' } = req.query;
-        const pexelsKey = process.env.PEXELS_API_KEY;
-        if (!pexelsKey) return res.status(500).json({ error: 'Pexels API Key not configured' });
-
+        const { query, type = 'video', source = 'pexels' } = req.query;
+        
         try {
-            const endpoint = type === 'video'
-                ? `https://api.pexels.com/videos/search?query=${encodeURIComponent(query as string)}&per_page=1&orientation=landscape`
-                : `https://api.pexels.com/v1/search?query=${encodeURIComponent(query as string)}&per_page=1`;
-
-            const searchRes = await fetch(endpoint, { headers: { Authorization: pexelsKey } });
-            const data = await searchRes.json() as any;
-
             let mediaUrl = '';
             let originalName = '';
 
-            if (type === 'video' && data.videos?.[0]) {
-                const video = data.videos[0];
-                const file = video.video_files.find((f: any) => f.quality === 'hd' || f.quality === 'sd') || video.video_files[0];
-                mediaUrl = file.link;
-                originalName = `pexels_${video.id}.mp4`;
-            } else if (type === 'image' && data.photos?.[0]) {
-                const photo = data.photos[0];
-                mediaUrl = photo.src.large2x || photo.src.large;
-                originalName = `pexels_${photo.id}.jpg`;
+            if (source === 'freesound') {
+              const keys = JSON.parse(req.headers['x-proedit-keys'] || '{}');
+              const token = keys.freesoundKey || process.env.FREESOUND_API_KEY;
+              if (!token) return res.status(400).json({ error: 'Freesound API Key missing' });
+              
+              const searchRes = await fetch(`https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(query as string)}&token=${token}&fields=id,name,previews&page_size=1`);
+              const data = await searchRes.json() as any;
+              
+              if (data.results && data.results[0]) {
+                mediaUrl = data.results[0].previews['preview-hq-mp3'] || data.results[0].previews['preview-hq-ogg'];
+                originalName = `freesound_${data.results[0].id}.mp3`;
+              }
+            } else {
+              const pexelsKey = process.env.PEXELS_API_KEY;
+              if (!pexelsKey) return res.status(500).json({ error: 'Pexels API Key not configured' });
+
+              const endpoint = type === 'video'
+                  ? `https://api.pexels.com/videos/search?query=${encodeURIComponent(query as string)}&per_page=1&orientation=landscape`
+                  : `https://api.pexels.com/v1/search?query=${encodeURIComponent(query as string)}&per_page=1`;
+
+              const searchRes = await fetch(endpoint, { headers: { Authorization: pexelsKey } });
+              const data = await searchRes.json() as any;
+
+              if (type === 'video' && data.videos?.[0]) {
+                  const video = data.videos[0];
+                  const file = video.video_files.find((f: any) => f.quality === 'hd' || f.quality === 'sd') || video.video_files[0];
+                  mediaUrl = file.link;
+                  originalName = `pexels_${video.id}.mp4`;
+              } else if (type === 'image' && data.photos?.[0]) {
+                  const photo = data.photos[0];
+                  mediaUrl = photo.src.large2x || photo.src.large;
+                  originalName = `pexels_${photo.id}.jpg`;
+              }
             }
 
             if (!mediaUrl) return res.status(404).json({ error: 'No media found' });
