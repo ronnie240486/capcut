@@ -506,12 +506,10 @@ async function startServer() {
 
         // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
         // Limitation: Limit threads and memory footprint for Cloud Run stability
-        // Adding max_alloc back as a safety threshold
         let finalArgs = [
             '-hide_banner', '-loglevel', 'error', '-stats', 
             '-threads', '1', 
             '-filter_threads', '1',
-            '-max_alloc', '512M', 
             '-probesize', '2M', 
             '-analyzeduration', '2M',
             '-reinit_filter', '0', 
