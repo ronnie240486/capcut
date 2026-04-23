@@ -504,19 +504,33 @@ async function startServer() {
 
         if (res && !res.headersSent) res.status(202).json({ jobId });
 
+        // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
         let finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats'];
-        const improvedArgs: string[] = [];
-        for (let i = 0; i < args.length; i++) {
-            if (args[i] === '-i') improvedArgs.push('-thread_queue_size', '1024');
-            improvedArgs.push(args[i]);
-        }
-        finalArgs = [...finalArgs, ...improvedArgs];
+        const processedArgs: string[] = [];
+        let filterScriptPath: string | null = null;
 
-        console.log(`[Job ${jobId}] Spawning FFmpeg...`);
+        for (let i = 0; i < args.length; i++) {
+            if (args[i] === '-filter_complex' && args[i+1] && args[i+1].length > 1000) {
+                const filterContent = args[i+1];
+                filterScriptPath = path.join(uploadDir, `filter_${jobId}_${Date.now()}.txt`);
+                fs.writeFileSync(filterScriptPath, filterContent);
+                processedArgs.push('-filter_complex_script', filterScriptPath);
+                i++; // Skip the next arg as we handled it
+            } else if (args[i] === '-i') {
+                processedArgs.push('-thread_queue_size', '1024', '-i');
+            } else {
+                processedArgs.push(args[i]);
+            }
+        }
+        
+        finalArgs = [...finalArgs, ...processedArgs];
+
+        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
 
         try {
             const ffmpeg = spawn('ffmpeg', finalArgs);
             let stderr = '';
+            
             ffmpeg.stderr.on('data', (d: Buffer) => {
                 const line = d.toString();
                 stderr += line;
@@ -531,9 +545,14 @@ async function startServer() {
             ffmpeg.on('error', (err: Error) => {
                 console.error(`[Job ${jobId}] Spawn Error:`, err);
                 if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = err.message; }
+                if (filterScriptPath && fs.existsSync(filterScriptPath)) fs.unlinkSync(filterScriptPath);
             });
 
             ffmpeg.on('close', (code: number) => {
+                if (filterScriptPath && fs.existsSync(filterScriptPath)) {
+                    try { fs.unlinkSync(filterScriptPath); } catch(e) {}
+                }
+                
                 if (!jobs[jobId]) return;
                 const fileExists = jobs[jobId].outputPath && fs.existsSync(jobs[jobId].outputPath);
                 const fileSize = fileExists ? fs.statSync(jobs[jobId].outputPath).size : 0;
@@ -548,12 +567,13 @@ async function startServer() {
                 } else {
                     console.error(`[Job ${jobId}] Failed. Code: ${code}. File Size: ${fileSize}`, stderr);
                     jobs[jobId].status = 'failed';
-                    jobs[jobId].error = `Erro ao renderizar. Código: ${code}. ` + (stderr.slice(-100) || 'Verifique logs.');
+                    jobs[jobId].error = `Erro ao renderizar. Código: ${code}. ` + (stderr.slice(-200).trim() || 'Verifique sua timeline.');
                     if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
                 }
             });
         } catch (e: any) {
             console.error(`[Job ${jobId}] Fatal Error:`, e);
+            if (filterScriptPath && fs.existsSync(filterScriptPath)) try { fs.unlinkSync(filterScriptPath); } catch(ex) {}
             if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Erro crítico no servidor: ' + e.message; }
         }
     }
