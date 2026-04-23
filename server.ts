@@ -144,7 +144,7 @@ async function startServer() {
                                         filter: { type: Type.STRING, description: "Visual filter to apply" },
                                         transition: { type: Type.STRING, description: "Transition type (fade, zoom, none)" },
                                         movement: { type: Type.STRING, description: "Movement type (zoom_in, zoom_out, pan_left, pan_right, static)" },
-                                        subtitle: { type: Type.STRING, description: "Concise subtitle for this scene" },
+                                        subtitle: { type: Type.STRING, description: "The EXACT text from the 'script' spoken during this scene. Do not summarize." },
                                         sfx: { type: Type.STRING, description: "Sound effect description" },
                                         stockTopic: { type: Type.STRING, description: "Topic for stock footage if user clip is missing" }
                                     },
@@ -351,6 +351,45 @@ async function startServer() {
         });
     };
 
+    // ─── CHUNKED UPLOAD TO BYPASS CLOUD RUN 32MB LIMIT ──────────────────────
+    app.post('/api/upload-chunk', uploadAny, (req: any, res: any) => {
+        try {
+            const file = req.files && req.files.length > 0 ? req.files[0] : null;
+            const filename = sanitizeFilename(req.body.filename);
+            const index = parseInt(req.body.index);
+            const total = parseInt(req.body.total);
+            
+            if (!file || !filename || isNaN(index) || isNaN(total)) {
+                return res.status(400).json({ error: 'Missing parameters' });
+            }
+
+            const targetPath = path.join(uploadDir, filename);
+            const chunkBuffer = fs.readFileSync(file.path);
+            
+            if (index === 0 && fs.existsSync(targetPath)) {
+                fs.unlinkSync(targetPath); // Clear existing on first chunk
+            }
+
+            fs.appendFileSync(targetPath, chunkBuffer);
+            fs.unlinkSync(file.path); // Remove temp chunk
+
+            res.json({ success: true, index, total, complete: index === total - 1 });
+        } catch (e: any) {
+            console.error('[Chunk Upload] Error:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.get('/api/check-file/:name', (req, res) => {
+        const filePath = path.join(uploadDir, sanitizeFilename(req.params.name));
+        if (fs.existsSync(filePath)) {
+            const stats = fs.statSync(filePath);
+            res.json({ exists: true, size: stats.size });
+        } else {
+            res.json({ exists: false, size: 0 });
+        }
+    });
+
     // ─── UPLOAD COM PROXY ──────────────────────────────────────────────────────
     // Nova rota: faz upload e gera proxy automaticamente para vídeos
     app.post('/api/upload', uploadSingle, async (req: any, res: any) => {
@@ -465,22 +504,41 @@ async function startServer() {
 
         if (res && !res.headersSent) res.status(202).json({ jobId });
 
-        let finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats'];
-        const improvedArgs: string[] = [];
-        for (let i = 0; i < args.length; i++) {
-            if (args[i] === '-i') improvedArgs.push('-thread_queue_size', '1024');
-            improvedArgs.push(args[i]);
-        }
-        finalArgs = [...finalArgs, ...improvedArgs];
+        // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
+        // Limitation: Limit threads and memory footprint for Cloud Run stability
+        // Adding -max_alloc to prevent some runaway memory allocations
+        let finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', '-threads', '1', '-max_alloc', '400M', '-reinit_filter', '0', '-hwaccel', 'none'];
+        const processedArgs: string[] = [];
+        let filterScriptPath: string | null = null;
 
-        console.log(`[Job ${jobId}] Spawning FFmpeg...`);
+        for (let i = 0; i < args.length; i++) {
+            // Lower threshold to 100 characters to ensure stability even with moderate filters
+            if (args[i] === '-filter_complex' && args[i+1] && args[i+1].length > 100) {
+                const filterContent = args[i+1];
+                filterScriptPath = path.join(uploadDir, `filter_${jobId}_${Date.now()}.txt`);
+                fs.writeFileSync(filterScriptPath, filterContent);
+                processedArgs.push('-filter_complex_script', filterScriptPath);
+                i++; // Skip the next arg as we handled it
+            } else if (args[i] === '-i') {
+                // Reduced even further to 4 to save memory on large timelines
+                processedArgs.push('-thread_queue_size', '4', '-i');
+            } else {
+                processedArgs.push(args[i]);
+            }
+        }
+        finalArgs = [...finalArgs, ...processedArgs];
+
+        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
 
         try {
             const ffmpeg = spawn('ffmpeg', finalArgs);
             let stderr = '';
+            
             ffmpeg.stderr.on('data', (d: Buffer) => {
                 const line = d.toString();
-                stderr += line;
+                // Limit stderr size to last 4KB to prevent OOM
+                stderr = (stderr + line).slice(-4096);
+                
                 const timeMatch = line.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
                 if (timeMatch && expectedDuration > 0) {
                     const t = timeToSeconds(timeMatch[1]);
@@ -492,14 +550,22 @@ async function startServer() {
             ffmpeg.on('error', (err: Error) => {
                 console.error(`[Job ${jobId}] Spawn Error:`, err);
                 if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = err.message; }
+                if (filterScriptPath && fs.existsSync(filterScriptPath)) fs.unlinkSync(filterScriptPath);
             });
 
-            ffmpeg.on('close', (code: number) => {
+            ffmpeg.on('close', (code: number, signal: string) => {
+                if (filterScriptPath && fs.existsSync(filterScriptPath)) {
+                    try { fs.unlinkSync(filterScriptPath); } catch(e) {}
+                }
+                
                 if (!jobs[jobId]) return;
                 const fileExists = jobs[jobId].outputPath && fs.existsSync(jobs[jobId].outputPath);
                 const fileSize = fileExists ? fs.statSync(jobs[jobId].outputPath).size : 0;
                 const hasValidContent = fileSize > 100;
-                const isSuccess = (code === 0 && hasValidContent) || (fileSize > 1024 && hasValidContent);
+                
+                // If code is null and signal is present, it means the process was terminated (often SIGKILL/OOM)
+                const wasKilled = code === null && !!signal;
+                const isSuccess = (code === 0 && hasValidContent) || (fileSize > 1024 && hasValidContent && !wasKilled);
 
                 if (isSuccess) {
                     console.log(`[Job ${jobId}] Success. Size: ${fileSize} bytes`);
@@ -507,14 +573,16 @@ async function startServer() {
                     jobs[jobId].progress = 100;
                     jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
                 } else {
-                    console.error(`[Job ${jobId}] Failed. Code: ${code}. File Size: ${fileSize}`, stderr);
+                    const errorMsg = wasKilled ? `Processo encerrado pelo sistema (${signal}). Tente reduzir a complexidade do vídeo.` : stderr.trim();
+                    console.error(`[Job ${jobId}] Failed. Code: ${code}. Signal: ${signal}. File Size: ${fileSize}`, errorMsg);
                     jobs[jobId].status = 'failed';
-                    jobs[jobId].error = `Erro ao renderizar. Código: ${code}. ` + (stderr.slice(-100) || 'Verifique logs.');
+                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
                     if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
                 }
             });
         } catch (e: any) {
             console.error(`[Job ${jobId}] Fatal Error:`, e);
+            if (filterScriptPath && fs.existsSync(filterScriptPath)) try { fs.unlinkSync(filterScriptPath); } catch(ex) {}
             if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Erro crítico no servidor: ' + e.message; }
         }
     }
@@ -565,17 +633,43 @@ async function startServer() {
         const job: any = { id: jobId, status: 'pending', files: (req as any).files || [], params: req.body, startTime: Date.now() };
         jobs[jobId] = job;
 
-        const file = job.files[0];
-        if (!file) { job.status = 'failed'; return res.status(400).json({ error: 'Ficheiro não encontrado' }); }
+        let file = job.files[0];
+        if (!file && job.params.targetFileName) {
+            const preUploadedPath = path.join(uploadDir, job.params.targetFileName);
+            if (fs.existsSync(preUploadedPath)) {
+                let ext = path.extname(job.params.targetFileName).toLowerCase();
+                let mimetype = 'video/mp4';
+                if (['.mp3', '.wav', '.ogg', '.m4a'].includes(ext)) mimetype = 'audio/mp3';
+                else if (['.jpg', '.jpeg', '.png'].includes(ext)) mimetype = 'image/jpeg';
+                
+                file = {
+                    path: preUploadedPath,
+                    filename: job.params.targetFileName,
+                    originalname: job.params.targetFileName,
+                    mimetype: mimetype
+                };
+                job.files.push(file);
+            }
+        }
 
-        const streamInfo = await getStreamInfo(file.path);
-        job.params.hasAudio = streamInfo.hasAudio;
-        job.params.hasVideo = streamInfo.hasVideo;
+        if (!job.files.length && !action.includes('export') && !action.includes('unify-real')) {
+             job.status = 'failed'; 
+             return res.status(400).json({ error: 'Ficheiro não encontrado: ' + job.params.targetFileName }); 
+        }
+
+        let streamInfo = { hasAudio: false, hasVideo: false };
+        if (file && !action.includes('export') && !action.includes('unify-real')) {
+            const si = await getStreamInfo(file.path);
+            streamInfo.hasAudio = si.hasAudio;
+            streamInfo.hasVideo = si.hasVideo;
+            job.params.hasAudio = streamInfo.hasAudio;
+            job.params.hasVideo = streamInfo.hasVideo;
+        }
 
         setTimeout(() => {
             let ext = '.mp4';
             const isAudioAction = action === 'extract-audio' || action.includes('voice') || action.includes('noise') || action.includes('silence');
-            if (file.mimetype.startsWith('audio') || (isAudioAction && !streamInfo.hasVideo)) ext = '.mp3';
+            if ((file && file.mimetype && file.mimetype.startsWith('audio')) || (isAudioAction && !streamInfo.hasVideo)) ext = '.mp3';
             const outputPath = path.join(uploadDir, `${action}-${Date.now()}${ext}`);
             job.outputPath = outputPath;
 
@@ -786,7 +880,7 @@ async function startServer() {
                     'noir': 'hue=s=0,eq=contrast=1.5',
                     'warm': 'colorbalance=rs=0.1:bs=-0.1',
                     'cool': 'colorbalance=bs=0.1:rs=-0.1',
-                    'vintage': 'sepia=0.6,eq=contrast=0.9',
+                    'vintage': 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131,eq=contrast=0.9',
                     'dreamy': 'boxblur=luma_radius=2:luma_power=1',
                     'sharp': 'unsharp=5:5:1.5:5:5:0.0'
                 };
@@ -920,6 +1014,21 @@ async function startServer() {
             if (apiRes.headers['content-type']) res.setHeader('Content-Type', apiRes.headers['content-type']);
             apiRes.pipe(res);
         }).on('error', () => res.status(500).send('Request error'));
+    });
+
+    app.get('/api/proxy/freesound', async (req: any, res: any) => {
+        const { q, token } = req.query;
+        if (!q || !token) return res.status(400).json({ error: 'Missing query or token' });
+        
+        try {
+            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,username`;
+            const searchRes = await fetch(endpoint);
+            const data = await searchRes.json();
+            res.json(data);
+        } catch (e: any) {
+            console.error('[Freesound Proxy] Failed:', e);
+            res.status(500).json({ error: e.message });
+        }
     });
 
     // ─── STOCK DOWNLOAD ───────────────────────────────────────────────────────
