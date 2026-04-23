@@ -506,7 +506,17 @@ async function startServer() {
 
         // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
         // Limitation: Limit threads and memory footprint for Cloud Run stability
-        let finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', '-threads', '1', '-reinit_filter', '0', '-hwaccel', 'none'];
+        // Adding max_alloc back as a safety threshold
+        let finalArgs = [
+            '-hide_banner', '-loglevel', 'error', '-stats', 
+            '-threads', '1', 
+            '-filter_threads', '1',
+            '-max_alloc', '512M', 
+            '-probesize', '2M', 
+            '-analyzeduration', '2M',
+            '-reinit_filter', '0', 
+            '-hwaccel', 'none'
+        ];
         const processedArgs: string[] = [];
         let filterScriptPath: string | null = null;
 
@@ -519,14 +529,15 @@ async function startServer() {
                 processedArgs.push('-filter_complex_script', filterScriptPath);
                 i++; // Skip the next arg as we handled it
             } else if (args[i] === '-i') {
-                processedArgs.push('-thread_queue_size', '64', '-i');
+                // Absolute minimum queue and threads per input
+                processedArgs.push('-threads', '1', '-thread_queue_size', '1', '-i');
             } else {
                 processedArgs.push(args[i]);
             }
         }
         finalArgs = [...finalArgs, ...processedArgs];
 
-        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
+        console.log(`[Job ${jobId}] Spawning FFmpeg. Command Size: ${finalArgs.length}`);
 
         try {
             const ffmpeg = spawn('ffmpeg', finalArgs);
@@ -573,8 +584,19 @@ async function startServer() {
                 } else {
                     const errorMsg = wasKilled ? `Processo encerrado pelo sistema (${signal}). Tente reduzir a complexidade do vídeo.` : stderr.trim();
                     console.error(`[Job ${jobId}] Failed. Code: ${code}. Signal: ${signal}. File Size: ${fileSize}`, errorMsg);
-                    jobs[jobId].status = 'failed';
-                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
+                    
+                    // Log filter hint if it's an immediate fail
+                    if (filterScriptPath && fs.existsSync(filterScriptPath) && fileSize === 0) {
+                        try {
+                            const hint = fs.readFileSync(filterScriptPath, 'utf8').slice(0, 500);
+                            console.error(`[Job ${jobId}] Filter Script Hint: ${hint}...`);
+                        } catch(e) {}
+                    }
+
+                    if (jobs[jobId]) {
+                        jobs[jobId].status = 'failed';
+                        jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
+                    }
                     if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
                 }
             });
@@ -1125,6 +1147,21 @@ async function startServer() {
     }
 
     app.listen(PORT, '0.0.0.0', () => console.log(`Server running on http://localhost:${PORT}`));
+
+    // ─── UTILS & CLEANER ──────────────────────────────────────────────────────
+    setInterval(() => {
+        const now = Date.now();
+        Object.keys(jobs).forEach(id => {
+            if (now - (jobs[id].startTime || 0) > 30 * 60 * 1000) { 
+                console.log(`[Cleaner] Removing expired job: ${id}`);
+                const outputPath = jobs[id].outputPath;
+                if (outputPath && fs.existsSync(outputPath)) {
+                    try { fs.unlinkSync(outputPath); } catch(e) {}
+                }
+                delete jobs[id];
+            }
+        });
+    }, 15 * 60 * 1000);
 }
 
 startServer();
