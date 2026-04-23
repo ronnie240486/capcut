@@ -505,7 +505,8 @@ async function startServer() {
         if (res && !res.headersSent) res.status(202).json({ jobId });
 
         // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
-        let finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats'];
+        // Limitation: Limit threads to avoid OOM on shared environments
+        let finalArgs = ['-hide_banner', '-loglevel', 'error', '-stats', '-threads', '2'];
         const processedArgs: string[] = [];
         let filterScriptPath: string | null = null;
 
