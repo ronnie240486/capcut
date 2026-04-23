@@ -139,15 +139,25 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             }
         }
 
+        const sanitizeFilename = (name) => name.replace(/[^a-z0-9._-]/gi, '_');
+
         // Also check uploadDir for pre-uploaded files (from chunked upload)
         if (media) {
             for (const name of Object.keys(media)) {
                 if (!fileMap[name]) {
                     const possiblePath = path.join(uploadDir, name);
+                    const sanitizedPath = path.join(uploadDir, sanitizeFilename(name));
+                    
                     if (fs.existsSync(possiblePath)) {
                         const info = await validateAndProbe(possiblePath);
                         if (info.isValid) {
                             fileMap[name] = possiblePath;
+                            media[name].hasAudio = info.hasAudio;
+                        }
+                    } else if (fs.existsSync(sanitizedPath)) {
+                        const info = await validateAndProbe(sanitizedPath);
+                        if (info.isValid) {
+                            fileMap[name] = sanitizedPath;
                             media[name].hasAudio = info.hasAudio;
                         }
                     }
@@ -197,13 +207,17 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             '-map', outputMapAudio,
             
             '-c:v', 'libx264',
-            '-preset', 'ultrafast',
-            '-crf', '23',
+            '-preset', 'superfast',
+            '-crf', '24',
+            '-maxrate', '6M',
+            '-bufsize', '3M',
             '-pix_fmt', 'yuv420p',
             '-r', String(fps),
-            '-vsync', '1',
+            '-vsync', 'vfr',
+            '-profile:v', 'main',
+            '-level', '3.1',
             '-c:a', 'aac',
-            '-b:a', '192k',
+            '-b:a', '128k',
             '-ac', '2',
             '-ar', '44100',
             '-t', String(totalDuration + 0.1),
