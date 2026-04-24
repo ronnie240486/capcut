@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI, SchemaType } from "@google/genai";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
 
 // Engine Imports
 import { handleExportVideo } from './video-engine/export-video.js';
@@ -111,17 +111,14 @@ async function startServer() {
                 });
             }
             
-            const genAI = new GoogleGenAI(apiKey);
-            const model = genAI.getGenerativeModel({ 
-                model: 'gemini-1.5-flash', // Use stable flash model for Autopilot
-            });
-            
+            const ai = new GoogleGenAI({ apiKey });
             const imageParts = images ? images.map((f: string) => ({
                 inlineData: { mimeType: 'image/jpeg', data: f }
             })) : [];
 
-            console.log(`[Autopilot Plan] Calling Gemini 1.5 Flash`);
-            const result = await model.generateContent({
+            console.log(`[Autopilot Plan] Calling Gemini 3 Flash Preview`);
+            const scriptResponse = await ai.models.generateContent({
+                model: 'gemini-3-flash-preview',
                 contents: [{
                     role: 'user',
                     parts: [
@@ -129,27 +126,27 @@ async function startServer() {
                         ...imageParts
                     ]
                 }],
-                generationConfig: { 
+                config: { 
                     responseMimeType: "application/json",
                     responseSchema: {
-                        type: SchemaType.OBJECT,
+                        type: Type.OBJECT,
                         properties: {
-                            script: { type: SchemaType.STRING, description: "Full narration script" },
-                            nuance: { type: SchemaType.STRING, description: "Selected human nuance ID" },
+                            script: { type: Type.STRING, description: "Full narration script" },
+                            nuance: { type: Type.STRING, description: "Selected human nuance ID" },
                             scenes: {
-                                type: SchemaType.ARRAY,
+                                type: Type.ARRAY,
                                 items: {
-                                    type: SchemaType.OBJECT,
+                                    type: Type.OBJECT,
                                     properties: {
-                                        duration: { type: SchemaType.NUMBER, description: "Duration in seconds" },
-                                        action: { type: SchemaType.STRING, description: "Description of visuals" },
-                                        fileIndex: { type: SchemaType.NUMBER, description: "Index of user file to use" },
-                                        filter: { type: SchemaType.STRING, description: "Visual filter to apply" },
-                                        transition: { type: SchemaType.STRING, description: "Transition type (fade, zoom, none)" },
-                                        movement: { type: SchemaType.STRING, description: "Movement type (zoom_in, zoom_out, pan_left, pan_right, static)" },
-                                        subtitle: { type: SchemaType.STRING, description: "The EXACT text from the 'script' spoken during this scene. Do not summarize." },
-                                        sfx: { type: SchemaType.STRING, description: "Sound effect description" },
-                                        stockTopic: { type: SchemaType.STRING, description: "Topic for stock footage if user clip is missing" }
+                                        duration: { type: Type.NUMBER, description: "Duration in seconds" },
+                                        action: { type: Type.STRING, description: "Description of visuals" },
+                                        fileIndex: { type: Type.NUMBER, description: "Index of user file to use" },
+                                        filter: { type: Type.STRING, description: "Visual filter to apply" },
+                                        transition: { type: Type.STRING, description: "Transition type (fade, zoom, none)" },
+                                        movement: { type: Type.STRING, description: "Movement type (zoom_in, zoom_out, pan_left, pan_right, static)" },
+                                        subtitle: { type: Type.STRING, description: "The EXACT text from the 'script' spoken during this scene. Do not summarize." },
+                                        sfx: { type: Type.STRING, description: "Sound effect description" },
+                                        stockTopic: { type: Type.STRING, description: "Topic for stock footage if user clip is missing" }
                                     },
                                     required: ["duration", "action", "subtitle"]
                                 }
@@ -160,10 +157,9 @@ async function startServer() {
                 }
             });
 
-            const text = result.response.text();
+            const text = scriptResponse.text;
             if (!text) throw new Error("A IA retornou uma resposta vazia.");
             
-            // JSON cleaning in case of markdown wrap (though responseMimeType should prevent it)
             const jsonStr = text.replace(/```json\n?|```/g, '').trim();
             
             try {
@@ -241,26 +237,26 @@ async function startServer() {
                     details: "Para resolver: 1. No AI Studio, clique no ícone de engrenagem e selecione uma chave API. 2. Se estiver rodando localmente/firebase, defina a variável de ambiente GEMINI_API_KEY com sua chave do Google AI Studio."
                 });
             }
-            const genAI = new GoogleGenAI(apiKey);
-            const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+            const ai = new GoogleGenAI({ apiKey });
 
-            console.log(`[Autopilot TTS] Calling Gemini 2.0 Flash for TTS: ${voice}`);
-            const result = await model.generateContent({
+            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${voice}`);
+            const ttsResponse = await ai.models.generateContent({
+                model: "gemini-3.1-flash-tts-preview",
                 contents: [{
                     role: 'user',
                     parts: [{ text: finalPrompt }]
                 }],
-                generationConfig: {
+                config: {
                     responseModalities: ["AUDIO"],
                     speechConfig: {
                         voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: voice || 'Aoide' }, // Use valid voice name or default
+                            prebuiltVoiceConfig: { voiceName: voice || 'live' },
                         },
                     },
                 },
             });
 
-            const audioPart = result.response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+            const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
             const audioBase64 = audioPart?.inlineData?.data;
 
             if (!audioBase64) throw new Error("A IA gerou uma narração vazia.");
@@ -509,13 +505,13 @@ async function startServer() {
         if (res && !res.headersSent) res.status(202).json({ jobId });
 
         // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
-        // Limitation: Limit threads and memory footprint for Cloud Run stability
+        // Limitation: Limit threads for Cloud Run stability
+        // Adding probe limits to prevent runaway memory
         let finalArgs = [
             '-hide_banner', '-loglevel', 'error', '-stats', 
             '-threads', '1', 
-            '-filter_threads', '1',
-            '-probesize', '2M', 
-            '-analyzeduration', '2M',
+            '-probesize', '1M', 
+            '-analyzeduration', '1M',
             '-reinit_filter', '0', 
             '-hwaccel', 'none'
         ];
@@ -531,15 +527,15 @@ async function startServer() {
                 processedArgs.push('-filter_complex_script', filterScriptPath);
                 i++; // Skip the next arg as we handled it
             } else if (args[i] === '-i') {
-                // Absolute minimum queue and threads per input
-                processedArgs.push('-threads', '1', '-thread_queue_size', '1', '-i');
+                // Higher queue size to handle many inputs without blocking
+                processedArgs.push('-thread_queue_size', '512', '-i');
             } else {
                 processedArgs.push(args[i]);
             }
         }
         finalArgs = [...finalArgs, ...processedArgs];
 
-        console.log(`[Job ${jobId}] Spawning FFmpeg. Command Size: ${finalArgs.length}`);
+        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
 
         try {
             const ffmpeg = spawn('ffmpeg', finalArgs);
@@ -586,19 +582,8 @@ async function startServer() {
                 } else {
                     const errorMsg = wasKilled ? `Processo encerrado pelo sistema (${signal}). Tente reduzir a complexidade do vídeo.` : stderr.trim();
                     console.error(`[Job ${jobId}] Failed. Code: ${code}. Signal: ${signal}. File Size: ${fileSize}`, errorMsg);
-                    
-                    // Log filter hint if it's an immediate fail
-                    if (filterScriptPath && fs.existsSync(filterScriptPath) && fileSize === 0) {
-                        try {
-                            const hint = fs.readFileSync(filterScriptPath, 'utf8').slice(0, 500);
-                            console.error(`[Job ${jobId}] Filter Script Hint: ${hint}...`);
-                        } catch(e) {}
-                    }
-
-                    if (jobs[jobId]) {
-                        jobs[jobId].status = 'failed';
-                        jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
-                    }
+                    jobs[jobId].status = 'failed';
+                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
                     if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
                 }
             });
@@ -1030,12 +1015,37 @@ async function startServer() {
         const { url } = req.query;
         if (!url) return res.status(400).send('URL missing');
         const decodedUrl = decodeURIComponent(url as string);
-        const protocol = decodedUrl.startsWith('https') ? https : http;
-        protocol.get(decodedUrl, (apiRes: any) => {
-            if (apiRes.statusCode !== 200) return res.status(apiRes.statusCode || 500).send('Proxy error');
-            if (apiRes.headers['content-type']) res.setHeader('Content-Type', apiRes.headers['content-type']);
-            apiRes.pipe(res);
-        }).on('error', () => res.status(500).send('Request error'));
+        
+        const options = {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Referer': 'https://pixabay.com/'
+            }
+        };
+
+        const fetchWithRedirect = (currentUrl: string) => {
+            const protocol = currentUrl.startsWith('https') ? https : http;
+            protocol.get(currentUrl, options, (apiRes: any) => {
+                // Handle Redirects
+                if (apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
+                    return fetchWithRedirect(apiRes.headers.location);
+                }
+
+                if (apiRes.statusCode !== 200) {
+                    console.error(`[Proxy] Failed with status ${apiRes.statusCode} for ${currentUrl}`);
+                    return res.status(apiRes.statusCode || 500).send('Proxy error');
+                }
+                
+                if (apiRes.headers['content-type']) res.setHeader('Content-Type', apiRes.headers['content-type']);
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                apiRes.pipe(res);
+            }).on('error', (err) => {
+                console.error("[Proxy] Request error:", err);
+                res.status(500).send('Request error');
+            });
+        };
+
+        fetchWithRedirect(decodedUrl);
     });
 
     app.get('/api/proxy/freesound', async (req: any, res: any) => {
