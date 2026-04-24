@@ -1337,8 +1337,16 @@ async function startServer() {
     // ─── STOCK SEARCH PROXIES ────────────────────────────────────────────────
     app.get('/api/stock/pexels', async (req: any, res: any) => {
         const { type = 'videos', q, ...otherParams } = req.query;
-        const queryParams = new URLSearchParams(otherParams as any);
+        // Clean up params - don't pass 'type' or 'q' to Pexels if they are just our internal routing
+        const queryParams = new URLSearchParams();
         if (q) queryParams.set('query', q as string);
+        
+        // Copy other allowed params
+        const allowed = ['per_page', 'page', 'orientation', 'size', 'color', 'locale'];
+        for (const key of allowed) {
+            if (req.query[key]) queryParams.set(key, req.query[key] as string);
+        }
+        
         if (!queryParams.has('per_page')) queryParams.set('per_page', '20');
         
         const baseUrl = type === 'videos' 
@@ -1350,7 +1358,7 @@ async function startServer() {
         try {
             const key = req.headers['x-pexels-api-key'] || process.env.PEXELS_API_KEY || '563492ad6f917000010000010c2834b1509b4db78907865c1920263f';
             console.log(`[Pexels Proxy] Searching ${type}: ${url}`);
-            
+
             const response = await fetch(url, {
                 headers: { 
                     'Authorization': String(key),
@@ -1381,15 +1389,26 @@ async function startServer() {
         const { type = 'video', q, ...otherParams } = req.query;
         const key = req.headers['x-pixabay-api-key'] || process.env.PIXABAY_API_KEY || '21114562-b9e7fa6996d9ccca39ee3ecc9';
         
-        const queryParams = new URLSearchParams(otherParams as any);
+        const queryParams = new URLSearchParams();
         queryParams.set('key', key as string);
         if (q) queryParams.set('q', q as string);
+        
+        // Copy other allowed params
+        const allowed = ['lang', 'id', 'image_type', 'orientation', 'category', 'min_width', 'min_height', 'colors', 'editors_choice', 'safesearch', 'order', 'page', 'per_page', 'video_type'];
+        for (const k of allowed) {
+            if (req.query[k]) queryParams.set(k, req.query[k] as string);
+        }
+        
         if (!queryParams.has('per_page')) queryParams.set('per_page', '20');
 
         let baseUrl = 'https://pixabay.com/api/';
+        
         if (type === 'video' || type === 'videos') {
             baseUrl = 'https://pixabay.com/api/videos/';
         } else if (type === 'music') {
+            // Some documentation suggests music has its own endpoint in some SDKs, 
+            // but for the REST API it's often media_type=music on the main endpoint.
+            // If it returns images, we might be getting redirected or param ignored.
             queryParams.set('media_type', 'music');
         }
 
@@ -1442,7 +1461,7 @@ async function startServer() {
             } else {
                 const text = await response.text();
                 console.error(`[Unsplash Proxy] Non-JSON response (status ${response.status}):`, text.substring(0, 500));
-                res.status(502).json({ 
+                res.status(response.status).json({ 
                     error: 'Invalid response from Unsplash', 
                     status: response.status,
                     preview: text.substring(0, 100) 
