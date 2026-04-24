@@ -598,32 +598,61 @@ async function startServer() {
     app.post('/api/process/start/audio-merge-real', uploadAny, async (req: any, res: any) => {
         const jobId = `audiomerge_${Date.now()}`;
         const params = req.body;
-        const job: any = { id: jobId, status: 'processing', progress: 0, startTime: Date.now() };
+        const job: any = { id: jobId, status: 'processing', progress: 0, startTime: Date.now(), friendlyName: 'Unificação de Áudio' };
         jobs[jobId] = job;
         res.status(202).json({ jobId });
 
         try {
-            const files = (req as any).files || [];
-            if (files.length === 0) throw new Error('Nenhum arquivo enviado para mixagem.');
+            const uploadedFiles = (req as any).files || [];
+            const clipsInfo = params.clips ? JSON.parse(params.clips) : [];
             const outputPath = path.join(uploadDir, `sonora_${Date.now()}.wav`);
             job.outputPath = outputPath;
 
             const inputs: string[] = [];
             const filterItems: string[] = [];
-            const clipsInfo = params.clips ? JSON.parse(params.clips) : [];
+            let validInputs = 0;
+            
+            for (let i = 0; i < clipsInfo.length; i++) {
+                const clip = clipsInfo[i];
+                let filePath = '';
+                
+                const upFile = uploadedFiles.find((f: any) => f.originalname === clip.fileName);
+                if (upFile) {
+                    filePath = upFile.path;
+                } else {
+                    const existingPath = path.join(uploadDir, sanitizeFilename(clip.fileName));
+                    if (fs.existsSync(existingPath)) {
+                        filePath = existingPath;
+                    }
+                }
 
-            files.forEach((file: any, i: number) => {
-                inputs.push('-i', file.path);
-                const clipData = clipsInfo.find((c: any) => c.fileName === file.originalname) || {};
-                const delayMs = Math.round((clipData.start || 0) * 1000);
-                const volume = clipData.volume !== undefined ? clipData.volume : 1;
-                const trimStart = clipData.mediaStartOffset || 0;
-                const trimDur = clipData.duration || 10;
-                filterItems.push(`[${i}:a]atrim=start=${trimStart}:duration=${trimDur},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delayMs}|${delayMs},aformat=sample_rates=44100:channel_layouts=stereo[a${i}]`);
-            });
+                if (!filePath) {
+                    console.warn(`[AudioMerge] File not found: ${clip.fileName}`);
+                    continue;
+                }
 
-            const filterComplex = `${filterItems.join(';')};${filterItems.map((_: any, i: number) => `[a${i}]`).join('')}amix=inputs=${files.length}:duration=longest:dropout_transition=0:normalize=0[out]`;
-            const args = [...inputs, '-filter_complex', filterComplex, '-map', '[out]', '-c:a', 'pcm_s16le', '-ar', '44100', '-y', outputPath];
+                inputs.push('-i', filePath);
+                const delayMs = Math.round((clip.start || 0) * 1000);
+                const volume = clip.volume !== undefined ? clip.volume : 1;
+                const trimStart = clip.mediaStartOffset || 0;
+                const trimDur = clip.duration || 10;
+                
+                // Use validInputs as the index for the filter
+                filterItems.push(`[${validInputs}:a]atrim=start=${trimStart}:duration=${trimDur},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delayMs}|${delayMs},aformat=sample_rates=44100:channel_layouts=stereo[a${validInputs}]`);
+                validInputs++;
+            }
+
+            if (validInputs === 0) throw new Error('Nenhum arquivo válido encontrado para mixagem.');
+
+            let args: string[] = [];
+            if (validInputs === 1) {
+                // Single input, just apply filters without amix
+                const filterComplex = `${filterItems[0]}`;
+                args = [...inputs, '-filter_complex', filterComplex, '-map', '[a0]', '-c:a', 'pcm_s16le', '-ar', '44100', '-y', outputPath];
+            } else {
+                const filterComplex = `${filterItems.join(';')};${filterItems.map((_, i) => `[a${i}]`).join('')}amix=inputs=${validInputs}:duration=longest:dropout_transition=0:normalize=0[out]`;
+                args = [...inputs, '-filter_complex', filterComplex, '-map', '[out]', '-c:a', 'pcm_s16le', '-ar', '44100', '-y', outputPath];
+            }
             const totalDuration = clipsInfo.reduce((max: number, c: any) => Math.max(max, (c.start || 0) + (c.duration || 0)), 10);
             createFFmpegJob(jobId, args, totalDuration);
         } catch (e: any) {
@@ -1067,8 +1096,64 @@ async function startServer() {
         }
     });
 
+    app.get('/api/download-external', async (req: any, res: any) => {
+        const { url, filename } = req.query;
+        if (!url) return res.status(400).send('URL missing');
+        const decodedUrl = decodeURIComponent(url as string);
+        const name = filename ? sanitizeFilename(filename as string) : `audio_${Date.now()}.mp3`;
+
+        console.log(`[DownloadProxy] Attempting to proxy: ${decodedUrl}`);
+
+        const options: any = {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Referer': new URL(decodedUrl).origin
+            },
+            timeout: 30000
+        };
+
+        const fetchWithRedirect = (currentUrl: string, depth = 0) => {
+            if (depth > 5) return res.status(500).send('Too many redirects');
+            
+            try {
+                const protocol = currentUrl.startsWith('https') ? https : http;
+                protocol.get(currentUrl, options, (apiRes: any) => {
+                    // Handle Redirects
+                    if (apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
+                        let redirUrl = apiRes.headers.location;
+                        if (!redirUrl.startsWith('http')) {
+                            const origin = new URL(currentUrl).origin;
+                            redirUrl = origin + redirUrl;
+                        }
+                        return fetchWithRedirect(redirUrl, depth + 1);
+                    }
+
+                    if (apiRes.statusCode !== 200) {
+                        return res.status(apiRes.statusCode).send(`Original server returned status ${apiRes.statusCode}`);
+                    }
+
+                    // Forward content-type or force octet-stream for download
+                    const contentType = apiRes.headers['content-type'] || 'application/octet-stream';
+                    res.setHeader('Content-Type', contentType);
+                    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+                    
+                    // Pipe the stream
+                    apiRes.pipe(res);
+                }).on('error', (err) => {
+                    console.error("[DownloadProxy] Error:", err);
+                    if (!res.headersSent) res.status(500).send('Download failure');
+                });
+            } catch (err: any) {
+                console.error("[DownloadProxy] Exception:", err);
+                if (!res.headersSent) res.status(500).send('Download failure: ' + err.message);
+            }
+        };
+
+        fetchWithRedirect(decodedUrl);
+    });
+
     app.get('/api/proxy/media', async (req: any, res: any) => {
-        const { url, download } = req.query;
+        const { url } = req.query;
         if (!url) return res.status(400).send('URL missing');
         const decodedUrl = decodeURIComponent(url as string);
         
@@ -1079,13 +1164,8 @@ async function startServer() {
                 'Referer': 'https://pixabay.com/',
                 'Connection': 'keep-alive'
             },
-            timeout: 30000
+            timeout: 25000
         };
-
-        if (download === 'true') {
-            const fileName = path.basename(new URL(decodedUrl).pathname) || 'download';
-            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-        }
 
         // Forward Range headers for audio seeking
         if (req.headers.range) {
@@ -1238,25 +1318,34 @@ async function startServer() {
     app.get('/api/stock/pexels', async (req: any, res: any) => {
         const { q, type = 'videos' } = req.query;
         const query = encodeURIComponent(q as string);
-        const url = (type === 'videos' || type === 'video')
+        const url = type === 'videos' 
             ? `https://api.pexels.com/videos/search?query=${query}&per_page=20`
             : `https://api.pexels.com/v1/search?query=${query}&per_page=20`;
         
         try {
+            // Check for API key in header first, then env, then fallback
             const key = req.headers['x-pexels-api-key'] || process.env.PEXELS_API_KEY || '563492ad6f917000010000010c2834b1509b4db78907865c1920263f';
-            const response = await fetch(url, {
-                headers: { 'Authorization': key as string }
+            const options = {
+                headers: { 'Authorization': key } 
+            };
+            const apiReq = https.get(url, options, (apiRes) => {
+                let data = '';
+                apiRes.on('data', chunk => data += chunk);
+                apiRes.on('end', () => {
+                    try {
+                        JSON.parse(data);
+                        res.send(data);
+                    } catch (e) {
+                        console.error('Pexels API non-JSON response:', data.substring(0, 200));
+                        res.status(502).json({ error: 'Invalid response from Pexels', raw: data.substring(0, 100) });
+                    }
+                });
             });
-            if (!response.ok) {
-                const errorBody = await response.text();
-                return res.status(response.status).json({ error: 'Pexels API error', details: errorBody });
-            }
-            const data = await response.json();
-            res.json(data);
-        } catch (e) { 
-            console.error('Pexels generic error:', e);
-            res.status(500).json({ error: 'Failed to search Pexels' }); 
-        }
+            apiReq.on('error', (e) => {
+                console.error('Pexels API request error:', e);
+                res.status(500).json({ error: 'Pexels API error' });
+            });
+        } catch (e) { res.status(500).json({ error: 'Failed' }); }
     });
 
     app.get('/api/stock/pixabay', async (req: any, res: any) => {
@@ -1265,46 +1354,57 @@ async function startServer() {
         const query = encodeURIComponent(q as string);
         
         let url = '';
-        if (type === 'video' || type === 'videos') {
+        if (type === 'video') {
             url = `https://pixabay.com/api/videos/?key=${key}&q=${query}&per_page=20`;
         } else if (type === 'music') {
+            // Search specifically for music
             url = `https://pixabay.com/api/?key=${key}&q=${query}&media_type=music&per_page=20`;
         } else {
             url = `https://pixabay.com/api/?key=${key}&q=${query}&per_page=20`;
         }
 
         try {
-            const response = await fetch(url);
-            if (!response.ok) {
-                const errorText = await response.text();
-                return res.status(response.status).json({ error: 'Pixabay API error', details: errorText });
-            }
-            const data = await response.json();
-            res.json(data);
-        } catch (e) { 
-            console.error('Pixabay search error:', e);
-            res.status(500).json({ error: 'Failed to search Pixabay' }); 
-        }
+            const apiReq = https.get(url, (apiRes) => {
+                let data = '';
+                apiRes.on('data', chunk => data += chunk);
+                apiRes.on('end', () => {
+                    try {
+                        const parsed = JSON.parse(data);
+                        res.json(parsed);
+                    } catch (e) {
+                        console.error('Pixabay API non-JSON response:', data.substring(0, 200));
+                        res.status(502).json({ error: 'Invalid response from Pixabay', raw: data.substring(0, 100) });
+                    }
+                });
+            });
+            apiReq.on('error', (e) => {
+                console.error('Pixabay API request error:', e);
+                res.status(500).json({ error: 'Pixabay API error' });
+            });
+        } catch (e) { res.status(500).json({ error: 'Failed' }); }
     });
 
     app.get('/api/stock/unsplash', async (req: any, res: any) => {
         const { q } = req.query;
-        const key = req.headers['x-unsplash-api-key'] || process.env.UNSPLASH_API_KEY || 'R0XN_0yCHG5v6N8l296f8XG3Gv-_D7P7x5TqC_8w-Ew';
+        const key = req.headers['x-unsplash-api-key'] || process.env.UNSPLASH_API_KEY || 'R0XN_0yCHG5v6N8l296f8XG3Gv-_D7P7x5TqC_8w-Ew'; // Example fallback
         const query = encodeURIComponent(q as string);
         const url = `https://api.unsplash.com/search/photos?query=${query}&per_page=20&client_id=${key}`;
 
         try {
-            const response = await fetch(url);
-            if (!response.ok) {
-                const errorText = await response.text();
-                return res.status(response.status).json({ error: 'Unsplash API error', details: errorText });
-            }
-            const data = await response.json();
-            res.json(data);
-        } catch (e) { 
-            console.error('Unsplash search error:', e);
-            res.status(500).json({ error: 'Failed to search Unsplash' }); 
-        }
+            const apiReq = https.get(url, (apiRes) => {
+                let data = '';
+                apiRes.on('data', chunk => data += chunk);
+                apiRes.on('end', () => {
+                    try {
+                        const parsed = JSON.parse(data);
+                        res.json(parsed);
+                    } catch (e) {
+                        res.status(502).json({ error: 'Invalid response from Unsplash' });
+                    }
+                });
+            });
+            apiReq.on('error', () => res.status(500).json({ error: 'Unsplash API error' }));
+        } catch (e) { res.status(500).json({ error: 'Failed' }); }
     });
 
     // API Fallback for missing routes (to prevent SPA mismatch returning HTML)
