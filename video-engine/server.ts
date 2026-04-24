@@ -1011,38 +1011,124 @@ async function startServer() {
     });
 
     // ─── PROXY MEDIA (externo) ────────────────────────────────────────────────
-    app.get('/api/proxy/media', async (req: any, res: any) => {
+    // API for resolving media from landing pages (metadata extraction)
+    app.get('/api/resolve-media', async (req: any, res: any) => {
         const { url } = req.query;
         if (!url) return res.status(400).send('URL missing');
         const decodedUrl = decodeURIComponent(url as string);
+
+        try {
+            const protocol = decodedUrl.startsWith('https') ? https : http;
+            protocol.get(decodedUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' }
+            }, (apiRes) => {
+                let data = '';
+                apiRes.on('data', chunk => data += chunk);
+                apiRes.on('end', () => {
+                    // Try to find direct MP3 links or JSON metadata
+                    const mp3Match = data.match(/https?:\/\/[^"']+\.mp3\?[^"']+/i) || 
+                                   data.match(/https?:\/\/[^"']+\.mp3(?=["'])/i) ||
+                                   data.match(/canonical_url":"(https?:\/\/[^"]+\.mp3)"/i);
+                    
+                    const titleMatch = data.match(/<title>(.*?)<\/title>/i) || 
+                                     data.match(/"name":"([^"]+)"/i);
+                    
+                    const thumbMatch = data.match(/"thumbnailUrl":"([^"]+)"/i) ||
+                                     data.match(/"image":"([^"]+)"/i);
+
+                    if (mp3Match) {
+                        let finalUrl = mp3Match[0];
+                        // If it's a JSON match, it might have escapes
+                        if (mp3Match[1]) finalUrl = mp3Match[1].replace(/\\/g, '');
+                        
+                        res.json({
+                            url: finalUrl,
+                            name: titleMatch ? (titleMatch[1] || titleMatch[0]).split('|')[0].trim() : 'Áudio Importado',
+                            thumbnail: thumbMatch ? (thumbMatch[1] || thumbMatch[0]).replace(/\\/g, '') : null,
+                            type: 'audio'
+                        });
+                    } else {
+                        // Fallback: check if it's a Pexels video or similar
+                        const videoMatch = data.match(/https?:\/\/[^"']+\.mp4\?[^"']+/i) || data.match(/https?:\/\/[^"']+\.mp4(?=["'])/i);
+                        if (videoMatch) {
+                             res.json({
+                                url: videoMatch[0],
+                                name: 'Vídeo Importado',
+                                type: 'video'
+                            });
+                        } else {
+                            res.status(404).json({ error: 'Nenhum áudio encontrado nesta página.' });
+                        }
+                    }
+                });
+            }).on('error', () => res.status(500).send('Erro ao acessar URL'));
+        } catch (err) {
+            res.status(500).send('Falha na resolução');
+        }
+    });
+
+    app.get('/api/proxy/media', async (req: any, res: any) => {
+        const { url, download } = req.query;
+        if (!url) return res.status(400).send('URL missing');
+        const decodedUrl = decodeURIComponent(url as string);
         
-        const options = {
+        const options: any = {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Referer': 'https://pixabay.com/'
-            }
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Referer': 'https://pixabay.com/',
+                'Connection': 'keep-alive'
+            },
+            timeout: 30000
         };
 
-        const fetchWithRedirect = (currentUrl: string) => {
-            const protocol = currentUrl.startsWith('https') ? https : http;
-            protocol.get(currentUrl, options, (apiRes: any) => {
-                // Handle Redirects
-                if (apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
-                    return fetchWithRedirect(apiRes.headers.location);
-                }
+        if (download === 'true') {
+            const fileName = path.basename(new URL(decodedUrl).pathname) || 'download';
+            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        }
 
-                if (apiRes.statusCode !== 200) {
-                    console.error(`[Proxy] Failed with status ${apiRes.statusCode} for ${currentUrl}`);
-                    return res.status(apiRes.statusCode || 500).send('Proxy error');
-                }
-                
-                if (apiRes.headers['content-type']) res.setHeader('Content-Type', apiRes.headers['content-type']);
-                res.setHeader('Access-Control-Allow-Origin', '*');
-                apiRes.pipe(res);
-            }).on('error', (err) => {
-                console.error("[Proxy] Request error:", err);
-                res.status(500).send('Request error');
-            });
+        // Forward Range headers for audio seeking
+        if (req.headers.range) {
+            options.headers.range = req.headers.range;
+        }
+
+        const fetchWithRedirect = (currentUrl: string, depth = 0) => {
+            if (depth > 5) return res.status(500).send('Too many redirects');
+            
+            try {
+                const protocol = currentUrl.startsWith('https') ? https : http;
+                const request = protocol.get(currentUrl, options, (apiRes: any) => {
+                    // Handle Redirects
+                    if (apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
+                        let redirUrl = apiRes.headers.location;
+                        if (!redirUrl.startsWith('http')) {
+                            const origin = new URL(currentUrl).origin;
+                            redirUrl = origin + redirUrl;
+                        }
+                        return fetchWithRedirect(redirUrl, depth + 1);
+                    }
+
+                    // Forward headers
+                    res.statusCode = apiRes.statusCode || 200;
+                    if (apiRes.headers['content-type']) res.setHeader('Content-Type', apiRes.headers['content-type']);
+                    if (apiRes.headers['content-length']) res.setHeader('Content-Length', apiRes.headers['content-length']);
+                    if (apiRes.headers['content-range']) res.setHeader('Content-Range', apiRes.headers['content-range']);
+                    if (apiRes.headers['accept-ranges']) res.setHeader('Accept-Ranges', apiRes.headers['accept-ranges']);
+                    
+                    res.setHeader('Access-Control-Allow-Origin', '*');
+                    res.setHeader('Cache-Control', 'no-cache, no-transform');
+                    
+                    apiRes.pipe(res);
+                });
+
+                request.on('error', (err) => {
+                    console.error("[Proxy] Request error:", err);
+                    if (!res.headersSent) res.status(500).send('Proxy failure');
+                });
+            } catch (err) {
+                console.error("[Proxy] Critical exception:", err);
+                if (!res.headersSent) res.status(500).send('Critical proxy failure');
+            }
         };
 
         fetchWithRedirect(decodedUrl);
@@ -1146,6 +1232,84 @@ async function startServer() {
         const check = spawn('ffmpeg', ['-version']);
         check.on('error', () => res.status(500).send('FFmpeg Missing'));
         check.on('close', (code: number) => { if (code === 0) res.send('OK'); else res.status(500).send('FFmpeg Error'); });
+    });
+
+    // ─── STOCK SEARCH PROXIES ────────────────────────────────────────────────
+    app.get('/api/stock/pexels', async (req: any, res: any) => {
+        const { q, type = 'videos' } = req.query;
+        const query = encodeURIComponent(q as string);
+        const url = (type === 'videos' || type === 'video')
+            ? `https://api.pexels.com/videos/search?query=${query}&per_page=20`
+            : `https://api.pexels.com/v1/search?query=${query}&per_page=20`;
+        
+        try {
+            const key = req.headers['x-pexels-api-key'] || process.env.PEXELS_API_KEY || '563492ad6f917000010000010c2834b1509b4db78907865c1920263f';
+            const response = await fetch(url, {
+                headers: { 'Authorization': key as string }
+            });
+            if (!response.ok) {
+                const errorBody = await response.text();
+                return res.status(response.status).json({ error: 'Pexels API error', details: errorBody });
+            }
+            const data = await response.json();
+            res.json(data);
+        } catch (e) { 
+            console.error('Pexels generic error:', e);
+            res.status(500).json({ error: 'Failed to search Pexels' }); 
+        }
+    });
+
+    app.get('/api/stock/pixabay', async (req: any, res: any) => {
+        const { q, type = 'video' } = req.query;
+        const key = req.headers['x-pixabay-api-key'] || process.env.PIXABAY_API_KEY || '21114562-b9e7fa6996d9ccca39ee3ecc9';
+        const query = encodeURIComponent(q as string);
+        
+        let url = '';
+        if (type === 'video' || type === 'videos') {
+            url = `https://pixabay.com/api/videos/?key=${key}&q=${query}&per_page=20`;
+        } else if (type === 'music') {
+            url = `https://pixabay.com/api/?key=${key}&q=${query}&media_type=music&per_page=20`;
+        } else {
+            url = `https://pixabay.com/api/?key=${key}&q=${query}&per_page=20`;
+        }
+
+        try {
+            const response = await fetch(url);
+            if (!response.ok) {
+                const errorText = await response.text();
+                return res.status(response.status).json({ error: 'Pixabay API error', details: errorText });
+            }
+            const data = await response.json();
+            res.json(data);
+        } catch (e) { 
+            console.error('Pixabay search error:', e);
+            res.status(500).json({ error: 'Failed to search Pixabay' }); 
+        }
+    });
+
+    app.get('/api/stock/unsplash', async (req: any, res: any) => {
+        const { q } = req.query;
+        const key = req.headers['x-unsplash-api-key'] || process.env.UNSPLASH_API_KEY || 'R0XN_0yCHG5v6N8l296f8XG3Gv-_D7P7x5TqC_8w-Ew';
+        const query = encodeURIComponent(q as string);
+        const url = `https://api.unsplash.com/search/photos?query=${query}&per_page=20&client_id=${key}`;
+
+        try {
+            const response = await fetch(url);
+            if (!response.ok) {
+                const errorText = await response.text();
+                return res.status(response.status).json({ error: 'Unsplash API error', details: errorText });
+            }
+            const data = await response.json();
+            res.json(data);
+        } catch (e) { 
+            console.error('Unsplash search error:', e);
+            res.status(500).json({ error: 'Failed to search Unsplash' }); 
+        }
+    });
+
+    // API Fallback for missing routes (to prevent SPA mismatch returning HTML)
+    app.use('/api/*', (req: any, res: any) => {
+        res.status(404).json({ status: 'error', error: 'API route not found' });
     });
 
     // ─── FRONTEND ─────────────────────────────────────────────────────────────
