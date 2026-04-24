@@ -1191,12 +1191,7 @@ async function startServer() {
 
                     // Forward headers
                     res.statusCode = apiRes.statusCode || 200;
-                    // Fix incorrect MIME type from Pixabay CDN (sends video/mp4 for audio files)
-                    let contentType = apiRes.headers['content-type'] || '';
-                    if (contentType.includes('video/mp4') && (currentUrl.includes('pixabay.com/audio') || currentUrl.includes('/audio/') || currentUrl.endsWith('.mp3') || currentUrl.endsWith('.m4a'))) {
-                        contentType = 'audio/mpeg';
-                    }
-                    if (contentType) res.setHeader('Content-Type', contentType);
+                    if (apiRes.headers['content-type']) res.setHeader('Content-Type', apiRes.headers['content-type']);
                     if (apiRes.headers['content-length']) res.setHeader('Content-Length', apiRes.headers['content-length']);
                     if (apiRes.headers['content-range']) res.setHeader('Content-Range', apiRes.headers['content-range']);
                     if (apiRes.headers['accept-ranges']) res.setHeader('Accept-Ranges', apiRes.headers['accept-ranges']);
@@ -1241,7 +1236,11 @@ async function startServer() {
         
         try {
             const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,username`;
-            const searchRes = await fetch(endpoint);
+            const searchRes = await fetch(endpoint, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
+            });
             const data = await searchRes.json();
             res.json(data);
         } catch (e: any) {
@@ -1337,99 +1336,81 @@ async function startServer() {
 
     // ─── STOCK SEARCH PROXIES ────────────────────────────────────────────────
     app.get('/api/stock/pexels', async (req: any, res: any) => {
-        const { q, type = 'videos' } = req.query;
-        const query = encodeURIComponent(q as string);
-        const url = type === 'videos' 
-            ? `https://api.pexels.com/videos/search?query=${query}&per_page=20`
-            : `https://api.pexels.com/v1/search?query=${query}&per_page=20`;
+        const { type = 'videos', q, ...otherParams } = req.query;
+        const queryParams = new URLSearchParams(otherParams as any);
+        if (q) queryParams.set('query', q as string);
+        
+        const baseUrl = type === 'videos' 
+            ? 'https://api.pexels.com/videos/search'
+            : 'https://api.pexels.com/v1/search';
+        
+        const url = `${baseUrl}?${queryParams.toString()}&per_page=20`;
         
         try {
-            // Check for API key in header first, then env, then fallback
             const key = req.headers['x-pexels-api-key'] || process.env.PEXELS_API_KEY || '563492ad6f917000010000010c2834b1509b4db78907865c1920263f';
-            const options = {
-                headers: { 'Authorization': key } 
-            };
-            const apiReq = https.get(url, options, (apiRes) => {
-                let data = '';
-                apiRes.on('data', chunk => data += chunk);
-                apiRes.on('end', () => {
-                    try {
-                        JSON.parse(data);
-                        res.send(data);
-                    } catch (e) {
-                        console.error('Pexels API non-JSON response:', data.substring(0, 200));
-                        res.status(502).json({ error: 'Invalid response from Pexels', raw: data.substring(0, 100) });
-                    }
-                });
+            const response = await fetch(url, {
+                headers: { 
+                    'Authorization': String(key),
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
             });
-            apiReq.on('error', (e) => {
-                console.error('Pexels API request error:', e);
-                res.status(500).json({ error: 'Pexels API error' });
-            });
-        } catch (e) { res.status(500).json({ error: 'Failed' }); }
+            const data = await response.json();
+            res.json(data);
+        } catch (e: any) {
+            console.error('[Pexels Proxy] Error:', e);
+            res.status(500).json({ error: e.message });
+        }
     });
 
     app.get('/api/stock/pixabay', async (req: any, res: any) => {
-        const { q, type = 'video' } = req.query;
+        const { type = 'video', ...otherParams } = req.query;
         const key = req.headers['x-pixabay-api-key'] || process.env.PIXABAY_API_KEY || '21114562-b9e7fa6996d9ccca39ee3ecc9';
-        const query = encodeURIComponent(q as string);
         
-        let url = '';
-        if (type === 'video') {
-            url = `https://pixabay.com/api/videos/?key=${key}&q=${query}&per_page=20`;
+        const queryParams = new URLSearchParams(otherParams as any);
+        queryParams.set('key', key as string);
+        queryParams.set('per_page', (queryParams.get('per_page') || '20'));
+
+        let baseUrl = 'https://pixabay.com/api/';
+        if (type === 'video' || type === 'videos') {
+            baseUrl = 'https://pixabay.com/api/videos/';
         } else if (type === 'music') {
-            // Use the correct Pixabay music API endpoint
-            url = `https://pixabay.com/api/music/?key=${key}&q=${query}&per_page=20`;
-        } else {
-            url = `https://pixabay.com/api/?key=${key}&q=${query}&per_page=20`;
+            baseUrl = 'https://pixabay.com/api/music/';
         }
 
+        const url = `${baseUrl}?${queryParams.toString()}`;
+
         try {
-            const apiReq = https.get(url, (apiRes) => {
-                let data = '';
-                apiRes.on('data', chunk => data += chunk);
-                apiRes.on('end', () => {
-                    try {
-                        const parsed = JSON.parse(data);
-                        if (type === 'music' && parsed.hits && parsed.hits.length > 0) {
-                            console.log('[Pixabay Music] First hit fields:', Object.keys(parsed.hits[0]).join(', '));
-                            console.log('[Pixabay Music] First hit sample:', JSON.stringify(parsed.hits[0]).substring(0, 300));
-                        }
-                        res.json(parsed);
-                    } catch (e) {
-                        console.error('Pixabay API non-JSON response:', data.substring(0, 200));
-                        res.status(502).json({ error: 'Invalid response from Pixabay', raw: data.substring(0, 100) });
-                    }
-                });
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
             });
-            apiReq.on('error', (e) => {
-                console.error('Pixabay API request error:', e);
-                res.status(500).json({ error: 'Pixabay API error' });
-            });
-        } catch (e) { res.status(500).json({ error: 'Failed' }); }
+            const data = await response.json();
+            res.json(data);
+        } catch (e: any) {
+            console.error('[Pixabay Proxy] Error:', e);
+            res.status(500).json({ error: e.message });
+        }
     });
 
     app.get('/api/stock/unsplash', async (req: any, res: any) => {
         const { q } = req.query;
-        const key = req.headers['x-unsplash-api-key'] || process.env.UNSPLASH_API_KEY || 'R0XN_0yCHG5v6N8l296f8XG3Gv-_D7P7x5TqC_8w-Ew'; // Example fallback
+        const key = req.headers['x-unsplash-api-key'] || process.env.UNSPLASH_API_KEY || 'R0XN_0yCHG5v6N8l296f8XG3Gv-_D7P7x5TqC_8w-Ew';
         const query = encodeURIComponent(q as string);
         const url = `https://api.unsplash.com/search/photos?query=${query}&per_page=20&client_id=${key}`;
 
         try {
-            const apiReq = https.get(url, (apiRes) => {
-                let data = '';
-                apiRes.on('data', chunk => data += chunk);
-                apiRes.on('end', () => {
-                    try {
-                        const parsed = JSON.parse(data);
-                        res.json(parsed);
-                    } catch (e) {
-                        res.status(502).json({ error: 'Invalid response from Unsplash' });
-                    }
-                });
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
             });
-            apiReq.on('error', () => res.status(500).json({ error: 'Unsplash API error' }));
-        } catch (e) { res.status(500).json({ error: 'Failed' }); }
+            const data = await response.json();
+            res.json(data);
+        } catch (e: any) {
+            console.error('[Unsplash Proxy] Error:', e);
+            res.status(500).json({ error: e.message });
+        }
     });
 
     // API Fallback for missing routes (to prevent SPA mismatch returning HTML)
