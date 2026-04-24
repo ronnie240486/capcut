@@ -1162,9 +1162,10 @@ async function startServer() {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                 'Accept': '*/*',
                 'Referer': 'https://pixabay.com/',
-                'Connection': 'keep-alive'
+                'Connection': 'keep-alive',
+                'Accept-Encoding': 'gzip, deflate, br'
             },
-            timeout: 25000
+            timeout: 30000
         };
 
         // Forward Range headers for audio seeking
@@ -1190,23 +1191,43 @@ async function startServer() {
 
                     // Forward headers
                     res.statusCode = apiRes.statusCode || 200;
-                    if (apiRes.headers['content-type']) res.setHeader('Content-Type', apiRes.headers['content-type']);
+                    // Fix incorrect MIME type from Pixabay CDN (sends video/mp4 for audio files)
+                    let contentType = apiRes.headers['content-type'] || '';
+                    if (contentType.includes('video/mp4') && (currentUrl.includes('pixabay.com/audio') || currentUrl.includes('/audio/') || currentUrl.endsWith('.mp3') || currentUrl.endsWith('.m4a'))) {
+                        contentType = 'audio/mpeg';
+                    }
+                    if (contentType) res.setHeader('Content-Type', contentType);
                     if (apiRes.headers['content-length']) res.setHeader('Content-Length', apiRes.headers['content-length']);
                     if (apiRes.headers['content-range']) res.setHeader('Content-Range', apiRes.headers['content-range']);
                     if (apiRes.headers['accept-ranges']) res.setHeader('Accept-Ranges', apiRes.headers['accept-ranges']);
+                    if (apiRes.headers['content-encoding']) res.setHeader('Content-Encoding', apiRes.headers['content-encoding']);
                     
                     res.setHeader('Access-Control-Allow-Origin', '*');
-                    res.setHeader('Cache-Control', 'no-cache, no-transform');
+                    res.setHeader('Cache-Control', 'public, max-age=86400');
+                    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+                    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
+                    
+                    // Handle errors during streaming
+                    apiRes.on('error', (err: any) => {
+                        console.error('[Proxy] Stream error:', err);
+                        if (!res.headersSent) res.status(502).send('Stream error');
+                    });
                     
                     apiRes.pipe(res);
                 });
 
                 request.on('error', (err) => {
-                    console.error("[Proxy] Request error:", err);
+                    console.error('[Proxy] Request error:', err);
                     if (!res.headersSent) res.status(500).send('Proxy failure');
                 });
+                
+                request.on('timeout', () => {
+                    console.error('[Proxy] Request timeout');
+                    request.destroy();
+                    if (!res.headersSent) res.status(504).send('Gateway timeout');
+                });
             } catch (err) {
-                console.error("[Proxy] Critical exception:", err);
+                console.error('[Proxy] Critical exception:', err);
                 if (!res.headersSent) res.status(500).send('Critical proxy failure');
             }
         };
@@ -1357,8 +1378,8 @@ async function startServer() {
         if (type === 'video') {
             url = `https://pixabay.com/api/videos/?key=${key}&q=${query}&per_page=20`;
         } else if (type === 'music') {
-            // Search specifically for music
-            url = `https://pixabay.com/api/?key=${key}&q=${query}&media_type=music&per_page=20`;
+            // Use the correct Pixabay music API endpoint
+            url = `https://pixabay.com/api/music/?key=${key}&q=${query}&per_page=20`;
         } else {
             url = `https://pixabay.com/api/?key=${key}&q=${query}&per_page=20`;
         }
