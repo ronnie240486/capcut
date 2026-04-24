@@ -1339,56 +1339,85 @@ async function startServer() {
         const { type = 'videos', q, ...otherParams } = req.query;
         const queryParams = new URLSearchParams(otherParams as any);
         if (q) queryParams.set('query', q as string);
+        if (!queryParams.has('per_page')) queryParams.set('per_page', '20');
         
         const baseUrl = type === 'videos' 
             ? 'https://api.pexels.com/videos/search'
             : 'https://api.pexels.com/v1/search';
         
-        const url = `${baseUrl}?${queryParams.toString()}&per_page=20`;
+        const url = `${baseUrl}?${queryParams.toString()}`;
         
         try {
             const key = req.headers['x-pexels-api-key'] || process.env.PEXELS_API_KEY || '563492ad6f917000010000010c2834b1509b4db78907865c1920263f';
+            console.log(`[Pexels Proxy] Searching ${type}: ${url}`);
+            
             const response = await fetch(url, {
                 headers: { 
                     'Authorization': String(key),
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
                 }
             });
-            const data = await response.json();
-            res.json(data);
+
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                const data = await response.json();
+                res.json(data);
+            } else {
+                const text = await response.text();
+                console.error(`[Pexels Proxy] Non-JSON response (status ${response.status}):`, text.substring(0, 500));
+                res.status(response.status).json({ 
+                    error: 'Invalid response from Pexels', 
+                    status: response.status,
+                    preview: text.substring(0, 100)
+                });
+            }
         } catch (e: any) {
-            console.error('[Pexels Proxy] Error:', e);
+            console.error('[Pexels Proxy] Exception:', e);
             res.status(500).json({ error: e.message });
         }
     });
 
     app.get('/api/stock/pixabay', async (req: any, res: any) => {
-        const { type = 'video', ...otherParams } = req.query;
+        const { type = 'video', q, ...otherParams } = req.query;
         const key = req.headers['x-pixabay-api-key'] || process.env.PIXABAY_API_KEY || '21114562-b9e7fa6996d9ccca39ee3ecc9';
         
         const queryParams = new URLSearchParams(otherParams as any);
         queryParams.set('key', key as string);
-        queryParams.set('per_page', (queryParams.get('per_page') || '20'));
+        if (q) queryParams.set('q', q as string);
+        if (!queryParams.has('per_page')) queryParams.set('per_page', '20');
 
         let baseUrl = 'https://pixabay.com/api/';
         if (type === 'video' || type === 'videos') {
             baseUrl = 'https://pixabay.com/api/videos/';
         } else if (type === 'music') {
-            baseUrl = 'https://pixabay.com/api/music/';
+            queryParams.set('media_type', 'music');
         }
 
         const url = `${baseUrl}?${queryParams.toString()}`;
 
         try {
+            console.log(`[Pixabay Proxy] Searching ${type}: ${url.replace(/key=[^&]+/, 'key=REDACTED')}`);
             const response = await fetch(url, {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
                 }
             });
-            const data = await response.json();
-            res.json(data);
+
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                const data = await response.json();
+                res.json(data);
+            } else {
+                const text = await response.text();
+                console.error(`[Pixabay Proxy] Non-JSON response for ${type} (status ${response.status}):`, text.substring(0, 500));
+                res.status(response.status).json({ 
+                    error: 'Invalid response from Pixabay', 
+                    status: response.status,
+                    preview: text.substring(0, 100) 
+                });
+            }
         } catch (e: any) {
-            console.error('[Pixabay Proxy] Error:', e);
+            console.error('[Pixabay Proxy] Exception:', e);
             res.status(500).json({ error: e.message });
         }
     });
@@ -1405,10 +1434,22 @@ async function startServer() {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
                 }
             });
-            const data = await response.json();
-            res.json(data);
+
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                const data = await response.json();
+                res.json(data);
+            } else {
+                const text = await response.text();
+                console.error(`[Unsplash Proxy] Non-JSON response (status ${response.status}):`, text.substring(0, 500));
+                res.status(502).json({ 
+                    error: 'Invalid response from Unsplash', 
+                    status: response.status,
+                    preview: text.substring(0, 100) 
+                });
+            }
         } catch (e: any) {
-            console.error('[Unsplash Proxy] Error:', e);
+            console.error('[Unsplash Proxy] Exception:', e);
             res.status(500).json({ error: e.message });
         }
     });
