@@ -1391,6 +1391,10 @@ async function startServer() {
                 apiRes.on('end', () => {
                     try {
                         const parsed = JSON.parse(data);
+                        if (type === 'music' && parsed.hits && parsed.hits.length > 0) {
+                            console.log('[Pixabay Music] First hit fields:', Object.keys(parsed.hits[0]).join(', '));
+                            console.log('[Pixabay Music] First hit sample:', JSON.stringify(parsed.hits[0]).substring(0, 300));
+                        }
                         res.json(parsed);
                     } catch (e) {
                         console.error('Pixabay API non-JSON response:', data.substring(0, 200));
