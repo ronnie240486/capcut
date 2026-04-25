@@ -26,7 +26,7 @@ async function startServer() {
     app.use(cors({
         origin: '*',
         methods: ['GET', 'POST', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
     }));
 
     app.use(express.json({ limit: '1gb' }));
@@ -1228,25 +1228,6 @@ async function startServer() {
         };
 
         fetchWithRedirect(decodedUrl);
-    });
-
-    app.get('/api/proxy/freesound', async (req: any, res: any) => {
-        const { q, token } = req.query;
-        if (!q || !token) return res.status(400).json({ error: 'Missing query or token' });
-        
-        try {
-            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,username`;
-            const searchRes = await fetch(endpoint, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-                }
-            });
-            const data = await searchRes.json();
-            res.json(data);
-        } catch (e: any) {
-            console.error('[Freesound Proxy] Failed:', e);
-            res.status(500).json({ error: e.message });
-        }
     });
 
     // ─── STOCK DOWNLOAD ───────────────────────────────────────────────────────
