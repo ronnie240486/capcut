@@ -26,11 +26,84 @@ async function startServer() {
     app.use(cors({
         origin: '*',
         methods: ['GET', 'POST', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
     }));
 
     app.use(express.json({ limit: '1gb' }));
     app.use(express.urlencoded({ extended: true, limit: '1gb' }));
+
+    // Helper for safe JSON parsing in Node environment
+    async function safeJson(response: any) {
+        try {
+            const text = await response.text();
+            if (!text || text.trim() === "") return null;
+            return JSON.parse(text);
+        } catch (e) {
+            console.error("[safeJson Server] Parse Error:", e);
+            return null;
+        }
+    }
+
+    // Proxy para Freesound para evitar CORS
+    app.get('/api/proxy/freesound', async (req: any, res: any) => {
+        const { q, token } = req.query;
+        if (!q || !token) {
+            console.error('[Freesound Proxy] Missing q or token');
+            return res.status(400).json({ error: 'Missing query or token. Verifique sua chave API nas configurações.' });
+        }
+        
+        try {
+            // Use token in query param as well, as it is officially supported and sometimes more reliable through proxies
+            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,username`;
+            console.log(`[Freesound Proxy] Requesting: ${endpoint}`);
+            
+            const searchRes = await fetch(endpoint, {
+                headers: {
+                    'Authorization': `Token ${token}`,
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://freesound.org/'
+                }
+            });
+
+            const contentType = searchRes.headers.get('content-type') || '';
+            if (!searchRes.ok) {
+                const text = await searchRes.text();
+                console.error(`[Freesound Proxy] Error status: ${searchRes.status}. Content-Type: ${contentType}. Body: ${text.substring(0, 512)}`);
+                
+                if (searchRes.status === 403) {
+                    if (text.includes('<html>') || contentType.includes('text/html')) {
+                        return res.status(403).json({ 
+                            error: "Acesso Negado (403). O Freesound bloqueou a requisição do servidor. Isso pode ocorrer se o IP do servidor estiver sendo rate-limited ou bloqueado pelo firewall deles.",
+                            details: "Freesound Firewall/WAF blocking. Please try using a different provider for now or try again later."
+                        });
+                    }
+                    return res.status(403).json({ 
+                        error: "Acesso Negado (403). Verifique se sua API Key do Freesound está correta e ativa nas configurações.",
+                        details: text.substring(0, 200)
+                    });
+                }
+                
+                return res.status(searchRes.status || 500).json({ 
+                    error: `Freesound API returned ${searchRes.status}`, 
+                    details: text.substring(0, 100) 
+                });
+            }
+
+            if (!contentType || !contentType.includes('application/json')) {
+                const text = await searchRes.text();
+                return res.status(500).json({ error: 'Invalid response from Freesound', details: text.substring(0, 100) });
+            }
+
+            const data = await safeJson(searchRes);
+            if (!data) return res.status(500).json({ error: 'Failed to parse Freesound response' });
+            res.json(data);
+        } catch (e: any) {
+            console.error('[Freesound Proxy] Critical Failure:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
 
     // Diagnostic to see if the autopilot routes are actually reached
     app.all('/api/autopilot/*', (req, res, next) => {
@@ -753,24 +826,65 @@ async function startServer() {
         }
 
         try {
-            console.log(`[Job ${jobId}] Starting AI Generation...`);
-            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model || 'veo-3.1-lite-generate-preview'}:generateVideo?key=${finalKey}`, {
+            const payload: any = {
+                prompt,
+                config: {
+                    aspectRatio,
+                    resolution,
+                    numberOfVideos: 1
+                }
+            };
+
+            if (image) {
+                payload.image = { imageBytes: image.split(',')[1], mimeType: 'image/png' };
+            }
+            if (lastFrame) {
+                payload.lastFrame = { imageBytes: lastFrame.split(',')[1], mimeType: 'image/png' };
+            }
+            if (referenceImages && referenceImages.length > 0) {
+                payload.referenceImages = referenceImages.map((img: string) => ({ 
+                    image: {
+                        imageBytes: img.split(',')[1], 
+                        mimeType: 'image/png' 
+                    },
+                    referenceType: 'ASSET'
+                }));
+            }
+
+            console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'veo-3.1-lite-generate-preview'}...`);
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model || 'veo-3.1-lite-generate-preview'}:generateVideos?key=${finalKey}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    prompt, aspectRatio, resolution,
-                    image: image ? { data: image.split(',')[1], mimeType: 'image/png' } : undefined,
-                    lastFrame: lastFrame ? { data: lastFrame.split(',')[1], mimeType: 'image/png' } : undefined,
-                    referenceImages: referenceImages ? referenceImages.map((img: string) => ({ data: img.split(',')[1], mimeType: 'image/png' })) : undefined
-                })
+                body: JSON.stringify(payload)
             });
 
             if (!response.ok) {
-                const err = await response.json() as any;
-                throw new Error(err.error?.message || 'Erro na API Gemini');
+                const errText = await response.text();
+                console.error(`[Job ${jobId}] Gemini API Error (${response.status}):`, errText);
+                let errMsg = 'Erro na API Gemini';
+                try {
+                    const err = JSON.parse(errText);
+                    errMsg = err?.error?.message || err?.message || `${errMsg} (${response.status})`;
+                } catch (e) {
+                    errMsg = `${errMsg} (${response.status}: ${errText.substring(0, 150)})`;
+                }
+                throw new Error(errMsg);
             }
 
-            const data = await response.json() as any;
+            const dataContent = await response.text();
+            let data: any = null;
+            try {
+                data = JSON.parse(dataContent);
+            } catch (e) {
+                console.error(`[Job ${jobId}] Failed to parse successful response:`, dataContent);
+                throw new Error('Falha ao processar resposta de sucesso da API Gemini (JSON inválido)');
+            }
+
+            if (!data || !data.name) {
+                console.error(`[Job ${jobId}] Unexpected response structure:`, data);
+                throw new Error('Resposta inesperada da API Gemini (operation name missing)');
+            }
+
             const operationName = data.name;
             let completed = false;
             let attempts = 0;
@@ -780,7 +894,11 @@ async function startServer() {
                 attempts++;
                 await new Promise(r => setTimeout(r, 5000));
                 const pollRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${finalKey}`);
-                const pollData = await pollRes.json() as any;
+                const pollData = await safeJson(pollRes);
+                if (!pollData) {
+                    attempts++;
+                    continue;
+                }
                 if (jobs[jobId]) jobs[jobId].progress = Math.min(95, 10 + (attempts * 1.5));
 
                 if (pollData.done) {
@@ -876,19 +994,52 @@ async function startServer() {
                     filePath = fileMap[i % Object.keys(fileMap).length];
                 }
 
-                if (!filePath || !fs.existsSync(filePath)) continue;
+                if (!filePath || !fs.existsSync(filePath)) {
+                    // Fallback se o arquivo não existir: usar um fundo colorido com o tema da cena
+                    const duration = scene.duration || 3;
+                    const sceneLabel = `scene_v${i}`;
+                    const colors = ['darkblue', 'darkgreen', 'darkred', 'purple', 'black'];
+                    const color = colors[i % colors.length];
+                    
+                    let filterChain = `color=c=${color}:s=1280x720:d=${duration}[vbg${i}];[vbg${i}]setsar=1`;
+                    
+                    // Se tiver subtitle, já colocamos aqui também para não ficar totalmente vazio
+                    if (scene.subtitle) {
+                        const cleanSub = scene.subtitle
+                            .replace(/\\/g, '\\\\\\\\')
+                            .replace(/'/g, "'\\''")
+                            .replace(/:/g, '\\:')
+                            .toUpperCase();
+                        const fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
+                        const fontArg = fs.existsSync(fontPath) ? `:fontfile='${fontPath}'` : '';
+                        filterChain += `,drawtext=text='${cleanSub}'${fontArg}:fontcolor=white:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=15:line_spacing=5:x=(w-text_w)/2:y=h-text_h-100:fix_bounds=1`;
+                    }
+                    
+                    filterParts.push(`${filterChain},fps=30,format=yuv420p[${sceneLabel}]`);
+                    videoLabels.push(`[${sceneLabel}]`);
+                    continue;
+                }
 
                 const streamInfo = await getStreamInfo(filePath);
-                inputs.push('-i', filePath);
+                const isImage = ['.jpg', '.jpeg', '.png', '.webp'].some(ext => filePath.toLowerCase().endsWith(ext));
+                const duration = scene.duration || 3;
+
+                if (isImage) {
+                    // Imagens estáticas precisam de loop e tempo definido na entrada
+                    inputs.push('-loop', '1', '-t', duration.toString(), '-i', filePath);
+                } else {
+                    inputs.push('-i', filePath);
+                }
                 const vIdx = inputIdx++;
 
                 const startTime = scene.startTime || 0;
-                const duration = scene.duration || 3;
                 const sceneLabel = `scene_v${i}`;
 
                 // Aplicar trim, scale, efeito e formato
                 let filterChain = "";
-                if (streamInfo.hasVideo) {
+                if (isImage) {
+                    filterChain = `[${vIdx}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:-1:-1:color=black`;
+                } else if (streamInfo.hasVideo) {
                     filterChain = `[${vIdx}:v]trim=start=${startTime}:duration=${duration},setpts=PTS-STARTPTS`;
                 } else {
                     // Fallback para áudio-only ou arquivos sem vídeo: fundo preto de 1280x720
@@ -1242,7 +1393,8 @@ async function startServer() {
                 : `https://api.pexels.com/v1/search?query=${encodeURIComponent(query as string)}&per_page=1`;
 
             const searchRes = await fetch(endpoint, { headers: { Authorization: pexelsKey } });
-            const data = await searchRes.json() as any;
+            const data = await safeJson(searchRes);
+            if (!data) throw new Error('Falha ao obter dados do Pexels');
 
             let mediaUrl = '';
             let originalName = '';
@@ -1349,8 +1501,9 @@ async function startServer() {
 
             const contentType = response.headers.get('content-type');
             if (contentType && contentType.includes('application/json')) {
-                const data = await response.json();
-                res.json(data);
+                const data = await safeJson(response);
+                if (data) res.json(data);
+                else res.status(500).json({ error: 'Failed to parse JSON response from Pexels' });
             } else {
                 const text = await response.text();
                 console.error(`[Pexels Proxy] Non-JSON response (status ${response.status}):`, text.substring(0, 500));
@@ -1386,11 +1539,8 @@ async function startServer() {
         
         if (type === 'video' || type === 'videos') {
             baseUrl = 'https://pixabay.com/api/videos/';
-        } else if (type === 'music') {
-            // Some documentation suggests music has its own endpoint in some SDKs, 
-            // but for the REST API it's often media_type=music on the main endpoint.
-            // If it returns images, we might be getting redirected or param ignored.
-            queryParams.set('media_type', 'music');
+        } else if (type === 'music' || type === 'audio') {
+            baseUrl = 'https://pixabay.com/api/audios/';
         }
 
         const url = `${baseUrl}?${queryParams.toString()}`;
@@ -1405,8 +1555,9 @@ async function startServer() {
 
             const contentType = response.headers.get('content-type');
             if (contentType && contentType.includes('application/json')) {
-                const data = await response.json();
-                res.json(data);
+                const data = await safeJson(response);
+                if (data) res.json(data);
+                else res.status(500).json({ error: 'Failed to parse JSON response from Pixabay' });
             } else {
                 const text = await response.text();
                 console.error(`[Pixabay Proxy] Non-JSON response for ${type} (status ${response.status}):`, text.substring(0, 500));
@@ -1437,8 +1588,9 @@ async function startServer() {
 
             const contentType = response.headers.get('content-type');
             if (contentType && contentType.includes('application/json')) {
-                const data = await response.json();
-                res.json(data);
+                const data = await safeJson(response);
+                if (data) res.json(data);
+                else res.status(500).json({ error: 'Failed to parse JSON response from Unsplash' });
             } else {
                 const text = await response.text();
                 console.error(`[Unsplash Proxy] Non-JSON response (status ${response.status}):`, text.substring(0, 500));
