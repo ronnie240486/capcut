@@ -849,36 +849,28 @@ async function startServer() {
             }
 
             console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'veo-3.1-lite-generate-preview'}...`);
-            let response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model || 'veo-3.1-lite-generate-preview'}:generateVideos?key=${finalKey}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+            
+            const modelsToTry = model ? [model] : ['veo-3.1-lite-generate-preview', 'veo-lite-preview-001', 'veo-lite-preview-012'];
+            if (model === 'veo-3.1-generate-preview') {
+                modelsToTry.push('veo-pro-preview-001');
+            }
 
-            // FALLBACK logic if 404 (Model Not Found)
-            if (response.status === 404 && (!model || model === 'veo-3.1-lite-generate-preview')) {
-                console.warn(`[Job ${jobId}] primary model 404-ed, trying fallback 'veo-lite-preview-001'...`);
-                response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/veo-lite-preview-001:generateVideos?key=${finalKey}`, {
+            let response: any;
+            let successModel = '';
+
+            for (const currentModel of modelsToTry) {
+                console.log(`[Job ${jobId}] Trying model: ${currentModel}...`);
+                response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateVideos?key=${finalKey}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-                
-                if (response.status === 404) {
-                    console.warn(`[Job ${jobId}] fallback 1 404-ed, trying fallback 'veo-lite-preview-012'...`);
-                    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/veo-lite-preview-012:generateVideos?key=${finalKey}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
+
+                if (response.status !== 404) {
+                    successModel = currentModel;
+                    break;
                 }
-            } else if (response.status === 404 && model === 'veo-3.1-generate-preview') {
-                 console.warn(`[Job ${jobId}] pro model 404-ed, trying fallback 'veo-pro-preview-001'...`);
-                 response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/veo-pro-preview-001:generateVideos?key=${finalKey}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
+                console.warn(`[Job ${jobId}] Model ${currentModel} not found (404).`);
             }
 
             if (!response.ok) {
@@ -1620,14 +1612,15 @@ async function startServer() {
             queryParams.set('media_type', 'music');
         }
 
-        const fetchWithFallback = async (targetUrl: string): Promise<Response> => {
+        const fetchWithFallback = async (targetUrl: string, method: string = 'GET'): Promise<Response> => {
             return fetch(targetUrl, {
+                method,
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                     'Accept': 'application/json, text/javascript, */*; q=0.01',
                     'Accept-Language': 'en-US,en;q=0.9',
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache',
+                    'Referer': 'https://pixabay.com/',
+                    'Origin': 'https://pixabay.com',
                 }
             });
         };
@@ -1637,11 +1630,18 @@ async function startServer() {
             console.log(`[Pixabay Proxy] Searching ${type}: ${url.replace(/key=[^&]+/, 'key=REDACTED')}`);
             let response = await fetchWithFallback(url);
 
-            // Music Fallback Endpoint
+            // Music Fallback Endpoint: Sometimes the main API plus media_type=music is blocked, but /api/audio/ works or vice-versa
             if (type === 'music' && response.status === 403) {
-                 const musicUrl = `https://pixabay.com/api/audio/?${queryParams.toString()}`;
-                 console.warn(`[Pixabay Proxy] 403 on root endpoint for music, trying /api/audio/: ${musicUrl.replace(/key=[^&]+/, 'key=REDACTED')}`);
+                 const musicUrl = `https://pixabay.com/api/audio/?${queryParams.toString().replace('media_type=music', '')}`;
+                 console.warn(`[Pixabay Proxy] 403 on root endpoint for music, trying /api/audio/ fallback: ${musicUrl.replace(/key=[^&]+/, 'key=REDACTED')}`);
                  response = await fetchWithFallback(musicUrl);
+            }
+            
+            // Second fallback if /api/audio/ was tried first and failed
+            if (type === 'music' && response.status === 403 && baseUrl.includes('/audio/')) {
+                const mainUrl = `https://pixabay.com/api/?${queryParams.toString()}&media_type=music`;
+                console.warn(`[Pixabay Proxy] 403 on /api/audio/, trying main endpoint with media_type=music...`);
+                response = await fetchWithFallback(mainUrl);
             }
 
             const contentType = response.headers.get('content-type');
