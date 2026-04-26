@@ -1539,11 +1539,8 @@ async function startServer() {
         
         if (type === 'video' || type === 'videos') {
             baseUrl = 'https://pixabay.com/api/videos/';
-        } else if (type === 'music') {
-            // Some documentation suggests music has its own endpoint in some SDKs, 
-            // but for the REST API it's often media_type=music on the main endpoint.
-            // If it returns images, we might be getting redirected or param ignored.
-            queryParams.set('media_type', 'music');
+        } else if (type === 'music' || type === 'audio') {
+            baseUrl = 'https://pixabay.com/api/audios/';
         }
 
         const url = `${baseUrl}?${queryParams.toString()}`;
