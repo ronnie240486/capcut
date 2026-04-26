@@ -45,63 +45,60 @@ async function startServer() {
     }
 
     // Proxy para Freesound para evitar CORS
-    app.get('/api/proxy/freesound', async (req: any, res: any) => {
-        const { q, token } = req.query;
+    app.get('/api/sound-search', async (req: any, res: any) => {
+        const { q, key, page = 1 } = req.query;
+        const token = key; 
+        
         if (!q || !token) {
-            console.error('[Freesound Proxy] Missing q or token');
-            return res.status(400).json({ error: 'Missing query or token. Verifique sua chave API nas configurações.' });
+            console.error('[Sound Search] Missing q or key');
+            return res.status(400).json({ error: 'Missing query or key. Verifique sua chave API nas configurações.' });
         }
         
+        console.log(`[Sound Search] Received request for: ${q} with key length: ${token.length} page: ${page}`);
+        
         try {
-            // Use token in query param as well, as it is officially supported and sometimes more reliable through proxies
-            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,username`;
-            console.log(`[Freesound Proxy] Requesting: ${endpoint}`);
+            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,username&page=${page}&page_size=6`;
+            console.log(`[Sound Search] Requesting Freesound: ${endpoint}`);
             
             const searchRes = await fetch(endpoint, {
                 headers: {
                     'Authorization': `Token ${token}`,
-                    'Accept': 'application/json, text/plain, */*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Referer': 'https://freesound.org/'
+                    'Accept': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
                 }
             });
 
             const contentType = searchRes.headers.get('content-type') || '';
+            console.log(`[Sound Search] Freesound status: ${searchRes.status}, Content-Type: ${contentType}`);
+
             if (!searchRes.ok) {
                 const text = await searchRes.text();
-                console.error(`[Freesound Proxy] Error status: ${searchRes.status}. Content-Type: ${contentType}. Body: ${text.substring(0, 512)}`);
+                console.error(`[Sound Search] Error from Freesound: ${searchRes.status}. Body: ${text.substring(0, 500)}`);
                 
-                if (searchRes.status === 403) {
-                    if (text.includes('<html>') || contentType.includes('text/html')) {
-                        return res.status(403).json({ 
-                            error: "Acesso Negado (403). O Freesound bloqueou a requisição do servidor. Isso pode ocorrer se o IP do servidor estiver sendo rate-limited ou bloqueado pelo firewall deles.",
-                            details: "Freesound Firewall/WAF blocking. Please try using a different provider for now or try again later."
-                        });
-                    }
-                    return res.status(403).json({ 
-                        error: "Acesso Negado (403). Verifique se sua API Key do Freesound está correta e ativa nas configurações.",
-                        details: text.substring(0, 200)
-                    });
-                }
-                
-                return res.status(searchRes.status || 500).json({ 
-                    error: `Freesound API returned ${searchRes.status}`, 
-                    details: text.substring(0, 100) 
+                // Return a 200 with an error object to avoid triggering "safeJson" 403 warning on client if we can
+                // but let's stick to correct status for now but ensure it's JSON
+                return res.status(searchRes.status === 403 ? 403 : 500).json({ 
+                    error: `Freesound Error ${searchRes.status}`, 
+                    details: text.includes('<html>') ? 'Access Blocked by Freesound Firewall (403)' : text.substring(0, 200),
+                    isFreesoundBlocking: searchRes.status === 403
                 });
             }
 
-            if (!contentType || !contentType.includes('application/json')) {
+            if (!contentType.includes('application/json')) {
                 const text = await searchRes.text();
-                return res.status(500).json({ error: 'Invalid response from Freesound', details: text.substring(0, 100) });
+                console.error(`[Sound Search] Expected JSON but got: ${contentType}`);
+                return res.status(500).json({ error: 'Freesound returned non-JSON response' });
             }
 
             const data = await safeJson(searchRes);
-            if (!data) return res.status(500).json({ error: 'Failed to parse Freesound response' });
+            if (!data) {
+                return res.status(500).json({ error: 'Failed to parse Freesound JSON' });
+            }
+            
             res.json(data);
         } catch (e: any) {
-            console.error('[Freesound Proxy] Critical Failure:', e);
-            res.status(500).json({ error: e.message });
+            console.error('[Sound Search] Critical Failure:', e);
+            res.status(500).json({ error: 'Search failed in proxy', details: e.message });
         }
     });
 
@@ -852,11 +849,37 @@ async function startServer() {
             }
 
             console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'veo-3.1-lite-generate-preview'}...`);
-            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model || 'veo-3.1-lite-generate-preview'}:generateVideos?key=${finalKey}`, {
+            let response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model || 'veo-3.1-lite-generate-preview'}:generateVideos?key=${finalKey}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
+
+            // FALLBACK logic if 404 (Model Not Found)
+            if (response.status === 404 && (!model || model === 'veo-3.1-lite-generate-preview')) {
+                console.warn(`[Job ${jobId}] primary model 404-ed, trying fallback 'veo-lite-preview-001'...`);
+                response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/veo-lite-preview-001:generateVideos?key=${finalKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (response.status === 404) {
+                    console.warn(`[Job ${jobId}] fallback 1 404-ed, trying fallback 'veo-lite-preview-012'...`);
+                    response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/veo-lite-preview-012:generateVideos?key=${finalKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                }
+            } else if (response.status === 404 && model === 'veo-3.1-generate-preview') {
+                 console.warn(`[Job ${jobId}] pro model 404-ed, trying fallback 'veo-pro-preview-001'...`);
+                 response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/veo-pro-preview-001:generateVideos?key=${finalKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            }
 
             if (!response.ok) {
                 const errText = await response.text();
@@ -1381,6 +1404,60 @@ async function startServer() {
         fetchWithRedirect(decodedUrl);
     });
 
+    // Proxy para Jamendo
+    app.get('/api/stock/jamendo', async (req: any, res: any) => {
+        const { q, page = 1 } = req.query;
+        const key = req.headers['x-jamendo-api-key'] || process.env.JAMENDO_API_KEY || '56d30cce';
+        const limit = 6;
+        const offset = (Number(page) - 1) * limit;
+        
+        const url = `https://api.jamendo.com/v3.0/tracks/?client_id=${key}&format=jsonfull&search=${encodeURIComponent(q as string)}&limit=${limit}&offset=${offset}&audioformat=mp32`;
+        
+        try {
+            const response = await fetch(url, {
+                headers: {
+                    'Accept': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
+            });
+            const contentType = response.headers.get('content-type') || '';
+            if (!response.ok) {
+                const text = await response.text();
+                return res.status(response.status).json({ error: `Jamendo Error ${response.status}`, details: text.substring(0, 200) });
+            }
+            const data = await safeJson(response);
+            res.json(data);
+        } catch (e: any) {
+            res.status(500).json({ error: 'Jamendo Proxy Failure', details: e.message });
+        }
+    });
+
+    // Proxy para FMA (Free Music Archive)
+    app.get('/api/stock/fma', async (req: any, res: any) => {
+        const { q, page = 1 } = req.query;
+        const key = req.headers['x-fma-api-key'] || process.env.FMA_API_KEY || '';
+        const limit = 6;
+        
+        const url = `https://freemusicarchive.org/api/get/tracks.json?api_key=${key}&q=${encodeURIComponent(q as string)}&limit=${limit}&page=${page}`;
+        
+        try {
+            const response = await fetch(url, {
+                headers: {
+                    'Accept': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
+            });
+            if (!response.ok) {
+                const text = await response.text();
+                return res.status(response.status).json({ error: `FMA Error ${response.status}`, details: text.substring(0, 200) });
+            }
+            const data = await safeJson(response);
+            res.json(data);
+        } catch (e: any) {
+            res.status(500).json({ error: 'FMA Proxy Failure', details: e.message });
+        }
+    });
+
     // ─── STOCK DOWNLOAD ───────────────────────────────────────────────────────
     app.get('/api/stock/download', async (req: any, res: any) => {
         const { query, type = 'video' } = req.query;
@@ -1480,7 +1557,7 @@ async function startServer() {
             if (req.query[key]) queryParams.set(key, req.query[key] as string);
         }
         
-        if (!queryParams.has('per_page')) queryParams.set('per_page', '20');
+        if (!queryParams.has('per_page')) queryParams.set('per_page', '6');
         
         const baseUrl = type === 'videos' 
             ? 'https://api.pexels.com/videos/search'
@@ -1533,14 +1610,14 @@ async function startServer() {
             if (req.query[k]) queryParams.set(k, req.query[k] as string);
         }
         
-        if (!queryParams.has('per_page')) queryParams.set('per_page', '20');
+        if (!queryParams.has('per_page')) queryParams.set('per_page', '6');
 
         let baseUrl = 'https://pixabay.com/api/';
         
         if (type === 'video' || type === 'videos') {
             baseUrl = 'https://pixabay.com/api/videos/';
-        } else if (type === 'music' || type === 'audio') {
-            baseUrl = 'https://pixabay.com/api/audios/';
+        } else if (type === 'music') {
+            queryParams.set('media_type', 'music');
         }
 
         const url = `${baseUrl}?${queryParams.toString()}`;
@@ -1574,10 +1651,10 @@ async function startServer() {
     });
 
     app.get('/api/stock/unsplash', async (req: any, res: any) => {
-        const { q } = req.query;
+        const { q, page = 1 } = req.query;
         const key = req.headers['x-unsplash-api-key'] || process.env.UNSPLASH_API_KEY || 'R0XN_0yCHG5v6N8l296f8XG3Gv-_D7P7x5TqC_8w-Ew';
         const query = encodeURIComponent(q as string);
-        const url = `https://api.unsplash.com/search/photos?query=${query}&per_page=20&client_id=${key}`;
+        const url = `https://api.unsplash.com/search/photos?query=${query}&per_page=6&page=${page}&client_id=${key}`;
 
         try {
             const response = await fetch(url, {
