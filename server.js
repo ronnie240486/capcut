@@ -1609,18 +1609,15 @@ async function startServer() {
         if (type === 'video' || type === 'videos') {
             baseUrl = 'https://pixabay.com/api/videos/';
         } else if (type === 'music') {
-            queryParams.set('media_type', 'music');
+            baseUrl = 'https://pixabay.com/api/audio/';
         }
 
         const fetchWithFallback = async (targetUrl: string, method: string = 'GET'): Promise<Response> => {
             return fetch(targetUrl, {
                 method,
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                    'Accept': 'application/json, text/javascript, */*; q=0.01',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Referer': 'https://pixabay.com/',
-                    'Origin': 'https://pixabay.com',
+                    'User-Agent': 'PixabayProxy/1.0',
+                    'Accept': 'application/json',
                 }
             });
         };
@@ -1630,18 +1627,18 @@ async function startServer() {
             console.log(`[Pixabay Proxy] Searching ${type}: ${url.replace(/key=[^&]+/, 'key=REDACTED')}`);
             let response = await fetchWithFallback(url);
 
-            // Music Fallback Endpoint: Sometimes the main API plus media_type=music is blocked, but /api/audio/ works or vice-versa
-            if (type === 'music' && response.status === 403) {
-                 const musicUrl = `https://pixabay.com/api/audio/?${queryParams.toString().replace('media_type=music', '')}`;
-                 console.warn(`[Pixabay Proxy] 403 on root endpoint for music, trying /api/audio/ fallback: ${musicUrl.replace(/key=[^&]+/, 'key=REDACTED')}`);
-                 response = await fetchWithFallback(musicUrl);
+            // Music Fallback: If /api/audio/ fails, try main endpoint with media_type=music
+            if (response.status === 403 && type === 'music' && baseUrl.includes('/audio/')) {
+                 const mainUrl = `https://pixabay.com/api/?${queryParams.toString()}&media_type=music`;
+                 console.warn(`[Pixabay Proxy] 403 on /api/audio/, trying fallback to main endpoint...`);
+                 response = await fetchWithFallback(mainUrl);
             }
             
-            // Second fallback if /api/audio/ was tried first and failed
-            if (type === 'music' && response.status === 403 && baseUrl.includes('/audio/')) {
-                const mainUrl = `https://pixabay.com/api/?${queryParams.toString()}&media_type=music`;
-                console.warn(`[Pixabay Proxy] 403 on /api/audio/, trying main endpoint with media_type=music...`);
-                response = await fetchWithFallback(mainUrl);
+            // Reverse Fallback: If main endpoint with media_type=music was tried (unlikely given logic above) and failed
+            if (response.status === 403 && type === 'music' && !baseUrl.includes('/audio/')) {
+                const audioUrl = `https://pixabay.com/api/audio/?${queryParams.toString().replace('media_type=music', '')}`;
+                console.warn(`[Pixabay Proxy] 403 on main endpoint, trying fallback to /api/audio/...`);
+                response = await fetchWithFallback(audioUrl);
             }
 
             const contentType = response.headers.get('content-type');
