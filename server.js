@@ -1620,15 +1620,29 @@ async function startServer() {
             queryParams.set('media_type', 'music');
         }
 
-        const url = `${baseUrl}?${queryParams.toString()}`;
-
-        try {
-            console.log(`[Pixabay Proxy] Searching ${type}: ${url.replace(/key=[^&]+/, 'key=REDACTED')}`);
-            const response = await fetch(url, {
+        const fetchWithFallback = async (targetUrl: string): Promise<Response> => {
+            return fetch(targetUrl, {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
                 }
             });
+        };
+
+        try {
+            const url = `${baseUrl}?${queryParams.toString()}`;
+            console.log(`[Pixabay Proxy] Searching ${type}: ${url.replace(/key=[^&]+/, 'key=REDACTED')}`);
+            let response = await fetchWithFallback(url);
+
+            // Music Fallback Endpoint
+            if (type === 'music' && response.status === 403) {
+                 const musicUrl = `https://pixabay.com/api/audio/?${queryParams.toString()}`;
+                 console.warn(`[Pixabay Proxy] 403 on root endpoint for music, trying /api/audio/: ${musicUrl.replace(/key=[^&]+/, 'key=REDACTED')}`);
+                 response = await fetchWithFallback(musicUrl);
+            }
 
             const contentType = response.headers.get('content-type');
             if (contentType && contentType.includes('application/json')) {
