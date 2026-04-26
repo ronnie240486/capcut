@@ -26,11 +26,84 @@ async function startServer() {
     app.use(cors({
         origin: '*',
         methods: ['GET', 'POST', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token']
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
     }));
 
     app.use(express.json({ limit: '1gb' }));
     app.use(express.urlencoded({ extended: true, limit: '1gb' }));
+
+    // Helper for safe JSON parsing in Node environment
+    async function safeJson(response: any) {
+        try {
+            const text = await response.text();
+            if (!text || text.trim() === "") return null;
+            return JSON.parse(text);
+        } catch (e) {
+            console.error("[safeJson Server] Parse Error:", e);
+            return null;
+        }
+    }
+
+    // Proxy para Freesound para evitar CORS
+    app.get('/api/proxy/freesound', async (req: any, res: any) => {
+        const { q, token } = req.query;
+        if (!q || !token) {
+            console.error('[Freesound Proxy] Missing q or token');
+            return res.status(400).json({ error: 'Missing query or token. Verifique sua chave API nas configurações.' });
+        }
+        
+        try {
+            // Use token in query param as well, as it is officially supported and sometimes more reliable through proxies
+            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,username`;
+            console.log(`[Freesound Proxy] Requesting: ${endpoint}`);
+            
+            const searchRes = await fetch(endpoint, {
+                headers: {
+                    'Authorization': `Token ${token}`,
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://freesound.org/'
+                }
+            });
+
+            const contentType = searchRes.headers.get('content-type') || '';
+            if (!searchRes.ok) {
+                const text = await searchRes.text();
+                console.error(`[Freesound Proxy] Error status: ${searchRes.status}. Content-Type: ${contentType}. Body: ${text.substring(0, 512)}`);
+                
+                if (searchRes.status === 403) {
+                    if (text.includes('<html>') || contentType.includes('text/html')) {
+                        return res.status(403).json({ 
+                            error: "Acesso Negado (403). O Freesound bloqueou a requisição do servidor. Isso pode ocorrer se o IP do servidor estiver sendo rate-limited ou bloqueado pelo firewall deles.",
+                            details: "Freesound Firewall/WAF blocking. Please try using a different provider for now or try again later."
+                        });
+                    }
+                    return res.status(403).json({ 
+                        error: "Acesso Negado (403). Verifique se sua API Key do Freesound está correta e ativa nas configurações.",
+                        details: text.substring(0, 200)
+                    });
+                }
+                
+                return res.status(searchRes.status || 500).json({ 
+                    error: `Freesound API returned ${searchRes.status}`, 
+                    details: text.substring(0, 100) 
+                });
+            }
+
+            if (!contentType || !contentType.includes('application/json')) {
+                const text = await searchRes.text();
+                return res.status(500).json({ error: 'Invalid response from Freesound', details: text.substring(0, 100) });
+            }
+
+            const data = await safeJson(searchRes);
+            if (!data) return res.status(500).json({ error: 'Failed to parse Freesound response' });
+            res.json(data);
+        } catch (e: any) {
+            console.error('[Freesound Proxy] Critical Failure:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
 
     // Diagnostic to see if the autopilot routes are actually reached
     app.all('/api/autopilot/*', (req, res, next) => {
@@ -505,14 +578,13 @@ async function startServer() {
         if (res && !res.headersSent) res.status(202).json({ jobId });
 
         // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
-        // Limitation: Limit threads and memory footprint for Cloud Run stability
-        // Removing max_alloc as it might cause aborts, adding per-input thread limits
+        // Limitation: Limit threads for Cloud Run stability
+        // Adding probe limits to prevent runaway memory
         let finalArgs = [
             '-hide_banner', '-loglevel', 'error', '-stats', 
             '-threads', '1', 
-            '-filter_threads', '1',
-            '-probesize', '2M', 
-            '-analyzeduration', '2M',
+            '-probesize', '1M', 
+            '-analyzeduration', '1M',
             '-reinit_filter', '0', 
             '-hwaccel', 'none'
         ];
@@ -528,15 +600,15 @@ async function startServer() {
                 processedArgs.push('-filter_complex_script', filterScriptPath);
                 i++; // Skip the next arg as we handled it
             } else if (args[i] === '-i') {
-                // Absolute minimum queue and threads per input
-                processedArgs.push('-threads', '1', '-thread_queue_size', '1', '-i');
+                // Higher queue size to handle many inputs without blocking
+                processedArgs.push('-thread_queue_size', '512', '-i');
             } else {
                 processedArgs.push(args[i]);
             }
         }
         finalArgs = [...finalArgs, ...processedArgs];
 
-        console.log(`[Job ${jobId}] Spawning FFmpeg. Command Size: ${finalArgs.length}`);
+        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
 
         try {
             const ffmpeg = spawn('ffmpeg', finalArgs);
@@ -583,19 +655,8 @@ async function startServer() {
                 } else {
                     const errorMsg = wasKilled ? `Processo encerrado pelo sistema (${signal}). Tente reduzir a complexidade do vídeo.` : stderr.trim();
                     console.error(`[Job ${jobId}] Failed. Code: ${code}. Signal: ${signal}. File Size: ${fileSize}`, errorMsg);
-                    
-                    // Log filter hint if it's an immediate fail
-                    if (filterScriptPath && fs.existsSync(filterScriptPath) && fileSize === 0) {
-                        try {
-                            const hint = fs.readFileSync(filterScriptPath, 'utf8').slice(0, 500);
-                            console.error(`[Job ${jobId}] Filter Script Hint: ${hint}...`);
-                        } catch(e) {}
-                    }
-
-                    if (jobs[jobId]) {
-                        jobs[jobId].status = 'failed';
-                        jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
-                    }
+                    jobs[jobId].status = 'failed';
+                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
                     if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
                 }
             });
@@ -610,32 +671,61 @@ async function startServer() {
     app.post('/api/process/start/audio-merge-real', uploadAny, async (req: any, res: any) => {
         const jobId = `audiomerge_${Date.now()}`;
         const params = req.body;
-        const job: any = { id: jobId, status: 'processing', progress: 0, startTime: Date.now() };
+        const job: any = { id: jobId, status: 'processing', progress: 0, startTime: Date.now(), friendlyName: 'Unificação de Áudio' };
         jobs[jobId] = job;
         res.status(202).json({ jobId });
 
         try {
-            const files = (req as any).files || [];
-            if (files.length === 0) throw new Error('Nenhum arquivo enviado para mixagem.');
+            const uploadedFiles = (req as any).files || [];
+            const clipsInfo = params.clips ? JSON.parse(params.clips) : [];
             const outputPath = path.join(uploadDir, `sonora_${Date.now()}.wav`);
             job.outputPath = outputPath;
 
             const inputs: string[] = [];
             const filterItems: string[] = [];
-            const clipsInfo = params.clips ? JSON.parse(params.clips) : [];
+            let validInputs = 0;
+            
+            for (let i = 0; i < clipsInfo.length; i++) {
+                const clip = clipsInfo[i];
+                let filePath = '';
+                
+                const upFile = uploadedFiles.find((f: any) => f.originalname === clip.fileName);
+                if (upFile) {
+                    filePath = upFile.path;
+                } else {
+                    const existingPath = path.join(uploadDir, sanitizeFilename(clip.fileName));
+                    if (fs.existsSync(existingPath)) {
+                        filePath = existingPath;
+                    }
+                }
 
-            files.forEach((file: any, i: number) => {
-                inputs.push('-i', file.path);
-                const clipData = clipsInfo.find((c: any) => c.fileName === file.originalname) || {};
-                const delayMs = Math.round((clipData.start || 0) * 1000);
-                const volume = clipData.volume !== undefined ? clipData.volume : 1;
-                const trimStart = clipData.mediaStartOffset || 0;
-                const trimDur = clipData.duration || 10;
-                filterItems.push(`[${i}:a]atrim=start=${trimStart}:duration=${trimDur},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delayMs}|${delayMs},aformat=sample_rates=44100:channel_layouts=stereo[a${i}]`);
-            });
+                if (!filePath) {
+                    console.warn(`[AudioMerge] File not found: ${clip.fileName}`);
+                    continue;
+                }
 
-            const filterComplex = `${filterItems.join(';')};${filterItems.map((_: any, i: number) => `[a${i}]`).join('')}amix=inputs=${files.length}:duration=longest:dropout_transition=0:normalize=0[out]`;
-            const args = [...inputs, '-filter_complex', filterComplex, '-map', '[out]', '-c:a', 'pcm_s16le', '-ar', '44100', '-y', outputPath];
+                inputs.push('-i', filePath);
+                const delayMs = Math.round((clip.start || 0) * 1000);
+                const volume = clip.volume !== undefined ? clip.volume : 1;
+                const trimStart = clip.mediaStartOffset || 0;
+                const trimDur = clip.duration || 10;
+                
+                // Use validInputs as the index for the filter
+                filterItems.push(`[${validInputs}:a]atrim=start=${trimStart}:duration=${trimDur},asetpts=PTS-STARTPTS,volume=${volume},adelay=${delayMs}|${delayMs},aformat=sample_rates=44100:channel_layouts=stereo[a${validInputs}]`);
+                validInputs++;
+            }
+
+            if (validInputs === 0) throw new Error('Nenhum arquivo válido encontrado para mixagem.');
+
+            let args: string[] = [];
+            if (validInputs === 1) {
+                // Single input, just apply filters without amix
+                const filterComplex = `${filterItems[0]}`;
+                args = [...inputs, '-filter_complex', filterComplex, '-map', '[a0]', '-c:a', 'pcm_s16le', '-ar', '44100', '-y', outputPath];
+            } else {
+                const filterComplex = `${filterItems.join(';')};${filterItems.map((_, i) => `[a${i}]`).join('')}amix=inputs=${validInputs}:duration=longest:dropout_transition=0:normalize=0[out]`;
+                args = [...inputs, '-filter_complex', filterComplex, '-map', '[out]', '-c:a', 'pcm_s16le', '-ar', '44100', '-y', outputPath];
+            }
             const totalDuration = clipsInfo.reduce((max: number, c: any) => Math.max(max, (c.start || 0) + (c.duration || 0)), 10);
             createFFmpegJob(jobId, args, totalDuration);
         } catch (e: any) {
@@ -736,24 +826,65 @@ async function startServer() {
         }
 
         try {
-            console.log(`[Job ${jobId}] Starting AI Generation...`);
-            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model || 'veo-3.1-lite-generate-preview'}:generateVideo?key=${finalKey}`, {
+            const payload: any = {
+                prompt,
+                config: {
+                    aspectRatio,
+                    resolution,
+                    numberOfVideos: 1
+                }
+            };
+
+            if (image) {
+                payload.image = { imageBytes: image.split(',')[1], mimeType: 'image/png' };
+            }
+            if (lastFrame) {
+                payload.lastFrame = { imageBytes: lastFrame.split(',')[1], mimeType: 'image/png' };
+            }
+            if (referenceImages && referenceImages.length > 0) {
+                payload.referenceImages = referenceImages.map((img: string) => ({ 
+                    image: {
+                        imageBytes: img.split(',')[1], 
+                        mimeType: 'image/png' 
+                    },
+                    referenceType: 'ASSET'
+                }));
+            }
+
+            console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'veo-3.1-lite-generate-preview'}...`);
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model || 'veo-3.1-lite-generate-preview'}:generateVideos?key=${finalKey}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    prompt, aspectRatio, resolution,
-                    image: image ? { data: image.split(',')[1], mimeType: 'image/png' } : undefined,
-                    lastFrame: lastFrame ? { data: lastFrame.split(',')[1], mimeType: 'image/png' } : undefined,
-                    referenceImages: referenceImages ? referenceImages.map((img: string) => ({ data: img.split(',')[1], mimeType: 'image/png' })) : undefined
-                })
+                body: JSON.stringify(payload)
             });
 
             if (!response.ok) {
-                const err = await response.json() as any;
-                throw new Error(err.error?.message || 'Erro na API Gemini');
+                const errText = await response.text();
+                console.error(`[Job ${jobId}] Gemini API Error (${response.status}):`, errText);
+                let errMsg = 'Erro na API Gemini';
+                try {
+                    const err = JSON.parse(errText);
+                    errMsg = err?.error?.message || err?.message || `${errMsg} (${response.status})`;
+                } catch (e) {
+                    errMsg = `${errMsg} (${response.status}: ${errText.substring(0, 150)})`;
+                }
+                throw new Error(errMsg);
             }
 
-            const data = await response.json() as any;
+            const dataContent = await response.text();
+            let data: any = null;
+            try {
+                data = JSON.parse(dataContent);
+            } catch (e) {
+                console.error(`[Job ${jobId}] Failed to parse successful response:`, dataContent);
+                throw new Error('Falha ao processar resposta de sucesso da API Gemini (JSON inválido)');
+            }
+
+            if (!data || !data.name) {
+                console.error(`[Job ${jobId}] Unexpected response structure:`, data);
+                throw new Error('Resposta inesperada da API Gemini (operation name missing)');
+            }
+
             const operationName = data.name;
             let completed = false;
             let attempts = 0;
@@ -763,7 +894,11 @@ async function startServer() {
                 attempts++;
                 await new Promise(r => setTimeout(r, 5000));
                 const pollRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${finalKey}`);
-                const pollData = await pollRes.json() as any;
+                const pollData = await safeJson(pollRes);
+                if (!pollData) {
+                    attempts++;
+                    continue;
+                }
                 if (jobs[jobId]) jobs[jobId].progress = Math.min(95, 10 + (attempts * 1.5));
 
                 if (pollData.done) {
@@ -859,19 +994,52 @@ async function startServer() {
                     filePath = fileMap[i % Object.keys(fileMap).length];
                 }
 
-                if (!filePath || !fs.existsSync(filePath)) continue;
+                if (!filePath || !fs.existsSync(filePath)) {
+                    // Fallback se o arquivo não existir: usar um fundo colorido com o tema da cena
+                    const duration = scene.duration || 3;
+                    const sceneLabel = `scene_v${i}`;
+                    const colors = ['darkblue', 'darkgreen', 'darkred', 'purple', 'black'];
+                    const color = colors[i % colors.length];
+                    
+                    let filterChain = `color=c=${color}:s=1280x720:d=${duration}[vbg${i}];[vbg${i}]setsar=1`;
+                    
+                    // Se tiver subtitle, já colocamos aqui também para não ficar totalmente vazio
+                    if (scene.subtitle) {
+                        const cleanSub = scene.subtitle
+                            .replace(/\\/g, '\\\\\\\\')
+                            .replace(/'/g, "'\\''")
+                            .replace(/:/g, '\\:')
+                            .toUpperCase();
+                        const fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
+                        const fontArg = fs.existsSync(fontPath) ? `:fontfile='${fontPath}'` : '';
+                        filterChain += `,drawtext=text='${cleanSub}'${fontArg}:fontcolor=white:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=15:line_spacing=5:x=(w-text_w)/2:y=h-text_h-100:fix_bounds=1`;
+                    }
+                    
+                    filterParts.push(`${filterChain},fps=30,format=yuv420p[${sceneLabel}]`);
+                    videoLabels.push(`[${sceneLabel}]`);
+                    continue;
+                }
 
                 const streamInfo = await getStreamInfo(filePath);
-                inputs.push('-i', filePath);
+                const isImage = ['.jpg', '.jpeg', '.png', '.webp'].some(ext => filePath.toLowerCase().endsWith(ext));
+                const duration = scene.duration || 3;
+
+                if (isImage) {
+                    // Imagens estáticas precisam de loop e tempo definido na entrada
+                    inputs.push('-loop', '1', '-t', duration.toString(), '-i', filePath);
+                } else {
+                    inputs.push('-i', filePath);
+                }
                 const vIdx = inputIdx++;
 
                 const startTime = scene.startTime || 0;
-                const duration = scene.duration || 3;
                 const sceneLabel = `scene_v${i}`;
 
                 // Aplicar trim, scale, efeito e formato
                 let filterChain = "";
-                if (streamInfo.hasVideo) {
+                if (isImage) {
+                    filterChain = `[${vIdx}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:-1:-1:color=black`;
+                } else if (streamInfo.hasVideo) {
                     filterChain = `[${vIdx}:v]trim=start=${startTime}:duration=${duration},setpts=PTS-STARTPTS`;
                 } else {
                     // Fallback para áudio-only ou arquivos sem vídeo: fundo preto de 1280x720
@@ -1023,31 +1191,194 @@ async function startServer() {
     });
 
     // ─── PROXY MEDIA (externo) ────────────────────────────────────────────────
+    // API for resolving media from landing pages (metadata extraction)
+    app.get('/api/resolve-media', async (req: any, res: any) => {
+        const { url } = req.query;
+        if (!url) return res.status(400).send('URL missing');
+        const decodedUrl = decodeURIComponent(url as string);
+
+        try {
+            const protocol = decodedUrl.startsWith('https') ? https : http;
+            protocol.get(decodedUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' }
+            }, (apiRes) => {
+                let data = '';
+                apiRes.on('data', chunk => data += chunk);
+                apiRes.on('end', () => {
+                    // Try to find direct MP3 links or JSON metadata
+                    const mp3Match = data.match(/https?:\/\/[^"']+\.mp3\?[^"']+/i) || 
+                                   data.match(/https?:\/\/[^"']+\.mp3(?=["'])/i) ||
+                                   data.match(/canonical_url":"(https?:\/\/[^"]+\.mp3)"/i);
+                    
+                    const titleMatch = data.match(/<title>(.*?)<\/title>/i) || 
+                                     data.match(/"name":"([^"]+)"/i);
+                    
+                    const thumbMatch = data.match(/"thumbnailUrl":"([^"]+)"/i) ||
+                                     data.match(/"image":"([^"]+)"/i);
+
+                    if (mp3Match) {
+                        let finalUrl = mp3Match[0];
+                        // If it's a JSON match, it might have escapes
+                        if (mp3Match[1]) finalUrl = mp3Match[1].replace(/\\/g, '');
+                        
+                        res.json({
+                            url: finalUrl,
+                            name: titleMatch ? (titleMatch[1] || titleMatch[0]).split('|')[0].trim() : 'Áudio Importado',
+                            thumbnail: thumbMatch ? (thumbMatch[1] || thumbMatch[0]).replace(/\\/g, '') : null,
+                            type: 'audio'
+                        });
+                    } else {
+                        // Fallback: check if it's a Pexels video or similar
+                        const videoMatch = data.match(/https?:\/\/[^"']+\.mp4\?[^"']+/i) || data.match(/https?:\/\/[^"']+\.mp4(?=["'])/i);
+                        if (videoMatch) {
+                             res.json({
+                                url: videoMatch[0],
+                                name: 'Vídeo Importado',
+                                type: 'video'
+                            });
+                        } else {
+                            res.status(404).json({ error: 'Nenhum áudio encontrado nesta página.' });
+                        }
+                    }
+                });
+            }).on('error', () => res.status(500).send('Erro ao acessar URL'));
+        } catch (err) {
+            res.status(500).send('Falha na resolução');
+        }
+    });
+
+    app.get('/api/download-external', async (req: any, res: any) => {
+        const { url, filename } = req.query;
+        if (!url) return res.status(400).send('URL missing');
+        const decodedUrl = decodeURIComponent(url as string);
+        const name = filename ? sanitizeFilename(filename as string) : `audio_${Date.now()}.mp3`;
+
+        console.log(`[DownloadProxy] Attempting to proxy: ${decodedUrl}`);
+
+        const options: any = {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Referer': new URL(decodedUrl).origin
+            },
+            timeout: 30000
+        };
+
+        const fetchWithRedirect = (currentUrl: string, depth = 0) => {
+            if (depth > 5) return res.status(500).send('Too many redirects');
+            
+            try {
+                const protocol = currentUrl.startsWith('https') ? https : http;
+                protocol.get(currentUrl, options, (apiRes: any) => {
+                    // Handle Redirects
+                    if (apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
+                        let redirUrl = apiRes.headers.location;
+                        if (!redirUrl.startsWith('http')) {
+                            const origin = new URL(currentUrl).origin;
+                            redirUrl = origin + redirUrl;
+                        }
+                        return fetchWithRedirect(redirUrl, depth + 1);
+                    }
+
+                    if (apiRes.statusCode !== 200) {
+                        return res.status(apiRes.statusCode).send(`Original server returned status ${apiRes.statusCode}`);
+                    }
+
+                    // Forward content-type or force octet-stream for download
+                    const contentType = apiRes.headers['content-type'] || 'application/octet-stream';
+                    res.setHeader('Content-Type', contentType);
+                    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+                    
+                    // Pipe the stream
+                    apiRes.pipe(res);
+                }).on('error', (err) => {
+                    console.error("[DownloadProxy] Error:", err);
+                    if (!res.headersSent) res.status(500).send('Download failure');
+                });
+            } catch (err: any) {
+                console.error("[DownloadProxy] Exception:", err);
+                if (!res.headersSent) res.status(500).send('Download failure: ' + err.message);
+            }
+        };
+
+        fetchWithRedirect(decodedUrl);
+    });
+
     app.get('/api/proxy/media', async (req: any, res: any) => {
         const { url } = req.query;
         if (!url) return res.status(400).send('URL missing');
         const decodedUrl = decodeURIComponent(url as string);
-        const protocol = decodedUrl.startsWith('https') ? https : http;
-        protocol.get(decodedUrl, (apiRes: any) => {
-            if (apiRes.statusCode !== 200) return res.status(apiRes.statusCode || 500).send('Proxy error');
-            if (apiRes.headers['content-type']) res.setHeader('Content-Type', apiRes.headers['content-type']);
-            apiRes.pipe(res);
-        }).on('error', () => res.status(500).send('Request error'));
-    });
-
-    app.get('/api/proxy/freesound', async (req: any, res: any) => {
-        const { q, token } = req.query;
-        if (!q || !token) return res.status(400).json({ error: 'Missing query or token' });
         
-        try {
-            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,username`;
-            const searchRes = await fetch(endpoint);
-            const data = await searchRes.json();
-            res.json(data);
-        } catch (e: any) {
-            console.error('[Freesound Proxy] Failed:', e);
-            res.status(500).json({ error: e.message });
+        const options: any = {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Referer': 'https://pixabay.com/',
+                'Connection': 'keep-alive',
+                'Accept-Encoding': 'gzip, deflate, br'
+            },
+            timeout: 30000
+        };
+
+        // Forward Range headers for audio seeking
+        if (req.headers.range) {
+            options.headers.range = req.headers.range;
         }
+
+        const fetchWithRedirect = (currentUrl: string, depth = 0) => {
+            if (depth > 5) return res.status(500).send('Too many redirects');
+            
+            try {
+                const protocol = currentUrl.startsWith('https') ? https : http;
+                const request = protocol.get(currentUrl, options, (apiRes: any) => {
+                    // Handle Redirects
+                    if (apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
+                        let redirUrl = apiRes.headers.location;
+                        if (!redirUrl.startsWith('http')) {
+                            const origin = new URL(currentUrl).origin;
+                            redirUrl = origin + redirUrl;
+                        }
+                        return fetchWithRedirect(redirUrl, depth + 1);
+                    }
+
+                    // Forward headers
+                    res.statusCode = apiRes.statusCode || 200;
+                    if (apiRes.headers['content-type']) res.setHeader('Content-Type', apiRes.headers['content-type']);
+                    if (apiRes.headers['content-length']) res.setHeader('Content-Length', apiRes.headers['content-length']);
+                    if (apiRes.headers['content-range']) res.setHeader('Content-Range', apiRes.headers['content-range']);
+                    if (apiRes.headers['accept-ranges']) res.setHeader('Accept-Ranges', apiRes.headers['accept-ranges']);
+                    if (apiRes.headers['content-encoding']) res.setHeader('Content-Encoding', apiRes.headers['content-encoding']);
+                    
+                    res.setHeader('Access-Control-Allow-Origin', '*');
+                    res.setHeader('Cache-Control', 'public, max-age=86400');
+                    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+                    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
+                    
+                    // Handle errors during streaming
+                    apiRes.on('error', (err: any) => {
+                        console.error('[Proxy] Stream error:', err);
+                        if (!res.headersSent) res.status(502).send('Stream error');
+                    });
+                    
+                    apiRes.pipe(res);
+                });
+
+                request.on('error', (err) => {
+                    console.error('[Proxy] Request error:', err);
+                    if (!res.headersSent) res.status(500).send('Proxy failure');
+                });
+                
+                request.on('timeout', () => {
+                    console.error('[Proxy] Request timeout');
+                    request.destroy();
+                    if (!res.headersSent) res.status(504).send('Gateway timeout');
+                });
+            } catch (err) {
+                console.error('[Proxy] Critical exception:', err);
+                if (!res.headersSent) res.status(500).send('Critical proxy failure');
+            }
+        };
+
+        fetchWithRedirect(decodedUrl);
     });
 
     // ─── STOCK DOWNLOAD ───────────────────────────────────────────────────────
@@ -1062,7 +1393,8 @@ async function startServer() {
                 : `https://api.pexels.com/v1/search?query=${encodeURIComponent(query as string)}&per_page=1`;
 
             const searchRes = await fetch(endpoint, { headers: { Authorization: pexelsKey } });
-            const data = await searchRes.json() as any;
+            const data = await safeJson(searchRes);
+            if (!data) throw new Error('Falha ao obter dados do Pexels');
 
             let mediaUrl = '';
             let originalName = '';
@@ -1133,6 +1465,153 @@ async function startServer() {
         const check = spawn('ffmpeg', ['-version']);
         check.on('error', () => res.status(500).send('FFmpeg Missing'));
         check.on('close', (code: number) => { if (code === 0) res.send('OK'); else res.status(500).send('FFmpeg Error'); });
+    });
+
+    // ─── STOCK SEARCH PROXIES ────────────────────────────────────────────────
+    app.get('/api/stock/pexels', async (req: any, res: any) => {
+        const { type = 'videos', q, ...otherParams } = req.query;
+        // Clean up params - don't pass 'type' or 'q' to Pexels if they are just our internal routing
+        const queryParams = new URLSearchParams();
+        if (q) queryParams.set('query', q as string);
+        
+        // Copy other allowed params
+        const allowed = ['per_page', 'page', 'orientation', 'size', 'color', 'locale'];
+        for (const key of allowed) {
+            if (req.query[key]) queryParams.set(key, req.query[key] as string);
+        }
+        
+        if (!queryParams.has('per_page')) queryParams.set('per_page', '20');
+        
+        const baseUrl = type === 'videos' 
+            ? 'https://api.pexels.com/videos/search'
+            : 'https://api.pexels.com/v1/search';
+        
+        const url = `${baseUrl}?${queryParams.toString()}`;
+        
+        try {
+            const key = req.headers['x-pexels-api-key'] || process.env.PEXELS_API_KEY || '563492ad6f917000010000010c2834b1509b4db78907865c1920263f';
+            console.log(`[Pexels Proxy] Searching ${type}: ${url}`);
+
+            const response = await fetch(url, {
+                headers: { 
+                    'Authorization': String(key),
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
+            });
+
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                const data = await safeJson(response);
+                if (data) res.json(data);
+                else res.status(500).json({ error: 'Failed to parse JSON response from Pexels' });
+            } else {
+                const text = await response.text();
+                console.error(`[Pexels Proxy] Non-JSON response (status ${response.status}):`, text.substring(0, 500));
+                res.status(response.status).json({ 
+                    error: 'Invalid response from Pexels', 
+                    status: response.status,
+                    preview: text.substring(0, 100)
+                });
+            }
+        } catch (e: any) {
+            console.error('[Pexels Proxy] Exception:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.get('/api/stock/pixabay', async (req: any, res: any) => {
+        const { type = 'video', q, ...otherParams } = req.query;
+        const key = req.headers['x-pixabay-api-key'] || process.env.PIXABAY_API_KEY || '21114562-b9e7fa6996d9ccca39ee3ecc9';
+        
+        const queryParams = new URLSearchParams();
+        queryParams.set('key', key as string);
+        if (q) queryParams.set('q', q as string);
+        
+        // Copy other allowed params
+        const allowed = ['lang', 'id', 'image_type', 'orientation', 'category', 'min_width', 'min_height', 'colors', 'editors_choice', 'safesearch', 'order', 'page', 'per_page', 'video_type'];
+        for (const k of allowed) {
+            if (req.query[k]) queryParams.set(k, req.query[k] as string);
+        }
+        
+        if (!queryParams.has('per_page')) queryParams.set('per_page', '20');
+
+        let baseUrl = 'https://pixabay.com/api/';
+        
+        if (type === 'video' || type === 'videos') {
+            baseUrl = 'https://pixabay.com/api/videos/';
+        } else if (type === 'music') {
+            // Some documentation suggests music has its own endpoint in some SDKs, 
+            // but for the REST API it's often media_type=music on the main endpoint.
+            // If it returns images, we might be getting redirected or param ignored.
+            queryParams.set('media_type', 'music');
+        }
+
+        const url = `${baseUrl}?${queryParams.toString()}`;
+
+        try {
+            console.log(`[Pixabay Proxy] Searching ${type}: ${url.replace(/key=[^&]+/, 'key=REDACTED')}`);
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
+            });
+
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                const data = await safeJson(response);
+                if (data) res.json(data);
+                else res.status(500).json({ error: 'Failed to parse JSON response from Pixabay' });
+            } else {
+                const text = await response.text();
+                console.error(`[Pixabay Proxy] Non-JSON response for ${type} (status ${response.status}):`, text.substring(0, 500));
+                res.status(response.status).json({ 
+                    error: 'Invalid response from Pixabay', 
+                    status: response.status,
+                    preview: text.substring(0, 100) 
+                });
+            }
+        } catch (e: any) {
+            console.error('[Pixabay Proxy] Exception:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.get('/api/stock/unsplash', async (req: any, res: any) => {
+        const { q } = req.query;
+        const key = req.headers['x-unsplash-api-key'] || process.env.UNSPLASH_API_KEY || 'R0XN_0yCHG5v6N8l296f8XG3Gv-_D7P7x5TqC_8w-Ew';
+        const query = encodeURIComponent(q as string);
+        const url = `https://api.unsplash.com/search/photos?query=${query}&per_page=20&client_id=${key}`;
+
+        try {
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
+            });
+
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                const data = await safeJson(response);
+                if (data) res.json(data);
+                else res.status(500).json({ error: 'Failed to parse JSON response from Unsplash' });
+            } else {
+                const text = await response.text();
+                console.error(`[Unsplash Proxy] Non-JSON response (status ${response.status}):`, text.substring(0, 500));
+                res.status(response.status).json({ 
+                    error: 'Invalid response from Unsplash', 
+                    status: response.status,
+                    preview: text.substring(0, 100) 
+                });
+            }
+        } catch (e: any) {
+            console.error('[Unsplash Proxy] Exception:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    // API Fallback for missing routes (to prevent SPA mismatch returning HTML)
+    app.use('/api/*', (req: any, res: any) => {
+        res.status(404).json({ status: 'error', error: 'API route not found' });
     });
 
     // ─── FRONTEND ─────────────────────────────────────────────────────────────
