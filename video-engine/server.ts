@@ -851,10 +851,10 @@ async function startServer() {
 
             console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'veo-3.1-lite-generate-preview'}...`);
             
-            const modelsToTry = model ? [model] : ['veo-1.0-preview-001', 'veo-lite-preview-001', 'veo-2.0-preview-001'];
-            if (model === 'veo-3.1-generate-preview' || !model) {
-                modelsToTry.push('veo-pro-preview-001');
-            }
+            // Fallback chain: tenta o modelo solicitado; se 404, tenta o alternativo
+            const modelsToTry: string[] = model
+                ? [model]
+                : ['veo-3.1-generate-preview', 'veo-3.1-lite-generate-preview'];
 
             let response: any;
             let successModel = '';
