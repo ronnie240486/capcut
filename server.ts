@@ -849,10 +849,12 @@ async function startServer() {
                 }));
             }
 
-            console.log(`[Job ${jobId}] Starting AI Generation...`);
+            console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'veo-3.1-lite-generate-preview'}...`);
             
-            const stableModels = ['veo-1.0-preview-001', 'veo-lite-preview-001', 'veo-2.0-preview-001', 'veo-pro-preview-001'];
-            const modelsToTry = model ? [model, ...stableModels.filter(m => m !== model)] : stableModels;
+            // Fallback chain: tenta o modelo solicitado; se 404, tenta o alternativo
+            const modelsToTry: string[] = model
+                ? [model]
+                : ['veo-3.1-generate-preview', 'veo-3.1-lite-generate-preview'];
 
             let response: any;
             let successModel = '';
@@ -869,7 +871,7 @@ async function startServer() {
                     successModel = currentModel;
                     break;
                 }
-                console.warn(`[Job ${jobId}] Model ${currentModel} not found (404). Falling back...`);
+                console.warn(`[Job ${jobId}] Model ${currentModel} not found (404).`);
             }
 
             if (!response.ok) {
