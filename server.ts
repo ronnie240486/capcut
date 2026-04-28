@@ -863,29 +863,41 @@ async function startServer() {
 
                 // Image handling: if image is provided, we use FormData for multipart
                 if (isImageToVideo) {
-                    // Handle image data (convert data URL or http URL to Blob)
-                    let fileBlob: Blob;
-                    let mimeType = 'image/jpeg';
+                    // ── Image normalisation ──────────────────────────────────────────
+                    // The frontend may send the image in several formats:
+                    //   1. Full data URL:  "data:image/png;base64,<b64>"
+                    //   2. Plain base64:   "<b64>"  (no prefix — blobToBase64 strips it)
+                    //   3. HTTP(S) URL:    "https://..."
+                    // We normalise all of them to a Buffer before building FormData.
                     const ACCEPTED_MIMES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp']);
+                    let mimeType = 'image/jpeg';
+                    let imageBuffer: Buffer;
 
                     if (image.startsWith('data:')) {
-                        const [header, base64Data] = image.split(',');
+                        // Full data URL
+                        const commaIdx = image.indexOf(',');
+                        const header = image.substring(0, commaIdx);
+                        const base64Data = image.substring(commaIdx + 1);
                         const detectedMime = header.split(':')[1]?.split(';')[0] ?? 'image/jpeg';
-                        // If the MIME is not accepted by Deapi, re-encode via a neutral binary
-                        // representation but keep the correct MIME so the server accepts it.
-                        // We always normalise to jpeg for non-accepted types.
                         mimeType = ACCEPTED_MIMES.has(detectedMime) ? detectedMime : 'image/jpeg';
-                        const buffer = Buffer.from(base64Data, 'base64');
-                        fileBlob = new Blob([buffer], { type: mimeType });
-                    } else if (image.startsWith('http')) {
+                        imageBuffer = Buffer.from(base64Data, 'base64');
+                    } else if (image.startsWith('http://') || image.startsWith('https://')) {
+                        // Remote URL — fetch the bytes
                         const imgRes = await fetch(image);
-                        const arrayBuffer = await imgRes.arrayBuffer();
                         const ct = imgRes.headers.get('content-type') ?? 'image/jpeg';
                         mimeType = ACCEPTED_MIMES.has(ct.split(';')[0].trim()) ? ct.split(';')[0].trim() : 'image/jpeg';
-                        fileBlob = new Blob([arrayBuffer], { type: mimeType });
+                        imageBuffer = Buffer.from(await imgRes.arrayBuffer());
                     } else {
-                        // Fallback: treat as raw bytes, wrap as JPEG
-                        fileBlob = new Blob([image], { type: 'image/jpeg' });
+                        // Plain base64 string (no data: prefix) — the most common case
+                        // from blobToBase64() in the frontend which strips the prefix.
+                        imageBuffer = Buffer.from(image, 'base64');
+                        // mimeType stays 'image/jpeg' (safe default)
+                    }
+
+                    console.log(`[Job ${jobId}] Image buffer size: ${imageBuffer.length} bytes, mime: ${mimeType}`);
+
+                    if (imageBuffer.length === 0) {
+                        throw new Error('A imagem enviada está vazia ou corrompida. Tente selecionar outra imagem.');
                     }
 
                     const extMap: Record<string, string> = {
@@ -894,7 +906,9 @@ async function startServer() {
                     };
                     const ext = extMap[mimeType] || 'jpg';
 
-                    // Build FormData ONCE, after the blob is ready
+                    // Build FormData ONCE, after the buffer is ready.
+                    // Use a File-like Blob so Node's FormData sets Content-Type correctly.
+                    const fileBlob = new Blob([imageBuffer], { type: mimeType });
                     const formData = new FormData();
                     formData.append('prompt', prompt || 'cinematic video generation');
                     formData.append('model', mappedModel);
