@@ -856,11 +856,10 @@ async function startServer() {
                 };
                 const mappedModel = modelMap[deapiModel] || deapiModel;
 
-                // Determine if it's image2video or text2video
                 const isImageToVideo = !!image;
                 const endpoint = isImageToVideo 
-                    ? `${baseUrl}/api/v1/client/img2video`
-                    : `${baseUrl}/api/v1/client/text2video`;
+                    ? `${baseUrl}/api/v2/videos/animations`
+                    : `${baseUrl}/api/v2/videos/generations`;
 
                 console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel})`);
                 
@@ -905,7 +904,7 @@ async function startServer() {
                         formData.append('frames', '121');
                         formData.append('fps', '24');
                         formData.append('seed', randomSeed);
-                        formData.append('first_frame_image', fileBlob, 'image.jpg');
+                        formData.append('image', fileBlob, 'image.jpg');
 
                         response = await fetch(endpoint, {
                             method: 'POST',
@@ -961,72 +960,70 @@ async function startServer() {
                 }
 
                 const data: any = await response.json();
-                const taskId = data.id || data.task_id || data.data?.task_id;
+                const taskId = data.id || data.task_id || data.job_id || data.data?.job_id || data.data?.task_id;
 
                 if (!taskId) {
-                    if (data.url || data.video_url) {
+                    const directUrl = data.url || data.video_url || data.data?.url || data.data?.video_url;
+                    if (directUrl) {
                         jobs[jobId].status = 'completed';
-                        jobs[jobId].result = [data.url || data.video_url];
+                        jobs[jobId].result = [directUrl];
                         jobs[jobId].progress = 100;
                         return;
                     }
-                    throw new Error("Deapi não retornou ID de tarefa ou URL direta.");
+                    throw new Error("Deapi não retornou ID de tarefa (job_id) ou URL direta.");
                 }
 
-                console.log(`[Job ${jobId}] Deapi Task ID: ${taskId}`);
+                console.log(`[Job ${jobId}] Deapi Job ID: ${taskId}`);
                 jobs[jobId].message = ""; 
 
-                // Polling Deapi Task
+                // Polling Deapi Task (Jobs v2)
                 let completed = false;
                 let attempts = 0;
-                const maxAttempts = 120; // 10 minutes (5s each)
+                const maxAttempts = 150; // 12.5 minutes (5s each)
 
                 while (!completed && attempts < maxAttempts) {
                     attempts++;
                     await new Promise(r => setTimeout(r, 5000));
                     
                     try {
-                        // Try both potential status endpoints
-                        let pollRes = await fetch(`${baseUrl}/v1/video/tasks/${taskId}`, {
+                        const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
                             headers: { 'Authorization': `Bearer ${deapiKey}` }
                         });
                         
                         if (!pollRes.ok) {
-                            // Fallback to client-based status endpoint
-                            pollRes = await fetch(`${baseUrl}/api/v1/client/status/${taskId}`, {
-                                headers: { 'Authorization': `Bearer ${deapiKey}` }
-                            });
-                        }
-                        
-                        if (!pollRes.ok) {
                             if (pollRes.status === 429) {
                                 console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando próximo ciclo (20s)...`);
-                                jobs[jobId].message = "Aguardando liberação de taxa da API...";
+                                jobs[jobId].message = "Aguardando liberação de taxa da API (429)...";
                                 await new Promise(r => setTimeout(r, 20000));
                                 continue;
                             }
+                            console.error(`[Job ${jobId}] Poll HTTP Error ${pollRes.status}`);
                             continue;
                         }
 
                         const taskData: any = await pollRes.json();
-                        console.log(`[Job ${jobId}] Deapi Poll Status: ${taskData.status}`);
+                        const result = taskData.data || taskData;
+                        const status = (result.status || "").toLowerCase();
                         
-                        if (taskData.status === 'completed' || taskData.status === 'succeeded') {
-                            const videoUrl = taskData.video_url || taskData.url;
+                        console.log(`[Job ${jobId}] Deapi Job Status: ${status}`);
+                        
+                        if (status === 'completed' || status === 'succeeded' || status === 'success') {
+                            const videoUrl = result.video_url || result.url;
                             if (videoUrl) {
                                 jobs[jobId].status = 'completed';
                                 jobs[jobId].result = [videoUrl];
                                 jobs[jobId].progress = 100;
                                 completed = true;
                             }
-                        } else if (taskData.status === 'failed') {
-                            throw new Error(`Deapi task failed: ${taskData.error || 'Unknown error'}`);
+                        } else if (status === 'failed' || status === 'error') {
+                            throw new Error(`Deapi task failed: ${result.error || result.message || 'Unknown error'}`);
                         } else {
                             // Update progress incrementally
-                            jobs[jobId].progress = Math.min(95, 5 + (attempts * 0.8));
+                            jobs[jobId].progress = Math.min(95, 5 + (attempts * 0.6));
                         }
-                    } catch (pollErr) {
+                    } catch (pollErr: any) {
                         console.warn(`[Job ${jobId}] Poll error:`, pollErr);
+                        if (pollErr.message?.includes("failed")) throw pollErr;
                     }
                 }
 
