@@ -939,9 +939,10 @@ async function startServer() {
                     }
 
                     if (response.status === 429) {
-                        const waitTime = Math.min(60000, Math.pow(1.5, fetchAttempts - 1) * 10000); // Start with 10s, max 60s
-                        console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/8. Aguardando ${Math.round(waitTime/1000)}s...`);
-                        jobs[jobId].message = `Limite de taxa da API atingido. Aguardando ${Math.round(waitTime/1000)}s para tentar novamente...`;
+                        const waitTime = Math.min(120000, Math.pow(2, fetchAttempts - 1) * 15000); // Start with 15s, double each time, max 2min
+                        const seconds = Math.round(waitTime/1000);
+                        console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/8. Aguardando ${seconds}s...`);
+                        jobs[jobId].message = `Limite de taxa atingido (429). Tentativa ${fetchAttempts}/8 - Retentando em ${seconds}s...`;
                         await new Promise(r => setTimeout(r, waitTime));
                         continue;
                     }
