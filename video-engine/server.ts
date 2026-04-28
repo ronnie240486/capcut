@@ -868,80 +868,38 @@ async function startServer() {
                 let lastFetchError = "";
                 const randomSeed = Math.floor(Math.random() * 2147483647).toString();
 
-                while (fetchAttempts < 8) {
+                while (fetchAttempts < 10) {
                     fetchAttempts++;
                     
-                    // Image handling: if image is provided, we use FormData for multipart
+                    const payload: any = {
+                        prompt: prompt || 'cinematic video generation',
+                        model: mappedModel,
+                        width: aspectRatio === '9:16' ? 720 : (aspectRatio === '16:9' ? 1280 : 1024),
+                        height: aspectRatio === '9:16' ? 1280 : (aspectRatio === '16:9' ? 720 : 1024),
+                        frames: 121,
+                        fps: 24,
+                        seed: parseInt(randomSeed)
+                    };
+
                     if (isImageToVideo) {
-                        let fileBlob;
-                        let mimeType = 'image/jpeg';
-                        
-                        try {
-                            if (image.startsWith('data:')) {
-                                const [header, base64Data] = image.split(',');
-                                mimeType = header.split(':')[1].split(';')[0];
-                                const buffer = Buffer.from(base64Data, 'base64');
-                                fileBlob = new Blob([buffer], { type: mimeType });
-                            } else if (image.startsWith('http')) {
-                                const imgRes = await fetch(image);
-                                const arrayBuffer = await imgRes.arrayBuffer();
-                                mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
-                                fileBlob = new Blob([arrayBuffer], { type: mimeType });
-                            } else {
-                                // Fallback: assume it's raw data or path, try to wrap as blob
-                                fileBlob = new Blob([image], { type: 'image/jpeg' });
-                            }
-                        } catch (blobErr) {
-                            console.error(`[Job ${jobId}] Failed to prepare fileBlob:`, blobErr);
-                            throw new Error("Falha ao processar imagem de referência.");
-                        }
-
-                        const formData = new FormData();
-                        formData.append('prompt', prompt || 'cinematic video generation');
-                        formData.append('model', mappedModel);
-                        formData.append('width', aspectRatio === '9:16' ? '768' : '1024');
-                        formData.append('height', aspectRatio === '9:16' ? '1280' : '768');
-                        formData.append('frames', '121');
-                        formData.append('fps', '24');
-                        formData.append('seed', randomSeed);
-                        formData.append('image', fileBlob, 'image.jpg');
-
-                        response = await fetch(endpoint, {
-                            method: 'POST',
-                            headers: {
-                                'Accept': 'application/json',
-                                'Authorization': `Bearer ${deapiKey}`
-                            },
-                            body: formData
-                        });
-                    } else {
-                        // Text to video usually supports JSON
-                        const jsonPayload = {
-                            prompt: prompt || 'cinematic video generation',
-                            model: mappedModel,
-                            width: aspectRatio === '9:16' ? 768 : 1024,
-                            height: aspectRatio === '9:16' ? 1280 : 768,
-                            frames: 121,
-                            fps: 24,
-                            seed: parseInt(randomSeed)
-                        };
-
-                        response = await fetch(endpoint, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json',
-                                'Authorization': `Bearer ${deapiKey}`
-                            },
-                            body: JSON.stringify(jsonPayload)
-                        });
+                        payload.image = image; // Use base64 directly from body
                     }
 
+                    response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'Authorization': `Bearer ${deapiKey}`
+                        },
+                        body: JSON.stringify(payload)
+                    });
+
                     if (response.status === 429) {
-                        const waitTime = Math.min(120000, Math.pow(2, fetchAttempts - 1) * 15000); // Start with 15s, double each time, max 2min
+                        const waitTime = Math.min(180000, Math.pow(2, fetchAttempts - 1) * 25000); // Start with 25s, double up to 3min
                         const seconds = Math.round(waitTime/1000);
-                        console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/8. Aguardando ${seconds}s...`);
-                        jobs[jobId].message = `Limite de taxa atingido (429). Tentativa ${fetchAttempts}/8 - Retentando em ${seconds}s...`;
+                        console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/10. Aguardando ${seconds}s...`);
+                        jobs[jobId].message = `Limite de taxa atingido (API Ocupada). Tentativa ${fetchAttempts}/10 - Retentando em ${seconds}s...`;
                         await new Promise(r => setTimeout(r, waitTime));
                         continue;
                     }
@@ -956,7 +914,8 @@ async function startServer() {
                 }
 
                 if (!response || !response.ok) {
-                    throw new Error(lastFetchError || "Falha na comunicação com Deapi após várias tentativas.");
+                    const finalError = lastFetchError || (fetchAttempts >= 10 ? "Limite de tentativas excedido (Rate Limit persistente na Deapi)." : "Falha na comunicação com Deapi após retentativas.");
+                    throw new Error(finalError);
                 }
 
                 const data: any = await response.json();
@@ -992,9 +951,9 @@ async function startServer() {
                         
                         if (!pollRes.ok) {
                             if (pollRes.status === 429) {
-                                console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando próximo ciclo (20s)...`);
-                                jobs[jobId].message = "Aguardando liberação de taxa da API (429)...";
-                                await new Promise(r => setTimeout(r, 20000));
+                                console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando ciclo mais longo (30s)...`);
+                                jobs[jobId].message = "API ocupada (Limite de taxa). Aguardando liberação...";
+                                await new Promise(r => setTimeout(r, 30000));
                                 continue;
                             }
                             console.error(`[Job ${jobId}] Poll HTTP Error ${pollRes.status}`);
