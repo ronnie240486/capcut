@@ -848,11 +848,14 @@ async function startServer() {
                 // Determine base URL (api.deapi.ai is standard for API access)
                 const baseUrl = "https://api.deapi.ai";
                 
-                // Model Mapping
+                // Model Mapping for v2
                 const modelMap: Record<string, string> = {
-                    "ltx-2.3-22b": "Ltx2_3_22B_Dist_INT8",
-                    "ltx-video-13b": "LtxVideo_13B_Dist_INT8",
-                    "ltx-2-19b-fp8": "Ltx2_19B_Dist_INT8"
+                    "ltx-2.3-22b": "ltx-video-2.3",
+                    "ltx-video-13b": "ltx-video-1.3",
+                    "ltx-2-19b-fp8": "ltx-video-2.0",
+                    "ltx-video": "ltx-video-1.3",
+                    "animate-diff": "animate-diff-v3",
+                    "svd": "svd-xt-1.1"
                 };
                 const mappedModel = modelMap[deapiModel] || deapiModel;
 
@@ -882,7 +885,11 @@ async function startServer() {
                     };
 
                     if (isImageToVideo) {
-                        payload.image = image; // Use base64 directly from body
+                        // Deapi v2 Animation payload (JSON)
+                        payload.image = image; 
+                        // Fallback for some v2 variants
+                        payload.image_url = image; 
+                        payload.input_image = image;
                     }
 
                     response = await fetch(endpoint, {
@@ -890,17 +897,19 @@ async function startServer() {
                         headers: {
                             'Content-Type': 'application/json',
                             'Accept': 'application/json',
-                            'Authorization': `Bearer ${deapiKey}`
+                            'Authorization': `Bearer ${deapiKey}`,
+                            'x-api-key': deapiKey
                         },
                         body: JSON.stringify(payload)
                     });
 
                     if (response.status === 429) {
-                        const waitTime = Math.min(240000, Math.pow(1.8, fetchAttempts - 1) * 30000); 
+                        // Wait significantly longer on 429
+                        const waitTime = Math.min(300000, 45000 + (Math.pow(1.5, fetchAttempts - 1) * 45000)); 
                         const seconds = Math.round(waitTime/1000);
                         console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/15. Aguardando ${seconds}s...`);
                         if (jobs[jobId]) {
-                            jobs[jobId].message = `API Ocupada (429). Tentativa ${fetchAttempts}/15 - Aguardando ${seconds}s para liberar...`;
+                            jobs[jobId].message = `API Temporariamente Ocupada (429). Tentat. ${fetchAttempts}/15 - Retentando em ${seconds}s...`;
                         }
                         await new Promise(r => setTimeout(r, waitTime));
                         continue;
@@ -954,7 +963,10 @@ async function startServer() {
 
                     try {
                         const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
-                            headers: { 'Authorization': `Bearer ${deapiKey}` }
+                            headers: { 
+                                'Authorization': `Bearer ${deapiKey}`,
+                                'x-api-key': deapiKey
+                            }
                         });
                         
                         if (!pollRes.ok) {
