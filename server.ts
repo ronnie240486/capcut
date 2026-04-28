@@ -894,16 +894,48 @@ async function startServer() {
                         payload.first_frame_image = image; // Novo campo obrigatório reportado no erro 422
                     }
 
-                    response = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Accept': 'application/json',
-                            'Authorization': `Bearer ${deapiKey}`,
-                            'x-api-key': deapiKey
-                        },
-                        body: JSON.stringify(payload)
-                    });
+                    if (isImageToVideo) {
+                        // Envio via FormData para suportar arquivo real (exigência da API Deapi v2)
+                        const formData = new FormData();
+                        formData.append('prompt', payload.prompt);
+                        formData.append('model', "ltx-video-v0.9"); // Slug padrão da documentação
+                        formData.append('width', payload.width.toString());
+                        formData.append('height', payload.height.toString());
+                        formData.append('frames', payload.frames.toString());
+                        formData.append('fps', payload.fps.toString());
+                        formData.append('seed', payload.seed.toString());
+
+                        // Converter base64 para Blob para enviar como arquivo
+                        const base64Data = image.split(',')[1] || image;
+                        const byteCharacters = Buffer.from(base64Data, 'base64');
+                        const blob = new Blob([byteCharacters], { type: 'image/png' });
+                        
+                        // A documentação cita input_image para img2video e first_frame_image em alguns modelos. 
+                        // Enviamos ambos para garantir compatibilidade máxima.
+                        formData.append('input_image', blob, 'input.png');
+                        formData.append('first_frame_image', blob, 'first_frame.png');
+
+                        response = await fetch(endpoint, {
+                            method: 'POST',
+                            headers: {
+                                'Accept': 'application/json',
+                                'Authorization': `Bearer ${deapiKey}`,
+                                'x-api-key': deapiKey
+                            },
+                            body: formData
+                        });
+                    } else {
+                        response = await fetch(endpoint, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'Authorization': `Bearer ${deapiKey}`,
+                                'x-api-key': deapiKey
+                            },
+                            body: JSON.stringify(payload)
+                        });
+                    }
 
                     if (response.status === 429) {
                         // Backoff linear: 30s fixos entre tentativas (não exponencial)
