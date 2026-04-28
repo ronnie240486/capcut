@@ -154,6 +154,15 @@ async function startServer() {
         return "";
     };
 
+    const getDeapiKey = (req?: express.Request) => {
+        const headerKey = (req?.headers['x-deapi-api-key'] || "").toString().trim();
+        let key = headerKey || (process.env.DEAPI_API_KEY || "").trim();
+        if (key.toLowerCase().startsWith("bearer ")) {
+            return key.substring(7).trim();
+        }
+        return key;
+    };
+
     // ─── HEALTH ────────────────────────────────────────────────────────────────
     app.get('/api/health', (req, res) => {
         const key = getGeminiKey();
@@ -815,6 +824,192 @@ async function startServer() {
         res.status(202).json({ jobId });
 
         const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey } = req.body;
+        
+        if (model && model.startsWith('deapi-')) {
+            const deapiModel = model.replace('deapi-', '');
+            const deapiKey = apiKey || getDeapiKey(req);
+
+            if (!deapiKey) {
+                jobs[jobId].status = 'failed';
+                jobs[jobId].error = 'Chave API Deapi não configurada no servidor.';
+                return;
+            }
+
+            console.log(`[Job ${jobId}] Starting Deapi Video Generation with model: ${deapiModel}...`);
+            console.log(`[Job ${jobId}] Key check: ${deapiKey ? (deapiKey.substring(0, 4) + "..." + deapiKey.substring(deapiKey.length - 4)) : "MISSING"}`);
+            
+            try {
+                // Determine base URL (api.deapi.ai is standard for API access)
+                const baseUrl = "https://api.deapi.ai";
+                
+                // Model Mapping
+                const modelMap: Record<string, string> = {
+                    "ltx-2.3-22b": "Ltx2_3_22B_Dist_INT8",
+                    "ltx-video-13b": "LtxVideo_13B_Dist_INT8",
+                    "ltx-2-19b-fp8": "Ltx2_19B_Dist_INT8"
+                };
+                const mappedModel = modelMap[deapiModel] || deapiModel;
+
+                // Determine if it's image2video or text2video
+                const isImageToVideo = !!image;
+                const endpoint = isImageToVideo 
+                    ? `${baseUrl}/api/v1/client/img2video`
+                    : `${baseUrl}/api/v1/client/text2video`;
+
+                console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel})`);
+                
+                let response;
+                const randomSeed = Math.floor(Math.random() * 2147483647).toString();
+
+                // Image handling: if image is provided, we use FormData for multipart
+                if (isImageToVideo) {
+                    const formData = new FormData();
+                    formData.append('prompt', prompt || 'cinematic video generation');
+                    formData.append('model', mappedModel);
+                    formData.append('width', aspectRatio === '9:16' ? '768' : '1024');
+                    formData.append('height', aspectRatio === '9:16' ? '1280' : '768');
+                    formData.append('frames', '121');
+                    formData.append('fps', '24');
+                    formData.append('seed', randomSeed);
+                    
+                    // Handle image data (convert URL or base64 to Blob)
+                    let fileBlob;
+                    let mimeType = 'image/jpeg';
+                    
+                    if (image.startsWith('data:')) {
+                        const [header, base64Data] = image.split(',');
+                        mimeType = header.split(':')[1].split(';')[0];
+                        const buffer = Buffer.from(base64Data, 'base64');
+                        fileBlob = new Blob([buffer], { type: mimeType });
+                    } else if (image.startsWith('http')) {
+                        const imgRes = await fetch(image);
+                        const arrayBuffer = await imgRes.arrayBuffer();
+                        mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
+                        fileBlob = new Blob([arrayBuffer], { type: mimeType });
+                    } else {
+                        // Fallback: assume it's raw data or path, try to wrap as blob
+                        fileBlob = new Blob([image], { type: 'image/jpeg' });
+                    }
+
+                    const formData = new FormData();
+                    formData.append('prompt', prompt || 'cinematic video generation');
+                    formData.append('model', mappedModel);
+                    formData.append('width', aspectRatio === '9:16' ? '768' : '1024');
+                    formData.append('height', aspectRatio === '9:16' ? '1280' : '768');
+                    formData.append('frames', '121');
+                    formData.append('fps', '24');
+                    formData.append('seed', randomSeed);
+                    formData.append('first_frame_image', fileBlob, 'image.jpg');
+
+                    response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Accept': 'application/json',
+                            'Authorization': `Bearer ${deapiKey}`
+                        },
+                        body: formData
+                    });
+                } else {
+                    // Text to video usually supports JSON
+                    const jsonPayload = {
+                        prompt: prompt || 'cinematic video generation',
+                        model: mappedModel,
+                        width: aspectRatio === '9:16' ? 768 : 1024,
+                        height: aspectRatio === '9:16' ? 1280 : 768,
+                        frames: 121,
+                        fps: 24,
+                        seed: parseInt(randomSeed)
+                    };
+
+                    response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'Authorization': `Bearer ${deapiKey}`
+                        },
+                        body: JSON.stringify(jsonPayload)
+                    });
+                }
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    throw new Error(`Deapi API error (${response.status}): ${errText.substring(0, 500)}${errText.length > 500 ? '...' : ''}`);
+                }
+
+                const data: any = await response.json();
+                const taskId = data.id || data.task_id || data.data?.task_id;
+
+                if (!taskId) {
+                    if (data.url || data.video_url) {
+                        jobs[jobId].status = 'completed';
+                        jobs[jobId].result = [data.url || data.video_url];
+                        jobs[jobId].progress = 100;
+                        return;
+                    }
+                    throw new Error("Deapi não retornou ID de tarefa ou URL direta.");
+                }
+
+                console.log(`[Job ${jobId}] Deapi Task ID: ${taskId}`);
+
+                // Polling Deapi Task
+                let completed = false;
+                let attempts = 0;
+                const maxAttempts = 120; // 10 minutes (5s each)
+
+                while (!completed && attempts < maxAttempts) {
+                    attempts++;
+                    await new Promise(r => setTimeout(r, 5000));
+                    
+                    try {
+                        // Try both potential status endpoints
+                        let pollRes = await fetch(`${baseUrl}/v1/video/tasks/${taskId}`, {
+                            headers: { 'Authorization': `Bearer ${deapiKey}` }
+                        });
+                        
+                        if (!pollRes.ok) {
+                            // Fallback to client-based status endpoint
+                            pollRes = await fetch(`${baseUrl}/api/v1/client/status/${taskId}`, {
+                                headers: { 'Authorization': `Bearer ${deapiKey}` }
+                            });
+                        }
+                        
+                        if (!pollRes.ok) continue;
+
+                        const taskData: any = await pollRes.json();
+                        console.log(`[Job ${jobId}] Deapi Poll Status: ${taskData.status}`);
+                        
+                        if (taskData.status === 'completed' || taskData.status === 'succeeded') {
+                            const videoUrl = taskData.video_url || taskData.url;
+                            if (videoUrl) {
+                                jobs[jobId].status = 'completed';
+                                jobs[jobId].result = [videoUrl];
+                                jobs[jobId].progress = 100;
+                                completed = true;
+                            }
+                        } else if (taskData.status === 'failed') {
+                            throw new Error(`Deapi task failed: ${taskData.error || 'Unknown error'}`);
+                        } else {
+                            // Update progress incrementally
+                            jobs[jobId].progress = Math.min(95, 5 + (attempts * 0.8));
+                        }
+                    } catch (pollErr) {
+                        console.warn(`[Job ${jobId}] Poll error:`, pollErr);
+                    }
+                }
+
+                if (!completed) {
+                    throw new Error("Tempo esgotado aguardando geração do Deapi.");
+                }
+
+            } catch (err: any) {
+                console.error(`[Job ${jobId}] Deapi Error:`, err);
+                jobs[jobId].status = 'failed';
+                jobs[jobId].error = err.message || String(err);
+            }
+            return;
+        }
+
         const finalKey = apiKey || getGeminiKey();
 
         if (!finalKey) {
@@ -851,57 +1046,55 @@ async function startServer() {
 
             console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'veo-3.1-lite-generate-preview'}...`);
             
-            // Fallback chain: tenta o modelo solicitado; se 404, tenta o alternativo
-            const modelsToTry: string[] = model
-                ? [model]
-                : ['veo-3.1-generate-preview', 'veo-3.1-lite-generate-preview'];
+            // Fallback chain: tenta o modelo solicitado primeiro; se 404, tenta os outros
+            const defaultModels = [
+                'models/veo-generate-preview-001',
+                'models/veo-lite-preview-001',
+                'veo-3.1-generate-preview', 
+                'veo-3.1-lite-generate-preview', 
+                'veo-2.0-preview-001', 
+                'veo-lite-preview-001'
+            ];
+            
+            const modelsToTry = model ? [model, ...defaultModels.filter(m => m !== model)] : defaultModels;
 
-            let response: any;
+            const ai = new GoogleGenAI({ apiKey: finalKey });
+            let operation: any;
             let successModel = '';
 
             for (const currentModel of modelsToTry) {
                 console.log(`[Job ${jobId}] Trying model: ${currentModel}...`);
-                response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateVideos?key=${finalKey}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
+                try {
+                    // Mapeia o payload para o formato esperado pelo SDK
+                    const sdkPayload: any = {
+                        model: currentModel,
+                        prompt: payload.prompt,
+                        config: payload.config
+                    };
+                    if (payload.image) sdkPayload.image = payload.image;
+                    if (payload.lastFrame) sdkPayload.lastFrame = payload.lastFrame;
+                    if (payload.referenceImages) sdkPayload.referenceImages = payload.referenceImages;
 
-                if (response.status !== 404) {
+                    operation = await ai.models.generateVideos(sdkPayload);
                     successModel = currentModel;
                     break;
+                } catch (e: any) {
+                    const errorMsg = e.message || String(e);
+                    if (errorMsg.includes('404') || errorMsg.includes('not found')) {
+                        console.warn(`[Job ${jobId}] Model ${currentModel} not found (404).`);
+                        continue;
+                    }
+                    console.error(`[Job ${jobId}] Error with model ${currentModel}:`, errorMsg);
+                    throw e; 
                 }
-                console.warn(`[Job ${jobId}] Model ${currentModel} not found (404).`);
             }
 
-            if (!response.ok) {
-                const errText = await response.text();
-                console.error(`[Job ${jobId}] Gemini API Error (${response.status}):`, errText);
-                let errMsg = 'Erro na API Gemini';
-                try {
-                    const err = JSON.parse(errText);
-                    errMsg = err?.error?.message || err?.message || `${errMsg} (${response.status})`;
-                } catch (e) {
-                    errMsg = `${errMsg} (${response.status}: ${errText.substring(0, 150)})`;
-                }
-                throw new Error(errMsg);
+            if (!operation) {
+                throw new Error('Nenhum modelo de vídeo disponível (404 em todos os modelos testados).');
             }
 
-            const dataContent = await response.text();
-            let data: any = null;
-            try {
-                data = JSON.parse(dataContent);
-            } catch (e) {
-                console.error(`[Job ${jobId}] Failed to parse successful response:`, dataContent);
-                throw new Error('Falha ao processar resposta de sucesso da API Gemini (JSON inválido)');
-            }
-
-            if (!data || !data.name) {
-                console.error(`[Job ${jobId}] Unexpected response structure:`, data);
-                throw new Error('Resposta inesperada da API Gemini (operation name missing)');
-            }
-
-            const operationName = data.name;
+            console.log(`[Job ${jobId}] Operation started with model ${successModel}: ${operation.name}`);
+            const operationName = operation.name;
             let completed = false;
             let attempts = 0;
             const maxAttempts = 60;
@@ -909,19 +1102,29 @@ async function startServer() {
             while (!completed && attempts < maxAttempts) {
                 attempts++;
                 await new Promise(r => setTimeout(r, 5000));
-                const pollRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${finalKey}`);
-                const pollData = await safeJson(pollRes);
-                if (!pollData) {
-                    attempts++;
-                    continue;
-                }
+                
+                // Polling using the SDK
+                const pollRes = await ai.operations.getVideosOperation({ 
+                    operation: operation 
+                });
+                
                 if (jobs[jobId]) jobs[jobId].progress = Math.min(95, 10 + (attempts * 1.5));
 
-                if (pollData.done) {
+                if (pollRes.done) {
                     completed = true;
-                    if (pollData.error) throw new Error(pollData.error.message);
-                    const videoUrl = pollData.response.videoUri || pollData.response.video.uri;
-                    const videoRes = await fetch(videoUrl);
+                    if (pollRes.error) throw new Error(String(pollRes.error.message || 'Erro deconhecido na geração do vídeo'));
+                    
+                    const videoUrl = pollRes.response?.generatedVideos?.[0]?.video?.uri;
+                    if (!videoUrl) throw new Error('Video URI not found in successful operation');
+                    
+                    // Download do vídeo final com a chave API (alguns endpoints exigem)
+                    const separator = videoUrl.includes('?') ? '&' : '?';
+                    const videoRes = await fetch(`${videoUrl}${separator}key=${finalKey}`);
+                    
+                    if (!videoRes.ok) {
+                        throw new Error(`Falha ao baixar vídeo gerado: ${videoRes.status}`);
+                    }
+
                     const buffer = Buffer.from(await videoRes.arrayBuffer());
                     const filename = `ai_gen_${Date.now()}.mp4`;
                     const outputPath = path.join(uploadDir, filename);
