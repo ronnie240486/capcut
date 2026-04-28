@@ -848,18 +848,37 @@ async function startServer() {
                 // Determine base URL (api.deapi.ai is standard for API access)
                 const baseUrl = "https://api.deapi.ai";
                 
-                // Model Mapping for v2
-                const modelMap: Record<string, string> = {
-                    "ltx-2.3-22b": "ltx-video-v0.9", // Ajustado para os nomes padrão da Deapi v2
-                    "ltx-video-13b": "ltx-video-v0.9",
-                    "ltx-2-19b-fp8": "ltx-video-v0.9",
-                    "ltx-video": "ltx-video-v0.9",
-                    "animate-diff": "animate-diff-v3",
-                    "svd": "svd-xt-1.1"
-                };
-                const mappedModel = modelMap[deapiModel] || deapiModel;
-
                 const isImageToVideo = !!image;
+                
+                // Busca dinâmica de modelos para evitar erro de "model does not exist"
+                let mappedModel = deapiModel;
+                try {
+                    console.log(`[Job ${jobId}] Buscando modelos disponíveis na Deapi...`);
+                    const modelsRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=img2video,txt2video`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                    });
+                    if (modelsRes.ok) {
+                        const modelsData = await modelsRes.json();
+                        const availableModels = modelsData.data || [];
+                        console.log(`[Job ${jobId}] Modelos encontrados:`, availableModels.map((m: any) => m.slug).join(', '));
+                        
+                        // Tentar encontrar o melhor match para LTX
+                        const ltxModel = availableModels.find((m: any) => 
+                            m.slug.toLowerCase().includes('ltx') && 
+                            (isImageToVideo ? (m.slug.toLowerCase().includes('anim') || m.slug.toLowerCase().includes('img')) : true)
+                        );
+                        
+                        if (ltxModel) {
+                            mappedModel = ltxModel.slug;
+                            console.log(`[Job ${jobId}] Usando modelo dinâmico encontrado: ${mappedModel}`);
+                        } else if (availableModels.length > 0) {
+                            mappedModel = availableModels[0].slug;
+                            console.log(`[Job ${jobId}] LTX não encontrado, usando primeiro disponível: ${mappedModel}`);
+                        }
+                    }
+                } catch (modelErr) {
+                    console.warn(`[Job ${jobId}] Falha ao buscar modelos dinamicamente, usando fallback: ${mappedModel}`);
+                }
                 const endpoint = isImageToVideo 
                     ? `${baseUrl}/api/v2/videos/animations`
                     : `${baseUrl}/api/v2/videos/generations`;
