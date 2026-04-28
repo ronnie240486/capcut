@@ -863,6 +863,38 @@ async function startServer() {
 
                 // Image handling: if image is provided, we use FormData for multipart
                 if (isImageToVideo) {
+                    // Handle image data (convert data URL or http URL to Blob)
+                    let fileBlob: Blob;
+                    let mimeType = 'image/jpeg';
+                    const ACCEPTED_MIMES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp']);
+
+                    if (image.startsWith('data:')) {
+                        const [header, base64Data] = image.split(',');
+                        const detectedMime = header.split(':')[1]?.split(';')[0] ?? 'image/jpeg';
+                        // If the MIME is not accepted by Deapi, re-encode via a neutral binary
+                        // representation but keep the correct MIME so the server accepts it.
+                        // We always normalise to jpeg for non-accepted types.
+                        mimeType = ACCEPTED_MIMES.has(detectedMime) ? detectedMime : 'image/jpeg';
+                        const buffer = Buffer.from(base64Data, 'base64');
+                        fileBlob = new Blob([buffer], { type: mimeType });
+                    } else if (image.startsWith('http')) {
+                        const imgRes = await fetch(image);
+                        const arrayBuffer = await imgRes.arrayBuffer();
+                        const ct = imgRes.headers.get('content-type') ?? 'image/jpeg';
+                        mimeType = ACCEPTED_MIMES.has(ct.split(';')[0].trim()) ? ct.split(';')[0].trim() : 'image/jpeg';
+                        fileBlob = new Blob([arrayBuffer], { type: mimeType });
+                    } else {
+                        // Fallback: treat as raw bytes, wrap as JPEG
+                        fileBlob = new Blob([image], { type: 'image/jpeg' });
+                    }
+
+                    const extMap: Record<string, string> = {
+                        'image/jpeg': 'jpg', 'image/png': 'png',
+                        'image/gif': 'gif', 'image/bmp': 'bmp', 'image/webp': 'webp',
+                    };
+                    const ext = extMap[mimeType] || 'jpg';
+
+                    // Build FormData ONCE, after the blob is ready
                     const formData = new FormData();
                     formData.append('prompt', prompt || 'cinematic video generation');
                     formData.append('model', mappedModel);
@@ -871,27 +903,7 @@ async function startServer() {
                     formData.append('frames', '121');
                     formData.append('fps', '24');
                     formData.append('seed', randomSeed);
-                    
-                    // Handle image data (convert URL or base64 to Blob)
-                    let fileBlob;
-                    let mimeType = 'image/jpeg';
-                    
-                    if (image.startsWith('data:')) {
-                        const [header, base64Data] = image.split(',');
-                        mimeType = header.split(':')[1].split(';')[0];
-                        const buffer = Buffer.from(base64Data, 'base64');
-                        fileBlob = new Blob([buffer], { type: mimeType });
-                    } else if (image.startsWith('http')) {
-                        const imgRes = await fetch(image);
-                        const arrayBuffer = await imgRes.arrayBuffer();
-                        mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
-                        fileBlob = new Blob([arrayBuffer], { type: mimeType });
-                    } else {
-                        // Fallback: assume it's raw data or path, try to wrap as blob
-                        fileBlob = new Blob([image], { type: 'image/jpeg' });
-                    }
-
-                    formData.append('first_frame_image', fileBlob, 'image.jpg');
+                    formData.append('first_frame_image', fileBlob, `first_frame_image.${ext}`);
 
                     response = await fetch(endpoint, {
                         method: 'POST',
