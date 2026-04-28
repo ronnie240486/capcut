@@ -869,7 +869,7 @@ async function startServer() {
                 let lastFetchError = "";
                 const randomSeed = Math.floor(Math.random() * 2147483647).toString();
 
-                while (fetchAttempts < 4) {
+                while (fetchAttempts < 8) {
                     fetchAttempts++;
                     
                     // Image handling: if image is provided, we use FormData for multipart
@@ -939,8 +939,10 @@ async function startServer() {
                     }
 
                     if (response.status === 429) {
-                        console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/4. Aguardando 8s...`);
-                        await new Promise(r => setTimeout(r, 8000));
+                        const waitTime = Math.min(60000, Math.pow(1.5, fetchAttempts - 1) * 10000); // Start with 10s, max 60s
+                        console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/8. Aguardando ${Math.round(waitTime/1000)}s...`);
+                        jobs[jobId].message = `Limite de taxa da API atingido. Aguardando ${Math.round(waitTime/1000)}s para tentar novamente...`;
+                        await new Promise(r => setTimeout(r, waitTime));
                         continue;
                     }
 
@@ -971,6 +973,7 @@ async function startServer() {
                 }
 
                 console.log(`[Job ${jobId}] Deapi Task ID: ${taskId}`);
+                jobs[jobId].message = ""; 
 
                 // Polling Deapi Task
                 let completed = false;
@@ -996,8 +999,9 @@ async function startServer() {
                         
                         if (!pollRes.ok) {
                             if (pollRes.status === 429) {
-                                console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando próximo ciclo...`);
-                                await new Promise(r => setTimeout(r, 10000));
+                                console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando próximo ciclo (20s)...`);
+                                jobs[jobId].message = "Aguardando liberação de taxa da API...";
+                                await new Promise(r => setTimeout(r, 20000));
                                 continue;
                             }
                             continue;
