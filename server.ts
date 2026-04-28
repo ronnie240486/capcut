@@ -959,6 +959,12 @@ async function startServer() {
                 
                 // Log the full response so we can see exactly what Deapi returns
                 console.log(`[Job ${jobId}] Deapi raw response:`, JSON.stringify(data));
+                
+                // If the response includes a status_url or callback_url, log it — 
+                // it tells us the exact poll endpoint to use
+                const hintUrl = data.status_url || data.callback_url || data.poll_url 
+                    || data.data?.status_url || data.data?.callback_url;
+                if (hintUrl) console.log(`[Job ${jobId}] Deapi hint status URL:`, hintUrl);
 
                 // Deapi response shapes vary by model/endpoint. Try every known field path.
                 const taskId = data.id
@@ -1011,24 +1017,40 @@ async function startServer() {
                     
                     try {
                         // Try all known Deapi status endpoints in order
+                        // Try every known Deapi status endpoint pattern.
+                        // The submission uses /api/v1/client/img2video, so the status
+                        // endpoint is most likely /api/v1/client/task/{id} (singular).
                         const pollEndpoints = [
+                            `${baseUrl}/api/v1/client/task/${taskId}`,
+                            `${baseUrl}/api/v1/client/tasks/${taskId}`,
+                            `${baseUrl}/api/v1/client/img2video/${taskId}`,
+                            `${baseUrl}/api/v1/client/result/${taskId}`,
                             `${baseUrl}/api/v1/client/status/${taskId}`,
-                            `${baseUrl}/v1/video/tasks/${taskId}`,
-                            `${baseUrl}/v1/tasks/${taskId}`,
+                            `${baseUrl}/api/v1/task/${taskId}`,
                             `${baseUrl}/api/v1/tasks/${taskId}`,
+                            `${baseUrl}/v1/video/tasks/${taskId}`,
                         ];
 
                         let pollRes: Response | null = null;
+                        let successEp = '';
                         for (const ep of pollEndpoints) {
-                            const r = await fetch(ep, {
-                                headers: { 'Authorization': `Bearer ${deapiKey}` }
-                            });
-                            if (r.ok) { pollRes = r; break; }
+                            try {
+                                const r = await fetch(ep, {
+                                    headers: { 'Authorization': `Bearer ${deapiKey}` }
+                                });
+                                console.log(`[Job ${jobId}] Poll ${ep} → ${r.status}`);
+                                if (r.ok) { pollRes = r; successEp = ep; break; }
+                            } catch (fetchErr) {
+                                console.warn(`[Job ${jobId}] Poll fetch error for ${ep}:`, fetchErr);
+                            }
                         }
 
                         if (!pollRes) { 
-                            console.warn(`[Job ${jobId}] All poll endpoints failed for task ${taskId}`);
+                            console.warn(`[Job ${jobId}] All poll endpoints failed for task ${taskId} — will retry next cycle`);
                             continue;
+                        }
+                        if (attempts === 1) {
+                            console.log(`[Job ${jobId}] Working poll endpoint: ${successEp}`);
                         }
 
                         const taskData: any = await pollRes.json();
