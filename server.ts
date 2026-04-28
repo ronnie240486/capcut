@@ -30,8 +30,8 @@ async function startServer() {
         allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
     }));
 
-    app.use(express.json({ limit: '5gb' }));
-    app.use(express.urlencoded({ extended: true, limit: '5gb' }));
+    app.use(express.json({ limit: '1gb' }));
+    app.use(express.urlencoded({ extended: true, limit: '1gb' }));
 
     // Helper for safe JSON parsing in Node environment
     async function safeJson(response: any) {
@@ -383,7 +383,7 @@ async function startServer() {
 
     const uploadAny = multer({
         storage,
-        limits: { fieldSize: 100 * 1024 * 1024, fileSize: 10240 * 1024 * 1024 } // 10GB for chunked assembly
+        limits: { fieldSize: 100 * 1024 * 1024, fileSize: 2048 * 1024 * 1024 }
     }).any();
 
     const uploadSingle = multer({ storage }).single('file');
@@ -584,22 +584,16 @@ async function startServer() {
 
         if (res && !res.headersSent) res.status(202).json({ jobId });
 
-        const deapi_key = process.env.DEAPI_API_KEY || '';
-        if (!deapi_key) {
-           console.error("[Backend] CRITICAL: DEAPI_API_KEY IS NOT CONFIGURED!");
-        }
-
         // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
         // Limitation: Limit threads for Cloud Run stability
         // Adding probe limits to prevent runaway memory
         let finalArgs = [
-            '-hide_banner', '-loglevel', 'info', '-stats', 
-            '-threads', '4', 
-            '-probesize', '500M', 
-            '-analyzeduration', '500M',
+            '-hide_banner', '-loglevel', 'error', '-stats', 
+            '-threads', '1', 
+            '-probesize', '1M', 
+            '-analyzeduration', '1M',
             '-reinit_filter', '0', 
-            '-hwaccel', 'none',
-            '-max_muxing_queue_size', '4096'
+            '-hwaccel', 'none'
         ];
         const processedArgs: string[] = [];
         let filterScriptPath: string | null = null;
@@ -865,161 +859,261 @@ async function startServer() {
                 console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel})`);
                 
                 let response;
-                let fetchAttempts = 0;
-                let lastFetchError = "";
+                let submitBody: FormData | string = '';
                 const randomSeed = Math.floor(Math.random() * 2147483647).toString();
 
-                while (fetchAttempts < 8) {
-                    fetchAttempts++;
-                    
-                    // Image handling: if image is provided, we use FormData for multipart
-                    if (isImageToVideo) {
-                        let fileBlob;
-                        let mimeType = 'image/jpeg';
-                        
-                        try {
-                            if (image.startsWith('data:')) {
-                                const [header, base64Data] = image.split(',');
-                                mimeType = header.split(':')[1].split(';')[0];
-                                const buffer = Buffer.from(base64Data, 'base64');
-                                fileBlob = new Blob([buffer], { type: mimeType });
-                            } else if (image.startsWith('http')) {
-                                const imgRes = await fetch(image);
-                                const arrayBuffer = await imgRes.arrayBuffer();
-                                mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
-                                fileBlob = new Blob([arrayBuffer], { type: mimeType });
-                            } else {
-                                // Fallback: assume it's raw data or path, try to wrap as blob
-                                fileBlob = new Blob([image], { type: 'image/jpeg' });
-                            }
-                        } catch (blobErr) {
-                            console.error(`[Job ${jobId}] Failed to prepare fileBlob:`, blobErr);
-                            throw new Error("Falha ao processar imagem de referência.");
-                        }
+                // Image handling: if image is provided, we use FormData for multipart
+                if (isImageToVideo) {
+                    // ── Image normalisation ──────────────────────────────────────────
+                    // The frontend may send the image in several formats:
+                    //   1. Full data URL:  "data:image/png;base64,<b64>"
+                    //   2. Plain base64:   "<b64>"  (no prefix — blobToBase64 strips it)
+                    //   3. HTTP(S) URL:    "https://..."
+                    // We normalise all of them to a Buffer before building FormData.
+                    const ACCEPTED_MIMES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/bmp', 'image/webp']);
+                    let mimeType = 'image/jpeg';
+                    let imageBuffer: Buffer;
 
-                        const formData = new FormData();
-                        formData.append('prompt', prompt || 'cinematic video generation');
-                        formData.append('model', mappedModel);
-                        formData.append('width', aspectRatio === '9:16' ? '768' : '1024');
-                        formData.append('height', aspectRatio === '9:16' ? '1280' : '768');
-                        formData.append('frames', '121');
-                        formData.append('fps', '24');
-                        formData.append('seed', randomSeed);
-                        formData.append('first_frame_image', fileBlob, 'image.jpg');
-
-                        response = await fetch(endpoint, {
-                            method: 'POST',
-                            headers: {
-                                'Accept': 'application/json',
-                                'Authorization': `Bearer ${deapiKey}`
-                            },
-                            body: formData
-                        });
+                    if (image.startsWith('data:')) {
+                        // Full data URL
+                        const commaIdx = image.indexOf(',');
+                        const header = image.substring(0, commaIdx);
+                        const base64Data = image.substring(commaIdx + 1);
+                        const detectedMime = header.split(':')[1]?.split(';')[0] ?? 'image/jpeg';
+                        mimeType = ACCEPTED_MIMES.has(detectedMime) ? detectedMime : 'image/jpeg';
+                        imageBuffer = Buffer.from(base64Data, 'base64');
+                    } else if (image.startsWith('http://') || image.startsWith('https://')) {
+                        // Remote URL — fetch the bytes
+                        const imgRes = await fetch(image);
+                        const ct = imgRes.headers.get('content-type') ?? 'image/jpeg';
+                        mimeType = ACCEPTED_MIMES.has(ct.split(';')[0].trim()) ? ct.split(';')[0].trim() : 'image/jpeg';
+                        imageBuffer = Buffer.from(await imgRes.arrayBuffer());
                     } else {
-                        // Text to video usually supports JSON
-                        const jsonPayload = {
-                            prompt: prompt || 'cinematic video generation',
-                            model: mappedModel,
-                            width: aspectRatio === '9:16' ? 768 : 1024,
-                            height: aspectRatio === '9:16' ? 1280 : 768,
-                            frames: 121,
-                            fps: 24,
-                            seed: parseInt(randomSeed)
-                        };
-
-                        response = await fetch(endpoint, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json',
-                                'Authorization': `Bearer ${deapiKey}`
-                            },
-                            body: JSON.stringify(jsonPayload)
-                        });
+                        // Plain base64 string (no data: prefix) — the most common case
+                        // from blobToBase64() in the frontend which strips the prefix.
+                        imageBuffer = Buffer.from(image, 'base64');
+                        // mimeType stays 'image/jpeg' (safe default)
                     }
 
-                    if (response.status === 429) {
-                        const waitTime = Math.min(60000, Math.pow(1.5, fetchAttempts - 1) * 10000); // Start with 10s, max 60s
-                        console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/8. Aguardando ${Math.round(waitTime/1000)}s...`);
-                        jobs[jobId].message = `Limite de taxa da API atingido. Aguardando ${Math.round(waitTime/1000)}s para tentar novamente...`;
-                        await new Promise(r => setTimeout(r, waitTime));
-                        continue;
+                    console.log(`[Job ${jobId}] Image buffer size: ${imageBuffer.length} bytes, mime: ${mimeType}`);
+
+                    if (imageBuffer.length === 0) {
+                        throw new Error('A imagem enviada está vazia ou corrompida. Tente selecionar outra imagem.');
                     }
 
-                    if (!response.ok) {
-                        const errText = await response.text();
-                        lastFetchError = `Deapi API error (${response.status}): ${errText.substring(0, 500)}`;
-                        break; // Stop retrying on non-429 errors
-                    }
+                    const extMap: Record<string, string> = {
+                        'image/jpeg': 'jpg', 'image/png': 'png',
+                        'image/gif': 'gif', 'image/bmp': 'bmp', 'image/webp': 'webp',
+                    };
+                    const ext = extMap[mimeType] || 'jpg';
 
-                    break; // Success
+                    // Build FormData ONCE, after the buffer is ready.
+                    // Use a File-like Blob so Node's FormData sets Content-Type correctly.
+                    const fileBlob = new Blob([imageBuffer], { type: mimeType });
+                    const formData = new FormData();
+                    formData.append('prompt', prompt || 'cinematic video generation');
+                    formData.append('model', mappedModel);
+                    formData.append('width', aspectRatio === '9:16' ? '768' : '1024');
+                    formData.append('height', aspectRatio === '9:16' ? '1280' : '768');
+                    formData.append('frames', '121');
+                    formData.append('fps', '24');
+                    formData.append('seed', randomSeed);
+                    formData.append('first_frame_image', fileBlob, `first_frame_image.${ext}`);
+
+                    submitBody = formData;
+                    response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Accept': 'application/json',
+                            'Authorization': `Bearer ${deapiKey}`
+                        },
+                        body: formData
+                    });
+                } else {
+                    // Text to video usually supports JSON
+                    const jsonPayload = {
+                        prompt: prompt || 'cinematic video generation',
+                        model: mappedModel,
+                        width: aspectRatio === '9:16' ? 768 : 1024,
+                        height: aspectRatio === '9:16' ? 1280 : 768,
+                        frames: 121,
+                        fps: 24,
+                        seed: parseInt(randomSeed)
+                    };
+
+                    submitBody = JSON.stringify(jsonPayload);
+                    response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'Authorization': `Bearer ${deapiKey}`
+                        },
+                        body: JSON.stringify(jsonPayload)
+                    });
                 }
 
-                if (!response || !response.ok) {
-                    throw new Error(lastFetchError || "Falha na comunicação com Deapi após várias tentativas.");
+                if (!response.ok) {
+                    const errText = await response.text();
+                    const status = response.status;
+                    if (status === 429 || status >= 500) {
+                        const retryAfterHeader = response.headers.get('retry-after');
+                        const waitMs = retryAfterHeader ? parseInt(retryAfterHeader) * 1000 : (status === 429 ? 20000 : 5000);
+                        console.warn(`[Job ${jobId}] Deapi ${status} on submit — waiting ${waitMs}ms then retrying once...`);
+                        await new Promise(r => setTimeout(r, waitMs));
+                        // Re-submit: rebuild body from already-computed values in scope
+                        response = await fetch(endpoint, {
+                            method: 'POST',
+                            headers: { 'Accept': 'application/json', 'Authorization': `Bearer ${deapiKey}` },
+                            body: submitBody
+                        });
+                        if (!response.ok) {
+                            const retryErr = await response.text();
+                            throw new Error(`Deapi API error (${response.status}): ${retryErr.substring(0, 500)}`);
+                        }
+                    } else {
+                        throw new Error(`Deapi API error (${status}): ${errText.substring(0, 500)}${errText.length > 500 ? '...' : ''}`);
+                    }
                 }
 
                 const data: any = await response.json();
-                const taskId = data.id || data.task_id || data.data?.task_id;
+                
+                // Log the full response so we can see exactly what Deapi returns
+                console.log(`[Job ${jobId}] Deapi raw response:`, JSON.stringify(data));
+                
+                // If the response includes a status_url or callback_url, log it — 
+                // it tells us the exact poll endpoint to use
+                const hintUrl = data.status_url || data.callback_url || data.poll_url 
+                    || data.data?.status_url || data.data?.callback_url;
+                if (hintUrl) console.log(`[Job ${jobId}] Deapi hint status URL:`, hintUrl);
+
+                // Deapi response shapes vary by model/endpoint. Try every known field path.
+                const taskId = data.id
+                    || data.task_id
+                    || data.taskId
+                    || data.request_id
+                    || data.requestId
+                    || data.job_id
+                    || data.jobId
+                    || data.data?.id
+                    || data.data?.task_id
+                    || data.data?.taskId
+                    || data.data?.request_id
+                    || data.result?.id
+                    || data.result?.task_id
+                    || (typeof data.data === 'string' ? data.data : null);
+
+                // Also check for immediate video URL (some models return synchronously)
+                const directUrl = data.url
+                    || data.video_url
+                    || data.videoUrl
+                    || data.output
+                    || data.output_url
+                    || data.data?.url
+                    || data.data?.video_url
+                    || data.result?.url
+                    || data.result?.video_url;
 
                 if (!taskId) {
-                    if (data.url || data.video_url) {
+                    if (directUrl) {
                         jobs[jobId].status = 'completed';
-                        jobs[jobId].result = [data.url || data.video_url];
+                        jobs[jobId].result = [directUrl];
                         jobs[jobId].progress = 100;
                         return;
                     }
-                    throw new Error("Deapi não retornou ID de tarefa ou URL direta.");
+                    // Log the full response in the error so the user can report it
+                    throw new Error(`Deapi não retornou ID de tarefa ou URL direta. Resposta: ${JSON.stringify(data).substring(0, 300)}`);
                 }
 
                 console.log(`[Job ${jobId}] Deapi Task ID: ${taskId}`);
-                jobs[jobId].message = ""; 
 
                 // Polling Deapi Task
                 let completed = false;
                 let attempts = 0;
-                const maxAttempts = 120; // 10 minutes (5s each)
+                const maxAttempts = 60; // 10 minutes (10s each)
+                let workingPollEndpoint = ''; // cache the first endpoint that works
 
                 while (!completed && attempts < maxAttempts) {
                     attempts++;
-                    await new Promise(r => setTimeout(r, 5000));
+                    // 10s between polls to avoid Deapi rate limiting (429)
+                    await new Promise(r => setTimeout(r, 10000));
                     
                     try {
-                        // Try both potential status endpoints
-                        let pollRes = await fetch(`${baseUrl}/v1/video/tasks/${taskId}`, {
-                            headers: { 'Authorization': `Bearer ${deapiKey}` }
-                        });
-                        
-                        if (!pollRes.ok) {
-                            // Fallback to client-based status endpoint
-                            pollRes = await fetch(`${baseUrl}/api/v1/client/status/${taskId}`, {
-                                headers: { 'Authorization': `Bearer ${deapiKey}` }
-                            });
-                        }
-                        
-                        if (!pollRes.ok) {
-                            if (pollRes.status === 429) {
-                                console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando próximo ciclo (20s)...`);
-                                jobs[jobId].message = "Aguardando liberação de taxa da API...";
-                                await new Promise(r => setTimeout(r, 20000));
-                                continue;
+                        // Try all known Deapi status endpoints in order
+                        // Try every known Deapi status endpoint pattern.
+                        // The submission uses /api/v1/client/img2video, so the status
+                        // endpoint is most likely /api/v1/client/task/{id} (singular).
+                        const pollEndpoints = [
+                            `${baseUrl}/api/v1/client/task/${taskId}`,
+                            `${baseUrl}/api/v1/client/tasks/${taskId}`,
+                            `${baseUrl}/api/v1/client/img2video/${taskId}`,
+                            `${baseUrl}/api/v1/client/result/${taskId}`,
+                            `${baseUrl}/api/v1/client/status/${taskId}`,
+                            `${baseUrl}/api/v1/task/${taskId}`,
+                            `${baseUrl}/api/v1/tasks/${taskId}`,
+                            `${baseUrl}/v1/video/tasks/${taskId}`,
+                        ];
+
+                        let pollRes: Response | null = null;
+                        // Use cached working endpoint after first discovery
+                        const endpointsToTry = workingPollEndpoint
+                            ? [workingPollEndpoint]
+                            : pollEndpoints;
+
+                        for (const ep of endpointsToTry) {
+                            try {
+                                const r = await fetch(ep, {
+                                    headers: { 'Authorization': `Bearer ${deapiKey}` }
+                                });
+                                if (attempts === 1 || !workingPollEndpoint) {
+                                    console.log(`[Job ${jobId}] Poll ${ep} → ${r.status}`);
+                                }
+                                if (r.ok) {
+                                    pollRes = r;
+                                    if (!workingPollEndpoint) {
+                                        workingPollEndpoint = ep;
+                                        console.log(`[Job ${jobId}] Caching poll endpoint: ${ep}`);
+                                    }
+                                    break;
+                                }
+                            } catch (fetchErr) {
+                                console.warn(`[Job ${jobId}] Poll fetch error for ${ep}:`, fetchErr);
                             }
+                        }
+
+                        if (!pollRes) { 
+                            console.warn(`[Job ${jobId}] All poll endpoints failed for task ${taskId} — will retry next cycle`);
+                            workingPollEndpoint = ''; // reset cache so we probe again
                             continue;
                         }
 
                         const taskData: any = await pollRes.json();
-                        console.log(`[Job ${jobId}] Deapi Poll Status: ${taskData.status}`);
+                        const pollStatus = taskData.status || taskData.state || taskData.task_status || '';
+                        console.log(`[Job ${jobId}] Deapi Poll Status: ${pollStatus}`, JSON.stringify(taskData).substring(0, 200));
                         
-                        if (taskData.status === 'completed' || taskData.status === 'succeeded') {
-                            const videoUrl = taskData.video_url || taskData.url;
+                        const isSuccess = ['completed', 'succeeded', 'success', 'done', 'finished'].includes(pollStatus.toLowerCase());
+                        const isFailed  = ['failed', 'error', 'cancelled', 'canceled'].includes(pollStatus.toLowerCase());
+
+                        if (isSuccess) {
+                            const videoUrl = taskData.video_url
+                                || taskData.url
+                                || taskData.videoUrl
+                                || taskData.output
+                                || taskData.output_url
+                                || taskData.data?.url
+                                || taskData.data?.video_url
+                                || taskData.result?.url
+                                || taskData.result?.video_url;
                             if (videoUrl) {
                                 jobs[jobId].status = 'completed';
                                 jobs[jobId].result = [videoUrl];
                                 jobs[jobId].progress = 100;
                                 completed = true;
+                            } else {
+                                console.warn(`[Job ${jobId}] Status is ${pollStatus} but no video URL found:`, JSON.stringify(taskData));
                             }
-                        } else if (taskData.status === 'failed') {
-                            throw new Error(`Deapi task failed: ${taskData.error || 'Unknown error'}`);
+                        } else if (isFailed) {
+                            throw new Error(`Deapi task failed: ${taskData.error || taskData.message || taskData.reason || 'Unknown error'}`);
                         } else {
                             // Update progress incrementally
                             jobs[jobId].progress = Math.min(95, 5 + (attempts * 0.8));
