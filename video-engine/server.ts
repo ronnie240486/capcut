@@ -868,7 +868,7 @@ async function startServer() {
                 let lastFetchError = "";
                 const randomSeed = Math.floor(Math.random() * 2147483647).toString();
 
-                while (fetchAttempts < 10) {
+                while (fetchAttempts < 15) {
                     fetchAttempts++;
                     
                     const payload: any = {
@@ -896,10 +896,10 @@ async function startServer() {
                     });
 
                     if (response.status === 429) {
-                        const waitTime = Math.min(180000, Math.pow(2, fetchAttempts - 1) * 25000); // Start with 25s, double up to 3min
+                        const waitTime = Math.min(240000, Math.pow(1.8, fetchAttempts - 1) * 30000); // Start with 30s, double-ish, max 4min
                         const seconds = Math.round(waitTime/1000);
-                        console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/10. Aguardando ${seconds}s...`);
-                        jobs[jobId].message = `Limite de taxa atingido (API Ocupada). Tentativa ${fetchAttempts}/10 - Retentando em ${seconds}s...`;
+                        console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/15. Aguardando ${seconds}s...`);
+                        jobs[jobId].message = `API Ocupada (429). Tentativa ${fetchAttempts}/15 - Aguardando ${seconds}s para liberar...`;
                         await new Promise(r => setTimeout(r, waitTime));
                         continue;
                     }
@@ -914,7 +914,7 @@ async function startServer() {
                 }
 
                 if (!response || !response.ok) {
-                    const finalError = lastFetchError || (fetchAttempts >= 10 ? "Limite de tentativas excedido (Rate Limit persistente na Deapi)." : "Falha na comunicação com Deapi após retentativas.");
+                    const finalError = lastFetchError || (fetchAttempts >= 15 ? "Limite de tentativas excedido (A API deAPI permaneceu ocupada por muito tempo). Tente novamente mais tarde." : "Falha na comunicação com Deapi após retentativas.");
                     throw new Error(finalError);
                 }
 
@@ -938,11 +938,13 @@ async function startServer() {
                 // Polling Deapi Task (Jobs v2)
                 let completed = false;
                 let attempts = 0;
-                const maxAttempts = 150; // 12.5 minutes (5s each)
+                const maxAttempts = 100; // Total duration: ~25-30 minutes with 15-20s intervals
 
                 while (!completed && attempts < maxAttempts) {
                     attempts++;
-                    await new Promise(r => setTimeout(r, 5000));
+                    // Slower polling to avoid 429 during status check
+                    const pollWait = 15000 + (Math.random() * 5000); 
+                    await new Promise(r => setTimeout(r, pollWait));
                     
                     try {
                         const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
@@ -951,9 +953,9 @@ async function startServer() {
                         
                         if (!pollRes.ok) {
                             if (pollRes.status === 429) {
-                                console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando ciclo mais longo (30s)...`);
-                                jobs[jobId].message = "API ocupada (Limite de taxa). Aguardando liberação...";
-                                await new Promise(r => setTimeout(r, 30000));
+                                console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando ciclo mais longo (40s)...`);
+                                jobs[jobId].message = "Verificando status... (API Ocupada, aguardando)";
+                                await new Promise(r => setTimeout(r, 40000));
                                 continue;
                             }
                             console.error(`[Job ${jobId}] Poll HTTP Error ${pollRes.status}`);
@@ -978,7 +980,8 @@ async function startServer() {
                             throw new Error(`Deapi task failed: ${result.error || result.message || 'Unknown error'}`);
                         } else {
                             // Update progress incrementally
-                            jobs[jobId].progress = Math.min(95, 5 + (attempts * 0.6));
+                            jobs[jobId].message = `Processando vídeo... (${status})`;
+                            jobs[jobId].progress = Math.min(95, 5 + (attempts * 1.0));
                         }
                     } catch (pollErr: any) {
                         console.warn(`[Job ${jobId}] Poll error:`, pollErr);
