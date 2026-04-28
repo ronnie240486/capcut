@@ -956,16 +956,46 @@ async function startServer() {
                 }
 
                 const data: any = await response.json();
-                const taskId = data.id || data.task_id || data.data?.task_id;
+                
+                // Log the full response so we can see exactly what Deapi returns
+                console.log(`[Job ${jobId}] Deapi raw response:`, JSON.stringify(data));
+
+                // Deapi response shapes vary by model/endpoint. Try every known field path.
+                const taskId = data.id
+                    || data.task_id
+                    || data.taskId
+                    || data.request_id
+                    || data.requestId
+                    || data.job_id
+                    || data.jobId
+                    || data.data?.id
+                    || data.data?.task_id
+                    || data.data?.taskId
+                    || data.data?.request_id
+                    || data.result?.id
+                    || data.result?.task_id
+                    || (typeof data.data === 'string' ? data.data : null);
+
+                // Also check for immediate video URL (some models return synchronously)
+                const directUrl = data.url
+                    || data.video_url
+                    || data.videoUrl
+                    || data.output
+                    || data.output_url
+                    || data.data?.url
+                    || data.data?.video_url
+                    || data.result?.url
+                    || data.result?.video_url;
 
                 if (!taskId) {
-                    if (data.url || data.video_url) {
+                    if (directUrl) {
                         jobs[jobId].status = 'completed';
-                        jobs[jobId].result = [data.url || data.video_url];
+                        jobs[jobId].result = [directUrl];
                         jobs[jobId].progress = 100;
                         return;
                     }
-                    throw new Error("Deapi não retornou ID de tarefa ou URL direta.");
+                    // Log the full response in the error so the user can report it
+                    throw new Error(`Deapi não retornou ID de tarefa ou URL direta. Resposta: ${JSON.stringify(data).substring(0, 300)}`);
                 }
 
                 console.log(`[Job ${jobId}] Deapi Task ID: ${taskId}`);
@@ -980,33 +1010,54 @@ async function startServer() {
                     await new Promise(r => setTimeout(r, 5000));
                     
                     try {
-                        // Try both potential status endpoints
-                        let pollRes = await fetch(`${baseUrl}/v1/video/tasks/${taskId}`, {
-                            headers: { 'Authorization': `Bearer ${deapiKey}` }
-                        });
-                        
-                        if (!pollRes.ok) {
-                            // Fallback to client-based status endpoint
-                            pollRes = await fetch(`${baseUrl}/api/v1/client/status/${taskId}`, {
+                        // Try all known Deapi status endpoints in order
+                        const pollEndpoints = [
+                            `${baseUrl}/api/v1/client/status/${taskId}`,
+                            `${baseUrl}/v1/video/tasks/${taskId}`,
+                            `${baseUrl}/v1/tasks/${taskId}`,
+                            `${baseUrl}/api/v1/tasks/${taskId}`,
+                        ];
+
+                        let pollRes: Response | null = null;
+                        for (const ep of pollEndpoints) {
+                            const r = await fetch(ep, {
                                 headers: { 'Authorization': `Bearer ${deapiKey}` }
                             });
+                            if (r.ok) { pollRes = r; break; }
                         }
-                        
-                        if (!pollRes.ok) continue;
+
+                        if (!pollRes) { 
+                            console.warn(`[Job ${jobId}] All poll endpoints failed for task ${taskId}`);
+                            continue;
+                        }
 
                         const taskData: any = await pollRes.json();
-                        console.log(`[Job ${jobId}] Deapi Poll Status: ${taskData.status}`);
+                        const pollStatus = taskData.status || taskData.state || taskData.task_status || '';
+                        console.log(`[Job ${jobId}] Deapi Poll Status: ${pollStatus}`, JSON.stringify(taskData).substring(0, 200));
                         
-                        if (taskData.status === 'completed' || taskData.status === 'succeeded') {
-                            const videoUrl = taskData.video_url || taskData.url;
+                        const isSuccess = ['completed', 'succeeded', 'success', 'done', 'finished'].includes(pollStatus.toLowerCase());
+                        const isFailed  = ['failed', 'error', 'cancelled', 'canceled'].includes(pollStatus.toLowerCase());
+
+                        if (isSuccess) {
+                            const videoUrl = taskData.video_url
+                                || taskData.url
+                                || taskData.videoUrl
+                                || taskData.output
+                                || taskData.output_url
+                                || taskData.data?.url
+                                || taskData.data?.video_url
+                                || taskData.result?.url
+                                || taskData.result?.video_url;
                             if (videoUrl) {
                                 jobs[jobId].status = 'completed';
                                 jobs[jobId].result = [videoUrl];
                                 jobs[jobId].progress = 100;
                                 completed = true;
+                            } else {
+                                console.warn(`[Job ${jobId}] Status is ${pollStatus} but no video URL found:`, JSON.stringify(taskData));
                             }
-                        } else if (taskData.status === 'failed') {
-                            throw new Error(`Deapi task failed: ${taskData.error || 'Unknown error'}`);
+                        } else if (isFailed) {
+                            throw new Error(`Deapi task failed: ${taskData.error || taskData.message || taskData.reason || 'Unknown error'}`);
                         } else {
                             // Update progress incrementally
                             jobs[jobId].progress = Math.min(95, 5 + (attempts * 0.8));
