@@ -850,10 +850,10 @@ async function startServer() {
                 
                 // Model Mapping for v2
                 const modelMap: Record<string, string> = {
-                    "ltx-2.3-22b": "ltx-video-2.3",
-                    "ltx-video-13b": "ltx-video-1.3",
-                    "ltx-2-19b-fp8": "ltx-video-2.0",
-                    "ltx-video": "ltx-video-1.3",
+                    "ltx-2.3-22b": "ltx-video-v0.9", // Ajustado para os nomes padrão da Deapi v2
+                    "ltx-video-13b": "ltx-video-v0.9",
+                    "ltx-2-19b-fp8": "ltx-video-v0.9",
+                    "ltx-video": "ltx-video-v0.9",
                     "animate-diff": "animate-diff-v3",
                     "svd": "svd-xt-1.1"
                 };
@@ -887,11 +887,11 @@ async function startServer() {
                     };
 
                     if (isImageToVideo) {
-                        // Deapi v2 Animation payload (JSON)
+                        // Deapi v2 Animation payload (JSON) - Updated for LTX Video requirements
                         payload.image = image; 
-                        // Fallback for some v2 variants
                         payload.image_url = image; 
                         payload.input_image = image;
+                        payload.first_frame_image = image; // Novo campo obrigatório reportado no erro 422
                     }
 
                     response = await fetch(endpoint, {
