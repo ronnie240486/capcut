@@ -872,33 +872,34 @@ async function startServer() {
                     formData.append('fps', '24');
                     formData.append('seed', randomSeed);
                     
-                    // Handle image data (convert URL or base64 to Blob/File)
-                    let file;
-                    if (image.startsWith('http')) {
+                    // Handle image data (convert URL or base64 to Blob)
+                    let fileBlob;
+                    let mimeType = 'image/jpeg';
+                    
+                    if (image.startsWith('data:')) {
+                        const [header, base64Data] = image.split(',');
+                        mimeType = header.split(':')[1].split(';')[0];
+                        const buffer = Buffer.from(base64Data, 'base64');
+                        fileBlob = new Blob([buffer], { type: mimeType });
+                    } else if (image.startsWith('http')) {
                         const imgRes = await fetch(image);
                         const arrayBuffer = await imgRes.arrayBuffer();
-                        const uint8 = new Uint8Array(arrayBuffer);
-                        try {
-                            file = new File([uint8], 'image.jpg', { type: 'image/jpeg' });
-                        } catch (e) {
-                            // Fallback to Blob if File constructor isn't available or fails
-                            file = new Blob([uint8], { type: 'image/jpeg' });
-                        }
-                        formData.set('first_frame_image', file, 'image.jpg');
-                    } else if (image.includes('base64,')) {
-                        const base64Data = image.split('base64,')[1];
-                        const buffer = Buffer.from(base64Data, 'base64');
-                        const uint8 = new Uint8Array(buffer);
-                        try {
-                            file = new File([uint8], 'image.jpg', { type: 'image/jpeg' });
-                        } catch (e) {
-                            file = new Blob([uint8], { type: 'image/jpeg' });
-                        }
-                        formData.set('first_frame_image', file, 'image.jpg');
+                        mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
+                        fileBlob = new Blob([arrayBuffer], { type: mimeType });
                     } else {
-                        // Fallback as string if it's already a path or something else
-                        formData.set('first_frame_image', image);
+                        // Fallback: assume it's raw data or path, try to wrap as blob
+                        fileBlob = new Blob([image], { type: 'image/jpeg' });
                     }
+
+                    const formData = new FormData();
+                    formData.append('prompt', prompt || 'cinematic video generation');
+                    formData.append('model', mappedModel);
+                    formData.append('width', aspectRatio === '9:16' ? '768' : '1024');
+                    formData.append('height', aspectRatio === '9:16' ? '1280' : '768');
+                    formData.append('frames', '121');
+                    formData.append('fps', '24');
+                    formData.append('seed', randomSeed);
+                    formData.append('first_frame_image', fileBlob, 'image.jpg');
 
                     response = await fetch(endpoint, {
                         method: 'POST',
@@ -915,7 +916,7 @@ async function startServer() {
                         model: mappedModel,
                         width: aspectRatio === '9:16' ? 768 : 1024,
                         height: aspectRatio === '9:16' ? 1280 : 768,
-                        frames: 123,
+                        frames: 121,
                         fps: 24,
                         seed: parseInt(randomSeed)
                     };
