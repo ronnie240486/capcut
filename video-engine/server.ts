@@ -896,10 +896,12 @@ async function startServer() {
                     });
 
                     if (response.status === 429) {
-                        const waitTime = Math.min(240000, Math.pow(1.8, fetchAttempts - 1) * 30000); // Start with 30s, double-ish, max 4min
+                        const waitTime = Math.min(240000, Math.pow(1.8, fetchAttempts - 1) * 30000); 
                         const seconds = Math.round(waitTime/1000);
                         console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/15. Aguardando ${seconds}s...`);
-                        jobs[jobId].message = `API Ocupada (429). Tentativa ${fetchAttempts}/15 - Aguardando ${seconds}s para liberar...`;
+                        if (jobs[jobId]) {
+                            jobs[jobId].message = `API Ocupada (429). Tentativa ${fetchAttempts}/15 - Aguardando ${seconds}s para liberar...`;
+                        }
                         await new Promise(r => setTimeout(r, waitTime));
                         continue;
                     }
@@ -933,19 +935,23 @@ async function startServer() {
                 }
 
                 console.log(`[Job ${jobId}] Deapi Job ID: ${taskId}`);
-                jobs[jobId].message = ""; 
+                if (jobs[jobId]) {
+                    jobs[jobId].message = ""; 
+                }
 
                 // Polling Deapi Task (Jobs v2)
                 let completed = false;
                 let attempts = 0;
-                const maxAttempts = 100; // Total duration: ~25-30 minutes with 15-20s intervals
+                let pollFailures = 0;
+                const maxAttempts = 150; 
 
-                while (!completed && attempts < maxAttempts) {
+                while (!completed && attempts < maxAttempts && jobs[jobId]) {
                     attempts++;
-                    // Slower polling to avoid 429 during status check
-                    const pollWait = 15000 + (Math.random() * 5000); 
+                    const pollWait = 20000 + (Math.random() * 5000); 
                     await new Promise(r => setTimeout(r, pollWait));
                     
+                    if (!jobs[jobId]) break; // Job was cancelled or removed
+
                     try {
                         const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
                             headers: { 'Authorization': `Bearer ${deapiKey}` }
@@ -953,15 +959,18 @@ async function startServer() {
                         
                         if (!pollRes.ok) {
                             if (pollRes.status === 429) {
-                                console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando ciclo mais longo (40s)...`);
-                                jobs[jobId].message = "Verificando status... (API Ocupada, aguardando)";
-                                await new Promise(r => setTimeout(r, 40000));
+                                console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando ciclo mais longo (50s)...`);
+                                if (jobs[jobId]) jobs[jobId].message = "Verificando status... (API Ocupada, aguardando)";
+                                await new Promise(r => setTimeout(r, 50000));
                                 continue;
                             }
-                            console.error(`[Job ${jobId}] Poll HTTP Error ${pollRes.status}`);
+                            pollFailures++;
+                            console.error(`[Job ${jobId}] Poll HTTP Error ${pollRes.status} (Failure ${pollFailures}/5)`);
+                            if (pollFailures > 5) break; 
                             continue;
                         }
 
+                        pollFailures = 0; // Reset failures on success
                         const taskData: any = await pollRes.json();
                         const result = taskData.data || taskData;
                         const status = (result.status || "").toLowerCase();
@@ -969,8 +978,8 @@ async function startServer() {
                         console.log(`[Job ${jobId}] Deapi Job Status: ${status}`);
                         
                         if (status === 'completed' || status === 'succeeded' || status === 'success') {
-                            const videoUrl = result.video_url || result.url;
-                            if (videoUrl) {
+                            const videoUrl = result.video_url || result.url || result.data?.url;
+                            if (videoUrl && jobs[jobId]) {
                                 jobs[jobId].status = 'completed';
                                 jobs[jobId].result = [videoUrl];
                                 jobs[jobId].progress = 100;
@@ -978,10 +987,9 @@ async function startServer() {
                             }
                         } else if (status === 'failed' || status === 'error') {
                             throw new Error(`Deapi task failed: ${result.error || result.message || 'Unknown error'}`);
-                        } else {
-                            // Update progress incrementally
+                        } else if (jobs[jobId]) {
                             jobs[jobId].message = `Processando vídeo... (${status})`;
-                            jobs[jobId].progress = Math.min(95, 5 + (attempts * 1.0));
+                            jobs[jobId].progress = Math.min(95, 5 + (attempts * 0.8));
                         }
                     } catch (pollErr: any) {
                         console.warn(`[Job ${jobId}] Poll error:`, pollErr);
@@ -989,14 +997,16 @@ async function startServer() {
                     }
                 }
 
-                if (!completed) {
-                    throw new Error("Tempo esgotado aguardando geração do Deapi.");
+                if (!completed && jobs[jobId]) {
+                    throw new Error(pollFailures > 5 ? "Muitas falhas na verificação de status. A API pode estar indisponível." : "Tempo esgotado aguardando geração do Deapi.");
                 }
 
             } catch (err: any) {
                 console.error(`[Job ${jobId}] Deapi Error:`, err);
-                jobs[jobId].status = 'failed';
-                jobs[jobId].error = err.message || String(err);
+                if (jobs[jobId]) {
+                    jobs[jobId].status = 'failed';
+                    jobs[jobId].error = err.message || String(err);
+                }
             }
             return;
         }
