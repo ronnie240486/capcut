@@ -859,82 +859,96 @@ async function startServer() {
                 console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel})`);
                 
                 let response;
+                let fetchAttempts = 0;
+                let lastFetchError = "";
                 const randomSeed = Math.floor(Math.random() * 2147483647).toString();
 
-                // Image handling: if image is provided, we use FormData for multipart
-                if (isImageToVideo) {
-                    const formData = new FormData();
-                    formData.append('prompt', prompt || 'cinematic video generation');
-                    formData.append('model', mappedModel);
-                    formData.append('width', aspectRatio === '9:16' ? '768' : '1024');
-                    formData.append('height', aspectRatio === '9:16' ? '1280' : '768');
-                    formData.append('frames', '121');
-                    formData.append('fps', '24');
-                    formData.append('seed', randomSeed);
+                while (fetchAttempts < 4) {
+                    fetchAttempts++;
                     
-                    // Handle image data (convert URL or base64 to Blob)
-                    let fileBlob;
-                    let mimeType = 'image/jpeg';
-                    
-                    if (image.startsWith('data:')) {
-                        const [header, base64Data] = image.split(',');
-                        mimeType = header.split(':')[1].split(';')[0];
-                        const buffer = Buffer.from(base64Data, 'base64');
-                        fileBlob = new Blob([buffer], { type: mimeType });
-                    } else if (image.startsWith('http')) {
-                        const imgRes = await fetch(image);
-                        const arrayBuffer = await imgRes.arrayBuffer();
-                        mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
-                        fileBlob = new Blob([arrayBuffer], { type: mimeType });
+                    // Image handling: if image is provided, we use FormData for multipart
+                    if (isImageToVideo) {
+                        let fileBlob;
+                        let mimeType = 'image/jpeg';
+                        
+                        try {
+                            if (image.startsWith('data:')) {
+                                const [header, base64Data] = image.split(',');
+                                mimeType = header.split(':')[1].split(';')[0];
+                                const buffer = Buffer.from(base64Data, 'base64');
+                                fileBlob = new Blob([buffer], { type: mimeType });
+                            } else if (image.startsWith('http')) {
+                                const imgRes = await fetch(image);
+                                const arrayBuffer = await imgRes.arrayBuffer();
+                                mimeType = imgRes.headers.get('content-type') || 'image/jpeg';
+                                fileBlob = new Blob([arrayBuffer], { type: mimeType });
+                            } else {
+                                // Fallback: assume it's raw data or path, try to wrap as blob
+                                fileBlob = new Blob([image], { type: 'image/jpeg' });
+                            }
+                        } catch (blobErr) {
+                            console.error(`[Job ${jobId}] Failed to prepare fileBlob:`, blobErr);
+                            throw new Error("Falha ao processar imagem de referência.");
+                        }
+
+                        const formData = new FormData();
+                        formData.append('prompt', prompt || 'cinematic video generation');
+                        formData.append('model', mappedModel);
+                        formData.append('width', aspectRatio === '9:16' ? '768' : '1024');
+                        formData.append('height', aspectRatio === '9:16' ? '1280' : '768');
+                        formData.append('frames', '121');
+                        formData.append('fps', '24');
+                        formData.append('seed', randomSeed);
+                        formData.append('first_frame_image', fileBlob, 'image.jpg');
+
+                        response = await fetch(endpoint, {
+                            method: 'POST',
+                            headers: {
+                                'Accept': 'application/json',
+                                'Authorization': `Bearer ${deapiKey}`
+                            },
+                            body: formData
+                        });
                     } else {
-                        // Fallback: assume it's raw data or path, try to wrap as blob
-                        fileBlob = new Blob([image], { type: 'image/jpeg' });
+                        // Text to video usually supports JSON
+                        const jsonPayload = {
+                            prompt: prompt || 'cinematic video generation',
+                            model: mappedModel,
+                            width: aspectRatio === '9:16' ? 768 : 1024,
+                            height: aspectRatio === '9:16' ? 1280 : 768,
+                            frames: 121,
+                            fps: 24,
+                            seed: parseInt(randomSeed)
+                        };
+
+                        response = await fetch(endpoint, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'Authorization': `Bearer ${deapiKey}`
+                            },
+                            body: JSON.stringify(jsonPayload)
+                        });
                     }
 
-                    const formData = new FormData();
-                    formData.append('prompt', prompt || 'cinematic video generation');
-                    formData.append('model', mappedModel);
-                    formData.append('width', aspectRatio === '9:16' ? '768' : '1024');
-                    formData.append('height', aspectRatio === '9:16' ? '1280' : '768');
-                    formData.append('frames', '121');
-                    formData.append('fps', '24');
-                    formData.append('seed', randomSeed);
-                    formData.append('first_frame_image', fileBlob, 'image.jpg');
+                    if (response.status === 429) {
+                        console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/4. Aguardando 8s...`);
+                        await new Promise(r => setTimeout(r, 8000));
+                        continue;
+                    }
 
-                    response = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: {
-                            'Accept': 'application/json',
-                            'Authorization': `Bearer ${deapiKey}`
-                        },
-                        body: formData
-                    });
-                } else {
-                    // Text to video usually supports JSON
-                    const jsonPayload = {
-                        prompt: prompt || 'cinematic video generation',
-                        model: mappedModel,
-                        width: aspectRatio === '9:16' ? 768 : 1024,
-                        height: aspectRatio === '9:16' ? 1280 : 768,
-                        frames: 121,
-                        fps: 24,
-                        seed: parseInt(randomSeed)
-                    };
+                    if (!response.ok) {
+                        const errText = await response.text();
+                        lastFetchError = `Deapi API error (${response.status}): ${errText.substring(0, 500)}`;
+                        break; // Stop retrying on non-429 errors
+                    }
 
-                    response = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Accept': 'application/json',
-                            'Authorization': `Bearer ${deapiKey}`
-                        },
-                        body: JSON.stringify(jsonPayload)
-                    });
+                    break; // Success
                 }
 
-                if (!response.ok) {
-                    const errText = await response.text();
-                    throw new Error(`Deapi API error (${response.status}): ${errText.substring(0, 500)}${errText.length > 500 ? '...' : ''}`);
+                if (!response || !response.ok) {
+                    throw new Error(lastFetchError || "Falha na comunicação com Deapi após várias tentativas.");
                 }
 
                 const data: any = await response.json();
@@ -974,7 +988,14 @@ async function startServer() {
                             });
                         }
                         
-                        if (!pollRes.ok) continue;
+                        if (!pollRes.ok) {
+                            if (pollRes.status === 429) {
+                                console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando próximo ciclo...`);
+                                await new Promise(r => setTimeout(r, 10000));
+                                continue;
+                            }
+                            continue;
+                        }
 
                         const taskData: any = await pollRes.json();
                         console.log(`[Job ${jobId}] Deapi Poll Status: ${taskData.status}`);
