@@ -829,7 +829,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, width, height, frames, fps } = req.body;
+        const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, deapiWidth, deapiHeight, deapiFrames, deapiFps } = req.body;
         
         if (model && model.startsWith('deapi-')) {
             const deapiModel = model.replace('deapi-', '');
@@ -842,11 +842,16 @@ async function startServer() {
             }
 
             console.log(`[Job ${jobId}] Starting Deapi Video Generation with model: ${deapiModel}...`);
+            console.log(`[Job ${jobId}] Key check: ${deapiKey ? (deapiKey.substring(0, 4) + "..." + deapiKey.substring(deapiKey.length - 4)) : "MISSING"}`);
             
             try {
+                // Determine base URL (api.deapi.ai is standard for API access)
                 const baseUrl = "https://api.deapi.ai";
+                
+                // Model Mapping for v2
                 const isImageToVideo = !!image;
                 
+                // Mapeamento exato baseado no painel Deapi (Imagem do usuário)
                 const modelMap: Record<string, string> = {
                     "ltx-2.3-22b": "ltx-video-v2.3",
                     "ltx-video-13b": "ltx-video-v1.3",
@@ -858,7 +863,9 @@ async function startServer() {
                 
                 let mappedModel = modelMap[deapiModel] || deapiModel;
                 
+                // Fallback dinâmico caso o mapeamento estático falhe
                 try {
+                    console.log(`[Job ${jobId}] Verificando modelos disponíveis na Deapi...`);
                     const modelsRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=img2video,txt2video`, {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     });
@@ -867,6 +874,7 @@ async function startServer() {
                         const availableModels = modelsData.data || [];
                         const slugs = availableModels.map((m: any) => m.slug);
                         
+                        // Se o modelo mapeado não estiver na lista, tenta o melhor match
                         if (!slugs.includes(mappedModel)) {
                             const bestMatch = availableModels.find((m: any) => 
                                 m.slug.toLowerCase().includes(deapiModel.split('-')[0])
@@ -875,11 +883,10 @@ async function startServer() {
                         }
                     }
                 } catch (e) {}
-
-                // Fix: Try /animations for Image2Video if /generations is failing to animate own image
-                const endpoint = isImageToVideo 
-                    ? `${baseUrl}/api/v2/videos/animations`
-                    : `${baseUrl}/api/v2/videos/generations`;
+                // A documentação atualizada indica que img2video e txt2video 
+                // podem usar o mesmo fluxo de generations ou animations. 
+                // Para maior compatibilidade com modelos LTX, usamos /generations como padrão.
+                const endpoint = `${baseUrl}/api/v2/videos/generations`;
 
                 console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel})`);
                 
@@ -895,15 +902,16 @@ async function startServer() {
                     const payload: any = {
                         prompt: prompt || 'cinematic video generation',
                         model: mappedModel,
-                        width: width || (aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768)),
-                        height: height || (aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768)),
-                        frames: frames || 120, 
-                        fps: fps || 30,
+                        width: deapiWidth || (aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768)),
+                        height: deapiHeight || (aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768)),
+                        frames: deapiFrames || 120, 
+                        fps: deapiFps || 30,
                         steps: 1,   
                         seed: parseInt(randomSeed)
                     };
 
                     if (isImageToVideo) {
+                        // Converter base64 para Blob para enviar como arquivo via FormData
                         const formData = new FormData();
                         formData.append('prompt', payload.prompt);
                         formData.append('model', mappedModel); 
@@ -918,9 +926,10 @@ async function startServer() {
                         const byteCharacters = Buffer.from(base64Data, 'base64');
                         const blob = new Blob([byteCharacters], { type: 'image/png' });
                         
+                        // Enviar apenas input_image para evitar ambiguidade em modelos img2video
                         formData.append('input_image', blob, 'input.png');
+                        // Alguns modelos podem exigir 'image' ou 'first_frame_image'
                         formData.append('first_frame_image', blob, 'first_frame.png');
-                        formData.append('image', blob, 'image.png');
 
                         response = await fetch(endpoint, {
                             method: 'POST',
@@ -1120,19 +1129,24 @@ async function startServer() {
             };
 
             if (image) {
-                payload.image = { imageBytes: image.split(',')[1], mimeType: 'image/png' };
+                const base64Data = image.split(',')[1] || image;
+                payload.image = { bytesBase64Encoded: base64Data, mimeType: 'image/png' };
             }
             if (lastFrame) {
-                payload.lastFrame = { imageBytes: lastFrame.split(',')[1], mimeType: 'image/png' };
+                const base64Data = lastFrame.split(',')[1] || lastFrame;
+                payload.lastFrame = { bytesBase64Encoded: base64Data, mimeType: 'image/png' };
             }
             if (referenceImages && referenceImages.length > 0) {
-                payload.referenceImages = referenceImages.map((img: string) => ({ 
-                    image: {
-                        imageBytes: img.split(',')[1], 
-                        mimeType: 'image/png' 
-                    },
-                    referenceType: 'ASSET'
-                }));
+                payload.referenceImages = referenceImages.map((img: string) => {
+                    const base64Data = img.split(',')[1] || img;
+                    return { 
+                        image: {
+                            bytesBase64Encoded: base64Data, 
+                            mimeType: 'image/png' 
+                        },
+                        referenceType: 'ASSET'
+                    };
+                });
             }
 
             console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'veo-3.1-lite-generate-preview'}...`);
