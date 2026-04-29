@@ -899,13 +899,15 @@ async function startServer() {
                 while (fetchAttempts < MAX_SUBMIT_ATTEMPTS) {
                     fetchAttempts++;
                     
+                    // Ajuste de limites conforme erro 422 retornado pela API
                     const payload: any = {
                         prompt: prompt || 'cinematic video generation',
                         model: mappedModel,
-                        width: aspectRatio === '9:16' ? 720 : (aspectRatio === '16:9' ? 1280 : 1024),
-                        height: aspectRatio === '9:16' ? 1280 : (aspectRatio === '16:9' ? 720 : 1024),
-                        frames: 121,
-                        fps: 24,
+                        width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
+                        height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
+                        frames: 120, // Limite máximo reportado pela API
+                        fps: 30,    // Mínimo exigido pela API
+                        steps: 20,  // Campo obrigatório reportado pela API
                         seed: parseInt(randomSeed)
                     };
 
@@ -926,6 +928,7 @@ async function startServer() {
                         formData.append('height', payload.height.toString());
                         formData.append('frames', payload.frames.toString());
                         formData.append('fps', payload.fps.toString());
+                        formData.append('steps', payload.steps.toString());
                         formData.append('seed', payload.seed.toString());
 
                         // Converter base64 para Blob para enviar como arquivo
