@@ -936,11 +936,12 @@ async function startServer() {
                         const byteCharacters = Buffer.from(base64Data, 'base64');
                         const blob = new Blob([byteCharacters], { type: 'image/png' });
                         
-                        // Conforme documentação, o campo principal para imagem é "image" (pode ser arquivo)
-                        formData.append('image', blob, 'image.png');
-                        // Fallbacks para compatibilidade com versões anteriores
+                        // Para animação (img2video), a documentação v2 e o erro 422 anterior
+                        // confirmaram que "input_image" e "first_frame_image" são os campos chave.
+                        // Enviamos a imagem selecionada pelo usuário nesses campos.
                         formData.append('input_image', blob, 'input.png');
                         formData.append('first_frame_image', blob, 'first_frame.png');
+                        formData.append('image', blob, 'image.png');
 
                         response = await fetch(endpoint, {
                             method: 'POST',
