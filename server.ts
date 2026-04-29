@@ -1137,17 +1137,21 @@ async function startServer() {
 
             if (image) {
                 const base64Data = image.split(',')[1] || image;
-                // According to the 400 error message, it expects "bytesBase64Encoded" and "mimeType"
+                // The @google/genai SDK often expects the inlineData structure for base64 inputs
                 payload.image = { 
-                    bytesBase64Encoded: base64Data, 
-                    mimeType: 'image/png' 
+                    inlineData: {
+                        data: base64Data, 
+                        mimeType: 'image/png' 
+                    }
                 };
             }
             if (lastFrame) {
                 const base64Data = lastFrame.split(',')[1] || lastFrame;
                 payload.lastFrame = { 
-                    bytesBase64Encoded: base64Data, 
-                    mimeType: 'image/png' 
+                    inlineData: {
+                        data: base64Data, 
+                        mimeType: 'image/png' 
+                    }
                 };
             }
             if (referenceImages && referenceImages.length > 0) {
@@ -1155,27 +1159,33 @@ async function startServer() {
                     const base64Data = img.split(',')[1] || img;
                     return { 
                         image: {
-                            bytesBase64Encoded: base64Data, 
-                            mimeType: 'image/png' 
+                            inlineData: {
+                                data: base64Data,
+                                mimeType: 'image/png'
+                            }
                         },
                         referenceType: 'ASSET'
                     };
                 });
             }
 
-            console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'veo-3.1-lite-generate-preview'}...`);
+            console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'models/veo-lite-preview-001'}...`);
             
             // Fallback chain: tenta o modelo solicitado primeiro; se 404, tenta os outros
             const defaultModels = [
                 'models/veo-generate-preview-001',
                 'models/veo-lite-preview-001',
-                'veo-3.1-generate-preview', 
-                'veo-3.1-lite-generate-preview', 
-                'veo-2.0-preview-001', 
-                'veo-lite-preview-001'
+                'models/veo-3.1-generate-preview', 
+                'models/veo-3.1-lite-generate-preview', 
+                'models/veo-2.0-preview-001'
             ];
             
-            const modelsToTry = model ? [model, ...defaultModels.filter(m => m !== model)] : defaultModels;
+            let normalizedModel = model || 'models/veo-lite-preview-001';
+            if (normalizedModel && !normalizedModel.startsWith('models/')) {
+                normalizedModel = `models/${normalizedModel}`;
+            }
+            
+            const modelsToTry = [normalizedModel, ...defaultModels.filter(m => m !== normalizedModel)];
 
             const ai = new GoogleGenAI({ apiKey: finalKey });
             let operation: any;
@@ -1185,7 +1195,6 @@ async function startServer() {
                 console.log(`[Job ${jobId}] Trying model: ${currentModel}...`);
                 try {
                     // Mapeia o payload para o formato esperado pelo SDK
-                    // lastFrame deve estar dentro do config para Veo
                     const finalConfig = { ...payload.config };
                     if (payload.lastFrame) {
                         (finalConfig as any).lastFrame = payload.lastFrame;
@@ -1200,6 +1209,14 @@ async function startServer() {
                         config: finalConfig
                     };
                     if (payload.image) sdkPayload.image = payload.image;
+
+                    // Log minimal payload structure for debug
+                    console.log(`[Job ${jobId}] SDK Payload structure:`, {
+                        model: sdkPayload.model,
+                        prompt: sdkPayload.prompt ? "PRESENTE" : "MISSING",
+                        hasImage: !!sdkPayload.image,
+                        hasConfig: !!sdkPayload.config
+                    });
 
                     operation = await ai.models.generateVideos(sdkPayload);
                     successModel = currentModel;
