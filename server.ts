@@ -882,9 +882,10 @@ async function startServer() {
                         }
                     }
                 } catch (e) {}
-                const endpoint = isImageToVideo 
-                    ? `${baseUrl}/api/v2/videos/animations`
-                    : `${baseUrl}/api/v2/videos/generations`;
+                // A documentação atualizada (pasted_content_2.txt) indica que img2video e txt2video 
+                // podem usar o mesmo fluxo de generations ou animations. 
+                // Para maior compatibilidade com modelos LTX, usamos /generations como padrão.
+                const endpoint = `${baseUrl}/api/v2/videos/generations`;
 
                 console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel})`);
                 
@@ -920,7 +921,7 @@ async function startServer() {
                         // Envio via FormData para suportar arquivo real (exigência da API Deapi v2)
                         const formData = new FormData();
                         formData.append('prompt', payload.prompt);
-                        formData.append('model', "ltx-video-v0.9"); // Slug padrão da documentação
+                        formData.append('model', mappedModel); 
                         formData.append('width', payload.width.toString());
                         formData.append('height', payload.height.toString());
                         formData.append('frames', payload.frames.toString());
@@ -932,8 +933,9 @@ async function startServer() {
                         const byteCharacters = Buffer.from(base64Data, 'base64');
                         const blob = new Blob([byteCharacters], { type: 'image/png' });
                         
-                        // A documentação cita input_image para img2video e first_frame_image em alguns modelos. 
-                        // Enviamos ambos para garantir compatibilidade máxima.
+                        // Conforme documentação, o campo principal para imagem é "image" (pode ser arquivo)
+                        formData.append('image', blob, 'image.png');
+                        // Fallbacks para compatibilidade com versões anteriores
                         formData.append('input_image', blob, 'input.png');
                         formData.append('first_frame_image', blob, 'first_frame.png');
 
