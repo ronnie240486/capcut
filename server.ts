@@ -991,10 +991,18 @@ async function startServer() {
                 }
 
                 const data: any = await response.json();
-                const taskId = data.id || data.task_id || data.job_id || data.data?.job_id || data.data?.task_id;
+                console.log(`[Job ${jobId}] Deapi Response Data:`, JSON.stringify(data));
+                
+                // Busca exaustiva por qualquer campo que possa ser o ID da tarefa
+                const taskId = data.id || data.task_id || data.job_id || data.request_id || 
+                               data.data?.id || data.data?.task_id || data.data?.job_id || data.data?.request_id ||
+                               data.result?.id || data.result?.job_id;
 
                 if (!taskId) {
-                    const directUrl = data.url || data.video_url || data.data?.url || data.data?.video_url;
+                    const directUrl = data.url || data.video_url || data.result_url || 
+                                     data.data?.url || data.data?.video_url || data.data?.result_url ||
+                                     data.result?.url || data.result?.video_url;
+                                     
                     if (directUrl) {
                         jobs[jobId].status = 'completed';
                         jobs[jobId].result = [directUrl];
@@ -1002,7 +1010,7 @@ async function startServer() {
                         jobs[jobId].progress = 100;
                         return;
                     }
-                    throw new Error("Deapi não retornou ID de tarefa (job_id) ou URL direta.");
+                    throw new Error(`Deapi não retornou ID de tarefa. Resposta: ${JSON.stringify(data).substring(0, 100)}`);
                 }
 
                 console.log(`[Job ${jobId}] Deapi Job ID: ${taskId}`);
