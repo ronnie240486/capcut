@@ -1059,8 +1059,8 @@ async function startServer() {
                         
                         console.log(`[Job ${jobId}] Deapi Job Status: ${status}`);
                         
-                        if (status === 'completed' || status === 'succeeded' || status === 'success') {
-                            const videoUrl = result.video_url || result.url || result.data?.url;
+                        if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
+                            const videoUrl = result.result_url || result.video_url || result.url || result.data?.url || result.data?.result_url;
                             if (videoUrl && jobs[jobId]) {
                                 // Baixar o vídeo para o servidor local e expor via downloadUrl
                                 // para que o frontend possa buscar sem problemas de CORS/autenticação
