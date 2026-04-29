@@ -906,7 +906,7 @@ async function startServer() {
                         width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
                         height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
                         frames: 120, 
-                        fps: 24,    // Ajustado para 24 conforme imagem do painel
+                        fps: 30,    // Forçado para 30 conforme erro 422 da API
                         steps: 1,   
                         seed: parseInt(randomSeed)
                     };
