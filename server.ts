@@ -883,12 +883,12 @@ async function startServer() {
                         }
                     }
                 } catch (e) {}
-                // A documentação atualizada indica que img2video e txt2video 
-                // podem usar o mesmo fluxo de generations ou animations. 
-                // Para maior compatibilidade com modelos LTX, usamos /generations como padrão.
-                const endpoint = `${baseUrl}/api/v2/videos/generations`;
+                // O usuário confirmou que para animações deve-se usar /animations
+                const endpoint = isImageToVideo 
+                    ? `${baseUrl}/api/v2/videos/animations`
+                    : `${baseUrl}/api/v2/videos/generations`;
 
-                console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel})`);
+                console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel}, isImageToVideo: ${isImageToVideo})`);
                 
                 let response;
                 let fetchAttempts = 0;
@@ -906,7 +906,7 @@ async function startServer() {
                         height: deapiHeight || (aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768)),
                         frames: deapiFrames || 120, 
                         fps: deapiFps || 30,
-                        steps: 1,   
+                        steps: 12, // Increased steps for better quality/animation binding
                         seed: parseInt(randomSeed)
                     };
 
@@ -926,11 +926,18 @@ async function startServer() {
                         const byteCharacters = Buffer.from(base64Data, 'base64');
                         const blob = new Blob([byteCharacters], { type: 'image/png' });
                         
-                        // Enviar apenas input_image para evitar ambiguidade em modelos img2video
+                        // Enviar campos variados para garantir compatibilidade com diferentes modelos Deapi (ltx, svd, etc)
                         formData.append('input_image', blob, 'input.png');
-                        // Alguns modelos podem exigir 'image' ou 'first_frame_image'
                         formData.append('first_frame_image', blob, 'first_frame.png');
+                        formData.append('image', blob, 'image.png');
+                        formData.append('reference_image', blob, 'ref.png');
+                        formData.append('image_file', blob, 'file.png');
 
+                        // Prompt improvement if empty
+                        if (!payload.prompt || payload.prompt === 'cinematic video generation') {
+                            payload.prompt = "Animate this image precisely, maintaining all details and colors, high quality cinematic motion";
+                        }
+                        
                         response = await fetch(endpoint, {
                             method: 'POST',
                             headers: {
@@ -1130,11 +1137,18 @@ async function startServer() {
 
             if (image) {
                 const base64Data = image.split(',')[1] || image;
-                payload.image = { bytesBase64Encoded: base64Data, mimeType: 'image/png' };
+                // According to the 400 error message, it expects "bytesBase64Encoded" and "mimeType"
+                payload.image = { 
+                    bytesBase64Encoded: base64Data, 
+                    mimeType: 'image/png' 
+                };
             }
             if (lastFrame) {
                 const base64Data = lastFrame.split(',')[1] || lastFrame;
-                payload.lastFrame = { bytesBase64Encoded: base64Data, mimeType: 'image/png' };
+                payload.lastFrame = { 
+                    bytesBase64Encoded: base64Data, 
+                    mimeType: 'image/png' 
+                };
             }
             if (referenceImages && referenceImages.length > 0) {
                 payload.referenceImages = referenceImages.map((img: string) => {
@@ -1171,14 +1185,21 @@ async function startServer() {
                 console.log(`[Job ${jobId}] Trying model: ${currentModel}...`);
                 try {
                     // Mapeia o payload para o formato esperado pelo SDK
+                    // lastFrame deve estar dentro do config para Veo
+                    const finalConfig = { ...payload.config };
+                    if (payload.lastFrame) {
+                        (finalConfig as any).lastFrame = payload.lastFrame;
+                    }
+                    if (payload.referenceImages) {
+                        (finalConfig as any).referenceImages = payload.referenceImages;
+                    }
+
                     const sdkPayload: any = {
                         model: currentModel,
                         prompt: payload.prompt,
-                        config: payload.config
+                        config: finalConfig
                     };
                     if (payload.image) sdkPayload.image = payload.image;
-                    if (payload.lastFrame) sdkPayload.lastFrame = payload.lastFrame;
-                    if (payload.referenceImages) sdkPayload.referenceImages = payload.referenceImages;
 
                     operation = await ai.models.generateVideos(sdkPayload);
                     successModel = currentModel;
