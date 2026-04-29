@@ -899,15 +899,15 @@ async function startServer() {
                 while (fetchAttempts < MAX_SUBMIT_ATTEMPTS) {
                     fetchAttempts++;
                     
-                    // Ajuste de limites conforme erro 422 retornado pela API
+                    // Ajuste de limites conforme imagem do painel e erros anteriores
                     const payload: any = {
                         prompt: prompt || 'cinematic video generation',
                         model: mappedModel,
                         width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
                         height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
-                        frames: 120, // Limite máximo reportado pela API
-                        fps: 30,    // Mínimo exigido pela API
-                        steps: 20,  // Campo obrigatório reportado pela API
+                        frames: 120, 
+                        fps: 24,    // Ajustado para 24 conforme imagem do painel
+                        steps: 1,   
                         seed: parseInt(randomSeed)
                     };
 
