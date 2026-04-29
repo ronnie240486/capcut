@@ -829,7 +829,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey } = req.body;
+        const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, width, height, frames, fps } = req.body;
         
         if (model && model.startsWith('deapi-')) {
             const deapiModel = model.replace('deapi-', '');
@@ -842,15 +842,11 @@ async function startServer() {
             }
 
             console.log(`[Job ${jobId}] Starting Deapi Video Generation with model: ${deapiModel}...`);
-            console.log(`[Job ${jobId}] Key check: ${deapiKey ? (deapiKey.substring(0, 4) + "..." + deapiKey.substring(deapiKey.length - 4)) : "MISSING"}`);
             
             try {
-                // Determine base URL (api.deapi.ai is standard for API access)
                 const baseUrl = "https://api.deapi.ai";
-                
                 const isImageToVideo = !!image;
                 
-                // Mapeamento exato baseado no painel Deapi (Imagem do usuário)
                 const modelMap: Record<string, string> = {
                     "ltx-2.3-22b": "ltx-video-v2.3",
                     "ltx-video-13b": "ltx-video-v1.3",
@@ -862,9 +858,7 @@ async function startServer() {
                 
                 let mappedModel = modelMap[deapiModel] || deapiModel;
                 
-                // Fallback dinâmico caso o mapeamento estático falhe
                 try {
-                    console.log(`[Job ${jobId}] Verificando modelos disponíveis na Deapi...`);
                     const modelsRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=img2video,txt2video`, {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     });
@@ -873,7 +867,6 @@ async function startServer() {
                         const availableModels = modelsData.data || [];
                         const slugs = availableModels.map((m: any) => m.slug);
                         
-                        // Se o modelo mapeado não estiver na lista, tenta o melhor match
                         if (!slugs.includes(mappedModel)) {
                             const bestMatch = availableModels.find((m: any) => 
                                 m.slug.toLowerCase().includes(deapiModel.split('-')[0])
@@ -882,10 +875,11 @@ async function startServer() {
                         }
                     }
                 } catch (e) {}
-                // A documentação atualizada (pasted_content_2.txt) indica que img2video e txt2video 
-                // podem usar o mesmo fluxo de generations ou animations. 
-                // Para maior compatibilidade com modelos LTX, usamos /generations como padrão.
-                const endpoint = `${baseUrl}/api/v2/videos/generations`;
+
+                // Fix: Try /animations for Image2Video if /generations is failing to animate own image
+                const endpoint = isImageToVideo 
+                    ? `${baseUrl}/api/v2/videos/animations`
+                    : `${baseUrl}/api/v2/videos/generations`;
 
                 console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel})`);
                 
@@ -894,33 +888,22 @@ async function startServer() {
                 let lastFetchError = "";
                 const randomSeed = Math.floor(Math.random() * 2147483647).toString();
 
-                // Limite de 5 tentativas com backoff linear de 30s para não saturar a fila
                 const MAX_SUBMIT_ATTEMPTS = 5;
                 while (fetchAttempts < MAX_SUBMIT_ATTEMPTS) {
                     fetchAttempts++;
                     
-                    // Ajuste de limites conforme imagem do painel e erros anteriores
                     const payload: any = {
                         prompt: prompt || 'cinematic video generation',
                         model: mappedModel,
-                        width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
-                        height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
-                        frames: 120, 
-                        fps: 30,    // Forçado para 30 conforme erro 422 da API
+                        width: width || (aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768)),
+                        height: height || (aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768)),
+                        frames: frames || 120, 
+                        fps: fps || 30,
                         steps: 1,   
                         seed: parseInt(randomSeed)
                     };
 
                     if (isImageToVideo) {
-                        // Deapi v2 Animation payload (JSON) - Updated for LTX Video requirements
-                        payload.image = image; 
-                        payload.image_url = image; 
-                        payload.input_image = image;
-                        payload.first_frame_image = image; // Novo campo obrigatório reportado no erro 422
-                    }
-
-                    if (isImageToVideo) {
-                        // Envio via FormData para suportar arquivo real (exigência da API Deapi v2)
                         const formData = new FormData();
                         formData.append('prompt', payload.prompt);
                         formData.append('model', mappedModel); 
@@ -931,14 +914,10 @@ async function startServer() {
                         formData.append('steps', payload.steps.toString());
                         formData.append('seed', payload.seed.toString());
 
-                        // Converter base64 para Blob para enviar como arquivo
                         const base64Data = image.split(',')[1] || image;
                         const byteCharacters = Buffer.from(base64Data, 'base64');
                         const blob = new Blob([byteCharacters], { type: 'image/png' });
                         
-                        // Para animação (img2video), a documentação v2 e o erro 422 anterior
-                        // confirmaram que "input_image" e "first_frame_image" são os campos chave.
-                        // Enviamos a imagem selecionada pelo usuário nesses campos.
                         formData.append('input_image', blob, 'input.png');
                         formData.append('first_frame_image', blob, 'first_frame.png');
                         formData.append('image', blob, 'image.png');
@@ -966,7 +945,6 @@ async function startServer() {
                     }
 
                     if (response.status === 429) {
-                        // Backoff linear: 30s fixos entre tentativas (não exponencial)
                         const waitTime = 30000;
                         const seconds = waitTime / 1000;
                         console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/${MAX_SUBMIT_ATTEMPTS}. Aguardando ${seconds}s...`);
@@ -980,14 +958,14 @@ async function startServer() {
                     if (!response.ok) {
                         const errText = await response.text();
                         lastFetchError = `Deapi API error (${response.status}): ${errText.substring(0, 500)}`;
-                        break; // Stop retrying on non-429 errors
+                        break; 
                     }
 
-                    break; // Success
+                    break; 
                 }
 
                 if (!response || !response.ok) {
-                    const finalError = lastFetchError || (fetchAttempts >= 5 ? "Limite de tentativas excedido (A API Deapi permaneceu ocupada). Tente novamente em alguns minutos." : "Falha na comunicação com Deapi após retentativas.");
+                    const finalError = lastFetchError || (fetchAttempts >= MAX_SUBMIT_ATTEMPTS ? "Limite de tentativas excedido (A API Deapi permaneceu ocupada). Tente novamente em alguns minutos." : "Falha na comunicação com Deapi após retentativas.");
                     throw new Error(finalError);
                 }
 
