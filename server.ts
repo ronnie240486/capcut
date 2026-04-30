@@ -1290,18 +1290,23 @@ async function startServer() {
 
         try {
             const baseUrl = "https://api.deapi.ai";
-            const endpoint = `${baseUrl}/api/v2/audios/generations`;
+            // Singular 'audio' is more common in v2 for these endpoints
+            const endpoint = `${baseUrl}/api/v2/audio/generations`;
             
-            // Unified payload for txt2audio, dubbing (if based on txt2audio), cloning
             const payload: any = {
                 prompt: prompt || '',
-                model: model || 'txt2audio',
+                model: model || (type === 'speech' ? 'cloning-v1' : 'txt2audio'),
                 type: type || 'audio'
             };
 
             if (audioUrl) payload.audio_url = audioUrl;
             if (audioFile) payload.audio_file = audioFile;
-            if (voiceBase64) payload.voice_file = voiceBase64; // v2 often uses voice_file for base64 data
+            if (voiceBase64) {
+                payload.voice_file = voiceBase64; 
+                payload.voice_base64 = voiceBase64; // Fallback
+            }
+
+            console.log(`[Deapi Audio] Calling ${endpoint} with type: ${payload.type}`);
 
             const response = await fetch(endpoint, {
                 method: 'POST',
@@ -1314,29 +1319,61 @@ async function startServer() {
 
             if (!response.ok) {
                 const text = await response.text();
-                throw new Error(`Deapi Error (${response.status}): ${text}`);
+                console.error(`[Deapi Audio] Error ${response.status}:`, text.substring(0, 500));
+                // If 404, try plural as fallback
+                if (response.status === 404) {
+                   const fallbackEndpoint = `${baseUrl}/api/v2/audios/generations`;
+                   console.log(`[Deapi Audio] 404 on singular, trying plural: ${fallbackEndpoint}`);
+                   const fbRes = await fetch(fallbackEndpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${deapiKey}`
+                        },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!fbRes.ok) {
+                        const fbText = await fbRes.text();
+                         throw new Error(`Deapi 404 on both singular and plural. Msg: ${fbText.substring(0, 100)}`);
+                    }
+                    // If fallback worked, continue with that data
+                    const data: any = await fbRes.json();
+                    handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                    return;
+                }
+                throw new Error(`Deapi Error (${response.status}): ${text.substring(0, 200)}`);
             }
 
             const data: any = await response.json();
-            const taskId = data.id || data.task_id || data.data?.id;
+            handleDeapiTask(jobId, data, deapiKey, baseUrl);
 
-            if (!taskId) {
-                const directUrl = data.url || data.audio_url || data.data?.url;
-                if (directUrl) {
-                    jobs[jobId].status = 'completed';
-                    jobs[jobId].downloadUrl = directUrl;
-                    jobs[jobId].progress = 100;
-                    return;
-                }
-                throw new Error('Deapi não retornou ID de tarefa.');
+        } catch (e: any) {
+            console.error(`[Job ${jobId}] Deapi Audio Error:`, e);
+            if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = e.message; }
+        }
+    });
+
+    // Helper to handle Deapi task/job response
+    const handleDeapiTask = async (jobId: string, data: any, deapiKey: string, baseUrl: string) => {
+        const taskId = data.id || data.task_id || data.data?.id || data.job_id;
+        if (!taskId) {
+            const directUrl = data.url || data.audio_url || data.data?.url || data.result_url;
+            if (directUrl) {
+                jobs[jobId].status = 'completed';
+                jobs[jobId].downloadUrl = directUrl;
+                jobs[jobId].progress = 100;
+                return;
             }
+            throw new Error('Deapi não retornou ID de tarefa nem URL direta.');
+        }
 
-            // Polling
-            let completed = false;
-            let attempts = 0;
-            while (!completed && attempts < 60 && jobs[jobId]) {
-                attempts++;
-                await new Promise(r => setTimeout(r, 5000));
+        // Polling
+        let completed = false;
+        let attempts = 0;
+        while (!completed && attempts < 60 && jobs[jobId]) {
+            attempts++;
+            await new Promise(r => setTimeout(r, 5000));
+            try {
                 const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}` }
                 });
@@ -1344,22 +1381,25 @@ async function startServer() {
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
                     const status = (result.status || "").toLowerCase();
-                    if (status === 'completed' || status === 'succeeded') {
-                        const audioUrl = result.result_url || result.audio_url || result.url;
+                    if (status === 'completed' || status === 'succeeded' || status === 'success') {
+                        const audioUrl = result.result_url || result.audio_url || result.url || result.download_url;
                         jobs[jobId].status = 'completed';
                         jobs[jobId].downloadUrl = audioUrl;
                         jobs[jobId].progress = 100;
                         completed = true;
-                    } else if (status === 'failed') {
-                        throw new Error(result.error || 'Deapi processing failed');
+                    } else if (status === 'failed' || status === 'error') {
+                        throw new Error(result.error || result.message || 'Deapi processing failed');
                     }
                 }
+            } catch (e) {
+                console.warn(`[Job ${jobId}] Polling attempt ${attempts} failed, continuing...`);
             }
-        } catch (e: any) {
-            console.error(`[Job ${jobId}] Deapi Audio Error:`, e);
-            if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = e.message; }
         }
-    });
+        if (!completed && jobs[jobId]) {
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = 'Timeout na geração Deapi.';
+        }
+    };
 
     // ─── DEAPI MUSIC GENERATION ────────────────────────────────────────────────
     app.post('/api/ai/generate-music', async (req: any, res: any) => {
@@ -1378,13 +1418,15 @@ async function startServer() {
 
         try {
             const baseUrl = "https://api.deapi.ai";
-            const endpoint = `${baseUrl}/api/v2/musics/generations`;
+            const endpoint = `${baseUrl}/api/v2/music/generations`;
             
             const payload: any = {
                 prompt: prompt || '',
                 model: model || 'txt2music',
                 duration: duration || 30
             };
+
+            console.log(`[Deapi Music] Calling ${endpoint}`);
 
             const response = await fetch(endpoint, {
                 method: 'POST',
@@ -1397,43 +1439,35 @@ async function startServer() {
 
             if (!response.ok) {
                 const text = await response.text();
-                throw new Error(`Deapi Error (${response.status}): ${text}`);
+                if (response.status === 404) {
+                    // Try plural fallback
+                    const fbEndpoint = `${baseUrl}/api/v2/musics/generations`;
+                    const fbRes = await fetch(fbEndpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${deapiKey}`
+                        },
+                        body: JSON.stringify(payload)
+                    });
+                    if (fbRes.ok) {
+                        const fbData = await fbRes.json();
+                        handleDeapiTask(jobId, fbData, deapiKey, baseUrl);
+                        return;
+                    }
+                }
+                throw new Error(`Deapi Error (${response.status}): ${text.substring(0, 200)}`);
             }
 
             const data: any = await response.json();
-            const taskId = data.id || data.task_id || data.data?.id;
+            handleDeapiTask(jobId, data, deapiKey, baseUrl);
 
-            if (!taskId) throw new Error('Deapi não retornou ID de tarefa de música.');
-
-            // Polling
-            let completed = false;
-            let attempts = 0;
-            while (!completed && attempts < 100 && jobs[jobId]) {
-                attempts++;
-                await new Promise(r => setTimeout(r, 10000));
-                const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
-                    headers: { 'Authorization': `Bearer ${deapiKey}` }
-                });
-                if (pollRes.ok) {
-                    const taskData: any = await pollRes.json();
-                    const result = taskData.data || taskData;
-                    const status = (result.status || "").toLowerCase();
-                    if (status === 'completed' || status === 'succeeded') {
-                        const musicUrl = result.result_url || result.music_url || result.url;
-                        jobs[jobId].status = 'completed';
-                        jobs[jobId].downloadUrl = musicUrl;
-                        jobs[jobId].progress = 100;
-                        completed = true;
-                    } else if (status === 'failed') {
-                        throw new Error(result.error || 'Deapi music processing failed');
-                    }
-                }
-            }
         } catch (e: any) {
             console.error(`[Job ${jobId}] Deapi Music Error:`, e);
             if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = e.message; }
         }
     });
+
 
     // ─── DEAPI TRANSCRIBE ─────────────────────────────────────────────────────
     app.post('/api/ai/transcribe', async (req: any, res: any) => {
@@ -1441,7 +1475,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { url, file, apiKey } = req.body;
+        const { url, file, audioUrl, audioFile, apiKey } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
 
         if (!deapiKey) {
@@ -1452,56 +1486,51 @@ async function startServer() {
 
         try {
             const baseUrl = "https://api.deapi.ai";
-            const endpoint = `${baseUrl}/api/v2/transcribe`;
+            const endpoint = `${baseUrl}/api/v2/audio/transcribe`;
             
-            let response;
-            if (url) {
-                response = await fetch(endpoint, {
+            const payload: any = {};
+            const sourceUrl = url || audioUrl;
+            const sourceFile = file || audioFile;
+
+            if (sourceUrl) payload.audio_url = sourceUrl;
+            if (sourceFile) payload.audio_file = sourceFile;
+
+            if (!payload.audio_url && !payload.audio_file) {
+                 throw new Error("Nenhuma mídia fornecida para transcrição.");
+            }
+
+            console.log(`[Deapi Transcribe] Calling ${endpoint}`);
+
+            let response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${deapiKey}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (response.status === 404) {
+                const fbEndpoint = `${baseUrl}/api/v2/transcribe`;
+                console.log(`[Deapi Transcribe] 404 on singular, trying fallback: ${fbEndpoint}`);
+                response = await fetch(fbEndpoint, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${deapiKey}`
                     },
-                    body: JSON.stringify({ url })
+                    body: JSON.stringify(payload)
                 });
-            } else {
-                // File upload logic if needed, simplify for now
-                throw new Error("URL é obrigatória para transcrição via proxy no momento.");
             }
 
             if (!response.ok) {
                 const text = await response.text();
-                throw new Error(`Deapi Error (${response.status}): ${text}`);
+                throw new Error(`Deapi Transcribe Error (${response.status}): ${text.substring(0, 200)}`);
             }
 
             const data: any = await response.json();
-            const taskId = data.id || data.task_id;
+            handleDeapiTask(jobId, data, deapiKey, baseUrl);
 
-            if (!taskId) {
-                jobs[jobId].status = 'completed';
-                jobs[jobId].result = data;
-                return;
-            }
-
-            // Polling
-            let completed = false;
-            let attempts = 0;
-            while (!completed && attempts < 30 && jobs[jobId]) {
-                attempts++;
-                await new Promise(r => setTimeout(r, 3000));
-                const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
-                    headers: { 'Authorization': `Bearer ${deapiKey}` }
-                });
-                if (pollRes.ok) {
-                    const taskData: any = await pollRes.json();
-                    const result = taskData.data || taskData;
-                    if (result.status === 'completed') {
-                        jobs[jobId].status = 'completed';
-                        jobs[jobId].result = result.text;
-                        completed = true;
-                    }
-                }
-            }
         } catch (e: any) {
             console.error(`[Job ${jobId}] Deapi Transcribe Error:`, e);
             if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = e.message; }
