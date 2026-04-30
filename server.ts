@@ -1383,19 +1383,30 @@ async function startServer() {
 
             // Resolve model slug dynamically — never hardcode
             let mappedModel = model || '';
-            // Normalize legacy/internal aliases to the real Deapi slug
+            // Normalize legacy/internal aliases to real Deapi slugs.
+            // 'cloning' is left empty so the dynamic lookup picks a voice_clone capable model.
             const LEGACY_ALIASES: Record<string, string> = {
-                'cloning': 'Kokoro',
-                'cloning-v1': 'Kokoro',
+                'cloning': '',        // resolved dynamically to a voice_clone capable model
+                'cloning-v1': '',     // same
                 'txt2audio': 'Kokoro',
-                'kokoro': 'Kokoro' // normalize lowercase to canonical
+                'kokoro': 'Kokoro'    // normalize lowercase to canonical
             };
-            if (!mappedModel || LEGACY_ALIASES[mappedModel] !== undefined) {
-                mappedModel = LEGACY_ALIASES[mappedModel] || 'Kokoro';
+            if (mappedModel in LEGACY_ALIASES) {
+                mappedModel = LEGACY_ALIASES[mappedModel]; // may be '' — resolved below
             }
+            if (!mappedModel) mappedModel = 'Kokoro'; // safe default for plain speech
 
-            // Validate against live model list; capture default voice slug
+            // Fetch live model list — resolve model + capabilities + default voice
+            const resolvedType = type || 'speech';
+            const hasRefAudio = !!(voiceBase64 && voiceBase64.length > 10);
+            const hasAudioFile = !!(audioFile && audioFile.length > 10);
+            const hasAudioUrl  = !!(audioUrl  && typeof audioUrl === 'string' && audioUrl.startsWith('http'));
+            const hasAnyRefAudio = hasRefAudio || hasAudioFile || hasAudioUrl;
+            const needsVoiceClone = resolvedType === 'clone' && hasAnyRefAudio;
+
             let defaultVoiceSlug: string | undefined;
+            let mode: string = needsVoiceClone ? 'voice_clone' : 'custom_voice';
+
             try {
                 const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2audio`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
@@ -1406,12 +1417,30 @@ async function startServer() {
                     if (availableModels.length > 0) {
                         const slugs: string[] = availableModels.map((m: any) => m.slug);
                         console.log(`[Deapi Audio] Available TTS models: ${slugs.join(', ')}`);
-                        if (!slugs.includes(mappedModel)) {
-                            const fallback = slugs[0];
-                            console.log(`[Deapi Audio] Model "${mappedModel}" not in list, using "${fallback}"`);
-                            mappedModel = fallback;
+
+                        // If voice_clone needed, find a model that supports it.
+                        // Priority: supports_voice_clone feature flag OR slug contains 'VoiceClone'
+                        if (needsVoiceClone) {
+                            const cloneCapable = availableModels.find((m: any) =>
+                                m.info?.features?.supports_voice_clone === true ||
+                                m.slug.toLowerCase().includes('voiceclone') ||
+                                m.slug.toLowerCase().includes('voice_clone')
+                            );
+                            if (cloneCapable) {
+                                mappedModel = cloneCapable.slug;
+                                mode = 'voice_clone';
+                                console.log(`[Deapi Audio] Voice clone model selected: ${mappedModel}`);
+                            } else {
+                                // No model supports voice_clone — fall back to custom_voice
+                                console.warn('[Deapi Audio] No voice_clone capable model found, falling back to custom_voice');
+                                mode = 'custom_voice';
+                            }
+                        } else if (mappedModel && !slugs.includes(mappedModel)) {
+                            mappedModel = slugs[0];
+                            console.log(`[Deapi Audio] Model not in list, using "${mappedModel}"`);
                         }
-                        // Grab the first available voice preset for custom_voice mode
+
+                        // Grab default voice preset for custom_voice mode
                         const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
                         const voices = modelInfo?.languages?.[0]?.voices;
                         if (voices && voices.length > 0) {
@@ -1422,28 +1451,6 @@ async function startServer() {
                 }
             } catch (e) {
                 console.error("[Deapi Audio] Could not fetch model list, proceeding with:", mappedModel, e);
-            }
-
-            // Determine mode from type
-            // type values from client: 'speech' | 'sfx' | 'clone' | 'dubbing'
-            const resolvedType = type || 'speech';
-            const hasRefAudio = !!(voiceBase64 && voiceBase64.length > 10);
-            const hasAudioFile = !!(audioFile && audioFile.length > 10);
-            const hasAudioUrl  = !!(audioUrl  && typeof audioUrl === 'string' && audioUrl.startsWith('http'));
-            const hasAnyRefAudio = hasRefAudio || hasAudioFile || hasAudioUrl;
-
-            // Kokoro (and other TTS models) require an explicit mode.
-            // voice_clone → requires ref_audio file
-            // custom_voice → requires voice slug (preset)
-            // If no ref audio is present, always use custom_voice + a default voice preset.
-            let mode: string;
-            let voiceSlug: string | undefined;
-            if (hasAnyRefAudio) {
-                mode = 'voice_clone';
-            } else {
-                mode = 'custom_voice';
-                // Use the first available voice preset for this model/language
-                // Populated from model.languages[0].voices[0].slug during model fetch below
             }
 
             let response: any;
@@ -1499,7 +1506,7 @@ async function startServer() {
                         if (mode === 'custom_voice' && defaultVoiceSlug) {
                             v1Payload.voice = defaultVoiceSlug;
                         }
-                        if (hasRefAudio) v1Payload.ref_audio = voiceBase64;
+                        // v1 cannot accept ref_audio as base64 string — voice cloning only works via v2
                         fetchOptions = {
                             method: 'POST',
                             headers: {
