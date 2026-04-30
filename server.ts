@@ -1419,12 +1419,15 @@ async function startServer() {
             // Determine mode from type
             // type values from client: 'speech' | 'sfx' | 'clone' | 'dubbing'
             const resolvedType = type || 'speech';
+            // Only set voice_clone mode when there is ACTUAL reference audio data
+            const hasRefAudio = !!(voiceBase64 && voiceBase64.length > 10);
+            const hasAudioFile = !!(audioFile && audioFile.length > 10);
+            const hasAudioUrl  = !!(audioUrl  && typeof audioUrl === 'string' && audioUrl.startsWith('http'));
             let mode: string | undefined;
-            if (resolvedType === 'clone' || voiceBase64) {
-                mode = 'voice_clone';
-            } else if (audioUrl || audioFile) {
+            if (resolvedType === 'clone' && (hasRefAudio || hasAudioFile || hasAudioUrl)) {
                 mode = 'voice_clone';
             }
+            // Without reference audio, send no mode at all — API uses its default
 
             let response: any;
             let success = false;
@@ -1445,8 +1448,8 @@ async function startServer() {
                         form.append('format', 'mp3');
                         form.append('sample_rate', '24000');
                         if (mode) form.append('mode', mode);
-                        // ref_audio must be a file blob — base64 strings are not accepted
-                        if (voiceBase64) {
+                        // ref_audio must be a file blob — only attach when we have real audio data
+                        if (hasRefAudio) {
                             try {
                                 const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
                                 const buffer = Buffer.from(base64Data, 'base64');
@@ -1472,7 +1475,7 @@ async function startServer() {
                             sample_rate: 24000
                         };
                         if (mode) v1Payload.mode = mode;
-                        if (voiceBase64) v1Payload.ref_audio = voiceBase64;
+                        if (hasRefAudio) v1Payload.ref_audio = voiceBase64;
                         fetchOptions = {
                             method: 'POST',
                             headers: {
