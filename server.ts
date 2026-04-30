@@ -613,8 +613,13 @@ async function startServer() {
                 processedArgs.push('-filter_complex_script', filterScriptPath);
                 i++; // Skip the next arg as we handled it
             } else if (args[i] === '-i') {
-                // Higher queue size to handle many inputs without blocking
-                processedArgs.push('-thread_queue_size', '512', '-i');
+                // Higher queue size to handle many inputs without blocking,
+                // but avoid it for lavfi/virtual devices which can be sensitive to option placement
+                const isLavfi = i > 0 && args[i-1] === 'lavfi';
+                if (!isLavfi) {
+                    processedArgs.push('-thread_queue_size', '512');
+                }
+                processedArgs.push('-i');
             } else {
                 processedArgs.push(args[i]);
             }
@@ -882,11 +887,10 @@ async function startServer() {
                         }
                     }
                 } catch (e) {}
-                // Para img2video (animação de imagem), usar /api/v2/videos/animations
-                // Para txt2video (geração pura de texto), usar /api/v2/videos/generations
-                const endpoint = isImageToVideo 
-                    ? `${baseUrl}/api/v2/videos/animations`
-                    : `${baseUrl}/api/v2/videos/generations`;
+                // A documentação atualizada (pasted_content_2.txt) indica que img2video e txt2video 
+                // podem usar o mesmo fluxo de generations ou animations. 
+                // Para maior compatibilidade com modelos LTX, usamos /generations como padrão.
+                const endpoint = `${baseUrl}/api/v2/videos/generations`;
 
                 console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel})`);
                 
@@ -900,29 +904,49 @@ async function startServer() {
                 while (fetchAttempts < MAX_SUBMIT_ATTEMPTS) {
                     fetchAttempts++;
                     
-                    // Payload base para ambos os endpoints (animations e generations)
-                    const videoWidth = aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768);
-                    const videoHeight = aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768);
+                    // Ajuste de limites conforme imagem do painel e erros anteriores
+                    const payload: any = {
+                        prompt: prompt || 'cinematic video generation',
+                        model: mappedModel,
+                        width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
+                        height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
+                        frames: 120, 
+                        fps: 30,    // Forçado para 30 conforme erro 422 da API
+                        steps: 1,   
+                        seed: parseInt(randomSeed)
+                    };
 
                     if (isImageToVideo) {
-                        // /api/v2/videos/animations - requer multipart/form-data com first_frame_image como arquivo binário
-                        // Campos obrigatórios: prompt, first_frame_image, model, width, height, guidance, steps, seed, frames
-                        const formData = new FormData();
-                        formData.append('prompt', prompt || 'cinematic smooth animation, camera movement, natural motion');
-                        formData.append('model', mappedModel);
-                        formData.append('width', videoWidth.toString());
-                        formData.append('height', videoHeight.toString());
-                        formData.append('frames', '121');
-                        formData.append('fps', '24');
-                        formData.append('steps', '20');
-                        formData.append('guidance', '7.5');
-                        formData.append('seed', parseInt(randomSeed).toString());
+                        // Deapi v2 Animation payload (JSON) - Updated for LTX Video requirements
+                        payload.image = image; 
+                        payload.image_url = image; 
+                        payload.input_image = image;
+                        payload.first_frame_image = image; // Novo campo obrigatório reportado no erro 422
+                    }
 
-                        // Converter base64 para Blob e enviar como first_frame_image (campo obrigatório)
+                    if (isImageToVideo) {
+                        // Envio via FormData para suportar arquivo real (exigência da API Deapi v2)
+                        const formData = new FormData();
+                        formData.append('prompt', payload.prompt);
+                        formData.append('model', mappedModel); 
+                        formData.append('width', payload.width.toString());
+                        formData.append('height', payload.height.toString());
+                        formData.append('frames', payload.frames.toString());
+                        formData.append('fps', payload.fps.toString());
+                        formData.append('steps', payload.steps.toString());
+                        formData.append('seed', payload.seed.toString());
+
+                        // Converter base64 para Blob para enviar como arquivo
                         const base64Data = image.split(',')[1] || image;
                         const byteCharacters = Buffer.from(base64Data, 'base64');
-                        const imageBlob = new Blob([byteCharacters], { type: 'image/png' });
-                        formData.append('first_frame_image', imageBlob, 'first_frame.png');
+                        const blob = new Blob([byteCharacters], { type: 'image/png' });
+                        
+                        // Para animação (img2video), a documentação v2 e o erro 422 anterior
+                        // confirmaram que "input_image" e "first_frame_image" são os campos chave.
+                        // Enviamos a imagem selecionada pelo usuário nesses campos.
+                        formData.append('input_image', blob, 'input.png');
+                        formData.append('first_frame_image', blob, 'first_frame.png');
+                        formData.append('image', blob, 'image.png');
 
                         response = await fetch(endpoint, {
                             method: 'POST',
@@ -934,18 +958,6 @@ async function startServer() {
                             body: formData
                         });
                     } else {
-                        // /api/v2/videos/generations - JSON body para txt2video
-                        const payload: any = {
-                            prompt: prompt || 'cinematic video generation',
-                            model: mappedModel,
-                            width: videoWidth,
-                            height: videoHeight,
-                            frames: 121,
-                            fps: 24,
-                            steps: 20,
-                            guidance: 7.5,
-                            seed: parseInt(randomSeed)
-                        };
                         response = await fetch(endpoint, {
                             method: 'POST',
                             headers: {
@@ -987,10 +999,9 @@ async function startServer() {
                 const data: any = await response.json();
                 console.log(`[Job ${jobId}] Deapi Response Data:`, JSON.stringify(data));
                 
-                // Deapi v2 retorna { data: { request_id: "..." } } - busca exaustiva
-                const taskId = data.data?.request_id || data.request_id ||
-                               data.id || data.task_id || data.job_id ||
-                               data.data?.id || data.data?.task_id || data.data?.job_id ||
+                // Busca exaustiva por qualquer campo que possa ser o ID da tarefa
+                const taskId = data.id || data.task_id || data.job_id || data.request_id || 
+                               data.data?.id || data.data?.task_id || data.data?.job_id || data.data?.request_id ||
                                data.result?.id || data.result?.job_id;
 
                 if (!taskId) {
@@ -1013,7 +1024,7 @@ async function startServer() {
                     jobs[jobId].message = ""; 
                 }
 
-                // Polling Deapi Task (Jobs v2) - usa GET /api/v2/jobs/{request_id}
+                // Polling Deapi Task (Jobs v2)
                 let completed = false;
                 let attempts = 0;
                 let pollFailures = 0;
@@ -1021,18 +1032,16 @@ async function startServer() {
 
                 while (!completed && attempts < maxAttempts && jobs[jobId]) {
                     attempts++;
-                    const pollWait = 15000 + (Math.random() * 5000); 
+                    const pollWait = 20000 + (Math.random() * 5000); 
                     await new Promise(r => setTimeout(r, pollWait));
                     
                     if (!jobs[jobId]) break; // Job was cancelled or removed
 
                     try {
-                        // Deapi v2: GET /api/v2/jobs/{job_request} retorna { data: { status, progress, result_url } }
                         const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
                             headers: { 
                                 'Authorization': `Bearer ${deapiKey}`,
-                                'x-api-key': deapiKey,
-                                'Accept': 'application/json'
+                                'x-api-key': deapiKey
                             }
                         });
                         
@@ -1051,19 +1060,12 @@ async function startServer() {
 
                         pollFailures = 0; // Reset failures on success
                         const taskData: any = await pollRes.json();
-                        // Deapi v2 retorna { data: { status: 'done'|'processing'|'failed', result_url, progress } }
                         const result = taskData.data || taskData;
                         const status = (result.status || "").toLowerCase();
-                        const progress = result.progress || 0;
                         
-                        console.log(`[Job ${jobId}] Deapi Job Status: ${status} (${progress}%)`);
-                        if (jobs[jobId]) {
-                            jobs[jobId].progress = Math.min(95, progress || Math.min(95, 5 + (attempts * 0.8)));
-                            jobs[jobId].message = `Animando imagem... (${Math.round(progress || 0)}%)`;
-                        }
+                        console.log(`[Job ${jobId}] Deapi Job Status: ${status}`);
                         
                         if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
-                            // Deapi v2 usa result_url como campo principal
                             const videoUrl = result.result_url || result.video_url || result.url || result.data?.url || result.data?.result_url;
                             if (videoUrl && jobs[jobId]) {
                                 // Baixar o vídeo para o servidor local e expor via downloadUrl
@@ -1145,15 +1147,15 @@ async function startServer() {
             };
 
             if (image) {
-                payload.image = { imageBytes: image.split(',')[1], mimeType: 'image/png' };
+                payload.image = { imageBytes: image.split(',')[1] || image, mimeType: 'image/png' };
             }
             if (lastFrame) {
-                payload.lastFrame = { imageBytes: lastFrame.split(',')[1], mimeType: 'image/png' };
+                payload.config.lastFrame = { imageBytes: lastFrame.split(',')[1] || lastFrame, mimeType: 'image/png' };
             }
             if (referenceImages && referenceImages.length > 0) {
-                payload.referenceImages = referenceImages.map((img: string) => ({ 
+                payload.config.referenceImages = referenceImages.map((img: string) => ({ 
                     image: {
-                        imageBytes: img.split(',')[1], 
+                        imageBytes: img.split(',')[1] || img, 
                         mimeType: 'image/png' 
                     },
                     referenceType: 'ASSET'
@@ -1188,8 +1190,6 @@ async function startServer() {
                         config: payload.config
                     };
                     if (payload.image) sdkPayload.image = payload.image;
-                    if (payload.lastFrame) sdkPayload.lastFrame = payload.lastFrame;
-                    if (payload.referenceImages) sdkPayload.referenceImages = payload.referenceImages;
 
                     operation = await ai.models.generateVideos(sdkPayload);
                     successModel = currentModel;
