@@ -1352,6 +1352,11 @@ async function startServer() {
     });
 
     // ─── DEAPI AUDIO GENERATION ────────────────────────────────────────────────
+    // Doc: POST /api/v2/audio/speech — Content-Type: multipart/form-data
+    // Params: text (req), model (req), lang (req), speed (req), format (req),
+    //         sample_rate (req), mode (opt), voice (opt), ref_audio (file,opt),
+    //         ref_text (opt), instruct (opt), webhook_url (opt)
+    // Response: { "data": { "request_id": "UUID" } }
     app.post('/api/ai/generate-audio', async (req: any, res: any) => {
         const jobId = `aiaudio_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
@@ -1368,22 +1373,28 @@ async function startServer() {
 
         try {
             const baseUrl = "https://api.deapi.ai";
-            
-            // Endpoints confirmados para v2 (Audio/Speech) e v1
-            const endpoints = [
-                `${baseUrl}/api/v2/audio/speech`,
-                `${baseUrl}/api/v2/audio/generations`,
-                `${baseUrl}/api/v1/client/txt2audio`
+
+            // v2 TTS endpoint (multipart/form-data). v1 fallback uses JSON.
+            // There is NO /api/v2/audio/generations — that endpoint does not exist.
+            const ENDPOINTS = [
+                { url: `${baseUrl}/api/v2/audio/speech`, version: 'v2' },
+                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
             ];
-            
-            let mappedModel = model;
-            // Slugs válidos conhecidos da Deapi para TTS
-            const AUDIO_MODEL_FALLBACKS = ['kokoro', 'fish-speech-1.5', 'xtts-v2'];
-            if (!mappedModel || mappedModel === 'cloning' || mappedModel === 'cloning-v1' || mappedModel === 'txt2audio' || mappedModel === 'Kokoro') {
-                mappedModel = AUDIO_MODEL_FALLBACKS[0];
+
+            // Resolve model slug dynamically — never hardcode
+            let mappedModel = model || '';
+            // Normalize legacy/internal aliases to the real Deapi slug
+            const LEGACY_ALIASES: Record<string, string> = {
+                'cloning': 'Kokoro',
+                'cloning-v1': 'Kokoro',
+                'txt2audio': 'Kokoro',
+                'kokoro': 'Kokoro' // normalize lowercase to canonical
+            };
+            if (!mappedModel || LEGACY_ALIASES[mappedModel] !== undefined) {
+                mappedModel = LEGACY_ALIASES[mappedModel] || 'Kokoro';
             }
 
-            // Tenta obter modelos de áudio dinamicamente e valida o modelo escolhido
+            // Validate against live model list; fall back gracefully
             try {
                 const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2audio`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
@@ -1393,76 +1404,103 @@ async function startServer() {
                     const availableModels: any[] = mData.data || [];
                     if (availableModels.length > 0) {
                         const slugs: string[] = availableModels.map((m: any) => m.slug);
-                        console.log(`[Deapi Audio] Available models: ${slugs.join(', ')}`);
+                        console.log(`[Deapi Audio] Available TTS models: ${slugs.join(', ')}`);
                         if (!slugs.includes(mappedModel)) {
-                            // Tenta fallbacks em ordem, depois usa o primeiro disponivel
-                            const match = AUDIO_MODEL_FALLBACKS.find(f => slugs.includes(f)) || slugs[0];
-                            console.log(`[Deapi Audio] Model "${mappedModel}" not found, using "${match}"`);
-                            mappedModel = match;
+                            const fallback = slugs[0];
+                            console.log(`[Deapi Audio] Model "${mappedModel}" not in list, using "${fallback}"`);
+                            mappedModel = fallback;
                         }
                     }
                 }
             } catch (e) {
-                console.error("[Deapi Audio] Falha ao listar modelos:", e);
+                console.error("[Deapi Audio] Could not fetch model list, proceeding with:", mappedModel, e);
             }
 
-            const payload: any = {
-                text: prompt || '',
-                prompt: prompt || '',
-                model: mappedModel,
-                lang: 'en-us', 
-                speed: 1.0,
-                format: 'mp3',
-                sample_rate: 24000
-            };
-
-            if (audioUrl) {
-                payload.audio_url = audioUrl;
-                payload.ref_audio_url = audioUrl;
-            }
-            if (audioFile) {
-                payload.audio_file = audioFile;
-                payload.ref_audio = audioFile;
-            }
-            if (voiceBase64) {
-                payload.voice_file = voiceBase64; 
-                payload.ref_audio = voiceBase64;
-            }
-            // Sempre inclui o tipo na payload para logging e roteamento correto
-            payload.type = type || 'speech';
-            if (type === 'speech' || type === 'clone') {
-                payload.mode = (type === 'clone' || voiceBase64) ? 'voice_clone' : 'custom_voice';
+            // Determine mode from type
+            // type values from client: 'speech' | 'sfx' | 'clone' | 'dubbing'
+            const resolvedType = type || 'speech';
+            let mode: string | undefined;
+            if (resolvedType === 'clone' || voiceBase64) {
+                mode = 'voice_clone';
+            } else if (audioUrl || audioFile) {
+                mode = 'voice_clone';
             }
 
-            let response;
+            let response: any;
             let success = false;
             let lastError = "";
 
-            for (const endpoint of endpoints) {
-                console.log(`[Deapi Audio] Attempting ${endpoint} with type: ${type || 'speech'}, model: ${mappedModel}`);
+            for (const ep of ENDPOINTS) {
+                console.log(`[Deapi Audio] Attempting ${ep.url} | type=${resolvedType} model=${mappedModel} mode=${mode || 'default'}`);
                 try {
-                    response = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${deapiKey}`
-                        },
-                        body: JSON.stringify(payload)
-                    });
+                    let fetchOptions: any;
+
+                    if (ep.version === 'v2') {
+                        // v2 requires multipart/form-data
+                        const form = new FormData();
+                        form.append('text', prompt || '');
+                        form.append('model', mappedModel);
+                        form.append('lang', 'en-us');
+                        form.append('speed', '1.0');
+                        form.append('format', 'mp3');
+                        form.append('sample_rate', '24000');
+                        if (mode) form.append('mode', mode);
+                        // ref_audio must be a file blob — base64 strings are not accepted
+                        if (voiceBase64) {
+                            try {
+                                const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
+                                const buffer = Buffer.from(base64Data, 'base64');
+                                const blob = new Blob([buffer], { type: 'audio/mpeg' });
+                                form.append('ref_audio', blob, 'ref.mp3');
+                            } catch (blobErr) {
+                                console.warn('[Deapi Audio] Could not attach ref_audio blob:', blobErr);
+                            }
+                        }
+                        fetchOptions = {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' },
+                            body: form
+                        };
+                    } else {
+                        // v1 fallback — JSON body (legacy endpoint, still operational)
+                        const v1Payload: any = {
+                            text: prompt || '',
+                            model: mappedModel,
+                            lang: 'en-us',
+                            speed: 1.0,
+                            format: 'mp3',
+                            sample_rate: 24000
+                        };
+                        if (mode) v1Payload.mode = mode;
+                        if (voiceBase64) v1Payload.ref_audio = voiceBase64;
+                        fetchOptions = {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${deapiKey}`,
+                                'Accept': 'application/json'
+                            },
+                            body: JSON.stringify(v1Payload)
+                        };
+                    }
+
+                    response = await fetch(ep.url, fetchOptions);
 
                     if (response.ok) {
                         const data: any = await response.json();
+                        // v2 response: { data: { request_id: "UUID" } }
+                        // v1 response: { data: { request_id: "UUID" } } — same shape
                         handleDeapiTask(jobId, data, deapiKey, baseUrl);
                         success = true;
                         break;
                     } else {
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 100)}`;
-                        console.warn(`[Deapi Audio] Failed ${endpoint}: ${lastError}`);
+                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        console.warn(`[Deapi Audio] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
                     lastError = e.message;
-                    console.warn(`[Deapi Audio] Fetch error on ${endpoint}: ${e.message}`);
+                    console.warn(`[Deapi Audio] Fetch error on ${ep.url}: ${e.message}`);
                 }
             }
 
