@@ -1290,8 +1290,14 @@ async function startServer() {
 
         try {
             const baseUrl = "https://api.deapi.ai";
-            // Singular 'audio' is more common in v2 for these endpoints
-            const endpoint = `${baseUrl}/api/v2/audio/generations`;
+            
+            // Try different possible endpoints for audio
+            const endpoints = [
+                `${baseUrl}/api/v1/audios/generations`,
+                `${baseUrl}/api/v2/audios/generations`,
+                `${baseUrl}/api/v2/audio/generations`,
+                `${baseUrl}/api/v2/speech/generations`
+            ];
             
             const payload: any = {
                 prompt: prompt || '',
@@ -1306,25 +1312,14 @@ async function startServer() {
                 payload.voice_base64 = voiceBase64; // Fallback
             }
 
-            console.log(`[Deapi Audio] Calling ${endpoint} with type: ${payload.type}`);
+            let response;
+            let success = false;
+            let lastError = "";
 
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${deapiKey}`
-                },
-                body: JSON.stringify(payload)
-            });
-
-            if (!response.ok) {
-                const text = await response.text();
-                console.error(`[Deapi Audio] Error ${response.status}:`, text.substring(0, 500));
-                // If 404, try plural as fallback
-                if (response.status === 404) {
-                   const fallbackEndpoint = `${baseUrl}/api/v2/audios/generations`;
-                   console.log(`[Deapi Audio] 404 on singular, trying plural: ${fallbackEndpoint}`);
-                   const fbRes = await fetch(fallbackEndpoint, {
+            for (const endpoint of endpoints) {
+                console.log(`[Deapi Audio] Attempting ${endpoint} with type: ${payload.type}`);
+                try {
+                    response = await fetch(endpoint, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
@@ -1332,20 +1327,26 @@ async function startServer() {
                         },
                         body: JSON.stringify(payload)
                     });
-                    if (!fbRes.ok) {
-                        const fbText = await fbRes.text();
-                         throw new Error(`Deapi 404 on both singular and plural. Msg: ${fbText.substring(0, 100)}`);
+
+                    if (response.ok) {
+                        const data: any = await response.json();
+                        handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                        success = true;
+                        break;
+                    } else {
+                        const text = await response.text();
+                        lastError = `Status ${response.status}: ${text.substring(0, 100)}`;
+                        console.warn(`[Deapi Audio] Failed ${endpoint}: ${lastError}`);
                     }
-                    // If fallback worked, continue with that data
-                    const data: any = await fbRes.json();
-                    handleDeapiTask(jobId, data, deapiKey, baseUrl);
-                    return;
+                } catch (e: any) {
+                    lastError = e.message;
+                    console.warn(`[Deapi Audio] Fetch error on ${endpoint}: ${e.message}`);
                 }
-                throw new Error(`Deapi Error (${response.status}): ${text.substring(0, 200)}`);
             }
 
-            const data: any = await response.json();
-            handleDeapiTask(jobId, data, deapiKey, baseUrl);
+            if (!success) {
+                throw new Error(`Deapi Audio falhou em todos os endpoints tentados. Último erro: ${lastError}`);
+            }
 
         } catch (e: any) {
             console.error(`[Job ${jobId}] Deapi Audio Error:`, e);
@@ -1374,9 +1375,18 @@ async function startServer() {
             attempts++;
             await new Promise(r => setTimeout(r, 5000));
             try {
-                const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
+                // Try v2 polling first
+                let pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}` }
                 });
+                
+                // If v2 fails (404), try v1
+                if (!pollRes.ok && pollRes.status === 404) {
+                    pollRes = await fetch(`${baseUrl}/api/v1/jobs/${taskId}`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}` }
+                    });
+                }
+
                 if (pollRes.ok) {
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
@@ -1418,7 +1428,14 @@ async function startServer() {
 
         try {
             const baseUrl = "https://api.deapi.ai";
-            const endpoint = `${baseUrl}/api/v2/music/generations`;
+            
+            // Try different possible endpoints for music
+            const endpoints = [
+                `${baseUrl}/api/v1/musics/generations`,
+                `${baseUrl}/api/v2/musics/generations`,
+                `${baseUrl}/api/v2/music/generations`,
+                `${baseUrl}/api/v2/audios/generations` // Sometimes music is under audios
+            ];
             
             const payload: any = {
                 prompt: prompt || '',
@@ -1426,23 +1443,14 @@ async function startServer() {
                 duration: duration || 30
             };
 
-            console.log(`[Deapi Music] Calling ${endpoint}`);
+            let response;
+            let success = false;
+            let lastError = "";
 
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${deapiKey}`
-                },
-                body: JSON.stringify(payload)
-            });
-
-            if (!response.ok) {
-                const text = await response.text();
-                if (response.status === 404) {
-                    // Try plural fallback
-                    const fbEndpoint = `${baseUrl}/api/v2/musics/generations`;
-                    const fbRes = await fetch(fbEndpoint, {
+            for (const endpoint of endpoints) {
+                console.log(`[Deapi Music] Attempting ${endpoint}`);
+                try {
+                    response = await fetch(endpoint, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
@@ -1450,17 +1458,26 @@ async function startServer() {
                         },
                         body: JSON.stringify(payload)
                     });
-                    if (fbRes.ok) {
-                        const fbData = await fbRes.json();
-                        handleDeapiTask(jobId, fbData, deapiKey, baseUrl);
-                        return;
+
+                    if (response.ok) {
+                        const data: any = await response.json();
+                        handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                        success = true;
+                        break;
+                    } else {
+                        const text = await response.text();
+                        lastError = `Status ${response.status}: ${text.substring(0, 100)}`;
+                        console.warn(`[Deapi Music] Failed ${endpoint}: ${lastError}`);
                     }
+                } catch (e: any) {
+                    lastError = e.message;
+                    console.warn(`[Deapi Music] Fetch error on ${endpoint}: ${e.message}`);
                 }
-                throw new Error(`Deapi Error (${response.status}): ${text.substring(0, 200)}`);
             }
 
-            const data: any = await response.json();
-            handleDeapiTask(jobId, data, deapiKey, baseUrl);
+            if (!success) {
+                throw new Error(`Deapi Music falhou em todos os endpoints tentados. Último erro: ${lastError}`);
+            }
 
         } catch (e: any) {
             console.error(`[Job ${jobId}] Deapi Music Error:`, e);
@@ -1486,7 +1503,13 @@ async function startServer() {
 
         try {
             const baseUrl = "https://api.deapi.ai";
-            const endpoint = `${baseUrl}/api/v2/audio/transcribe`;
+            
+            const endpoints = [
+                `${baseUrl}/api/v1/audios/transcribe`,
+                `${baseUrl}/api/v2/audios/transcribe`,
+                `${baseUrl}/api/v2/audio/transcribe`,
+                `${baseUrl}/api/v2/transcribe`
+            ];
             
             const payload: any = {};
             const sourceUrl = url || audioUrl;
@@ -1499,37 +1522,41 @@ async function startServer() {
                  throw new Error("Nenhuma mídia fornecida para transcrição.");
             }
 
-            console.log(`[Deapi Transcribe] Calling ${endpoint}`);
+            let response;
+            let success = false;
+            let lastError = "";
 
-            let response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${deapiKey}`
-                },
-                body: JSON.stringify(payload)
-            });
+            for (const endpoint of endpoints) {
+                console.log(`[Deapi Transcribe] Attempting ${endpoint}`);
+                try {
+                    response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${deapiKey}`
+                        },
+                        body: JSON.stringify(payload)
+                    });
 
-            if (response.status === 404) {
-                const fbEndpoint = `${baseUrl}/api/v2/transcribe`;
-                console.log(`[Deapi Transcribe] 404 on singular, trying fallback: ${fbEndpoint}`);
-                response = await fetch(fbEndpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${deapiKey}`
-                    },
-                    body: JSON.stringify(payload)
-                });
+                    if (response.ok) {
+                        const data: any = await response.json();
+                        handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                        success = true;
+                        break;
+                    } else {
+                        const text = await response.text();
+                        lastError = `Status ${response.status}: ${text.substring(0, 100)}`;
+                        console.warn(`[Deapi Transcribe] Failed ${endpoint}: ${lastError}`);
+                    }
+                } catch (e: any) {
+                    lastError = e.message;
+                    console.warn(`[Deapi Transcribe] Fetch error on ${endpoint}: ${e.message}`);
+                }
             }
 
-            if (!response.ok) {
-                const text = await response.text();
-                throw new Error(`Deapi Transcribe Error (${response.status}): ${text.substring(0, 200)}`);
+            if (!success) {
+                throw new Error(`Deapi Transcribe falhou em todos os endpoints tentados. Último erro: ${lastError}`);
             }
-
-            const data: any = await response.json();
-            handleDeapiTask(jobId, data, deapiKey, baseUrl);
 
         } catch (e: any) {
             console.error(`[Job ${jobId}] Deapi Transcribe Error:`, e);
