@@ -1585,6 +1585,10 @@ async function startServer() {
     };
 
     // ─── DEAPI MUSIC GENERATION ────────────────────────────────────────────────
+    // Doc: POST /api/v2/audio/music — Content-Type: multipart/form-data
+    // Required: caption, model, lyrics, duration, inference_steps, guidance_scale, seed, format
+    // v1 fallback: POST /api/v1/client/txt2music — Content-Type: application/json
+    // Response: { "data": { "request_id": "UUID" } }
     app.post('/api/ai/generate-music', async (req: any, res: any) => {
         const jobId = `aimusic_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
@@ -1601,41 +1605,91 @@ async function startServer() {
 
         try {
             const baseUrl = "https://api.deapi.ai";
-            
-            // Endpoints confirmados para v2 (Music)
-            const endpoints = [
-                `${baseUrl}/api/v2/audio/music`,
-                `${baseUrl}/api/v2/music/generations`,
-                `${baseUrl}/api/v1/client/txt2music`
-            ];
-            
-            const payload: any = {
-                caption: prompt || '',
-                prompt: prompt || '',
-                lyrics: '[Instrumental]',
-                model: model || 'ACE-Step-v1.5-turbo',
-                duration: duration || 30,
-                inference_steps: 8,
-                guidance_scale: 5,
-                seed: -1,
-                format: 'mp3'
-            };
 
-            let response;
+            // Only two valid endpoints — /api/v2/music/generations does NOT exist
+            const ENDPOINTS = [
+                { url: `${baseUrl}/api/v2/audio/music`, version: 'v2' },
+                { url: `${baseUrl}/api/v1/client/txt2music`, version: 'v1' }
+            ];
+
+            // Resolve model dynamically — never hardcode slugs
+            let mappedModel = model || '';
+            const MUSIC_MODEL_FALLBACK = 'ACE-Step-v1.5-turbo';
+            if (!mappedModel) mappedModel = MUSIC_MODEL_FALLBACK;
+
+            try {
+                const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2music`, {
+                    headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                });
+                if (mRes.ok) {
+                    const mData = await mRes.json();
+                    const availableModels: any[] = mData.data || [];
+                    if (availableModels.length > 0) {
+                        const slugs: string[] = availableModels.map((m: any) => m.slug);
+                        console.log(`[Deapi Music] Available models: ${slugs.join(', ')}`);
+                        if (!slugs.includes(mappedModel)) {
+                            const fallback = slugs.find(s => s.toLowerCase().includes('ace')) || slugs[0];
+                            console.log(`[Deapi Music] Model "${mappedModel}" not found, using "${fallback}"`);
+                            mappedModel = fallback;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("[Deapi Music] Could not fetch model list, proceeding with:", mappedModel, e);
+            }
+
+            const resolvedDuration = duration || 30;
+            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s`);
+
+            let response: any;
             let success = false;
             let lastError = "";
 
-            for (const endpoint of endpoints) {
-                console.log(`[Deapi Music] Attempting ${endpoint}`);
+            for (const ep of ENDPOINTS) {
+                console.log(`[Deapi Music] Attempting ${ep.url}`);
                 try {
-                    response = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${deapiKey}`
-                        },
-                        body: JSON.stringify(payload)
-                    });
+                    let fetchOptions: any;
+
+                    if (ep.version === 'v2') {
+                        // v2 requires multipart/form-data
+                        const form = new FormData();
+                        form.append('caption', prompt || '');
+                        form.append('model', mappedModel);
+                        form.append('lyrics', '[Instrumental]');
+                        form.append('duration', String(resolvedDuration));
+                        form.append('inference_steps', '8');
+                        form.append('guidance_scale', '5');
+                        form.append('seed', '-1');
+                        form.append('format', 'mp3');
+                        fetchOptions = {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' },
+                            body: form
+                        };
+                    } else {
+                        // v1 fallback — JSON body
+                        fetchOptions = {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${deapiKey}`,
+                                'Accept': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                caption: prompt || '',
+                                prompt: prompt || '',
+                                lyrics: '[Instrumental]',
+                                model: mappedModel,
+                                duration: resolvedDuration,
+                                inference_steps: 8,
+                                guidance_scale: 5,
+                                seed: -1,
+                                format: 'mp3'
+                            })
+                        };
+                    }
+
+                    response = await fetch(ep.url, fetchOptions);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -1644,12 +1698,12 @@ async function startServer() {
                         break;
                     } else {
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 100)}`;
-                        console.warn(`[Deapi Music] Failed ${endpoint}: ${lastError}`);
+                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        console.warn(`[Deapi Music] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
                     lastError = e.message;
-                    console.warn(`[Deapi Music] Fetch error on ${endpoint}: ${e.message}`);
+                    console.warn(`[Deapi Music] Fetch error on ${ep.url}: ${e.message}`);
                 }
             }
 
@@ -1665,6 +1719,12 @@ async function startServer() {
 
 
     // ─── DEAPI TRANSCRIBE ─────────────────────────────────────────────────────
+    // Doc: POST /api/v2/audio/transcriptions — Content-Type: multipart/form-data
+    // Required: (source_url XOR source_file), include_ts, model
+    // source_url: YouTube, X/Twitter, Twitch, Kick, TikTok, X Spaces
+    // source_file: AAC, MPEG, OGG, WAV, WebM, FLAC, MP4, AVI, WMV, QuickTime
+    // v1 fallback: POST /api/v1/client/transcribe — JSON body
+    // Response: { "data": { "request_id": "UUID" } }
     app.post('/api/ai/transcribe', async (req: any, res: any) => {
         const jobId = `transcribe_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
@@ -1681,42 +1741,97 @@ async function startServer() {
 
         try {
             const baseUrl = "https://api.deapi.ai";
-            
-            // Endpoints confirmados para v2 (Transcription)
-            const endpoints = [
-                `${baseUrl}/api/v2/audio/transcriptions`,
-                `${baseUrl}/api/v1/client/transcribe`
+
+            // Only one v2 endpoint for all transcription types (unified)
+            const ENDPOINTS = [
+                { url: `${baseUrl}/api/v2/audio/transcriptions`, version: 'v2' },
+                { url: `${baseUrl}/api/v1/client/transcribe`,    version: 'v1' }
             ];
-            
-            const payload: any = {
-                include_ts: true,
-                model: 'WhisperLargeV3'
-            };
-            const sourceUrl = url || audioUrl;
-            const sourceFile = file || audioFile;
 
-            if (sourceUrl) payload.source_url = sourceUrl;
-            if (sourceFile) payload.source_file = sourceFile;
-
-            if (!payload.audio_url && !payload.audio_file) {
-                 throw new Error("Nenhuma mídia fornecida para transcrição.");
+            // Resolve model dynamically
+            let transcribeModel = 'WhisperLargeV3';
+            try {
+                const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=audio2text`, {
+                    headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                });
+                if (mRes.ok) {
+                    const mData = await mRes.json();
+                    const slugs: string[] = (mData.data || []).map((m: any) => m.slug);
+                    if (slugs.length > 0) {
+                        console.log(`[Deapi Transcribe] Available models: ${slugs.join(', ')}`);
+                        if (!slugs.includes(transcribeModel)) {
+                            transcribeModel = slugs.find(s => s.toLowerCase().includes('whisper')) || slugs[0];
+                            console.log(`[Deapi Transcribe] Using model: ${transcribeModel}`);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("[Deapi Transcribe] Could not fetch model list, using:", transcribeModel);
             }
 
-            let response;
+            // Resolve source — exactly one of source_url or source_file must be provided
+            const sourceUrl  = (url  && typeof url  === 'string' && url.startsWith('http'))  ? url  :
+                               (audioUrl && typeof audioUrl === 'string' && audioUrl.startsWith('http')) ? audioUrl : null;
+            const sourceFile = file || audioFile || null;
+
+            if (!sourceUrl && !sourceFile) {
+                throw new Error("Nenhuma mídia fornecida para transcrição (source_url ou source_file obrigatório).");
+            }
+
+            console.log(`[Deapi Transcribe] model=${transcribeModel} source=${sourceUrl || '[file]'}`);
+
+            let response: any;
             let success = false;
             let lastError = "";
 
-            for (const endpoint of endpoints) {
-                console.log(`[Deapi Transcribe] Attempting ${endpoint}`);
+            for (const ep of ENDPOINTS) {
+                console.log(`[Deapi Transcribe] Attempting ${ep.url}`);
                 try {
-                    response = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${deapiKey}`
-                        },
-                        body: JSON.stringify(payload)
-                    });
+                    let fetchOptions: any;
+
+                    if (ep.version === 'v2') {
+                        // v2 requires multipart/form-data
+                        const form = new FormData();
+                        form.append('model', transcribeModel);
+                        form.append('include_ts', 'true');
+                        if (sourceUrl) {
+                            form.append('source_url', sourceUrl);
+                        } else if (sourceFile) {
+                            // sourceFile may be base64 or a path — handle base64
+                            if (typeof sourceFile === 'string' && sourceFile.includes('base64,')) {
+                                const base64Data = sourceFile.replace(/^data:[^;]+;base64,/, '');
+                                const buffer = Buffer.from(base64Data, 'base64');
+                                const blob = new Blob([buffer], { type: 'audio/mpeg' });
+                                form.append('source_file', blob, 'audio.mp3');
+                            } else {
+                                form.append('source_file', sourceFile);
+                            }
+                        }
+                        fetchOptions = {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' },
+                            body: form
+                        };
+                    } else {
+                        // v1 fallback — JSON body
+                        const v1Payload: any = {
+                            model: transcribeModel,
+                            include_ts: true
+                        };
+                        if (sourceUrl)  v1Payload.source_url  = sourceUrl;
+                        if (sourceFile) v1Payload.source_file = sourceFile;
+                        fetchOptions = {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${deapiKey}`,
+                                'Accept': 'application/json'
+                            },
+                            body: JSON.stringify(v1Payload)
+                        };
+                    }
+
+                    response = await fetch(ep.url, fetchOptions);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -1725,12 +1840,12 @@ async function startServer() {
                         break;
                     } else {
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 100)}`;
-                        console.warn(`[Deapi Transcribe] Failed ${endpoint}: ${lastError}`);
+                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        console.warn(`[Deapi Transcribe] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
                     lastError = e.message;
-                    console.warn(`[Deapi Transcribe] Fetch error on ${endpoint}: ${e.message}`);
+                    console.warn(`[Deapi Transcribe] Fetch error on ${ep.url}: ${e.message}`);
                 }
             }
 
