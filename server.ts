@@ -1085,15 +1085,23 @@ async function startServer() {
                                     const dlRes = await fetch(videoUrl);
                                     if (dlRes.ok) {
                                         const buffer = Buffer.from(await dlRes.arrayBuffer());
-                                        const filename = `ai_gen_${jobId}.mp4`;
+                                        const contentType = dlRes.headers.get('content-type') || '';
+                                        let fileExt = '.mp4';
+                                        if (contentType.includes('audio')) fileExt = '.mp3';
+                                        else if (contentType.includes('image')) fileExt = '.png';
+                                        else if (videoUrl.toLowerCase().includes('.mp3')) fileExt = '.mp3';
+                                        else if (videoUrl.toLowerCase().includes('.png')) fileExt = '.png';
+                                        else if (videoUrl.toLowerCase().includes('.jpg') || videoUrl.toLowerCase().includes('.jpeg')) fileExt = '.jpg';
+                                        
+                                        const filename = `ai_gen_${jobId}${fileExt}`;
                                         const outputPath = path.join(uploadDir, filename);
                                         fs.writeFileSync(outputPath, buffer);
                                         jobs[jobId].status = 'completed';
                                         jobs[jobId].progress = 100;
                                         jobs[jobId].outputPath = outputPath;
                                         jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
-                                        jobs[jobId].result = [videoUrl]; // manter URL original como fallback
-                                        console.log(`[Job ${jobId}] Vídeo Deapi salvo localmente: ${outputPath}`);
+                                        jobs[jobId].result = [videoUrl];
+                                        console.log(`[Job ${jobId}] Deapi asset saved locally (${fileExt}): ${outputPath}`);
                                     } else {
                                         // Fallback: expor URL externa diretamente
                                         console.warn(`[Job ${jobId}] Falha ao baixar vídeo (${dlRes.status}), usando URL externa como fallback.`);
@@ -1273,6 +1281,76 @@ async function startServer() {
         }
     });
 
+    // ─── DEAPI IMAGE GENERATION & TOOLS ──────────────────────────────────────
+    app.post('/api/ai/generate-image', async (req: any, res: any) => {
+        const { prompt, aspectRatio, model, imageUrl, action, apiKey } = req.body;
+        const jobId = `deapi_image_${Date.now()}`;
+        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        res.status(202).json({ jobId });
+
+        const deapiKey = apiKey || getDeapiKey(req);
+        if (!deapiKey) {
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            return;
+        }
+
+        try {
+            const baseUrl = "https://api.deapi.ai";
+            let endpoint = `${baseUrl}/api/v2/images/generations`;
+            
+            // Map actions to v2 endpoints
+            if (action === 'ocr') endpoint = `${baseUrl}/api/v2/images/ocr`;
+            else if (action === 'remove-bg') endpoint = `${baseUrl}/api/v2/images/background-removals`;
+            else if (action === 'upscale') endpoint = `${baseUrl}/api/v2/images/upscales`;
+            else if (action === 'edit') endpoint = `${baseUrl}/api/v2/images/edits`;
+
+            const width = aspectRatio === '16:9' ? 1792 : (aspectRatio === '9:16' ? 1024 : 1024);
+            const height = aspectRatio === '16:9' ? 1024 : (aspectRatio === '9:16' ? 1792 : 1024);
+
+            const payload: any = {
+                prompt: prompt || '',
+                model: model || 'flux-schnell',
+                width,
+                height,
+                guidance: 1,
+                steps: 4,
+                seed: -1
+            };
+
+            if (imageUrl) {
+                payload.image = imageUrl;
+                payload.image_url = imageUrl;
+                payload.input_image = imageUrl;
+            }
+
+            console.log(`[Deapi Image] Action: ${action || 'generation'} -> ${endpoint}`);
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${deapiKey}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (response.ok) {
+                const data: any = await response.json();
+                handleDeapiTask(jobId, data, deapiKey, baseUrl);
+            } else {
+                const text = await response.text();
+                throw new Error(`Status ${response.status}: ${text.substring(0, 200)}`);
+            }
+        } catch (e: any) {
+            console.error(`[Job ${jobId}] Deapi Image Error:`, e);
+            if (jobs[jobId]) {
+                jobs[jobId].status = 'failed';
+                jobs[jobId].error = e.message;
+            }
+        }
+    });
+
     // ─── DEAPI AUDIO GENERATION ────────────────────────────────────────────────
     app.post('/api/ai/generate-audio', async (req: any, res: any) => {
         const jobId = `aiaudio_${Date.now()}`;
@@ -1295,22 +1373,37 @@ async function startServer() {
             const endpoints = [
                 `${baseUrl}/api/v2/audio/speech`,
                 `${baseUrl}/api/v2/audio/generations`,
-                `${baseUrl}/api/v2/audios/generations`,
-                `${baseUrl}/api/v1/audios/generations`,
-                `${baseUrl}/api/v2/speech/generations`
+                `${baseUrl}/api/v1/client/txt2audio`
             ];
             
+            // Requisito v2: 'text' para speech, 'model', 'lang'
+            let mappedModel = model || (type === 'speech' ? 'cloning-v1' : (type === 'dubbing' ? 'dubbing-v1' : 'txt2audio'));
+            if (mappedModel === 'cloning') mappedModel = 'cloning-v1';
+
             const payload: any = {
+                text: prompt || '',
                 prompt: prompt || '',
-                model: model || (type === 'speech' ? 'cloning-v1' : 'txt2audio'),
-                type: type || 'audio'
+                model: mappedModel,
+                lang: 'en-us',
+                speed: 1.0,
+                format: 'mp3',
+                sample_rate: 24000
             };
 
-            if (audioUrl) payload.audio_url = audioUrl;
-            if (audioFile) payload.audio_file = audioFile;
+            if (audioUrl) {
+                payload.audio_url = audioUrl;
+                payload.ref_audio_url = audioUrl;
+            }
+            if (audioFile) {
+                payload.audio_file = audioFile;
+                payload.ref_audio = audioFile;
+            }
             if (voiceBase64) {
                 payload.voice_file = voiceBase64; 
-                payload.voice_base64 = voiceBase64; // Fallback
+                payload.ref_audio = voiceBase64;
+            }
+            if (type === 'speech' || type === 'clone') {
+                payload.mode = (type === 'clone' || voiceBase64) ? 'voice_clone' : 'custom_voice';
             }
 
             let response;
@@ -1357,34 +1450,36 @@ async function startServer() {
 
     // Helper to handle Deapi task/job response
     const handleDeapiTask = async (jobId: string, data: any, deapiKey: string, baseUrl: string) => {
-        const taskId = data.id || data.task_id || data.data?.id || data.job_id;
+        // Doc v2: data.request_id. Fallback para outros formatos comuns.
+        const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id;
+        
         if (!taskId) {
-            const directUrl = data.url || data.audio_url || data.data?.url || data.result_url;
+            const directUrl = data.url || data.audio_url || data.data?.url || data.result_url || data.data?.result_url;
             if (directUrl) {
                 jobs[jobId].status = 'completed';
                 jobs[jobId].downloadUrl = directUrl;
                 jobs[jobId].progress = 100;
                 return;
             }
-            throw new Error('Deapi não retornou ID de tarefa nem URL direta.');
+            throw new Error('Deapi não retornou request_id nem URL direta.');
         }
 
         // Polling
         let completed = false;
         let attempts = 0;
-        while (!completed && attempts < 60 && jobs[jobId]) {
+        while (!completed && attempts < 80 && jobs[jobId]) {
             attempts++;
-            await new Promise(r => setTimeout(r, 5000));
+            await new Promise(r => setTimeout(r, 4000));
             try {
                 // Try v2 polling first
                 let pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
-                    headers: { 'Authorization': `Bearer ${deapiKey}` }
+                    headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                 });
                 
                 // If v2 fails (404), try v1
                 if (!pollRes.ok && pollRes.status === 404) {
-                    pollRes = await fetch(`${baseUrl}/api/v1/jobs/${taskId}`, {
-                        headers: { 'Authorization': `Bearer ${deapiKey}` }
+                    pollRes = await fetch(`${baseUrl}/api/v1/client/request-status/${taskId}`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     });
                 }
 
@@ -1392,11 +1487,19 @@ async function startServer() {
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
                     const status = (result.status || "").toLowerCase();
-                    if (status === 'completed' || status === 'succeeded' || status === 'success') {
-                        const audioUrl = result.result_url || result.audio_url || result.url || result.download_url;
-                        jobs[jobId].status = 'completed';
-                        jobs[jobId].downloadUrl = audioUrl;
-                        jobs[jobId].progress = 100;
+                    const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
+                    const resultText = result.result || result.data?.result;
+
+                    if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
+                        if (resultText && !resultUrl) {
+                            jobs[jobId].status = 'completed';
+                            jobs[jobId].result = [resultText];
+                            jobs[jobId].progress = 100;
+                        } else {
+                            jobs[jobId].status = 'completed';
+                            jobs[jobId].downloadUrl = resultUrl;
+                            jobs[jobId].progress = 100;
+                        }
                         completed = true;
                     } else if (status === 'failed' || status === 'error') {
                         throw new Error(result.error || result.message || 'Deapi processing failed');
@@ -1434,15 +1537,19 @@ async function startServer() {
             const endpoints = [
                 `${baseUrl}/api/v2/audio/music`,
                 `${baseUrl}/api/v2/music/generations`,
-                `${baseUrl}/api/v2/musics/generations`,
-                `${baseUrl}/api/v1/music/generations`,
-                `${baseUrl}/api/v2/audios/generations`
+                `${baseUrl}/api/v1/client/txt2music`
             ];
             
             const payload: any = {
+                caption: prompt || '',
                 prompt: prompt || '',
-                model: model || 'txt2music',
-                duration: duration || 30
+                lyrics: '[Instrumental]',
+                model: model || 'ACE-Step-v1.5-turbo',
+                duration: duration || 30,
+                inference_steps: 8,
+                guidance_scale: 5,
+                seed: -1,
+                format: 'mp3'
             };
 
             let response;
@@ -1509,18 +1616,18 @@ async function startServer() {
             // Endpoints confirmados para v2 (Transcription)
             const endpoints = [
                 `${baseUrl}/api/v2/audio/transcriptions`,
-                `${baseUrl}/api/v2/audio/transcribe`,
-                `${baseUrl}/api/v2/audios/transcribe`,
-                `${baseUrl}/api/v1/audios/transcribe`,
-                `${baseUrl}/api/v2/transcribe`
+                `${baseUrl}/api/v1/client/transcribe`
             ];
             
-            const payload: any = {};
+            const payload: any = {
+                include_ts: true,
+                model: 'WhisperLargeV3'
+            };
             const sourceUrl = url || audioUrl;
             const sourceFile = file || audioFile;
 
-            if (sourceUrl) payload.audio_url = sourceUrl;
-            if (sourceFile) payload.audio_file = sourceFile;
+            if (sourceUrl) payload.source_url = sourceUrl;
+            if (sourceFile) payload.source_file = sourceFile;
 
             if (!payload.audio_url && !payload.audio_file) {
                  throw new Error("Nenhuma mídia fornecida para transcrição.");
