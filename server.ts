@@ -1394,7 +1394,8 @@ async function startServer() {
                 mappedModel = LEGACY_ALIASES[mappedModel] || 'Kokoro';
             }
 
-            // Validate against live model list; fall back gracefully
+            // Validate against live model list; capture default voice slug
+            let defaultVoiceSlug: string | undefined;
             try {
                 const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2audio`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
@@ -1410,6 +1411,13 @@ async function startServer() {
                             console.log(`[Deapi Audio] Model "${mappedModel}" not in list, using "${fallback}"`);
                             mappedModel = fallback;
                         }
+                        // Grab the first available voice preset for custom_voice mode
+                        const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
+                        const voices = modelInfo?.languages?.[0]?.voices;
+                        if (voices && voices.length > 0) {
+                            defaultVoiceSlug = voices[0].slug;
+                            console.log(`[Deapi Audio] Default voice preset: ${defaultVoiceSlug}`);
+                        }
                     }
                 }
             } catch (e) {
@@ -1419,22 +1427,31 @@ async function startServer() {
             // Determine mode from type
             // type values from client: 'speech' | 'sfx' | 'clone' | 'dubbing'
             const resolvedType = type || 'speech';
-            // Only set voice_clone mode when there is ACTUAL reference audio data
             const hasRefAudio = !!(voiceBase64 && voiceBase64.length > 10);
             const hasAudioFile = !!(audioFile && audioFile.length > 10);
             const hasAudioUrl  = !!(audioUrl  && typeof audioUrl === 'string' && audioUrl.startsWith('http'));
-            let mode: string | undefined;
-            if (resolvedType === 'clone' && (hasRefAudio || hasAudioFile || hasAudioUrl)) {
+            const hasAnyRefAudio = hasRefAudio || hasAudioFile || hasAudioUrl;
+
+            // Kokoro (and other TTS models) require an explicit mode.
+            // voice_clone → requires ref_audio file
+            // custom_voice → requires voice slug (preset)
+            // If no ref audio is present, always use custom_voice + a default voice preset.
+            let mode: string;
+            let voiceSlug: string | undefined;
+            if (hasAnyRefAudio) {
                 mode = 'voice_clone';
+            } else {
+                mode = 'custom_voice';
+                // Use the first available voice preset for this model/language
+                // Populated from model.languages[0].voices[0].slug during model fetch below
             }
-            // Without reference audio, send no mode at all — API uses its default
 
             let response: any;
             let success = false;
             let lastError = "";
 
             for (const ep of ENDPOINTS) {
-                console.log(`[Deapi Audio] Attempting ${ep.url} | type=${resolvedType} model=${mappedModel} mode=${mode || 'default'}`);
+                console.log(`[Deapi Audio] Attempting ${ep.url} | type=${resolvedType} model=${mappedModel} mode=${mode} voice=${defaultVoiceSlug || 'n/a'}`);
                 try {
                     let fetchOptions: any;
 
@@ -1447,7 +1464,11 @@ async function startServer() {
                         form.append('speed', '1.0');
                         form.append('format', 'mp3');
                         form.append('sample_rate', '24000');
-                        if (mode) form.append('mode', mode);
+                        form.append('mode', mode);
+                        // custom_voice mode requires a voice preset slug
+                        if (mode === 'custom_voice' && defaultVoiceSlug) {
+                            form.append('voice', defaultVoiceSlug);
+                        }
                         // ref_audio must be a file blob — only attach when we have real audio data
                         if (hasRefAudio) {
                             try {
@@ -1474,7 +1495,10 @@ async function startServer() {
                             format: 'mp3',
                             sample_rate: 24000
                         };
-                        if (mode) v1Payload.mode = mode;
+                        v1Payload.mode = mode;
+                        if (mode === 'custom_voice' && defaultVoiceSlug) {
+                            v1Payload.voice = defaultVoiceSlug;
+                        }
                         if (hasRefAudio) v1Payload.ref_audio = voiceBase64;
                         fetchOptions = {
                             method: 'POST',
@@ -1645,10 +1669,14 @@ async function startServer() {
                 console.error("[Deapi Music] Could not fetch model list, proceeding with:", mappedModel, e);
             }
 
-            // Clamp guidance_scale to model limits (ACE-Step caps at 1; other models may allow up to 20)
-            const maxGuidance = modelLimits.max_guidance_scale ?? modelLimits.max_guidance ?? 1;
+            // Clamp guidance_scale to model limits
+            // ACE-Step: max=1 (<=1 valid). Unknown models: default to 0 (always safe).
+            const maxGuidance = modelLimits.max_guidance_scale ?? modelLimits.max_guidance ?? 0;
             const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 0;
-            const guidanceScale = Math.min(Math.max(minGuidance, 1), maxGuidance);
+            // Use minGuidance as the safe default when model limits are unknown
+            const guidanceScale = Object.keys(modelLimits).length > 0
+                ? Math.min(Math.max(minGuidance, minGuidance), maxGuidance)
+                : 0;
 
             const resolvedDuration = duration || 30;
             console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s guidance_scale=${guidanceScale}`);
