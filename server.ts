@@ -829,7 +829,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, deapiWidth, deapiHeight, deapiFrames, deapiFps } = req.body;
+        const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey } = req.body;
         
         if (model && model.startsWith('deapi-')) {
             const deapiModel = model.replace('deapi-', '');
@@ -848,7 +848,6 @@ async function startServer() {
                 // Determine base URL (api.deapi.ai is standard for API access)
                 const baseUrl = "https://api.deapi.ai";
                 
-                // Model Mapping for v2
                 const isImageToVideo = !!image;
                 
                 // Mapeamento exato baseado no painel Deapi (Imagem do usuário)
@@ -883,61 +882,48 @@ async function startServer() {
                         }
                     }
                 } catch (e) {}
-                // O usuário confirmou que para animações deve-se usar /animations
+                // Para img2video (animação de imagem), usar /api/v2/videos/animations
+                // Para txt2video (geração pura de texto), usar /api/v2/videos/generations
                 const endpoint = isImageToVideo 
                     ? `${baseUrl}/api/v2/videos/animations`
                     : `${baseUrl}/api/v2/videos/generations`;
 
-                console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel}, isImageToVideo: ${isImageToVideo})`);
+                console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel})`);
                 
                 let response;
                 let fetchAttempts = 0;
                 let lastFetchError = "";
                 const randomSeed = Math.floor(Math.random() * 2147483647).toString();
 
+                // Limite de 5 tentativas com backoff linear de 30s para não saturar a fila
                 const MAX_SUBMIT_ATTEMPTS = 5;
                 while (fetchAttempts < MAX_SUBMIT_ATTEMPTS) {
                     fetchAttempts++;
                     
-                    const payload: any = {
-                        prompt: prompt || 'cinematic video generation',
-                        model: mappedModel,
-                        width: deapiWidth || (aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768)),
-                        height: deapiHeight || (aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768)),
-                        frames: deapiFrames || 120, 
-                        fps: deapiFps || 30,
-                        steps: 12, // Increased steps for better quality/animation binding
-                        seed: parseInt(randomSeed)
-                    };
+                    // Payload base para ambos os endpoints (animations e generations)
+                    const videoWidth = aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768);
+                    const videoHeight = aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768);
 
                     if (isImageToVideo) {
-                        // Converter base64 para Blob para enviar como arquivo via FormData
+                        // /api/v2/videos/animations - requer multipart/form-data com first_frame_image como arquivo binário
+                        // Campos obrigatórios: prompt, first_frame_image, model, width, height, guidance, steps, seed, frames
                         const formData = new FormData();
-                        formData.append('prompt', payload.prompt);
-                        formData.append('model', mappedModel); 
-                        formData.append('width', payload.width.toString());
-                        formData.append('height', payload.height.toString());
-                        formData.append('frames', payload.frames.toString());
-                        formData.append('fps', payload.fps.toString());
-                        formData.append('steps', payload.steps.toString());
-                        formData.append('seed', payload.seed.toString());
+                        formData.append('prompt', prompt || 'cinematic smooth animation, camera movement, natural motion');
+                        formData.append('model', mappedModel);
+                        formData.append('width', videoWidth.toString());
+                        formData.append('height', videoHeight.toString());
+                        formData.append('frames', '121');
+                        formData.append('fps', '24');
+                        formData.append('steps', '20');
+                        formData.append('guidance', '7.5');
+                        formData.append('seed', parseInt(randomSeed).toString());
 
+                        // Converter base64 para Blob e enviar como first_frame_image (campo obrigatório)
                         const base64Data = image.split(',')[1] || image;
                         const byteCharacters = Buffer.from(base64Data, 'base64');
-                        const blob = new Blob([byteCharacters], { type: 'image/png' });
-                        
-                        // Enviar campos variados para garantir compatibilidade com diferentes modelos Deapi (ltx, svd, etc)
-                        formData.append('input_image', blob, 'input.png');
-                        formData.append('first_frame_image', blob, 'first_frame.png');
-                        formData.append('image', blob, 'image.png');
-                        formData.append('reference_image', blob, 'ref.png');
-                        formData.append('image_file', blob, 'file.png');
+                        const imageBlob = new Blob([byteCharacters], { type: 'image/png' });
+                        formData.append('first_frame_image', imageBlob, 'first_frame.png');
 
-                        // Prompt improvement if empty
-                        if (!payload.prompt || payload.prompt === 'cinematic video generation') {
-                            payload.prompt = "Animate this image precisely, maintaining all details and colors, high quality cinematic motion";
-                        }
-                        
                         response = await fetch(endpoint, {
                             method: 'POST',
                             headers: {
@@ -948,6 +934,18 @@ async function startServer() {
                             body: formData
                         });
                     } else {
+                        // /api/v2/videos/generations - JSON body para txt2video
+                        const payload: any = {
+                            prompt: prompt || 'cinematic video generation',
+                            model: mappedModel,
+                            width: videoWidth,
+                            height: videoHeight,
+                            frames: 121,
+                            fps: 24,
+                            steps: 20,
+                            guidance: 7.5,
+                            seed: parseInt(randomSeed)
+                        };
                         response = await fetch(endpoint, {
                             method: 'POST',
                             headers: {
@@ -961,6 +959,7 @@ async function startServer() {
                     }
 
                     if (response.status === 429) {
+                        // Backoff linear: 30s fixos entre tentativas (não exponencial)
                         const waitTime = 30000;
                         const seconds = waitTime / 1000;
                         console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/${MAX_SUBMIT_ATTEMPTS}. Aguardando ${seconds}s...`);
@@ -974,23 +973,24 @@ async function startServer() {
                     if (!response.ok) {
                         const errText = await response.text();
                         lastFetchError = `Deapi API error (${response.status}): ${errText.substring(0, 500)}`;
-                        break; 
+                        break; // Stop retrying on non-429 errors
                     }
 
-                    break; 
+                    break; // Success
                 }
 
                 if (!response || !response.ok) {
-                    const finalError = lastFetchError || (fetchAttempts >= MAX_SUBMIT_ATTEMPTS ? "Limite de tentativas excedido (A API Deapi permaneceu ocupada). Tente novamente em alguns minutos." : "Falha na comunicação com Deapi após retentativas.");
+                    const finalError = lastFetchError || (fetchAttempts >= 5 ? "Limite de tentativas excedido (A API Deapi permaneceu ocupada). Tente novamente em alguns minutos." : "Falha na comunicação com Deapi após retentativas.");
                     throw new Error(finalError);
                 }
 
                 const data: any = await response.json();
                 console.log(`[Job ${jobId}] Deapi Response Data:`, JSON.stringify(data));
                 
-                // Busca exaustiva por qualquer campo que possa ser o ID da tarefa
-                const taskId = data.id || data.task_id || data.job_id || data.request_id || 
-                               data.data?.id || data.data?.task_id || data.data?.job_id || data.data?.request_id ||
+                // Deapi v2 retorna { data: { request_id: "..." } } - busca exaustiva
+                const taskId = data.data?.request_id || data.request_id ||
+                               data.id || data.task_id || data.job_id ||
+                               data.data?.id || data.data?.task_id || data.data?.job_id ||
                                data.result?.id || data.result?.job_id;
 
                 if (!taskId) {
@@ -1013,7 +1013,7 @@ async function startServer() {
                     jobs[jobId].message = ""; 
                 }
 
-                // Polling Deapi Task (Jobs v2)
+                // Polling Deapi Task (Jobs v2) - usa GET /api/v2/jobs/{request_id}
                 let completed = false;
                 let attempts = 0;
                 let pollFailures = 0;
@@ -1021,16 +1021,18 @@ async function startServer() {
 
                 while (!completed && attempts < maxAttempts && jobs[jobId]) {
                     attempts++;
-                    const pollWait = 20000 + (Math.random() * 5000); 
+                    const pollWait = 15000 + (Math.random() * 5000); 
                     await new Promise(r => setTimeout(r, pollWait));
                     
                     if (!jobs[jobId]) break; // Job was cancelled or removed
 
                     try {
+                        // Deapi v2: GET /api/v2/jobs/{job_request} retorna { data: { status, progress, result_url } }
                         const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
                             headers: { 
                                 'Authorization': `Bearer ${deapiKey}`,
-                                'x-api-key': deapiKey
+                                'x-api-key': deapiKey,
+                                'Accept': 'application/json'
                             }
                         });
                         
@@ -1049,12 +1051,19 @@ async function startServer() {
 
                         pollFailures = 0; // Reset failures on success
                         const taskData: any = await pollRes.json();
+                        // Deapi v2 retorna { data: { status: 'done'|'processing'|'failed', result_url, progress } }
                         const result = taskData.data || taskData;
                         const status = (result.status || "").toLowerCase();
+                        const progress = result.progress || 0;
                         
-                        console.log(`[Job ${jobId}] Deapi Job Status: ${status}`);
+                        console.log(`[Job ${jobId}] Deapi Job Status: ${status} (${progress}%)`);
+                        if (jobs[jobId]) {
+                            jobs[jobId].progress = Math.min(95, progress || Math.min(95, 5 + (attempts * 0.8)));
+                            jobs[jobId].message = `Animando imagem... (${Math.round(progress || 0)}%)`;
+                        }
                         
                         if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
+                            // Deapi v2 usa result_url como campo principal
                             const videoUrl = result.result_url || result.video_url || result.url || result.data?.url || result.data?.result_url;
                             if (videoUrl && jobs[jobId]) {
                                 // Baixar o vídeo para o servidor local e expor via downloadUrl
@@ -1136,56 +1145,34 @@ async function startServer() {
             };
 
             if (image) {
-                const base64Data = image.split(',')[1] || image;
-                // The @google/genai SDK often expects the inlineData structure for base64 inputs
-                payload.image = { 
-                    inlineData: {
-                        data: base64Data, 
-                        mimeType: 'image/png' 
-                    }
-                };
+                payload.image = { imageBytes: image.split(',')[1], mimeType: 'image/png' };
             }
             if (lastFrame) {
-                const base64Data = lastFrame.split(',')[1] || lastFrame;
-                payload.lastFrame = { 
-                    inlineData: {
-                        data: base64Data, 
-                        mimeType: 'image/png' 
-                    }
-                };
+                payload.lastFrame = { imageBytes: lastFrame.split(',')[1], mimeType: 'image/png' };
             }
             if (referenceImages && referenceImages.length > 0) {
-                payload.referenceImages = referenceImages.map((img: string) => {
-                    const base64Data = img.split(',')[1] || img;
-                    return { 
-                        image: {
-                            inlineData: {
-                                data: base64Data,
-                                mimeType: 'image/png'
-                            }
-                        },
-                        referenceType: 'ASSET'
-                    };
-                });
+                payload.referenceImages = referenceImages.map((img: string) => ({ 
+                    image: {
+                        imageBytes: img.split(',')[1], 
+                        mimeType: 'image/png' 
+                    },
+                    referenceType: 'ASSET'
+                }));
             }
 
-            console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'models/veo-lite-preview-001'}...`);
+            console.log(`[Job ${jobId}] Starting AI Generation with model: ${model || 'veo-3.1-lite-generate-preview'}...`);
             
             // Fallback chain: tenta o modelo solicitado primeiro; se 404, tenta os outros
             const defaultModels = [
                 'models/veo-generate-preview-001',
                 'models/veo-lite-preview-001',
-                'models/veo-3.1-generate-preview', 
-                'models/veo-3.1-lite-generate-preview', 
-                'models/veo-2.0-preview-001'
+                'veo-3.1-generate-preview', 
+                'veo-3.1-lite-generate-preview', 
+                'veo-2.0-preview-001', 
+                'veo-lite-preview-001'
             ];
             
-            let normalizedModel = model || 'models/veo-lite-preview-001';
-            if (normalizedModel && !normalizedModel.startsWith('models/')) {
-                normalizedModel = `models/${normalizedModel}`;
-            }
-            
-            const modelsToTry = [normalizedModel, ...defaultModels.filter(m => m !== normalizedModel)];
+            const modelsToTry = model ? [model, ...defaultModels.filter(m => m !== model)] : defaultModels;
 
             const ai = new GoogleGenAI({ apiKey: finalKey });
             let operation: any;
@@ -1195,28 +1182,14 @@ async function startServer() {
                 console.log(`[Job ${jobId}] Trying model: ${currentModel}...`);
                 try {
                     // Mapeia o payload para o formato esperado pelo SDK
-                    const finalConfig = { ...payload.config };
-                    if (payload.lastFrame) {
-                        (finalConfig as any).lastFrame = payload.lastFrame;
-                    }
-                    if (payload.referenceImages) {
-                        (finalConfig as any).referenceImages = payload.referenceImages;
-                    }
-
                     const sdkPayload: any = {
                         model: currentModel,
                         prompt: payload.prompt,
-                        config: finalConfig
+                        config: payload.config
                     };
                     if (payload.image) sdkPayload.image = payload.image;
-
-                    // Log minimal payload structure for debug
-                    console.log(`[Job ${jobId}] SDK Payload structure:`, {
-                        model: sdkPayload.model,
-                        prompt: sdkPayload.prompt ? "PRESENTE" : "MISSING",
-                        hasImage: !!sdkPayload.image,
-                        hasConfig: !!sdkPayload.config
-                    });
+                    if (payload.lastFrame) sdkPayload.lastFrame = payload.lastFrame;
+                    if (payload.referenceImages) sdkPayload.referenceImages = payload.referenceImages;
 
                     operation = await ai.models.generateVideos(sdkPayload);
                     successModel = currentModel;
