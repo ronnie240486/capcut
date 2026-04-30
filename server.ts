@@ -1291,11 +1291,12 @@ async function startServer() {
         try {
             const baseUrl = "https://api.deapi.ai";
             
-            // Try different possible endpoints for audio
+            // Endpoints confirmados para v2 (Audio/Speech)
             const endpoints = [
-                `${baseUrl}/api/v1/audios/generations`,
-                `${baseUrl}/api/v2/audios/generations`,
+                `${baseUrl}/api/v2/audio/speech`,
                 `${baseUrl}/api/v2/audio/generations`,
+                `${baseUrl}/api/v2/audios/generations`,
+                `${baseUrl}/api/v1/audios/generations`,
                 `${baseUrl}/api/v2/speech/generations`
             ];
             
@@ -1429,12 +1430,13 @@ async function startServer() {
         try {
             const baseUrl = "https://api.deapi.ai";
             
-            // Try different possible endpoints for music
+            // Endpoints confirmados para v2 (Music)
             const endpoints = [
-                `${baseUrl}/api/v1/musics/generations`,
-                `${baseUrl}/api/v2/musics/generations`,
+                `${baseUrl}/api/v2/audio/music`,
                 `${baseUrl}/api/v2/music/generations`,
-                `${baseUrl}/api/v2/audios/generations` // Sometimes music is under audios
+                `${baseUrl}/api/v2/musics/generations`,
+                `${baseUrl}/api/v1/music/generations`,
+                `${baseUrl}/api/v2/audios/generations`
             ];
             
             const payload: any = {
@@ -1504,10 +1506,12 @@ async function startServer() {
         try {
             const baseUrl = "https://api.deapi.ai";
             
+            // Endpoints confirmados para v2 (Transcription)
             const endpoints = [
-                `${baseUrl}/api/v1/audios/transcribe`,
-                `${baseUrl}/api/v2/audios/transcribe`,
+                `${baseUrl}/api/v2/audio/transcriptions`,
                 `${baseUrl}/api/v2/audio/transcribe`,
+                `${baseUrl}/api/v2/audios/transcribe`,
+                `${baseUrl}/api/v1/audios/transcribe`,
                 `${baseUrl}/api/v2/transcribe`
             ];
             
