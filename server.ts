@@ -304,7 +304,16 @@ async function startServer() {
                 'surprised': 'Shocked, high-pitch, and wide-eyed tone.',
                 'fearful': 'Trembling, fast-paced, and scared tone.',
                 'disgusted': 'Repelled, sharp, and negative tone.',
-                'calm': 'Peaceful, steady, and relaxing tone.'
+                'calm': 'Peaceful, steady, and relaxing tone.',
+                'excited': 'Enthusiastic, high-energy, and ebullient tone.',
+                'scared': 'Trembling, fast-paced, and terrified tone.',
+                'whisper': 'Spoken in a very low, quiet whisper.',
+                'shout': 'Spoken loudly, with high energy and intensity.',
+                'deep': 'Spoken with a very deep, resonant voice.',
+                'high_pitch': 'Spoken with a high-pitched, childish or nervous voice.',
+                'anxious': 'Spoken with a trembling, fast-paced, anxious breath.',
+                'sarcastic': 'Spoken with a dry, ironic, sarcastic inflection.',
+                'romantic': 'Spoken with a soft, warm, romantic and affectionate tone.'
             };
 
             const selectedNuance = nuance && NUANCES[nuance] ? NUANCES[nuance] : "";
@@ -887,12 +896,13 @@ async function startServer() {
                         }
                     }
                 } catch (e) {}
-                // A documentação atualizada (pasted_content_2.txt) indica que img2video e txt2video 
-                // podem usar o mesmo fluxo de generations ou animations. 
-                // Para maior compatibilidade com modelos LTX, usamos /generations como padrão.
-                const endpoint = `${baseUrl}/api/v2/videos/generations`;
+                // A documentação atualizada indica que para animação (img2video) 
+                // devemos usar /animations, e para texto puro /generations.
+                const endpoint = isImageToVideo 
+                    ? `${baseUrl}/api/v2/videos/animations`
+                    : `${baseUrl}/api/v2/videos/generations`;
 
-                console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel})`);
+                console.log(`[Job ${jobId}] Deapi Endpoint: ${endpoint} (Model: ${mappedModel}, Animation: ${isImageToVideo})`);
                 
                 let response;
                 let fetchAttempts = 0;
@@ -1147,15 +1157,18 @@ async function startServer() {
             };
 
             if (image) {
-                payload.image = { imageBytes: image.split(',')[1] || image, mimeType: 'image/png' };
+                payload.image = { 
+                    bytesBase64Encoded: image.split(',')[1] || image, 
+                    mimeType: req.body.imageMimeType || 'image/png' 
+                };
             }
             if (lastFrame) {
-                payload.config.lastFrame = { imageBytes: lastFrame.split(',')[1] || lastFrame, mimeType: 'image/png' };
+                payload.config.lastFrame = { bytesBase64Encoded: lastFrame.split(',')[1] || lastFrame, mimeType: 'image/png' };
             }
             if (referenceImages && referenceImages.length > 0) {
                 payload.config.referenceImages = referenceImages.map((img: string) => ({ 
                     image: {
-                        imageBytes: img.split(',')[1] || img, 
+                        bytesBase64Encoded: img.split(',')[1] || img, 
                         mimeType: 'image/png' 
                     },
                     referenceType: 'ASSET'
