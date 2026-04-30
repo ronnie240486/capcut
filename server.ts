@@ -1310,7 +1310,7 @@ async function startServer() {
 
             const payload: any = {
                 prompt: prompt || '',
-                model: model || 'flux-schnell',
+                model: model || 'Flux1schnell',
                 width,
                 height,
                 guidance: 1,
@@ -1369,22 +1369,42 @@ async function startServer() {
         try {
             const baseUrl = "https://api.deapi.ai";
             
-            // Endpoints confirmados para v2 (Audio/Speech)
+            // Endpoints confirmados para v2 (Audio/Speech) e v1
             const endpoints = [
                 `${baseUrl}/api/v2/audio/speech`,
-                `${baseUrl}/api/v2/audio/generations`,
                 `${baseUrl}/api/v1/client/txt2audio`
             ];
             
-            // Requisito v2: 'text' para speech, 'model', 'lang'
-            let mappedModel = model || (type === 'speech' ? 'cloning-v1' : (type === 'dubbing' ? 'dubbing-v1' : 'txt2audio'));
-            if (mappedModel === 'cloning') mappedModel = 'cloning-v1';
+            let mappedModel = model;
+            // Defaults baseados na documentação e exemplos fornecidos
+            if (!mappedModel || mappedModel === 'cloning' || mappedModel === 'cloning-v1' || mappedModel === 'txt2audio') {
+                mappedModel = 'Kokoro'; 
+            }
+
+            // Tenta obter modelos de áudio dinamicamente se possível
+            try {
+                const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2audio`, {
+                    headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                });
+                if (mRes.ok) {
+                    const mData = await mRes.json();
+                    const availableModels = mData.data || [];
+                    if (availableModels.length > 0) {
+                        // Se o modelo atual não está na lista, usa o primeiro disponível
+                        if (!availableModels.some((m: any) => m.slug === mappedModel)) {
+                            mappedModel = availableModels[0].slug;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("[Deapi Audio] Falha ao listar modelos:", e);
+            }
 
             const payload: any = {
                 text: prompt || '',
                 prompt: prompt || '',
                 model: mappedModel,
-                lang: 'en-us',
+                lang: 'en-us', 
                 speed: 1.0,
                 format: 'mp3',
                 sample_rate: 24000
