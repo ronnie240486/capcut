@@ -1372,27 +1372,33 @@ async function startServer() {
             // Endpoints confirmados para v2 (Audio/Speech) e v1
             const endpoints = [
                 `${baseUrl}/api/v2/audio/speech`,
+                `${baseUrl}/api/v2/audio/generations`,
                 `${baseUrl}/api/v1/client/txt2audio`
             ];
             
             let mappedModel = model;
-            // Defaults baseados na documentação e exemplos fornecidos
-            if (!mappedModel || mappedModel === 'cloning' || mappedModel === 'cloning-v1' || mappedModel === 'txt2audio') {
-                mappedModel = 'Kokoro'; 
+            // Slugs válidos conhecidos da Deapi para TTS
+            const AUDIO_MODEL_FALLBACKS = ['kokoro', 'fish-speech-1.5', 'xtts-v2'];
+            if (!mappedModel || mappedModel === 'cloning' || mappedModel === 'cloning-v1' || mappedModel === 'txt2audio' || mappedModel === 'Kokoro') {
+                mappedModel = AUDIO_MODEL_FALLBACKS[0];
             }
 
-            // Tenta obter modelos de áudio dinamicamente se possível
+            // Tenta obter modelos de áudio dinamicamente e valida o modelo escolhido
             try {
                 const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2audio`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                 });
                 if (mRes.ok) {
                     const mData = await mRes.json();
-                    const availableModels = mData.data || [];
+                    const availableModels: any[] = mData.data || [];
                     if (availableModels.length > 0) {
-                        // Se o modelo atual não está na lista, usa o primeiro disponível
-                        if (!availableModels.some((m: any) => m.slug === mappedModel)) {
-                            mappedModel = availableModels[0].slug;
+                        const slugs: string[] = availableModels.map((m: any) => m.slug);
+                        console.log(`[Deapi Audio] Available models: ${slugs.join(', ')}`);
+                        if (!slugs.includes(mappedModel)) {
+                            // Tenta fallbacks em ordem, depois usa o primeiro disponivel
+                            const match = AUDIO_MODEL_FALLBACKS.find(f => slugs.includes(f)) || slugs[0];
+                            console.log(`[Deapi Audio] Model "${mappedModel}" not found, using "${match}"`);
+                            mappedModel = match;
                         }
                     }
                 }
@@ -1422,6 +1428,8 @@ async function startServer() {
                 payload.voice_file = voiceBase64; 
                 payload.ref_audio = voiceBase64;
             }
+            // Sempre inclui o tipo na payload para logging e roteamento correto
+            payload.type = type || 'speech';
             if (type === 'speech' || type === 'clone') {
                 payload.mode = (type === 'clone' || voiceBase64) ? 'voice_clone' : 'custom_voice';
             }
@@ -1431,7 +1439,7 @@ async function startServer() {
             let lastError = "";
 
             for (const endpoint of endpoints) {
-                console.log(`[Deapi Audio] Attempting ${endpoint} with type: ${payload.type}`);
+                console.log(`[Deapi Audio] Attempting ${endpoint} with type: ${type || 'speech'}, model: ${mappedModel}`);
                 try {
                     response = await fetch(endpoint, {
                         method: 'POST',
