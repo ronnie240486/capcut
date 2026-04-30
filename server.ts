@@ -1273,6 +1273,241 @@ async function startServer() {
         }
     });
 
+    // ─── DEAPI AUDIO GENERATION ────────────────────────────────────────────────
+    app.post('/api/ai/generate-audio', async (req: any, res: any) => {
+        const jobId = `aiaudio_${Date.now()}`;
+        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        res.status(202).json({ jobId });
+
+        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey } = req.body;
+        const deapiKey = apiKey || getDeapiKey(req);
+
+        if (!deapiKey) {
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            return;
+        }
+
+        try {
+            const baseUrl = "https://api.deapi.ai";
+            const endpoint = `${baseUrl}/api/v2/audios/generations`;
+            
+            // Unified payload for txt2audio, dubbing (if based on txt2audio), cloning
+            const payload: any = {
+                prompt: prompt || '',
+                model: model || 'txt2audio',
+                type: type || 'audio'
+            };
+
+            if (audioUrl) payload.audio_url = audioUrl;
+            if (audioFile) payload.audio_file = audioFile;
+            if (voiceBase64) payload.voice_file = voiceBase64; // v2 often uses voice_file for base64 data
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${deapiKey}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Deapi Error (${response.status}): ${text}`);
+            }
+
+            const data: any = await response.json();
+            const taskId = data.id || data.task_id || data.data?.id;
+
+            if (!taskId) {
+                const directUrl = data.url || data.audio_url || data.data?.url;
+                if (directUrl) {
+                    jobs[jobId].status = 'completed';
+                    jobs[jobId].downloadUrl = directUrl;
+                    jobs[jobId].progress = 100;
+                    return;
+                }
+                throw new Error('Deapi não retornou ID de tarefa.');
+            }
+
+            // Polling
+            let completed = false;
+            let attempts = 0;
+            while (!completed && attempts < 60 && jobs[jobId]) {
+                attempts++;
+                await new Promise(r => setTimeout(r, 5000));
+                const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
+                    headers: { 'Authorization': `Bearer ${deapiKey}` }
+                });
+                if (pollRes.ok) {
+                    const taskData: any = await pollRes.json();
+                    const result = taskData.data || taskData;
+                    const status = (result.status || "").toLowerCase();
+                    if (status === 'completed' || status === 'succeeded') {
+                        const audioUrl = result.result_url || result.audio_url || result.url;
+                        jobs[jobId].status = 'completed';
+                        jobs[jobId].downloadUrl = audioUrl;
+                        jobs[jobId].progress = 100;
+                        completed = true;
+                    } else if (status === 'failed') {
+                        throw new Error(result.error || 'Deapi processing failed');
+                    }
+                }
+            }
+        } catch (e: any) {
+            console.error(`[Job ${jobId}] Deapi Audio Error:`, e);
+            if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = e.message; }
+        }
+    });
+
+    // ─── DEAPI MUSIC GENERATION ────────────────────────────────────────────────
+    app.post('/api/ai/generate-music', async (req: any, res: any) => {
+        const jobId = `aimusic_${Date.now()}`;
+        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        res.status(202).json({ jobId });
+
+        const { prompt, model, duration, apiKey } = req.body;
+        const deapiKey = apiKey || getDeapiKey(req);
+
+        if (!deapiKey) {
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            return;
+        }
+
+        try {
+            const baseUrl = "https://api.deapi.ai";
+            const endpoint = `${baseUrl}/api/v2/musics/generations`;
+            
+            const payload: any = {
+                prompt: prompt || '',
+                model: model || 'txt2music',
+                duration: duration || 30
+            };
+
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${deapiKey}`
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Deapi Error (${response.status}): ${text}`);
+            }
+
+            const data: any = await response.json();
+            const taskId = data.id || data.task_id || data.data?.id;
+
+            if (!taskId) throw new Error('Deapi não retornou ID de tarefa de música.');
+
+            // Polling
+            let completed = false;
+            let attempts = 0;
+            while (!completed && attempts < 100 && jobs[jobId]) {
+                attempts++;
+                await new Promise(r => setTimeout(r, 10000));
+                const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
+                    headers: { 'Authorization': `Bearer ${deapiKey}` }
+                });
+                if (pollRes.ok) {
+                    const taskData: any = await pollRes.json();
+                    const result = taskData.data || taskData;
+                    const status = (result.status || "").toLowerCase();
+                    if (status === 'completed' || status === 'succeeded') {
+                        const musicUrl = result.result_url || result.music_url || result.url;
+                        jobs[jobId].status = 'completed';
+                        jobs[jobId].downloadUrl = musicUrl;
+                        jobs[jobId].progress = 100;
+                        completed = true;
+                    } else if (status === 'failed') {
+                        throw new Error(result.error || 'Deapi music processing failed');
+                    }
+                }
+            }
+        } catch (e: any) {
+            console.error(`[Job ${jobId}] Deapi Music Error:`, e);
+            if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = e.message; }
+        }
+    });
+
+    // ─── DEAPI TRANSCRIBE ─────────────────────────────────────────────────────
+    app.post('/api/ai/transcribe', async (req: any, res: any) => {
+        const jobId = `transcribe_${Date.now()}`;
+        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        res.status(202).json({ jobId });
+
+        const { url, file, apiKey } = req.body;
+        const deapiKey = apiKey || getDeapiKey(req);
+
+        if (!deapiKey) {
+            jobs[jobId].status = 'failed';
+            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            return;
+        }
+
+        try {
+            const baseUrl = "https://api.deapi.ai";
+            const endpoint = `${baseUrl}/api/v2/transcribe`;
+            
+            let response;
+            if (url) {
+                response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${deapiKey}`
+                    },
+                    body: JSON.stringify({ url })
+                });
+            } else {
+                // File upload logic if needed, simplify for now
+                throw new Error("URL é obrigatória para transcrição via proxy no momento.");
+            }
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Deapi Error (${response.status}): ${text}`);
+            }
+
+            const data: any = await response.json();
+            const taskId = data.id || data.task_id;
+
+            if (!taskId) {
+                jobs[jobId].status = 'completed';
+                jobs[jobId].result = data;
+                return;
+            }
+
+            // Polling
+            let completed = false;
+            let attempts = 0;
+            while (!completed && attempts < 30 && jobs[jobId]) {
+                attempts++;
+                await new Promise(r => setTimeout(r, 3000));
+                const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
+                    headers: { 'Authorization': `Bearer ${deapiKey}` }
+                });
+                if (pollRes.ok) {
+                    const taskData: any = await pollRes.json();
+                    const result = taskData.data || taskData;
+                    if (result.status === 'completed') {
+                        jobs[jobId].status = 'completed';
+                        jobs[jobId].result = result.text;
+                        completed = true;
+                    }
+                }
+            }
+        } catch (e: any) {
+            console.error(`[Job ${jobId}] Deapi Transcribe Error:`, e);
+            if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = e.message; }
+        }
+    });
+
     // Recebe os arquivos do usuário + plano gerado pela IA e monta o vídeo final
     app.post('/api/autopilot/render', uploadAny, async (req: any, res: any) => {
         const jobId = `autopilot_${Date.now()}`;
