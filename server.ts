@@ -1617,6 +1617,9 @@ async function startServer() {
             const MUSIC_MODEL_FALLBACK = 'ACE-Step-v1.5-turbo';
             if (!mappedModel) mappedModel = MUSIC_MODEL_FALLBACK;
 
+            // Track model limits so we stay within per-model caps (e.g. guidance_scale max varies)
+            let modelLimits: any = {};
+
             try {
                 const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2music`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
@@ -1632,14 +1635,23 @@ async function startServer() {
                             console.log(`[Deapi Music] Model "${mappedModel}" not found, using "${fallback}"`);
                             mappedModel = fallback;
                         }
+                        // Capture this model's limits for clamping parameters
+                        const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
+                        if (modelInfo?.info?.limits) modelLimits = modelInfo.info.limits;
+                        console.log(`[Deapi Music] Model limits:`, JSON.stringify(modelLimits));
                     }
                 }
             } catch (e) {
                 console.error("[Deapi Music] Could not fetch model list, proceeding with:", mappedModel, e);
             }
 
+            // Clamp guidance_scale to model limits (ACE-Step caps at 1; other models may allow up to 20)
+            const maxGuidance = modelLimits.max_guidance_scale ?? modelLimits.max_guidance ?? 1;
+            const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 0;
+            const guidanceScale = Math.min(Math.max(minGuidance, 1), maxGuidance);
+
             const resolvedDuration = duration || 30;
-            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s`);
+            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s guidance_scale=${guidanceScale}`);
 
             let response: any;
             let success = false;
@@ -1658,7 +1670,7 @@ async function startServer() {
                         form.append('lyrics', '[Instrumental]');
                         form.append('duration', String(resolvedDuration));
                         form.append('inference_steps', '8');
-                        form.append('guidance_scale', '5');
+                        form.append('guidance_scale', String(guidanceScale));
                         form.append('seed', '-1');
                         form.append('format', 'mp3');
                         fetchOptions = {
@@ -1682,7 +1694,7 @@ async function startServer() {
                                 model: mappedModel,
                                 duration: resolvedDuration,
                                 inference_steps: 8,
-                                guidance_scale: 5,
+                                guidance_scale: guidanceScale,
                                 seed: -1,
                                 format: 'mp3'
                             })
