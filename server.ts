@@ -1425,29 +1425,38 @@ async function startServer() {
             // IMPORTANTE: Clonagem usa o mesmo endpoint /api/v2/audio/speech com mode=voice_clone
             let deapiV2Path = '/api/v2/audio/speech';
             if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
-            // Clonagem usa /api/v2/audio/speech com mode=voice_clone (não um endpoint separado)
-
+            
+            // Se for clonagem, NÃO usar o endpoint v1 pois ele não suporta voice_clone corretamente para Qwen3
             const ENDPOINTS = [
-                { url: `${baseUrl}${deapiV2Path}`, version: 'v2' },
-                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
+                { url: `${baseUrl}${deapiV2Path}`, version: 'v2' }
             ];
-
-            // Resolve model slug dynamically — never hardcode
-            let mappedModel = model || '';
-            // Normalize legacy/internal aliases to real Deapi slugs.
-            const LEGACY_ALIASES: Record<string, string> = {
-                'cloning': '',        // resolved dynamically to a voice_clone capable model
-                'cloning-v1': '',     // same
-                'txt2audio': 'Kokoro',
-                'sfx': 'F5-TTS',      // Reasonable fallback if sfx-specific model not selected
-                'kokoro': 'Kokoro'    // normalize lowercase to canonical
-            };
-            if (mappedModel in LEGACY_ALIASES) {
-                mappedModel = LEGACY_ALIASES[mappedModel];
+            if (resolvedType !== 'clone') {
+                ENDPOINTS.push({ url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' });
             }
-            if (!mappedModel) {
-                if (resolvedType === 'sfx') mappedModel = 'F5-TTS';
-                else mappedModel = 'Kokoro';
+
+            // Resolve model slug dynamically
+            let mappedModel = model || '';
+            
+            // SE FOR CLONAGEM, FORÇAR O MODELO CORRETO E O MODO VOICE_CLONE
+            if (resolvedType === 'clone') {
+                mappedModel = 'Qwen3_TTS_12Hz_1_7B_Base';
+                console.log(`[Deapi Audio] Forçando modelo de clonagem: ${mappedModel}`);
+            } else {
+                // Normalize legacy/internal aliases to real Deapi slugs.
+                const LEGACY_ALIASES: Record<string, string> = {
+                    'cloning': 'Qwen3_TTS_12Hz_1_7B_Base',
+                    'cloning-v1': 'Qwen3_TTS_12Hz_1_7B_Base',
+                    'txt2audio': 'Kokoro',
+                    'sfx': 'F5-TTS',
+                    'kokoro': 'Kokoro'
+                };
+                if (mappedModel in LEGACY_ALIASES) {
+                    mappedModel = LEGACY_ALIASES[mappedModel];
+                }
+                if (!mappedModel) {
+                    if (resolvedType === 'sfx') mappedModel = 'F5-TTS';
+                    else mappedModel = 'Kokoro';
+                }
             }
 
             // Fetch live model list — resolve model + capabilities + default voice
@@ -1489,34 +1498,15 @@ async function startServer() {
                     console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
 
                         if (needsVoiceClone) {
-                            // Procurar modelo que suporta clonagem (Chatterbox e Qwen3 suportam)
-                            const cloneCapable = availableModels.find((m: any) =>
-                                m.slug === 'Chatterbox' ||
-                                m.slug.toLowerCase().includes('qwen') ||
-                                m.info?.features?.supports_voice_clone === true
-                            );
-                            if (cloneCapable) {
-                                mappedModel = cloneCapable.slug;
-                                mode = 'voice_clone';
-                                console.log(`[Deapi Audio] Usando modelo com suporte a clonagem: ${mappedModel}`);
-                            } else if (mappedModel.toLowerCase().includes('qwen')) {
-                                // Forçar modo voice_clone se o modelo for Qwen3 mesmo que não esteja na lista filtrada
-                                mode = 'voice_clone';
-                                console.log(`[Deapi Audio] Forçando modo voice_clone para modelo Qwen: ${mappedModel}`);
+                            // Se for clonagem, forçar Qwen3 se disponível ou se já estiver mapeado
+                            const qwenModel = availableModels.find((m: any) => m.slug.toLowerCase().includes('qwen'));
+                            if (qwenModel) {
+                                mappedModel = qwenModel.slug;
                             } else {
-                                // Se nenhum modelo de clonagem encontrado, usar Chatterbox como fallback
-                                const chatterbox = availableModels.find((m: any) => m.slug === 'Chatterbox');
-                                if (chatterbox) {
-                                    mappedModel = 'Chatterbox';
-                                    mode = 'voice_clone';
-                                    console.log(`[Deapi Audio] Usando Chatterbox para clonagem (fallback)`);
-                                } else {
-                                    // Último recurso: usar o primeiro modelo disponível
-                                    mappedModel = slugs[0];
-                                    mode = 'custom_voice';
-                                    console.warn('[Deapi Audio] Nenhum modelo com suporte a clonagem encontrado, usando custom_voice');
-                                }
+                                mappedModel = 'Qwen3_TTS_12Hz_1_7B_Base';
                             }
+                            mode = 'voice_clone';
+                            console.log(`[Deapi Audio] Modo Clonagem Ativo: ${mappedModel}`);
                         } else if (!slugs.includes(mappedModel)) {
                             mappedModel = slugs[0];
                         }
@@ -2853,5 +2843,4 @@ async function startServer() {
     }, 15 * 60 * 1000);
 }
 
-startServer();
 startServer();
