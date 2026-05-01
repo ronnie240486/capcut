@@ -1357,13 +1357,49 @@ async function startServer() {
     //         sample_rate (req), mode (opt), voice (opt), ref_audio (file,opt),
     //         ref_text (opt), instruct (opt), webhook_url (opt)
     // Response: { "data": { "request_id": "UUID" } }
+    
+    // Cache for model lists to prevent 429 from Deapi
+    let deapiModelCache: Record<string, { data: any[], timestamp: number }> = {};
+    const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+    
+    app.get('/api/ai/deapi-models', async (req: any, res: any) => {
+        const deapiKey = getDeapiKey(req);
+        if (!deapiKey) return res.status(401).json({ error: 'API key missing' });
+        
+        const type = req.query.type || 'txt2audio';
+        const cacheKey = `models_${type}`;
+        
+        if (deapiModelCache[cacheKey] && (Date.now() - deapiModelCache[cacheKey].timestamp < CACHE_TTL)) {
+            return res.json(deapiModelCache[cacheKey].data);
+        }
+        
+        try {
+            const mRes = await fetch(`https://api.deapi.ai/api/v2/models?filter[inference_types]=${type}`, {
+                headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+            });
+            if (mRes.ok) {
+                const mData = await mRes.json();
+                const availableModels = mData.data || [];
+                deapiModelCache[cacheKey] = { data: availableModels, timestamp: Date.now() };
+                return res.json(availableModels);
+            }
+            res.status(mRes.status).json({ error: 'Failed to fetch' });
+        } catch (e) {
+            res.status(500).json({ error: 'Server error' });
+        }
+    });
+
     app.post('/api/ai/generate-audio', async (req: any, res: any) => {
         const jobId = `aiaudio_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey } = req.body;
+        const { prompt, model, type, audioUrl, audioFile, voiceBase64, refText, apiKey, text, targetLanguage, voice, voiceDescription } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
+        const resolvedType = type || 'speech';
+        const resolvedLang = text || targetLanguage || 'en-us';
+        const selectedVoice = voice || '';
+        const selectedVoiceDescription = voiceDescription || '';
 
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
@@ -1374,54 +1410,77 @@ async function startServer() {
         try {
             const baseUrl = "https://api.deapi.ai";
 
-            // v2 TTS endpoint (multipart/form-data). v1 fallback uses JSON.
-            // There is NO /api/v2/audio/generations — that endpoint does not exist.
+            // v2 TTS/SFX/Clone endpoints (multipart/form-data). v1 fallback uses JSON.
+            // NOTE: Voice cloning uses /api/v2/audio/speech with mode=voice_clone (NOT /voice-cloning)
+            let deapiV2Path = '/api/v2/audio/speech';
+            if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
+
             const ENDPOINTS = [
-                { url: `${baseUrl}/api/v2/audio/speech`, version: 'v2' },
+                { url: `${baseUrl}${deapiV2Path}`, version: 'v2' },
                 { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
             ];
 
             // Resolve model slug dynamically — never hardcode
             let mappedModel = model || '';
             // Normalize legacy/internal aliases to real Deapi slugs.
-            // 'cloning' is left empty so the dynamic lookup picks a voice_clone capable model.
             const LEGACY_ALIASES: Record<string, string> = {
-                'cloning': '',        // resolved dynamically to a voice_clone capable model
-                'cloning-v1': '',     // same
+                'cloning': 'Qwen3_TTS_12Hz_1_7B_Base',
+                'cloning-v1': 'Qwen3_TTS_12Hz_1_7B_Base',
                 'txt2audio': 'Kokoro',
-                'kokoro': 'Kokoro'    // normalize lowercase to canonical
+                'sfx': 'F5-TTS',
+                'kokoro': 'Kokoro',
+                'Qwen3_TTS_12Hz_1_7B_VoiceClone': 'Qwen3_TTS_12Hz_1_7B_Base',
             };
             if (mappedModel in LEGACY_ALIASES) {
-                mappedModel = LEGACY_ALIASES[mappedModel]; // may be '' — resolved below
+                mappedModel = LEGACY_ALIASES[mappedModel];
             }
-            if (!mappedModel) mappedModel = 'Kokoro'; // safe default for plain speech
+            if (!mappedModel) {
+                if (resolvedType === 'sfx') mappedModel = 'F5-TTS';
+                else mappedModel = 'Kokoro';
+            }
 
             // Fetch live model list — resolve model + capabilities + default voice
-            const resolvedType = type || 'speech';
+            const filterType = resolvedType === 'sfx' ? 'txt2sfx' : 'txt2audio';
             const hasRefAudio = !!(voiceBase64 && voiceBase64.length > 10);
             const hasAudioFile = !!(audioFile && audioFile.length > 10);
             const hasAudioUrl  = !!(audioUrl  && typeof audioUrl === 'string' && audioUrl.startsWith('http'));
             const hasAnyRefAudio = hasRefAudio || hasAudioFile || hasAudioUrl;
             const needsVoiceClone = resolvedType === 'clone' && hasAnyRefAudio;
+            const needsVoiceDesign = (resolvedType === 'design' || selectedVoiceDescription.length > 0);
 
             let defaultVoiceSlug: string | undefined;
-            let mode: string = needsVoiceClone ? 'voice_clone' : 'custom_voice';
+            let mode: string = needsVoiceClone ? 'voice_clone' : (needsVoiceDesign ? 'voice_design' : 'custom_voice');
+
+            let availableModels: any[] = [];
+            const cacheKey = `audio_${filterType}`;
+            const cached = deapiModelCache[cacheKey];
+
+            if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+                availableModels = cached.data;
+            } else {
+                try {
+                    const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=${filterType}`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                    });
+                    if (mRes.ok) {
+                        const mData = await mRes.json();
+                        availableModels = mData.data || [];
+                        deapiModelCache[cacheKey] = { data: availableModels, timestamp: Date.now() };
+                    }
+                } catch (e) {
+                    console.error("[Deapi Audio] Could not fetch model list:", e);
+                }
+            }
 
             try {
-                const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2audio`, {
-                    headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
-                });
-                if (mRes.ok) {
-                    const mData = await mRes.json();
-                    const availableModels: any[] = mData.data || [];
-                    if (availableModels.length > 0) {
-                        const slugs: string[] = availableModels.map((m: any) => m.slug);
-                        console.log(`[Deapi Audio] Available TTS models: ${slugs.join(', ')}`);
+                if (availableModels.length > 0) {
+                    const slugs: string[] = availableModels.map((m: any) => m.slug);
+                    console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
 
-                        // If voice_clone needed, find a model that supports it.
-                        // Priority: supports_voice_clone feature flag OR slug contains 'VoiceClone'
                         if (needsVoiceClone) {
+                            // Prefer Qwen3 Base model for voice cloning (uses mode=voice_clone)
                             const cloneCapable = availableModels.find((m: any) =>
+                                m.slug === 'Qwen3_TTS_12Hz_1_7B_Base' ||
                                 m.info?.features?.supports_voice_clone === true ||
                                 m.slug.toLowerCase().includes('voiceclone') ||
                                 m.slug.toLowerCase().includes('voice_clone')
@@ -1429,62 +1488,83 @@ async function startServer() {
                             if (cloneCapable) {
                                 mappedModel = cloneCapable.slug;
                                 mode = 'voice_clone';
-                                console.log(`[Deapi Audio] Voice clone model selected: ${mappedModel}`);
                             } else {
-                                // No model supports voice_clone — fall back to custom_voice
-                                console.warn('[Deapi Audio] No voice_clone capable model found, falling back to custom_voice');
-                                mode = 'custom_voice';
+                                // Fallback: use Qwen3 Base directly
+                                mappedModel = 'Qwen3_TTS_12Hz_1_7B_Base';
+                                mode = 'voice_clone';
                             }
-                        } else if (mappedModel && !slugs.includes(mappedModel)) {
+                        } else if (!slugs.includes(mappedModel)) {
                             mappedModel = slugs[0];
-                            console.log(`[Deapi Audio] Model not in list, using "${mappedModel}"`);
                         }
 
-                        // Grab default voice preset for custom_voice mode
                         const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
                         const voices = modelInfo?.languages?.[0]?.voices;
                         if (voices && voices.length > 0) {
                             defaultVoiceSlug = voices[0].slug;
-                            console.log(`[Deapi Audio] Default voice preset: ${defaultVoiceSlug}`);
                         }
                     }
+                } catch (e) {
+                    console.error("[Deapi Audio] Could not fetch model list:", e);
                 }
-            } catch (e) {
-                console.error("[Deapi Audio] Could not fetch model list, proceeding with:", mappedModel, e);
-            }
 
             let response: any;
             let success = false;
             let lastError = "";
 
             for (const ep of ENDPOINTS) {
-                console.log(`[Deapi Audio] Attempting ${ep.url} | type=${resolvedType} model=${mappedModel} mode=${mode} voice=${defaultVoiceSlug || 'n/a'}`);
+                console.log(`[Deapi Audio] Attempting ${ep.url} | type=${resolvedType} model=${mappedModel}`);
                 try {
                     let fetchOptions: any;
 
                     if (ep.version === 'v2') {
-                        // v2 requires multipart/form-data
                         const form = new FormData();
-                        form.append('text', prompt || '');
-                        form.append('model', mappedModel);
-                        form.append('lang', 'en-us');
-                        form.append('speed', '1.0');
-                        form.append('format', 'mp3');
-                        form.append('sample_rate', '24000');
-                        form.append('mode', mode);
-                        // custom_voice mode requires a voice preset slug
-                        if (mode === 'custom_voice' && defaultVoiceSlug) {
-                            form.append('voice', defaultVoiceSlug);
+                        // SFX v2 uses 'caption', Speech v2 uses 'text'
+                        if (resolvedType === 'sfx') {
+                            form.append('caption', prompt || '');
+                        } else {
+                            form.append('text', prompt || '');
                         }
-                        // ref_audio must be a file blob — only attach when we have real audio data
-                        if (hasRefAudio) {
+                        
+                        form.append('model', mappedModel);
+                        form.append('format', req.body.format || 'mp3');
+                        
+                        if (resolvedType === 'sfx') {
+                            form.append('duration', String(req.body.duration || 10));
+                        } else {
+                            form.append('lang', req.body.lang || resolvedLang);
+                            if (selectedVoice) form.append('voice', selectedVoice);
+                            if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
+                            form.append('speed', String(req.body.speed || '1.0'));
+                            form.append('sample_rate', String(req.body.sample_rate || '24000'));
+                            form.append('mode', mode);
+                            if (mode === 'custom_voice' && defaultVoiceSlug && !selectedVoice) {
+                                form.append('voice', defaultVoiceSlug);
+                            }
+                        }
+
+                        if (hasRefAudio && resolvedType !== 'sfx') {
                             try {
                                 const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
                                 const buffer = Buffer.from(base64Data, 'base64');
                                 const blob = new Blob([buffer], { type: 'audio/mpeg' });
                                 form.append('ref_audio', blob, 'ref.mp3');
+                                // ref_text improves clone quality — send if provided
+                                if (refText && refText.trim()) {
+                                    form.append('ref_text', refText.trim());
+                                }
                             } catch (blobErr) {
-                                console.warn('[Deapi Audio] Could not attach ref_audio blob:', blobErr);
+                                console.warn('[Deapi Audio] Ref audio attach failed:', blobErr);
+                            }
+                        }
+
+                        if (hasAudioFile && resolvedType === 'dubbing') {
+                             try {
+                                const base64Data = audioFile.replace(/^data:[^;]+;base64,/, '');
+                                const buffer = Buffer.from(base64Data, 'base64');
+                                const blob = new Blob([buffer], { type: 'audio/mpeg' });
+                                form.append('audio_file', blob, 'dub.mp3');
+                            } catch (blobErr) {
+                                console.warn('[Deapi Audio] Dub file attach failed:', blobErr);
                             }
                         }
                         fetchOptions = {
@@ -1493,20 +1573,18 @@ async function startServer() {
                             body: form
                         };
                     } else {
-                        // v1 fallback — JSON body (legacy endpoint, still operational)
+                        // v1 fallback
                         const v1Payload: any = {
                             text: prompt || '',
+                            prompt: prompt || '',
+                            caption: prompt || '',
                             model: mappedModel,
-                            lang: 'en-us',
-                            speed: 1.0,
-                            format: 'mp3',
-                            sample_rate: 24000
+                            format: 'mp3'
                         };
-                        v1Payload.mode = mode;
-                        if (mode === 'custom_voice' && defaultVoiceSlug) {
-                            v1Payload.voice = defaultVoiceSlug;
+                        if (resolvedType !== 'sfx') {
+                            v1Payload.mode = mode;
+                            if (defaultVoiceSlug) v1Payload.voice = defaultVoiceSlug;
                         }
-                        // v1 cannot accept ref_audio as base64 string — voice cloning only works via v2
                         fetchOptions = {
                             method: 'POST',
                             headers: {
@@ -1604,6 +1682,9 @@ async function startServer() {
                     } else if (status === 'failed' || status === 'error') {
                         throw new Error(result.error || result.message || 'Deapi processing failed');
                     }
+                } else if (pollRes.status === 429) {
+                    console.warn(`[Job ${jobId}] Deapi returned 429 (Rate Limit) during polling, backing off...`);
+                    await new Promise(r => setTimeout(r, 10000)); // Extra backoff
                 }
             } catch (e) {
                 console.warn(`[Job ${jobId}] Polling attempt ${attempts} failed, continuing...`);
@@ -1625,7 +1706,12 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, model, duration, apiKey } = req.body;
+        const { 
+            prompt, model, duration, apiKey, 
+            lyrics, vocalLanguage, 
+            steps, seed, guidanceScale: userGuidance, 
+            outputFormat, referenceAudio 
+        } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
 
         if (!deapiKey) {
@@ -1637,56 +1723,78 @@ async function startServer() {
         try {
             const baseUrl = "https://api.deapi.ai";
 
-            // Only two valid endpoints — /api/v2/music/generations does NOT exist
             const ENDPOINTS = [
                 { url: `${baseUrl}/api/v2/audio/music`, version: 'v2' },
                 { url: `${baseUrl}/api/v1/client/txt2music`, version: 'v1' }
             ];
 
-            // Resolve model dynamically — never hardcode slugs
-            let mappedModel = model || '';
-            const MUSIC_MODEL_FALLBACK = 'ACE-Step-v1.5-turbo';
-            if (!mappedModel) mappedModel = MUSIC_MODEL_FALLBACK;
+            let mappedModel = model || 'AceStep_1_5_XL_Turbo_INT8';
+            
+            // ... Logic for availableModels and modelLimits stays here (I'll keep the existing structure but add the mapping)
 
             // Track model limits so we stay within per-model caps (e.g. guidance_scale max varies)
             let modelLimits: any = {};
 
-            try {
-                const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2music`, {
-                    headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
-                });
-                if (mRes.ok) {
-                    const mData = await mRes.json();
-                    const availableModels: any[] = mData.data || [];
-                    if (availableModels.length > 0) {
-                        const slugs: string[] = availableModels.map((m: any) => m.slug);
-                        console.log(`[Deapi Music] Available models: ${slugs.join(', ')}`);
-                        if (!slugs.includes(mappedModel)) {
-                            const fallback = slugs.find(s => s.toLowerCase().includes('ace')) || slugs[0];
-                            console.log(`[Deapi Music] Model "${mappedModel}" not found, using "${fallback}"`);
-                            mappedModel = fallback;
-                        }
-                        // Capture this model's limits for clamping parameters
-                        const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
-                        if (modelInfo?.info?.limits) modelLimits = modelInfo.info.limits;
-                        console.log(`[Deapi Music] Model limits:`, JSON.stringify(modelLimits));
+            let availableModels: any[] = [];
+            const cacheKey = 'music_txt2music';
+            const cached = deapiModelCache[cacheKey];
+
+            if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+                availableModels = cached.data;
+            } else {
+                try {
+                    const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2music`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                    });
+                    if (mRes.ok) {
+                        const mData = await mRes.json();
+                        availableModels = mData.data || [];
+                        deapiModelCache[cacheKey] = { data: availableModels, timestamp: Date.now() };
                     }
+                } catch (e) {
+                    console.error("[Deapi Music] Could not fetch model list:", e);
+                }
+            }
+
+            try {
+                if (availableModels.length > 0) {
+                    const slugs: string[] = availableModels.map((m: any) => m.slug);
+                    console.log(`[Deapi Music] Available models: ${slugs.join(', ')}`);
+                    // Normalize legacy slugs to real deAPI slugs
+                    const MUSIC_ALIASES: Record<string, string> = {
+                        'AceStep_1_5_XL_Turbo_INT8': 'AceStep_1_5_XL_Turbo_INT8',
+                        'AceStep_1_5_Turbo': 'AceStep_1_5_Turbo',
+                        'AceStep_1_5_Base': 'AceStep_1_5_Base',
+                        'ACE-Step-v1.5-turbo': 'AceStep_1_5_Turbo',
+                        'ACE-Step-v1.5': 'AceStep_1_5_Base',
+                        'ace-v2': 'AceStep_1_5_XL_Turbo_INT8',
+                    };
+                    if (mappedModel in MUSIC_ALIASES) mappedModel = MUSIC_ALIASES[mappedModel];
+                    if (!slugs.includes(mappedModel)) {
+                        const fallback = slugs.find(s => s.toLowerCase().includes('acestep') || s.toLowerCase().includes('ace')) || slugs[0];
+                        console.log(`[Deapi Music] Model "${mappedModel}" not found, using "${fallback}"`);
+                        mappedModel = fallback;
+                    }
+                    // Capture this model's limits for clamping parameters
+                    const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
+                    if (modelInfo?.info?.limits) modelLimits = modelInfo.info.limits;
+                    console.log(`[Deapi Music] Model limits:`, JSON.stringify(modelLimits));
                 }
             } catch (e) {
-                console.error("[Deapi Music] Could not fetch model list, proceeding with:", mappedModel, e);
+                console.error("[Deapi Music] Error processing model list:", e);
             }
 
             // Clamp guidance_scale to model limits
-            // ACE-Step: max=1 (<=1 valid). Unknown models: default to 0 (always safe).
-            const maxGuidance = modelLimits.max_guidance_scale ?? modelLimits.max_guidance ?? 0;
+            // ACE-Step: max=1 (<=1 valid). Unknown models: default to 5.
+            const maxGuidance = modelLimits.max_guidance_scale ?? modelLimits.max_guidance ?? 10;
             const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 0;
-            // Use minGuidance as the safe default when model limits are unknown
-            const guidanceScale = Object.keys(modelLimits).length > 0
-                ? Math.min(Math.max(minGuidance, minGuidance), maxGuidance)
-                : 0;
+            
+            // Sensible defaults if model limits are unknown or specifically for ACE/Turbo models
+            const defaultTarget = mappedModel.toLowerCase().includes('ace') ? 0.7 : 5;
+            const guidanceScale = Math.min(Math.max(defaultTarget, minGuidance), maxGuidance);
 
             const resolvedDuration = duration || 30;
-            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s guidance_scale=${guidanceScale}`);
+            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s guidance_scale=${guidanceScale.toFixed(1)}`);
 
             let response: any;
             let success = false;
@@ -1702,12 +1810,25 @@ async function startServer() {
                         const form = new FormData();
                         form.append('caption', prompt || '');
                         form.append('model', mappedModel);
-                        form.append('lyrics', '[Instrumental]');
+                        form.append('lyrics', lyrics || '[Instrumental]');
                         form.append('duration', String(resolvedDuration));
-                        form.append('inference_steps', '8');
-                        form.append('guidance_scale', String(guidanceScale));
-                        form.append('seed', '-1');
-                        form.append('format', 'mp3');
+                        form.append('inference_steps', String(steps || 8));
+                        form.append('guidance_scale', String(userGuidance || guidanceScale));
+                        form.append('seed', String(seed || -1));
+                        form.append('format', outputFormat || 'mp3');
+                        if (vocalLanguage) form.append('vocal_language', vocalLanguage);
+                        
+                        if (referenceAudio && referenceAudio.length > 50) {
+                             try {
+                                const base64Data = referenceAudio.replace(/^data:[^;]+;base64,/, '');
+                                const buffer = Buffer.from(base64Data, 'base64');
+                                const blob = new Blob([buffer], { type: 'audio/mpeg' });
+                                form.append('reference_audio', blob, 'reference.mp3');
+                            } catch (blobErr) {
+                                console.warn('[Deapi Music] Ref audio attach failed:', blobErr);
+                            }
+                        }
+
                         fetchOptions = {
                             method: 'POST',
                             headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' },
@@ -1725,13 +1846,14 @@ async function startServer() {
                             body: JSON.stringify({
                                 caption: prompt || '',
                                 prompt: prompt || '',
-                                lyrics: '[Instrumental]',
+                                lyrics: lyrics || '[Instrumental]',
                                 model: mappedModel,
                                 duration: resolvedDuration,
-                                inference_steps: 8,
-                                guidance_scale: guidanceScale,
-                                seed: -1,
-                                format: 'mp3'
+                                vocal_language: vocalLanguage,
+                                inference_steps: steps || 8,
+                                guidance_scale: userGuidance || guidanceScale,
+                                seed: seed || -1,
+                                format: outputFormat || 'mp3'
                             })
                         };
                     }
@@ -2659,7 +2781,7 @@ async function startServer() {
 
     // ─── FRONTEND ─────────────────────────────────────────────────────────────
     if (process.env.NODE_ENV !== 'production') {
-        const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
+        const vite = await createViteServer({ server: { middlewareMode: true, allowedHosts: true }, appType: 'spa' });
         app.use(vite.middlewares);
     } else {
         const distPath = path.join(process.cwd(), 'dist');
