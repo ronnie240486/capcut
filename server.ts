@@ -1573,8 +1573,15 @@ async function startServer() {
                             
                             // Voz padrão segura para Kokoro se nenhuma for fornecida
                             let finalVoice = req.body.voice || selectedVoice || defaultVoiceSlug;
-                            if (!finalVoice || finalVoice === '') {
-                                finalVoice = (finalLang === 'pt-br') ? 'hf_alpha' : 'af_sky';
+                            
+                            // Normalização de voz para Kokoro (pm_alex, pm_santa, etc)
+                            if (mappedModel === 'Kokoro') {
+                                if (finalVoice && !finalVoice.startsWith('pm_') && !finalVoice.startsWith('hf_') && !finalVoice.startsWith('af_')) {
+                                    finalVoice = 'pm_' + finalVoice.toLowerCase();
+                                }
+                                if (!finalVoice || finalVoice === '' || finalVoice === 'pm_') {
+                                    finalVoice = 'pm_alex'; // Alex é o padrão seguro do playground
+                                }
                             }
 
                             form.append('lang', finalLang);
