@@ -1422,9 +1422,10 @@ async function startServer() {
             const baseUrl = "https://api.deapi.ai";
 
             // v2 TTS/SFX/Clone endpoints (multipart/form-data). v1 fallback uses JSON.
+            // IMPORTANTE: Clonagem usa o mesmo endpoint /api/v2/audio/speech com mode=voice_clone
             let deapiV2Path = '/api/v2/audio/speech';
             if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
-            else if (resolvedType === 'clone') deapiV2Path = '/api/v2/audio/voice-cloning';
+            // Clonagem usa /api/v2/audio/speech com mode=voice_clone (não um endpoint separado)
 
             const ENDPOINTS = [
                 { url: `${baseUrl}${deapiV2Path}`, version: 'v2' },
@@ -1488,27 +1489,28 @@ async function startServer() {
                     console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
 
                         if (needsVoiceClone) {
+                            // Procurar modelo que suporta clonagem (Chatterbox e Qwen3 suportam)
                             const cloneCapable = availableModels.find((m: any) =>
-                                m.info?.features?.supports_voice_clone === true ||
-                                m.slug.toLowerCase().includes('voiceclone') ||
-                                m.slug.toLowerCase().includes('voice_clone') ||
-                                m.slug.toLowerCase().includes('qwen')
+                                m.slug === 'Chatterbox' ||
+                                m.slug.toLowerCase().includes('qwen') ||
+                                m.info?.features?.supports_voice_clone === true
                             );
                             if (cloneCapable) {
                                 mappedModel = cloneCapable.slug;
                                 mode = 'voice_clone';
                                 console.log(`[Deapi Audio] Usando modelo com suporte a clonagem: ${mappedModel}`);
                             } else {
-                                const fallbackClone = availableModels.find((m: any) => 
-                                    m.slug === 'Qwen3_TTS_12Hz_1_7B_Base' || m.slug === 'Kokoro'
-                                );
-                                if (fallbackClone) {
-                                    mappedModel = fallbackClone.slug;
+                                // Se nenhum modelo de clonagem encontrado, usar Chatterbox como fallback
+                                const chatterbox = availableModels.find((m: any) => m.slug === 'Chatterbox');
+                                if (chatterbox) {
+                                    mappedModel = 'Chatterbox';
                                     mode = 'voice_clone';
-                                    console.log(`[Deapi Audio] Usando fallback para clonagem: ${mappedModel}`);
+                                    console.log(`[Deapi Audio] Usando Chatterbox para clonagem (fallback)`);
                                 } else {
+                                    // Último recurso: usar o primeiro modelo disponível
+                                    mappedModel = slugs[0];
                                     mode = 'custom_voice';
-                                    console.warn('[Deapi Audio] Nenhum modelo com suporte a clonagem encontrado');
+                                    console.warn('[Deapi Audio] Nenhum modelo com suporte a clonagem encontrado, usando custom_voice');
                                 }
                             }
                         } else if (!slugs.includes(mappedModel)) {
