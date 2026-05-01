@@ -1405,7 +1405,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription } = req.body;
+        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription, refText, ref_text } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
         const resolvedType = type || 'speech';
         const resolvedLang = text || targetLanguage || 'en-us';
@@ -1499,6 +1499,10 @@ async function startServer() {
                                 mappedModel = cloneCapable.slug;
                                 mode = 'voice_clone';
                                 console.log(`[Deapi Audio] Usando modelo com suporte a clonagem: ${mappedModel}`);
+                            } else if (mappedModel.toLowerCase().includes('qwen')) {
+                                // Forçar modo voice_clone se o modelo for Qwen3 mesmo que não esteja na lista filtrada
+                                mode = 'voice_clone';
+                                console.log(`[Deapi Audio] Forçando modo voice_clone para modelo Qwen: ${mappedModel}`);
                             } else {
                                 // Se nenhum modelo de clonagem encontrado, usar Chatterbox como fallback
                                 const chatterbox = availableModels.find((m: any) => m.slug === 'Chatterbox');
@@ -1580,9 +1584,18 @@ async function startServer() {
                             form.append('speed', finalSpeed);
                             form.append('sample_rate', finalSampleRate);
                             form.append('voice', finalVoice);
-                            form.append('mode', 'custom_voice'); // Modo correto para TTS padrão
+                            
+                            // Usar o modo resolvido (voice_clone, voice_design ou custom_voice)
+                            const finalMode = (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : (selectedVoiceDescription ? 'voice_design' : 'custom_voice');
+                            form.append('mode', finalMode); 
 
                             if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
+                            
+                            // Adicionar ref_text se disponível (importante para Qwen3 Clone)
+                            const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
+                            if (finalRefText) {
+                                form.append('ref_text', finalRefText);
+                            }
                         }
 
                         if (hasRefAudio && resolvedType !== 'sfx') {
@@ -2840,4 +2853,5 @@ async function startServer() {
     }, 15 * 60 * 1000);
 }
 
+startServer();
 startServer();
