@@ -1422,13 +1422,15 @@ async function startServer() {
             const baseUrl = "https://api.deapi.ai";
 
             // v2 TTS/SFX/Clone endpoints (multipart/form-data). v1 fallback uses JSON.
+            // IMPORTANTE: Para Kokoro, o playground usa o endpoint v1 mesmo com parâmetros v2.
+            // O endpoint v2 /api/v2/audio/speech é mais restrito com as vozes.
             let deapiV2Path = '/api/v2/audio/speech';
             if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
             else if (resolvedType === 'clone') deapiV2Path = '/api/v2/audio/speech';
 
             const ENDPOINTS = [
-                { url: `${baseUrl}${deapiV2Path}`, version: 'v2' },
-                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
+                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }, // Priorizar v1 para Kokoro
+                { url: `${baseUrl}${deapiV2Path}`, version: 'v2' }
             ];
 
             // Resolve model slug dynamically — never hardcode
@@ -1626,22 +1628,36 @@ async function startServer() {
                             body: form
                         };
                     } else {
-                        // v1 fallback
+                        // v1 fallback - Sincronizado com o Playground da Deapi
+                        let finalLang = req.body.lang || resolvedLang || 'en-us';
+                        const LANG_MAP: Record<string, string> = {
+                            'portuguese': 'pt-br', 'português': 'pt-br', 'english': 'en-us',
+                            'spanish': 'es', 'french': 'fr-fr', 'hindi': 'hi', 'italian': 'it'
+                        };
+                        const langLower = finalLang.toLowerCase();
+                        if (LANG_MAP[langLower]) finalLang = LANG_MAP[langLower];
+                        else if (finalLang.length > 5) finalLang = 'en-us';
+
+                        let finalVoice = req.body.voice || selectedVoice || defaultVoiceSlug;
+                        if (mappedModel === 'Kokoro') {
+                            if (finalVoice && !finalVoice.startsWith('pm_') && !finalVoice.startsWith('hf_') && !finalVoice.startsWith('af_')) {
+                                finalVoice = 'pm_' + finalVoice.toLowerCase();
+                            }
+                            if (!finalVoice || finalVoice === '' || finalVoice === 'pm_') {
+                                finalVoice = 'pm_alex';
+                            }
+                        }
+
                         const v1Payload: any = {
                             text: prompt || '',
-                            prompt: prompt || '',
-                            caption: prompt || '',
                             model: mappedModel,
-                            format: 'mp3'
+                            mode: mode,
+                            lang: finalLang,
+                            speed: Number(req.body.speed || 1),
+                            format: req.body.format || 'mp3',
+                            sample_rate: Number(req.body.sample_rate || 24000),
+                            voice: finalVoice
                         };
-                        if (resolvedType !== 'sfx') {
-                            v1Payload.mode = mode;
-                            v1Payload.lang = req.body.lang || resolvedLang || 'en-us';
-                            v1Payload.speed = String(req.body.speed || '1.0');
-                            v1Payload.sample_rate = String(req.body.sample_rate || '24000');
-                            if (selectedVoice) v1Payload.voice = selectedVoice;
-                            else if (defaultVoiceSlug) v1Payload.voice = defaultVoiceSlug;
-                        }
                         fetchOptions = {
                             method: 'POST',
                             headers: {
