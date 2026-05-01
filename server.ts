@@ -843,7 +843,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey } = req.body;
+        const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, frames, fps, format, sample_rate, speed } = req.body;
         
         if (model && model.startsWith('deapi-')) {
             const deapiModel = model.replace('deapi-', '');
@@ -920,10 +920,14 @@ async function startServer() {
                         model: mappedModel,
                         width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
                         height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
-                        frames: 120, 
-                        fps: 30,    // Forçado para 30 conforme erro 422 da API
+                        frames: frames || 121, 
+                        fps: fps || 24,
                         steps: 1,   
-                        seed: parseInt(randomSeed)
+                        seed: parseInt(randomSeed),
+                        include_audio: mappedModel.includes('ltx-video-v2.0') || mappedModel.includes('ltx-2-19b') || !!format,
+                        audio_format: format || 'mp3',
+                        audio_sample_rate: sample_rate || 24000,
+                        audio_speed: speed || 1.0
                     };
 
                     if (isImageToVideo) {
@@ -945,6 +949,10 @@ async function startServer() {
                         formData.append('fps', payload.fps.toString());
                         formData.append('steps', payload.steps.toString());
                         formData.append('seed', payload.seed.toString());
+                        formData.append('include_audio', payload.include_audio ? 'true' : 'false');
+                        if (payload.audio_format) formData.append('audio_format', payload.audio_format);
+                        if (payload.audio_sample_rate) formData.append('audio_sample_rate', payload.audio_sample_rate.toString());
+                        if (payload.audio_speed) formData.append('audio_speed', payload.audio_speed.toString());
 
                         // Converter base64 para Blob para enviar como arquivo
                         const base64Data = image.split(',')[1] || image;
@@ -1165,18 +1173,21 @@ async function startServer() {
             };
 
             if (image) {
+                // O SDK @google/genai espera `imageBytes` (camelCase); ele converte internamente
+                // para `bytesBase64Encoded` ao serializar para a API REST. Usar `bytesBase64Encoded`
+                // diretamente aqui faz o SDK enviar um objeto `image` vazio, causando erro 400.
                 payload.image = { 
-                    bytesBase64Encoded: image.split(',')[1] || image, 
+                    imageBytes: image.split(',')[1] || image, 
                     mimeType: req.body.imageMimeType || 'image/png' 
                 };
             }
             if (lastFrame) {
-                payload.config.lastFrame = { bytesBase64Encoded: lastFrame.split(',')[1] || lastFrame, mimeType: 'image/png' };
+                payload.config.lastFrame = { imageBytes: lastFrame.split(',')[1] || lastFrame, mimeType: 'image/png' };
             }
             if (referenceImages && referenceImages.length > 0) {
                 payload.config.referenceImages = referenceImages.map((img: string) => ({ 
                     image: {
-                        bytesBase64Encoded: img.split(',')[1] || img, 
+                        imageBytes: img.split(',')[1] || img, 
                         mimeType: 'image/png' 
                     },
                     referenceType: 'ASSET'
@@ -1587,7 +1598,12 @@ async function startServer() {
                         };
                         if (resolvedType !== 'sfx') {
                             v1Payload.mode = mode;
-                            if (defaultVoiceSlug) v1Payload.voice = defaultVoiceSlug;
+                            v1Payload.lang = req.body.lang || resolvedLang || 'Portuguese';
+                            v1Payload.speed = String(req.body.speed || '1.0');
+                            v1Payload.sample_rate = String(req.body.sample_rate || '24000');
+                            if (selectedVoice) v1Payload.voice = selectedVoice;
+                            else if (defaultVoiceSlug) v1Payload.voice = defaultVoiceSlug;
+                            else v1Payload.voice = 'af_sky';
                         }
                         fetchOptions = {
                             method: 'POST',
