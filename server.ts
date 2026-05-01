@@ -1422,33 +1422,30 @@ async function startServer() {
             const baseUrl = "https://api.deapi.ai";
 
             // v2 TTS/SFX/Clone endpoints (multipart/form-data). v1 fallback uses JSON.
-            // IMPORTANTE: Para Kokoro, o playground usa o endpoint v1 mesmo com parâmetros v2.
-            // O endpoint v2 /api/v2/audio/speech é mais restrito com as vozes.
             let deapiV2Path = '/api/v2/audio/speech';
             if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
-            else if (resolvedType === 'clone') deapiV2Path = '/api/v2/audio/speech';
+            else if (resolvedType === 'clone') deapiV2Path = '/api/v2/audio/voice-cloning';
 
             const ENDPOINTS = [
-                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }, // Priorizar v1 para Kokoro
-                { url: `${baseUrl}${deapiV2Path}`, version: 'v2' }
+                { url: `${baseUrl}${deapiV2Path}`, version: 'v2' },
+                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
             ];
 
             // Resolve model slug dynamically — never hardcode
             let mappedModel = model || '';
             // Normalize legacy/internal aliases to real Deapi slugs.
             const LEGACY_ALIASES: Record<string, string> = {
-                'cloning': 'Qwen3_TTS_12Hz_1_7B_Base',
-                'cloning-v1': 'Qwen3_TTS_12Hz_1_7B_Base',
+                'cloning': '',        // resolved dynamically to a voice_clone capable model
+                'cloning-v1': '',     // same
                 'txt2audio': 'Kokoro',
-                'sfx': 'F5-TTS',
-                'kokoro': 'Kokoro'
+                'sfx': 'F5-TTS',      // Reasonable fallback if sfx-specific model not selected
+                'kokoro': 'Kokoro'    // normalize lowercase to canonical
             };
             if (mappedModel in LEGACY_ALIASES) {
                 mappedModel = LEGACY_ALIASES[mappedModel];
             }
             if (!mappedModel) {
                 if (resolvedType === 'sfx') mappedModel = 'F5-TTS';
-                else if (resolvedType === 'clone') mappedModel = 'Qwen3_TTS_12Hz_1_7B_Base';
                 else mappedModel = 'Kokoro';
             }
 
@@ -1462,10 +1459,7 @@ async function startServer() {
             const needsVoiceDesign = (resolvedType === 'design' || selectedVoiceDescription.length > 0);
 
             let defaultVoiceSlug: string | undefined;
-            // Map internal/user modes to Deapi v2 modes
-            let mode: string = 'custom_voice';
-            if (needsVoiceClone || type === 'clone') mode = 'voice_clone';
-            else if (needsVoiceDesign || type === 'design') mode = 'voice_design';
+            let mode: string = needsVoiceClone ? 'voice_clone' : (needsVoiceDesign ? 'voice_design' : 'custom_voice');
 
             let availableModels: any[] = [];
             const cacheKey = `audio_${filterType}`;
@@ -1493,29 +1487,36 @@ async function startServer() {
                     const slugs: string[] = availableModels.map((m: any) => m.slug);
                     console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
 
-                        if (needsVoiceClone || type === 'clone') {
+                        if (needsVoiceClone) {
                             const cloneCapable = availableModels.find((m: any) =>
                                 m.info?.features?.supports_voice_clone === true ||
                                 m.slug.toLowerCase().includes('voiceclone') ||
                                 m.slug.toLowerCase().includes('voice_clone') ||
-                                m.slug === 'Qwen3_TTS_12Hz_1_7B_Base'
+                                m.slug.toLowerCase().includes('qwen')
                             );
                             if (cloneCapable) {
                                 mappedModel = cloneCapable.slug;
                                 mode = 'voice_clone';
+                                console.log(`[Deapi Audio] Usando modelo com suporte a clonagem: ${mappedModel}`);
+                            } else {
+                                const fallbackClone = availableModels.find((m: any) => 
+                                    m.slug === 'Qwen3_TTS_12Hz_1_7B_Base' || m.slug === 'Kokoro'
+                                );
+                                if (fallbackClone) {
+                                    mappedModel = fallbackClone.slug;
+                                    mode = 'voice_clone';
+                                    console.log(`[Deapi Audio] Usando fallback para clonagem: ${mappedModel}`);
+                                } else {
+                                    mode = 'custom_voice';
+                                    console.warn('[Deapi Audio] Nenhum modelo com suporte a clonagem encontrado');
+                                }
                             }
                         } else if (!slugs.includes(mappedModel)) {
                             mappedModel = slugs[0];
                         }
 
                         const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
-                        // Tenta encontrar vozes para o idioma solicitado ou a primeira disponível
-                        const langSlug = (req.body.lang || resolvedLang || 'en-us').toLowerCase();
-                        const targetLang = langSlug.includes('pt') ? 'pt-br' : (langSlug.includes('en') ? 'en-us' : langSlug);
-                        
-                        const langData = modelInfo?.languages?.find((l: any) => l.slug === targetLang) || modelInfo?.languages?.[0];
-                        const voices = langData?.voices;
-                        
+                        const voices = modelInfo?.languages?.[0]?.voices;
                         if (voices && voices.length > 0) {
                             defaultVoiceSlug = voices[0].slug;
                         }
@@ -1549,62 +1550,43 @@ async function startServer() {
                             form.append('duration', String(req.body.duration || 10));
                         } else {
                             // Garantir campos obrigatórios para evitar erro 422 no Deapi (especialmente Kokoro)
-                            // Kokoro v2 expects: text, model, lang, speed, format, sample_rate, mode, voice
-                            let finalLang = req.body.lang || resolvedLang || 'en-us';
-                            
-                            // Normalização de Idioma para Kokoro (Slug esperado: en-us, pt-br, etc)
-                            const LANG_MAP: Record<string, string> = {
+                            // Normalizar idioma para valores aceitos pela deAPI
+                            const langMap: Record<string, string> = {
+                                'pt-br': 'pt-br',
                                 'portuguese': 'pt-br',
-                                'português': 'pt-br',
+                                'pt': 'pt-br',
+                                'en-us': 'en-us',
+                                'en-gb': 'en-gb',
                                 'english': 'en-us',
+                                'es': 'es',
                                 'spanish': 'es',
+                                'fr-fr': 'fr-fr',
                                 'french': 'fr-fr',
+                                'hi': 'hi',
                                 'hindi': 'hi',
+                                'it': 'it',
                                 'italian': 'it'
                             };
-                            const langLower = finalLang.toLowerCase();
-                            if (LANG_MAP[langLower]) {
-                                finalLang = LANG_MAP[langLower];
-                            } else if (finalLang.length > 5) {
-                                // Se for um nome longo não mapeado, tenta en-us como fallback seguro
-                                finalLang = 'en-us';
-                            }
-
+                            const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
+                            const finalLang = langMap[normalizedLang] || 'pt-br';
                             const finalSpeed = String(req.body.speed || '1.0');
                             const finalSampleRate = String(req.body.sample_rate || '24000');
-                            
-                            // Voz padrão segura para Kokoro se nenhuma for fornecida
-                            let finalVoice = req.body.voice || selectedVoice || defaultVoiceSlug;
-                            
-                            // Normalização de voz para Kokoro (pm_alex, pm_santa, etc)
-                            if (mappedModel === 'Kokoro') {
-                                if (finalVoice && !finalVoice.startsWith('pm_') && !finalVoice.startsWith('hf_') && !finalVoice.startsWith('af_')) {
-                                    finalVoice = 'pm_' + finalVoice.toLowerCase();
-                                }
-                                if (!finalVoice || finalVoice === '' || finalVoice === 'pm_') {
-                                    finalVoice = 'pm_alex'; // Alex é o padrão seguro do playground
-                                }
-                            }
+                            // Usar voz de melhor qualidade como fallback (af_bella é A- grade)
+                            const finalVoice = req.body.voice || selectedVoice || defaultVoiceSlug || 'af_bella';
 
                             form.append('lang', finalLang);
                             form.append('speed', finalSpeed);
                             form.append('sample_rate', finalSampleRate);
                             form.append('voice', finalVoice);
-                            form.append('mode', mode);
+                            form.append('mode', 'custom_voice'); // Modo correto para TTS padrão
 
                             if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
-                            
-                            // Adicionar ref_text para clonagem se fornecido
-                            if (mode === 'voice_clone' && req.body.refText) {
-                                form.append('ref_text', req.body.refText);
-                            }
                         }
 
                         if (hasRefAudio && resolvedType !== 'sfx') {
                             try {
                                 const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
                                 const buffer = Buffer.from(base64Data, 'base64');
-                                // Deapi v2 espera multipart/form-data para arquivos
                                 const blob = new Blob([buffer], { type: 'audio/mpeg' });
                                 form.append('ref_audio', blob, 'ref.mp3');
                             } catch (blobErr) {
@@ -1628,36 +1610,22 @@ async function startServer() {
                             body: form
                         };
                     } else {
-                        // v1 fallback - Sincronizado com o Playground da Deapi
-                        let finalLang = req.body.lang || resolvedLang || 'en-us';
-                        const LANG_MAP: Record<string, string> = {
-                            'portuguese': 'pt-br', 'português': 'pt-br', 'english': 'en-us',
-                            'spanish': 'es', 'french': 'fr-fr', 'hindi': 'hi', 'italian': 'it'
-                        };
-                        const langLower = finalLang.toLowerCase();
-                        if (LANG_MAP[langLower]) finalLang = LANG_MAP[langLower];
-                        else if (finalLang.length > 5) finalLang = 'en-us';
-
-                        let finalVoice = req.body.voice || selectedVoice || defaultVoiceSlug;
-                        if (mappedModel === 'Kokoro') {
-                            if (finalVoice && !finalVoice.startsWith('pm_') && !finalVoice.startsWith('hf_') && !finalVoice.startsWith('af_')) {
-                                finalVoice = 'pm_' + finalVoice.toLowerCase();
-                            }
-                            if (!finalVoice || finalVoice === '' || finalVoice === 'pm_') {
-                                finalVoice = 'pm_alex';
-                            }
-                        }
-
+                        // v1 fallback
                         const v1Payload: any = {
                             text: prompt || '',
+                            prompt: prompt || '',
+                            caption: prompt || '',
                             model: mappedModel,
-                            mode: mode,
-                            lang: finalLang,
-                            speed: Number(req.body.speed || 1),
-                            format: req.body.format || 'mp3',
-                            sample_rate: Number(req.body.sample_rate || 24000),
-                            voice: finalVoice
+                            format: 'mp3'
                         };
+                        if (resolvedType !== 'sfx') {
+                            v1Payload.mode = mode;
+                            v1Payload.lang = req.body.lang || resolvedLang || 'en-us';
+                            v1Payload.speed = String(req.body.speed || '1.0');
+                            v1Payload.sample_rate = String(req.body.sample_rate || '24000');
+                            if (selectedVoice) v1Payload.voice = selectedVoice;
+                            else if (defaultVoiceSlug) v1Payload.voice = defaultVoiceSlug;
+                        }
                         fetchOptions = {
                             method: 'POST',
                             headers: {
