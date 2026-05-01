@@ -1498,15 +1498,16 @@ async function startServer() {
                     console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
 
                         if (needsVoiceClone) {
-                            // Se for clonagem, forçar Qwen3 se disponível ou se já estiver mapeado
-                            const qwenModel = availableModels.find((m: any) => m.slug.toLowerCase().includes('qwen'));
-                            if (qwenModel) {
-                                mappedModel = qwenModel.slug;
+                            // Se for clonagem, forçar estritamente o modelo BASE que suporta voice_clone
+                            // Evitar modelos CustomVoice ou VoiceDesign que não suportam clonagem
+                            const qwenBaseModel = availableModels.find((m: any) => m.slug === 'Qwen3_TTS_12Hz_1_7B_Base');
+                            if (qwenBaseModel) {
+                                mappedModel = qwenBaseModel.slug;
                             } else {
                                 mappedModel = 'Qwen3_TTS_12Hz_1_7B_Base';
                             }
                             mode = 'voice_clone';
-                            console.log(`[Deapi Audio] Modo Clonagem Ativo: ${mappedModel}`);
+                            console.log(`[Deapi Audio] Modo Clonagem Ativo (Forçado Base): ${mappedModel}`);
                         } else if (!slugs.includes(mappedModel)) {
                             mappedModel = slugs[0];
                         }
