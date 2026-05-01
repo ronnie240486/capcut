@@ -1531,15 +1531,19 @@ async function startServer() {
                         if (resolvedType === 'sfx') {
                             form.append('duration', String(req.body.duration || 10));
                         } else {
-                            form.append('lang', req.body.lang || resolvedLang);
-                            if (selectedVoice) form.append('voice', selectedVoice);
-                            if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
-                            form.append('speed', String(req.body.speed || '1.0'));
-                            form.append('sample_rate', String(req.body.sample_rate || '24000'));
+                            // Garantir campos obrigatórios para evitar erro 422 no Deapi (especialmente Kokoro)
+                            const finalLang = req.body.lang || resolvedLang || 'Portuguese';
+                            const finalSpeed = String(req.body.speed || '1.0');
+                            const finalSampleRate = String(req.body.sample_rate || '24000');
+                            const finalVoice = req.body.voice || selectedVoice || defaultVoiceSlug || 'af_sky'; // Fallback de voz para Kokoro
+
+                            form.append('lang', finalLang);
+                            form.append('speed', finalSpeed);
+                            form.append('sample_rate', finalSampleRate);
+                            form.append('voice', finalVoice);
                             form.append('mode', mode);
-                            if (mode === 'custom_voice' && defaultVoiceSlug && !selectedVoice) {
-                                form.append('voice', defaultVoiceSlug);
-                            }
+
+                            if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
                         }
 
                         if (hasRefAudio && resolvedType !== 'sfx') {
