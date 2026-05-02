@@ -1460,7 +1460,16 @@ async function startServer() {
             const needsVoiceDesign = (resolvedType === 'design' || selectedVoiceDescription.length > 0);
 
             let defaultVoiceSlug: string | undefined;
-            let mode: string = needsVoiceClone ? 'voice_clone' : (needsVoiceDesign ? 'voice_design' : (mappedModel.toLowerCase().includes('qwen') ? 'voice_clone' : 'custom_voice'));
+            let mode: string = 'custom_voice';
+            if (mappedModel.toLowerCase().includes('qwen')) {
+                mode = mappedModel.toLowerCase().includes('design') ? 'voice_design' : 'voice_clone';
+            } else if (mappedModel === 'Chatterbox') {
+                mode = 'custom_voice'; // Chatterbox usa custom_voice mesmo para clonagem
+            } else if (needsVoiceClone) {
+                mode = 'voice_clone';
+            } else if (needsVoiceDesign) {
+                mode = 'voice_design';
+            }
 
             let availableModels: any[] = [];
             const cacheKey = `audio_${filterType}`;
@@ -1534,6 +1543,7 @@ async function startServer() {
             for (const ep of ENDPOINTS) {
                 console.log(`[Deapi Audio] Attempting ${ep.url} | type=${resolvedType} model=${mappedModel}`);
                 try {
+                    console.log(`[Deapi Audio] Payload:`, JSON.stringify(req.body).substring(0, 500));
                     let fetchOptions: any;
 
                     if (ep.version === 'v2') {
@@ -1595,7 +1605,16 @@ async function startServer() {
                                 form.append('voice', finalVoice);
                             }
                             
-                            const finalMode = (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : (selectedVoiceDescription ? 'voice_design' : (mappedModel.toLowerCase().includes('qwen') ? 'voice_clone' : 'custom_voice'));
+                            let finalMode = 'custom_voice';
+                            if (mappedModel.toLowerCase().includes('qwen')) {
+                                finalMode = mappedModel.toLowerCase().includes('design') ? 'voice_design' : 'voice_clone';
+                            } else if (mappedModel === 'Chatterbox') {
+                                finalMode = 'custom_voice';
+                            } else if (resolvedType === 'clone' || needsVoiceClone) {
+                                finalMode = 'voice_clone';
+                            } else if (selectedVoiceDescription || mappedModel.toLowerCase().includes('design')) {
+                                finalMode = 'voice_design';
+                            }
                             form.append('mode', finalMode); 
 
                             if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
@@ -1652,7 +1671,16 @@ async function startServer() {
                         }
 
                         form.append('lang', finalLang);
-                        const finalMode = (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : (selectedVoiceDescription ? 'voice_design' : (mappedModel.toLowerCase().includes('qwen') ? 'voice_clone' : 'custom_voice'));
+                        let finalMode = 'custom_voice';
+                        if (mappedModel.toLowerCase().includes('qwen')) {
+                            finalMode = mappedModel.toLowerCase().includes('design') ? 'voice_design' : 'voice_clone';
+                        } else if (mappedModel === 'Chatterbox') {
+                            finalMode = 'custom_voice';
+                        } else if (resolvedType === 'clone' || needsVoiceClone) {
+                            finalMode = 'voice_clone';
+                        } else if (selectedVoiceDescription || mappedModel.toLowerCase().includes('design')) {
+                            finalMode = 'voice_design';
+                        }
                         form.append('mode', finalMode);
                         if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
                         
@@ -1694,6 +1722,7 @@ async function startServer() {
 
                     if (response.ok) {
                         const data: any = await response.json();
+                        console.log(`[Deapi Audio] Success Response from ${ep.url}:`, JSON.stringify(data));
                         
                         // TENTAR CAPTURAR URL DIRETA (Para modelos rápidos como Qwen3 com pouco texto)
                         const result = data.data || data;
@@ -1733,14 +1762,18 @@ async function startServer() {
 
     // Helper to handle Deapi task/job response
     const handleDeapiTask = async (jobId: string, data: any, deapiKey: string, baseUrl: string) => {
-        const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id;
+        // Captura agressiva de ID ou URL direta
+        const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id || data.data?.job_id;
+        const directUrl = data.url || data.audio_url || data.data?.url || data.result_url || data.data?.result_url || data.data?.audio_url || (data.output && data.output[0]);
         
+        if (directUrl) {
+            console.log(`[Job ${jobId}] URL direta encontrada na resposta inicial.`);
+            jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = directUrl; jobs[jobId].progress = 100;
+            return;
+        }
+
         if (!taskId) {
-            const directUrl = data.url || data.audio_url || data.data?.url || data.result_url || data.data?.result_url;
-            if (directUrl) {
-                jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = directUrl; jobs[jobId].progress = 100;
-                return;
-            }
+            console.error(`[Job ${jobId}] Resposta da Deapi sem ID:`, JSON.stringify(data));
             throw new Error('Deapi não retornou request_id nem URL direta.');
         }
 
@@ -1767,9 +1800,9 @@ async function startServer() {
                     rateLimitCount = 0;
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
-                    const status = (result.status || "").toLowerCase();
-                    if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
-                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
+                    const status = (result.status || result.state || "").toLowerCase();
+                    if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done' || status === 'finished') {
+                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url || result.data?.audio_url || (result.output && result.output[0]);
                         if (resultUrl) {
                             jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = resultUrl; jobs[jobId].progress = 100;
                             completed = true;
