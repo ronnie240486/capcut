@@ -1421,17 +1421,16 @@ async function startServer() {
         try {
             const baseUrl = "https://api.deapi.ai";
 
-            // v2 TTS/SFX/Clone endpoints (multipart/form-data). v1 fallback uses JSON.
-            // IMPORTANTE: Clonagem usa o mesmo endpoint /api/v2/audio/speech com mode=voice_clone
-            let deapiV2Path = '/api/v2/audio/speech';
-            if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
-            
-            // Se for clonagem, NÃO usar o endpoint v1 pois ele não suporta voice_clone corretamente para Qwen3
+            // PRIORIDADE PARA O ENDPOINT V1 CONFORME SOLICITADO (CURL DO PLAYGROUND)
             const ENDPOINTS = [
-                { url: `${baseUrl}${deapiV2Path}`, version: 'v2' }
+                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
             ];
+            
+            // Adicionar v2 apenas como fallback para outros tipos
             if (resolvedType !== 'clone') {
-                ENDPOINTS.push({ url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' });
+                let deapiV2Path = '/api/v2/audio/speech';
+                if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
+                ENDPOINTS.push({ url: `${baseUrl}${deapiV2Path}`, version: 'v2' });
             }
 
             // Resolve model slug dynamically
@@ -1649,22 +1648,26 @@ async function startServer() {
                             body: form
                         };
                     } else {
-                        // v1 fallback
+                        // v1 implementation (JSON) - EXACTLY AS PER CURL
                         const v1Payload: any = {
-                            text: prompt || '',
-                            prompt: prompt || '',
-                            caption: prompt || '',
+                            text: prompt || req.body.text || '',
                             model: mappedModel,
-                            format: 'mp3'
+                            mode: mode,
+                            lang: finalLang,
+                            speed: Number(req.body.speed || 1),
+                            format: req.body.format || 'mp3',
+                            sample_rate: Number(req.body.sample_rate || 24000)
                         };
-                        if (resolvedType !== 'sfx') {
-                            v1Payload.mode = mode;
-                            v1Payload.lang = req.body.lang || resolvedLang || 'en-us';
-                            v1Payload.speed = String(req.body.speed || '1.0');
-                            v1Payload.sample_rate = String(req.body.sample_rate || '24000');
+
+                        // Se for clonagem, incluir áudio de referência e texto de referência
+                        if (resolvedType === 'clone' || needsVoiceClone) {
+                            v1Payload.ref_audio = voiceBase64; // deAPI v1 aceita base64 no JSON
+                            v1Payload.ref_text = finalRefText;
+                        } else {
                             if (selectedVoice) v1Payload.voice = selectedVoice;
                             else if (defaultVoiceSlug) v1Payload.voice = defaultVoiceSlug;
                         }
+
                         fetchOptions = {
                             method: 'POST',
                             headers: {
