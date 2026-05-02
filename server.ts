@@ -1662,7 +1662,8 @@ async function startServer() {
                                 try {
                                     const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
                                     const buffer = Buffer.from(base64Data, 'base64');
-                                    form.append('ref_audio', buffer, { filename: 'ref.mp3', contentType: 'audio/mpeg' });
+                                    const blob = new (await import('node:buffer')).Blob([buffer], { type: 'audio/mpeg' });
+                                    form.append('ref_audio', blob, 'ref.mp3');
                                 } catch (e) {
                                     console.warn('[Deapi Audio] Failed to attach ref_audio file:', e);
                                 }
