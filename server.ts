@@ -1525,6 +1525,31 @@ async function startServer() {
             let success = false;
             let lastError = "";
 
+            // Normalização de parâmetros comuns (Idioma, Referência, Modo)
+            const langMap: Record<string, string> = {
+                'pt-br': 'pt-br', 'portuguese': 'pt-br', 'pt': 'pt-br',
+                'en-us': 'en-us', 'en-gb': 'en-gb', 'english': 'en-us',
+                'es': 'es', 'spanish': 'es', 'fr-fr': 'fr-fr', 'french': 'fr-fr',
+                'hi': 'hi', 'hindi': 'hi', 'it': 'it', 'italian': 'it'
+            };
+            const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
+            let finalLang = langMap[normalizedLang] || 'pt-br';
+
+            if (mappedModel.toLowerCase().includes('qwen')) {
+                const qwenLangMap: Record<string, string> = {
+                    'pt-br': 'Portuguese', 'portuguese': 'Portuguese',
+                    'en-us': 'English', 'en-gb': 'English', 'english': 'English',
+                    'es': 'Spanish', 'spanish': 'Spanish', 'fr-fr': 'French', 'french': 'French',
+                    'it': 'Italian', 'italian': 'Italian', 'ja': 'Japanese', 'japanese': 'Japanese',
+                    'ko': 'Korean', 'korean': 'Korean', 'ru': 'Russian', 'russian': 'Russian',
+                    'de': 'German', 'german': 'German'
+                };
+                finalLang = qwenLangMap[normalizedLang] || qwenLangMap[finalLang] || 'Portuguese';
+            }
+
+            const finalMode = (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : (voiceDescription ? 'voice_design' : 'custom_voice');
+            const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
+
             for (const ep of ENDPOINTS) {
                 console.log(`[Deapi Audio] Attempting ${ep.url} | type=${resolvedType} model=${mappedModel}`);
                 try {
@@ -1546,76 +1571,21 @@ async function startServer() {
                         if (resolvedType === 'sfx') {
                             form.append('duration', String(req.body.duration || 10));
                         } else {
-                            // Garantir campos obrigatórios para evitar erro 422 no Deapi (especialmente Kokoro)
-                            // Normalizar idioma para valores aceitos pela deAPI
-                            const langMap: Record<string, string> = {
-                                'pt-br': 'pt-br',
-                                'portuguese': 'pt-br',
-                                'pt': 'pt-br',
-                                'en-us': 'en-us',
-                                'en-gb': 'en-gb',
-                                'english': 'en-us',
-                                'es': 'es',
-                                'spanish': 'es',
-                                'fr-fr': 'fr-fr',
-                                'french': 'fr-fr',
-                                'hi': 'hi',
-                                'hindi': 'hi',
-                                'it': 'it',
-                                'italian': 'it'
-                            };
-                            const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
-                            let finalLang = langMap[normalizedLang] || 'pt-br';
-
-                            // CORREÇÃO PARA QWEN3: Este modelo exige o nome do idioma por extenso
-                            if (mappedModel.toLowerCase().includes('qwen')) {
-                                const qwenLangMap: Record<string, string> = {
-                                    'pt-br': 'Portuguese',
-                                    'portuguese': 'Portuguese',
-                                    'en-us': 'English',
-                                    'en-gb': 'English',
-                                    'english': 'English',
-                                    'es': 'Spanish',
-                                    'spanish': 'Spanish',
-                                    'fr-fr': 'French',
-                                    'french': 'French',
-                                    'it': 'Italian',
-                                    'italian': 'Italian',
-                                    'ja': 'Japanese',
-                                    'japanese': 'Japanese',
-                                    'ko': 'Korean',
-                                    'korean': 'Korean',
-                                    'ru': 'Russian',
-                                    'russian': 'Russian',
-                                    'de': 'German',
-                                    'german': 'German'
-                                };
-                                finalLang = qwenLangMap[normalizedLang] || qwenLangMap[finalLang] || 'Portuguese';
-                                console.log(`[Deapi Audio] Traduzindo idioma para Qwen3: ${normalizedLang} -> ${finalLang}`);
-                            }
-
                             const finalSpeed = String(req.body.speed || '1.0');
                             const finalSampleRate = String(req.body.sample_rate || '24000');
-                            // Usar voz de melhor qualidade como fallback (af_bella é A- grade)
                             const finalVoice = req.body.voice || selectedVoice || defaultVoiceSlug || 'af_bella';
 
                             form.append('lang', finalLang);
                             form.append('speed', finalSpeed);
                             form.append('sample_rate', finalSampleRate);
                             
-                            // Se for clonagem, NÃO enviar o campo 'voice', pois o modelo Qwen3 Base usa o ref_audio
                             if (resolvedType !== 'clone' && !needsVoiceClone) {
                                 form.append('voice', finalVoice);
                             }
                             
-                            // Usar o modo resolvido (voice_clone, voice_design ou custom_voice)
-                            const finalMode = (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : (selectedVoiceDescription ? 'voice_design' : 'custom_voice');
                             form.append('mode', finalMode); 
 
                             if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
-                            
-                            // Adicionar ref_text se disponível (importante para Qwen3 Clone)
-                            const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
                             if (finalRefText) {
                                 form.append('ref_text', finalRefText);
                             }
