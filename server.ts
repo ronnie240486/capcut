@@ -1807,10 +1807,16 @@ async function startServer() {
         while (!completed && attempts < 60 && jobs[jobId]) {
             attempts++;
             try {
-                // Tentar primeiro o endpoint de status v1 que é mais comum para txt2audio
-                let pollRes = await fetch(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
+                // Tentar múltiplos endpoints de status para garantir compatibilidade
+                let pollRes = await fetch(`${baseUrl}/api/v1/client/request-status/${taskId}`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                 });
+                
+                if (!pollRes.ok) {
+                    pollRes = await fetch(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                    });
+                }
                 
                 if (!pollRes.ok) {
                     pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
@@ -1822,10 +1828,13 @@ async function startServer() {
                     rateLimitCount = 0;
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
-                    const status = (result.status || result.state || "").toLowerCase();
+                    const status = (result.status || result.state || result.task_status || "").toLowerCase();
+                    console.log(`[Job ${jobId}] Polling status: ${status}`, JSON.stringify(result));
+                    
                     if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done' || status === 'finished') {
-                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url || result.data?.audio_url || (result.output && result.output[0]);
+                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url || result.data?.audio_url || (result.output && result.output[0]) || result.file_url;
                         if (resultUrl) {
+                            console.log(`[Job ${jobId}] Áudio pronto! URL: ${resultUrl}`);
                             jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = resultUrl; jobs[jobId].progress = 100;
                             completed = true;
                         }
