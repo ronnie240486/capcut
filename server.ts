@@ -1464,7 +1464,7 @@ async function startServer() {
             if (mappedModel.toLowerCase().includes('qwen')) {
                 mode = mappedModel.toLowerCase().includes('design') ? 'voice_design' : 'voice_clone';
             } else if (mappedModel === 'Chatterbox') {
-                mode = 'custom_voice'; // Chatterbox usa custom_voice mesmo para clonagem
+                mode = 'custom_voice';
             } else if (needsVoiceClone) {
                 mode = 'voice_clone';
             } else if (needsVoiceDesign) {
@@ -1543,7 +1543,6 @@ async function startServer() {
             for (const ep of ENDPOINTS) {
                 console.log(`[Deapi Audio] Attempting ${ep.url} | type=${resolvedType} model=${mappedModel}`);
                 try {
-                    console.log(`[Deapi Audio] Payload:`, JSON.stringify(req.body).substring(0, 500));
                     let fetchOptions: any;
 
                     if (ep.version === 'v2') {
@@ -1601,10 +1600,6 @@ async function startServer() {
                             form.append('speed', finalSpeed);
                             form.append('sample_rate', finalSampleRate);
                             
-                            if (resolvedType !== 'clone' && !needsVoiceClone) {
-                                form.append('voice', finalVoice);
-                            }
-                            
                             let finalMode = 'custom_voice';
                             if (mappedModel.toLowerCase().includes('qwen')) {
                                 finalMode = mappedModel.toLowerCase().includes('design') ? 'voice_design' : 'voice_clone';
@@ -1615,7 +1610,12 @@ async function startServer() {
                             } else if (selectedVoiceDescription || mappedModel.toLowerCase().includes('design')) {
                                 finalMode = 'voice_design';
                             }
-                            form.append('mode', finalMode); 
+                            form.append('mode', finalMode);
+
+                            // Remover parâmetro voice se for clone ou design para evitar conflitos (conforme playground Deapi)
+                            if (finalMode === 'custom_voice') {
+                                form.append('voice', finalVoice);
+                            }
 
                             const voiceDesc = selectedVoiceDescription || req.body.voice_description || req.body.voiceDescription || "";
                             if (voiceDesc) {
@@ -1661,7 +1661,7 @@ async function startServer() {
                     } else {
                         // v1 implementation (Multipart) - Required for ref_audio as file
                         const form = new FormData();
-                        form.append('text', prompt || req.body.text || "");
+                        form.append('text', prompt || req.body.text || '');
                         form.append('model', mappedModel);
                         
                         const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
@@ -1678,6 +1678,7 @@ async function startServer() {
                         }
 
                         form.append('lang', finalLang);
+                        
                         let finalMode = 'custom_voice';
                         if (mappedModel.toLowerCase().includes('qwen')) {
                             finalMode = mappedModel.toLowerCase().includes('design') ? 'voice_design' : 'voice_clone';
@@ -1689,6 +1690,12 @@ async function startServer() {
                             finalMode = 'voice_design';
                         }
                         form.append('mode', finalMode);
+
+                        // Remover parâmetro voice se for clone ou design para evitar conflitos (conforme playground Deapi)
+                        if (finalMode === 'custom_voice') {
+                            form.append('voice', finalVoice);
+                        }
+
                         const voiceDescV1 = selectedVoiceDescription || req.body.voice_description || req.body.voiceDescription || "";
                         if (voiceDescV1) {
                             form.append('voice_description', voiceDescV1);
@@ -1743,15 +1750,16 @@ async function startServer() {
                         const directUrl = result.output_file_url || result.url || result.audio_url || result.download_url || (result.output && result.output[0]);
                         
                         if (directUrl) {
-                            console.log(`[Job ${jobId}] Áudio recebido diretamente na resposta!`);
-                            jobs[jobId].status = 'completed';
-                            jobs[jobId].downloadUrl = directUrl;
-                            jobs[jobId].progress = 100;
-                        } else {
-                            handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                            console.log(`[Job ${jobId}] URL direta encontrada na resposta inicial.`);
+                            jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = directUrl; jobs[jobId].progress = 100;
+                            success = true;
+                            break;
                         }
                         
+                        await handleDeapiTask(jobId, data, deapiKey, baseUrl);
                         success = true;
+                        break;
+                    }             success = true;
                         break;
                     } else {
                         const text = await response.text();
