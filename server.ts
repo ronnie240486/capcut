@@ -1426,7 +1426,7 @@ async function startServer() {
                 { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
             ];
             
-            if (resolvedType !== 'clone') {
+            if (resolvedType !== 'clone' && resolvedType !== 'design') {
                 let deapiV2Path = '/api/v2/audio/speech';
                 if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
                 ENDPOINTS.push({ url: `${baseUrl}${deapiV2Path}`, version: 'v2' });
@@ -1633,6 +1633,43 @@ async function startServer() {
                             body: form
                         };
                     } else {
+                        // v1 implementation (Multipart) - Required for ref_audio as file else if (resolvedType === 'design' || req.body.type === 'design') {
+                        // Voice Design - JSON format
+                        const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
+                        const qwenLangMap: Record<string, string> = {
+                            'pt-br': 'Portuguese', 'portuguese': 'Portuguese', 'en-us': 'English', 'english': 'English',
+                            'es': 'Spanish', 'spanish': 'Spanish', 'fr-fr': 'French', 'french': 'French',
+                            'it': 'Italian', 'italian': 'Italian', 'ja': 'Japanese', 'japanese': 'Japanese',
+                            'ko': 'Korean', 'korean': 'Korean', 'ru': 'Russian', 'russian': 'Russian',
+                            'de': 'German', 'german': 'German'
+                        };
+                        const finalLang = qwenLangMap[normalizedLang] || 'Portuguese';
+                        
+                        const voiceDescription = req.body.voice_description || req.body.voiceDescription || '';
+                        
+                        const jsonPayload = {
+                            text: prompt || req.body.text || '',
+                            model: mappedModel,
+                            mode: 'voice_design',
+                            lang: finalLang,
+                            speed: req.body.speed || 1,
+                            format: req.body.format || 'mp3',
+                            sample_rate: req.body.sample_rate || 24000,
+                            voice_description: voiceDescription
+                        };
+                        
+                        console.log('[Deapi Audio] Voice Design JSON Payload:', jsonPayload);
+                        
+                        fetchOptions = {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${deapiKey}`,
+                                'Accept': 'application/json',
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(jsonPayload)
+                        };
+                    } else {
                         // v1 implementation (Multipart) - Required for ref_audio as file
                         const form = new FormData();
                         form.append('text', prompt || req.body.text || '');
@@ -1670,12 +1707,6 @@ async function startServer() {
                             }
                             const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
                             if (finalRefText) form.append('ref_text', finalRefText);
-                        } else if (resolvedType === 'design' || req.body.type === 'design') {
-                            const voiceDescription = req.body.voice_description || req.body.voiceDescription;
-                            if (voiceDescription) {
-                                form.append('voice_description', voiceDescription);
-                                console.log('[Deapi Audio] Voice Design Mode: Usando descricao de voz customizada');
-                            }
                         } else {
                             form.append('voice', req.body.voice || selectedVoice || defaultVoiceSlug || 'af_bella');
                         }
