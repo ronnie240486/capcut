@@ -1618,34 +1618,40 @@ async function startServer() {
                             body: form
                         };
                     } else {
-                        // v1 implementation (JSON) - EXACTLY AS PER CURL
-                        const v1Payload: any = {
-                            text: prompt || req.body.text || '',
-                            model: mappedModel,
-                            mode: mode,
-                            lang: finalLang,
-                            speed: Number(req.body.speed || 1),
-                            format: req.body.format || 'mp3',
-                            sample_rate: Number(req.body.sample_rate || 24000)
-                        };
+                        // v1 implementation (Multipart) - Required for ref_audio as file
+                        const form = new FormData();
+                        form.append('text', prompt || req.body.text || '');
+                        form.append('model', mappedModel);
+                        form.append('mode', finalMode);
+                        form.append('lang', finalLang);
+                        form.append('speed', String(req.body.speed || 1));
+                        form.append('format', req.body.format || 'mp3');
+                        form.append('sample_rate', String(req.body.sample_rate || 24000));
 
-                        // Se for clonagem, incluir áudio de referência e texto de referência
                         if (resolvedType === 'clone' || needsVoiceClone) {
-                            v1Payload.ref_audio = voiceBase64; // deAPI v1 aceita base64 no JSON
-                            v1Payload.ref_text = finalRefText;
+                            if (hasRefAudio) {
+                                try {
+                                    const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
+                                    const buffer = Buffer.from(base64Data, 'base64');
+                                    const blob = new Blob([buffer], { type: 'audio/mpeg' });
+                                    form.append('ref_audio', blob, 'ref.mp3');
+                                } catch (e) {
+                                    console.warn('[Deapi Audio] Failed to attach ref_audio file:', e);
+                                }
+                            }
+                            if (finalRefText) form.append('ref_text', finalRefText);
                         } else {
-                            if (selectedVoice) v1Payload.voice = selectedVoice;
-                            else if (defaultVoiceSlug) v1Payload.voice = defaultVoiceSlug;
+                            const finalVoice = req.body.voice || selectedVoice || defaultVoiceSlug || 'af_bella';
+                            form.append('voice', finalVoice);
                         }
 
                         fetchOptions = {
                             method: 'POST',
                             headers: {
-                                'Content-Type': 'application/json',
                                 'Authorization': `Bearer ${deapiKey}`,
                                 'Accept': 'application/json'
                             },
-                            body: JSON.stringify(v1Payload)
+                            body: form
                         };
                     }
 
