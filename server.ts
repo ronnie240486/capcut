@@ -2,7 +2,118 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import fs from 'fs';
-import path from 'path';
+import p
+import express from 'express';
+import cors from 'cors';
+import fetch from 'node-fetch';
+import FormData from 'form-data';
+import { getDeapiKey } from './lib/keys';
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+
+const jobs: Record<string, any> = {};
+
+app.post('/api/ai/generate-audio', async (req, res) => {
+    const jobId = `aiaudio_${Date.now()}`;
+    jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+    res.status(202).json({ jobId });
+
+    const { prompt, model, type, voiceBase64, apiKey, refText, ref_text } = req.body;
+    const deapiKey = apiKey || getDeapiKey(req);
+    const resolvedType = type || 'speech';
+    const mappedModel = (resolvedType === 'clone') ? 'Qwen3_TTS_12Hz_1_7B_Base' : (model || 'Kokoro');
+    const baseUrl = "https://api.deapi.ai";
+
+    try {
+        // Normalização de Idioma
+        const langMap: Record<string, string> = {
+            'pt-br': 'Portuguese', 'portuguese': 'Portuguese', 'en-us': 'English', 'english': 'English'
+        };
+        const normalizedLang = (req.body.lang || 'pt-br').toLowerCase();
+        const finalLang = langMap[normalizedLang] || 'Portuguese';
+        const finalRefText = ref_text || refText || "Welcome to deAPI.";
+
+        // Preparar Requisição (Multipart conforme exigido para arquivos)
+        const form = new FormData();
+        form.append('text', prompt || req.body.text || '');
+        form.append('model', mappedModel);
+        form.append('mode', 'voice_clone');
+        form.append('lang', finalLang);
+        
+        if (voiceBase64) {
+            const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
+            const buffer = Buffer.from(base64Data, 'base64');
+            form.append('ref_audio', buffer, { filename: 'ref.mp3', contentType: 'audio/mpeg' });
+        }
+        form.append('ref_text', finalRefText);
+
+        console.log(`[Deapi] Enviando para v1/client/txt2audio: ${mappedModel}`);
+        const response = await fetch(`${baseUrl}/api/v1/client/txt2audio`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${deapiKey}` },
+            body: form
+        });
+
+        if (response.ok) {
+            const data: any = await response.json();
+            const result = data.data || data;
+            const directUrl = result.url || result.audio_url || result.download_url;
+
+            if (directUrl) {
+                jobs[jobId].status = 'completed';
+                jobs[jobId].downloadUrl = directUrl;
+                jobs[jobId].progress = 100;
+            } else {
+                const taskId = result.request_id || result.id;
+                handlePolling(jobId, taskId, deapiKey, baseUrl);
+            }
+        } else {
+            const errText = await response.text();
+            throw new Error(`Deapi Error ${response.status}: ${errText}`);
+        }
+    } catch (e: any) {
+        console.error(`[Job ${jobId}] Error:`, e.message);
+        jobs[jobId].status = 'failed';
+        jobs[jobId].error = e.message;
+    }
+});
+
+async function handlePolling(jobId: string, taskId: string, deapiKey: string, baseUrl: string) {
+    let attempts = 0;
+    while (attempts < 30 && jobs[jobId]) {
+        attempts++;
+        await new Promise(r => setTimeout(r, 3000)); // Polling rápido (3s)
+        try {
+            const res = await fetch(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
+                headers: { 'Authorization': `Bearer ${deapiKey}` }
+            });
+            if (res.ok) {
+                const data: any = await res.json();
+                const task = data.data || data;
+                if (task.status === 'completed' || task.status === 'success') {
+                    jobs[jobId].status = 'completed';
+                    jobs[jobId].downloadUrl = task.url || task.audio_url || task.output_file_url;
+                    return;
+                }
+            } else if (res.status === 429) {
+                await new Promise(r => setTimeout(r, 5000)); // Espera extra se der 429
+            }
+        } catch (e) {}
+    }
+    if (jobs[jobId]) {
+        jobs[jobId].status = 'failed';
+        jobs[jobId].error = 'Timeout';
+    }
+}
+
+app.get('/api/process/status/:jobId', (req, res) => {
+    res.json(jobs[req.params.jobId] || { status: 'not_found' });
+});
+
+app.listen(3001, () => console.log('Server running on port 3001'));
+ath from 'path';
 import { spawn, exec, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import https from 'https';
