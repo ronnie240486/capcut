@@ -1405,12 +1405,12 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription, voice_description, refText, ref_text } = req.body;
+        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription, refText, ref_text } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
         const resolvedType = type || 'speech';
         const resolvedLang = text || targetLanguage || 'pt-br';
         const selectedVoice = voice || '';
-        const selectedVoiceDescription = voiceDescription || voice_description || '';
+        const selectedVoiceDescription = voiceDescription || '';
 
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
@@ -1426,7 +1426,7 @@ async function startServer() {
                 { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
             ];
             
-            if (resolvedType !== 'clone' && resolvedType !== 'design') {
+            if (resolvedType !== 'clone') {
                 let deapiV2Path = '/api/v2/audio/speech';
                 if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
                 ENDPOINTS.push({ url: `${baseUrl}${deapiV2Path}`, version: 'v2' });
@@ -1460,7 +1460,7 @@ async function startServer() {
             const needsVoiceDesign = (resolvedType === 'design' || selectedVoiceDescription.length > 0);
 
             let defaultVoiceSlug: string | undefined;
-            let mode: string = needsVoiceClone ? 'voice_clone' : (needsVoiceDesign ? 'voice_design' : 'custom_voice');
+            let mode: string = needsVoiceClone ? 'voice_clone' : (needsVoiceDesign ? 'voice_design' : (mappedModel.toLowerCase().includes('qwen') ? 'voice_clone' : 'custom_voice'));
 
             let availableModels: any[] = [];
             const cacheKey = `audio_${filterType}`;
@@ -1595,7 +1595,8 @@ async function startServer() {
                                 form.append('voice', finalVoice);
                             }
                             
-                            form.append('mode', mode); 
+                            const finalMode = (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : (selectedVoiceDescription ? 'voice_design' : (mappedModel.toLowerCase().includes('qwen') ? 'voice_clone' : 'custom_voice'));
+                            form.append('mode', finalMode); 
 
                             if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
                             
@@ -1631,42 +1632,6 @@ async function startServer() {
                             headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' },
                             body: form
                         };
-                    } else if (resolvedType === 'design' || req.body.type === 'design') {
-                        // Voice Design - JSON format
-                        const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
-                        const qwenLangMap: Record<string, string> = {
-                            'pt-br': 'Portuguese', 'portuguese': 'Portuguese', 'en-us': 'English', 'english': 'English',
-                            'es': 'Spanish', 'spanish': 'Spanish', 'fr-fr': 'French', 'french': 'French',
-                            'it': 'Italian', 'italian': 'Italian', 'ja': 'Japanese', 'japanese': 'Japanese',
-                            'ko': 'Korean', 'korean': 'Korean', 'ru': 'Russian', 'russian': 'Russian',
-                            'de': 'German', 'german': 'German'
-                        };
-                        const finalLang = qwenLangMap[normalizedLang] || 'Portuguese';
-                        
-                        const voiceDescription = req.body.voice_description || req.body.voiceDescription || '';
-                        
-                        const jsonPayload = {
-                            text: prompt || req.body.text || '',
-                            model: mappedModel,
-                            mode: 'voice_design',
-                            lang: finalLang,
-                            speed: req.body.speed || 1,
-                            format: req.body.format || 'mp3',
-                            sample_rate: req.body.sample_rate || 24000,
-                            voice_description: voiceDescription
-                        };
-                        
-                        console.log('[Deapi Audio] Voice Design JSON Payload:', jsonPayload);
-                        
-                        fetchOptions = {
-                            method: 'POST',
-                            headers: {
-                                'Authorization': `Bearer ${deapiKey}`,
-                                'Accept': 'application/json',
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify(jsonPayload)
-                        };
                     } else {
                         // v1 implementation (Multipart) - Required for ref_audio as file
                         const form = new FormData();
@@ -1687,7 +1652,10 @@ async function startServer() {
                         }
 
                         form.append('lang', finalLang);
-                        form.append('mode', mode);
+                        const finalMode = (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : (selectedVoiceDescription ? 'voice_design' : (mappedModel.toLowerCase().includes('qwen') ? 'voice_clone' : 'custom_voice'));
+                        form.append('mode', finalMode);
+                        if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
+                        
                         form.append('speed', String(req.body.speed || 1));
                         form.append('format', req.body.format || 'mp3');
                         form.append('sample_rate', String(req.body.sample_rate || 24000));
@@ -1705,11 +1673,14 @@ async function startServer() {
                             }
                             const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
                             if (finalRefText) form.append('ref_text', finalRefText);
+                        } else if (resolvedType === 'design' || req.body.type === 'design') {
+                            const voiceDescription = req.body.voice_description || req.body.voiceDescription;
+                            if (voiceDescription) {
+                                form.append('voice_description', voiceDescription);
+                                console.log('[Deapi Audio] Voice Design Mode: Usando descricao de voz customizada');
+                            }
                         } else {
                             form.append('voice', req.body.voice || selectedVoice || defaultVoiceSlug || 'af_bella');
-                            if (mode === 'voice_design' && selectedVoiceDescription) {
-                                form.append('voice_description', selectedVoiceDescription);
-                            }
                         }
 
                         fetchOptions = {
