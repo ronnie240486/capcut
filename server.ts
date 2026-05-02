@@ -1617,7 +1617,12 @@ async function startServer() {
                             }
                             form.append('mode', finalMode); 
 
-                            if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
+                            if (selectedVoiceDescription) {
+                                form.append('voice_description', selectedVoiceDescription);
+                                if (finalMode === 'voice_design') {
+                                    form.append('instruct', selectedVoiceDescription);
+                                }
+                            }
                             
                             const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
                             if (finalRefText) {
@@ -1682,7 +1687,12 @@ async function startServer() {
                             finalMode = 'voice_design';
                         }
                         form.append('mode', finalMode);
-                        if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
+                        if (selectedVoiceDescription) {
+                            form.append('voice_description', selectedVoiceDescription);
+                            if (finalMode === 'voice_design') {
+                                form.append('instruct', selectedVoiceDescription);
+                            }
+                        }
                         
                         form.append('speed', String(req.body.speed || 1));
                         form.append('format', req.body.format || 'mp3');
