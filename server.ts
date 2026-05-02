@@ -1756,10 +1756,11 @@ async function startServer() {
                             break;
                         }
                         
-                        await handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                        console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
+                        handleDeapiTask(jobId, data, deapiKey, baseUrl).catch(err => {
+                            console.error(`[Job ${jobId}] Erro no monitoramento em segundo plano:`, err);
+                        });
                         success = true;
-                        break;
-                    }             success = true;
                         break;
                     } else {
                         const text = await response.text();
@@ -1784,6 +1785,7 @@ async function startServer() {
 
     // Helper to handle Deapi task/job response
     const handleDeapiTask = async (jobId: string, data: any, deapiKey: string, baseUrl: string) => {
+        console.log(`[Job ${jobId}] handleDeapiTask chamado com dados:`, JSON.stringify(data));
         // Captura agressiva de ID ou URL direta
         const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id || data.data?.job_id;
         const directUrl = data.url || data.audio_url || data.data?.url || data.result_url || data.data?.result_url || data.data?.audio_url || (data.output && data.output[0]);
