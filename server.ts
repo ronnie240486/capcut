@@ -1565,7 +1565,35 @@ async function startServer() {
                                 'italian': 'it'
                             };
                             const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
-                            const finalLang = langMap[normalizedLang] || 'pt-br';
+                            let finalLang = langMap[normalizedLang] || 'pt-br';
+
+                            // CORREÇÃO PARA QWEN3: Este modelo exige o nome do idioma por extenso
+                            if (mappedModel.toLowerCase().includes('qwen')) {
+                                const qwenLangMap: Record<string, string> = {
+                                    'pt-br': 'Portuguese',
+                                    'portuguese': 'Portuguese',
+                                    'en-us': 'English',
+                                    'en-gb': 'English',
+                                    'english': 'English',
+                                    'es': 'Spanish',
+                                    'spanish': 'Spanish',
+                                    'fr-fr': 'French',
+                                    'french': 'French',
+                                    'it': 'Italian',
+                                    'italian': 'Italian',
+                                    'ja': 'Japanese',
+                                    'japanese': 'Japanese',
+                                    'ko': 'Korean',
+                                    'korean': 'Korean',
+                                    'ru': 'Russian',
+                                    'russian': 'Russian',
+                                    'de': 'German',
+                                    'german': 'German'
+                                };
+                                finalLang = qwenLangMap[normalizedLang] || qwenLangMap[finalLang] || 'Portuguese';
+                                console.log(`[Deapi Audio] Traduzindo idioma para Qwen3: ${normalizedLang} -> ${finalLang}`);
+                            }
+
                             const finalSpeed = String(req.body.speed || '1.0');
                             const finalSampleRate = String(req.body.sample_rate || '24000');
                             // Usar voz de melhor qualidade como fallback (af_bella é A- grade)
