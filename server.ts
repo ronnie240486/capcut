@@ -1617,11 +1617,13 @@ async function startServer() {
                             }
                             form.append('mode', finalMode); 
 
-                            if (selectedVoiceDescription) {
-                                form.append('voice_description', selectedVoiceDescription);
-                                if (finalMode === 'voice_design') {
-                                    form.append('instruct', selectedVoiceDescription);
-                                }
+                            const voiceDesc = selectedVoiceDescription || req.body.voice_description || req.body.voiceDescription || "";
+                            if (voiceDesc) {
+                                form.append('voice_description', voiceDesc);
+                            }
+                            // Forçar instruct se for modo design ou modelo design
+                            if (finalMode === 'voice_design' || mappedModel.toLowerCase().includes('design')) {
+                                form.append('instruct', voiceDesc || "A clear natural voice");
                             }
                             
                             const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
@@ -1687,11 +1689,13 @@ async function startServer() {
                             finalMode = 'voice_design';
                         }
                         form.append('mode', finalMode);
-                        if (selectedVoiceDescription) {
-                            form.append('voice_description', selectedVoiceDescription);
-                            if (finalMode === 'voice_design') {
-                                form.append('instruct', selectedVoiceDescription);
-                            }
+                        const voiceDescV1 = selectedVoiceDescription || req.body.voice_description || req.body.voiceDescription || "";
+                        if (voiceDescV1) {
+                            form.append('voice_description', voiceDescV1);
+                        }
+                        // Forçar instruct se for modo design ou modelo design
+                        if (finalMode === 'voice_design' || mappedModel.toLowerCase().includes('design')) {
+                            form.append('instruct', voiceDescV1 || "A clear natural voice");
                         }
                         
                         form.append('speed', String(req.body.speed || 1));
