@@ -1725,9 +1725,16 @@ async function startServer() {
         // Polling
         let completed = false;
         let attempts = 0;
-        while (!completed && attempts < 80 && jobs[jobId]) {
+        let rateLimitCount = 0;
+        
+        while (!completed && attempts < 100 && jobs[jobId]) {
             attempts++;
-            await new Promise(r => setTimeout(r, 4000));
+            
+            // Intervalo de polling mais lento (6 segundos) para evitar 429
+            const baseWait = 6000;
+            const backoff = rateLimitCount > 0 ? Math.min(baseWait * rateLimitCount, 30000) : baseWait;
+            await new Promise(r => setTimeout(r, backoff));
+            
             try {
                 // Try v2 polling first
                 let pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
@@ -1742,6 +1749,7 @@ async function startServer() {
                 }
 
                 if (pollRes.ok) {
+                    rateLimitCount = 0; // Reset rate limit count on success
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
                     const status = (result.status || "").toLowerCase();
@@ -1759,12 +1767,13 @@ async function startServer() {
                             jobs[jobId].progress = 100;
                         }
                         completed = true;
+                        console.log(`[Job ${jobId}] Concluído com sucesso!`);
                     } else if (status === 'failed' || status === 'error') {
                         throw new Error(result.error || result.message || 'Deapi processing failed');
                     }
                 } else if (pollRes.status === 429) {
-                    console.warn(`[Job ${jobId}] Deapi returned 429 (Rate Limit) during polling, backing off...`);
-                    await new Promise(r => setTimeout(r, 10000)); // Extra backoff
+                    rateLimitCount++;
+                    console.warn(`[Job ${jobId}] Deapi Rate Limit (429). Tentativa ${rateLimitCount}. Aplicando backoff...`);
                 }
             } catch (e) {
                 console.warn(`[Job ${jobId}] Polling attempt ${attempts} failed, continuing...`);
