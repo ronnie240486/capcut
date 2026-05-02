@@ -1670,6 +1670,12 @@ async function startServer() {
                             }
                             const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
                             if (finalRefText) form.append('ref_text', finalRefText);
+                        } else if (resolvedType === 'design' || req.body.type === 'design') {
+                            const voiceDescription = req.body.voice_description || req.body.voiceDescription;
+                            if (voiceDescription) {
+                                form.append('voice_description', voiceDescription);
+                                console.log('[Deapi Audio] Voice Design Mode: Usando descricao de voz customizada');
+                            }
                         } else {
                             form.append('voice', req.body.voice || selectedVoice || defaultVoiceSlug || 'af_bella');
                         }
