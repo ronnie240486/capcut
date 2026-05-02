@@ -1708,7 +1708,6 @@ async function startServer() {
 
     // Helper to handle Deapi task/job response
     const handleDeapiTask = async (jobId: string, data: any, deapiKey: string, baseUrl: string) => {
-        // Doc v2: data.request_id. Fallback para outros formatos comuns.
         const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id;
         
         if (!taskId) {
@@ -1722,66 +1721,70 @@ async function startServer() {
             throw new Error('Deapi não retornou request_id nem URL direta.');
         }
 
-        // Polling
+        console.log(`[Job ${jobId}] Iniciando polling para Task: ${taskId}`);
+
         let completed = false;
         let attempts = 0;
         let rateLimitCount = 0;
         
-        while (!completed && attempts < 100 && jobs[jobId]) {
+        // Espera inicial maior para clonagem (15 segundos)
+        await new Promise(r => setTimeout(r, 15000));
+
+        while (!completed && attempts < 60 && jobs[jobId]) {
             attempts++;
             
-            // Intervalo de polling mais lento (6 segundos) para evitar 429
-            const baseWait = 6000;
-            const backoff = rateLimitCount > 0 ? Math.min(baseWait * rateLimitCount, 30000) : baseWait;
-            await new Promise(r => setTimeout(r, backoff));
-            
             try {
-                // Try v2 polling first
+                // PRIORIDADE TOTAL AO ENDPOINT V2 PARA STATUS
                 let pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                 });
                 
-                // If v2 fails (404), try v1
-                if (!pollRes.ok && pollRes.status === 404) {
+                // Fallback para v1 apenas se v2 der 404 explicitamente
+                if (pollRes.status === 404) {
                     pollRes = await fetch(`${baseUrl}/api/v1/client/request-status/${taskId}`, {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     });
                 }
 
                 if (pollRes.ok) {
-                    rateLimitCount = 0; // Reset rate limit count on success
+                    rateLimitCount = 0;
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
                     const status = (result.status || "").toLowerCase();
-                    const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
-                    const resultText = result.result || result.data?.result;
+                    
+                    // Log de progresso silencioso
+                    if (attempts % 5 === 0) console.log(`[Job ${jobId}] Status atual: ${status}`);
 
                     if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
-                        if (resultText && !resultUrl) {
-                            jobs[jobId].status = 'completed';
-                            jobs[jobId].result = [resultText];
-                            jobs[jobId].progress = 100;
-                        } else {
+                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
+                        if (resultUrl) {
                             jobs[jobId].status = 'completed';
                             jobs[jobId].downloadUrl = resultUrl;
                             jobs[jobId].progress = 100;
+                            completed = true;
+                            console.log(`[Job ${jobId}] Clonagem concluída com sucesso!`);
                         }
-                        completed = true;
-                        console.log(`[Job ${jobId}] Concluído com sucesso!`);
                     } else if (status === 'failed' || status === 'error') {
                         throw new Error(result.error || result.message || 'Deapi processing failed');
                     }
                 } else if (pollRes.status === 429) {
                     rateLimitCount++;
-                    console.warn(`[Job ${jobId}] Deapi Rate Limit (429). Tentativa ${rateLimitCount}. Aplicando backoff...`);
+                    // Se der 429, espera 20 segundos antes de tentar de novo
+                    console.warn(`[Job ${jobId}] Rate Limit detectado. Aguardando 20s...`);
+                    await new Promise(r => setTimeout(r, 20000));
+                    continue;
                 }
             } catch (e) {
-                console.warn(`[Job ${jobId}] Polling attempt ${attempts} failed, continuing...`);
+                console.warn(`[Job ${jobId}] Erro no polling:`, e);
             }
+
+            // Intervalo normal de 10 segundos entre tentativas bem-sucedidas
+            if (!completed) await new Promise(r => setTimeout(r, 10000));
         }
+
         if (!completed && jobs[jobId]) {
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Timeout na geração Deapi.';
+            jobs[jobId].error = 'Timeout ou erro persistente na deAPI.';
         }
     };
 
