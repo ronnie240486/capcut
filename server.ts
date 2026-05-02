@@ -1659,7 +1659,7 @@ async function startServer() {
                     } else {
                         // v1 implementation (Multipart) - Required for ref_audio as file
                         const form = new FormData();
-                        form.append('text', prompt || req.body.text || '');
+                        form.append('text', prompt || req.body.text || "");
                         form.append('model', mappedModel);
                         
                         const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
