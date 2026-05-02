@@ -1534,10 +1534,11 @@ async function startServer() {
                     if (ep.version === 'v2') {
                         const form = new FormData();
                         // SFX v2 uses 'caption', Speech v2 uses 'text'
+                        // Qwen3 Base Clone especificamente usa 'text' conforme playground
                         if (resolvedType === 'sfx') {
                             form.append('caption', prompt || '');
                         } else {
-                            form.append('text', prompt || '');
+                            form.append('text', prompt || req.body.text || '');
                         }
                         
                         form.append('model', mappedModel);
@@ -1602,7 +1603,11 @@ async function startServer() {
                             form.append('lang', finalLang);
                             form.append('speed', finalSpeed);
                             form.append('sample_rate', finalSampleRate);
-                            form.append('voice', finalVoice);
+                            
+                            // Se for clonagem, NÃO enviar o campo 'voice', pois o modelo Qwen3 Base usa o ref_audio
+                            if (resolvedType !== 'clone' && !needsVoiceClone) {
+                                form.append('voice', finalVoice);
+                            }
                             
                             // Usar o modo resolvido (voice_clone, voice_design ou custom_voice)
                             const finalMode = (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : (selectedVoiceDescription ? 'voice_design' : 'custom_voice');
