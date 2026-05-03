@@ -1372,7 +1372,8 @@ async function startServer() {
                 ENDPOINTS.push({ url: `${baseUrl}${deapiV2Path}`, version: 'v2' });
             }
 
-            let mappedModel = model || '';
+            const MODEL_UI_MAP = { Qwen3_TTS_12Hz_1_7B_Clone: 'qwen3-tts-1.7b' };
+let mappedModel = MODEL_UI_MAP[model] || model || '';
             const LEGACY_ALIASES: Record<string, string> = {
                 'cloning': '',
                 'cloning-v1': '',
@@ -1422,6 +1423,8 @@ async function startServer() {
             try {
                 if (availableModels.length > 0) {
                     const slugs: string[] = availableModels.map((m: any) => m.slug);
+if (mappedModel && !slugs.includes(mappedModel)) { console.warn('[Deapi Audio] Modelo inválido:', mappedModel); mappedModel = ''; }
+if (!mappedModel || !slugs.includes(mappedModel)) { mappedModel = slugs[0]; }
                     console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
 
                     // ── MODEL CAPABILITY ROUTING (FIX) ────────────────────────────────
@@ -1802,6 +1805,8 @@ async function startServer() {
             try {
                 if (availableModels.length > 0) {
                     const slugs: string[] = availableModels.map((m: any) => m.slug);
+if (mappedModel && !slugs.includes(mappedModel)) { console.warn('[Deapi Audio] Modelo inválido:', mappedModel); mappedModel = ''; }
+if (!mappedModel || !slugs.includes(mappedModel)) { mappedModel = slugs[0]; }
                     console.log(`[Deapi Music] Available models: ${slugs.join(', ')}`);
                     if (!slugs.includes(mappedModel)) {
                         const fallback = slugs.find(s => s.toLowerCase().includes('ace')) || slugs[0];
