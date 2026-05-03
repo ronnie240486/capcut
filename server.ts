@@ -1756,7 +1756,8 @@ async function startServer() {
                             break;
                         }
                         
-                        console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
+                        const currentTaskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id || data.data?.job_id;
+                        console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${currentTaskId}`);
                         handleDeapiTask(jobId, data, deapiKey, baseUrl).catch(err => {
                             console.error(`[Job ${jobId}] Erro no monitoramento em segundo plano:`, err);
                         });
