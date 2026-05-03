@@ -1460,7 +1460,22 @@ async function startServer() {
             const needsVoiceDesign = (resolvedType === 'design' || selectedVoiceDescription.length > 0);
 
             let defaultVoiceSlug: string | undefined;
-            let mode: string = needsVoiceClone ? 'voice_clone' : (needsVoiceDesign ? 'voice_design' : 'custom_voice');
+            
+            // Unify mode calculation before the endpoint loop
+            let calculatedMode = 'custom_voice';
+            const modelLowerForMode = (model || '').toLowerCase();
+            
+            if (modelLowerForMode.includes('voicedesign') || modelLowerForMode.includes('design')) {
+                calculatedMode = 'voice_design';
+            } else if (modelLowerForMode.includes('qwen')) {
+                calculatedMode = 'voice_clone';
+            } else if (modelLowerForMode.includes('chatterbox')) {
+                calculatedMode = 'custom_voice';
+            } else if (resolvedType === 'clone' || needsVoiceClone) {
+                calculatedMode = 'voice_clone';
+            } else if (selectedVoiceDescription) {
+                calculatedMode = 'voice_design';
+            }
 
             let availableModels: any[] = [];
             const cacheKey = `audio_${filterType}`;
@@ -1567,27 +1582,11 @@ async function startServer() {
                             form.append('speed', finalSpeed);
                             form.append('sample_rate', finalSampleRate);
                             
-                            // Lógica de Modo Crítica - TRAVA DE SEGURANÇA REFORÇADA
-                            let finalMode = 'custom_voice';
-                            const modelLower = mappedModel.toLowerCase();
-                            
-                            if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
-                                finalMode = 'voice_design';
-                            } else if (modelLower.includes('qwen')) {
-                                finalMode = 'voice_clone';
-                            } else if (mappedModel.toLowerCase().includes('chatterbox')) {
-                                finalMode = 'custom_voice';
-                            } else if (resolvedType === 'clone' || needsVoiceClone) {
-                                finalMode = 'voice_clone';
-                            } else if (selectedVoiceDescription) {
-                                finalMode = 'voice_design';
-                            }
-                            
-                            console.log(`[Deapi Audio] Mapeamento Final: Modelo=${mappedModel}, Modo=${finalMode}`);
-                            form.append('mode', finalMode);
+                            console.log(`[Deapi Audio] Attempting Endpoint: Modelo=${mappedModel}, Modo=${calculatedMode}`);
+                            form.append('mode', calculatedMode);
 
                             // Evitar conflito de 'voice' em modos de criação/clonagem
-                            if (finalMode === 'custom_voice') {
+                            if (calculatedMode === 'custom_voice') {
                                 form.append('voice', finalVoice);
                             }
 
@@ -1596,7 +1595,7 @@ async function startServer() {
                             if (voiceDesc) {
                                 form.append('voice_description', voiceDesc);
                             }
-                            if (finalMode === 'voice_design' || modelLower.includes('design')) {
+                            if (calculatedMode === 'voice_design' || mappedModel.toLowerCase().includes('design')) {
                                 form.append('instruct', voiceDesc || "A clear natural voice");
                             }
                             
@@ -1652,10 +1651,17 @@ async function startServer() {
                         }
 
                         form.append('lang', finalLang);
-                        form.append('mode', mode);
+                        form.append('mode', calculatedMode);
                         form.append('speed', String(req.body.speed || 1));
                         form.append('format', req.body.format || 'mp3');
                         form.append('sample_rate', String(req.body.sample_rate || 24000));
+
+                        // Descrição e Instruct para Voice Design no v1
+                        if (calculatedMode === 'voice_design' || mappedModel.toLowerCase().includes('design')) {
+                            const vDesc = selectedVoiceDescription || req.body.voice_description || req.body.voiceDescription || "";
+                            if (vDesc) form.append('voice_description', vDesc);
+                            form.append('instruct', vDesc || "A clear natural voice");
+                        }
 
                         if (resolvedType === 'clone' || needsVoiceClone) {
                             if (hasRefAudio) {
