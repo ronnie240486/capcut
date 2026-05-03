@@ -1493,7 +1493,7 @@ async function startServer() {
                     if (voiceDesc) {
                         form.append('voice_description', voiceDesc);
                     }
-                    if (finalMode === 'voice_design' || mappedModel.toLowerCase().includes('design')) {
+                    if (finalMode === 'voice_design' || modelLower.includes('design')) {
                         form.append('instruct', voiceDesc || "A clear natural voice");
                     }
 
@@ -1714,6 +1714,7 @@ async function startServer() {
                         form.append('lyrics', lyrics || '[Instrumental]');
                         form.append('duration', String(resolvedDuration));
                         form.append('inference_steps', String(steps || 8));
+                        form.append('mode', 'custom_voice'); // Music v2 often requires a mode, default to custom_voice
                         form.append('guidance_scale', String(userGuidance || guidanceScale));
                         form.append('seed', String(seed || -1));
                         form.append('format', outputFormat || 'mp3');
