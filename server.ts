@@ -1805,9 +1805,10 @@ async function startServer() {
         let completed = false;
         let attempts = 0;
         let rateLimitCount = 0;
-        await new Promise(r => setTimeout(r, 3000));
+        // Espera inicial maior para dar tempo à Deapi
+        await new Promise(r => setTimeout(r, 10000));
 
-        while (!completed && attempts < 60 && jobs[jobId]) {
+        while (!completed && attempts < 100 && jobs[jobId]) {
             attempts++;
             console.log(`[Job ${jobId}] Tentativa de polling #${attempts} para taskId: ${taskId}`);
             try {
@@ -1852,10 +1853,12 @@ async function startServer() {
                 
                 if (pollRes.status === 429) {
                     rateLimitCount++;
-                    await new Promise(r => setTimeout(r, 10000));
+                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 20s...`);
+                    await new Promise(r => setTimeout(r, 20000));
                 }
             } catch (e) { console.warn(`[Job ${jobId}] Polling error:`, e); }
-            if (!completed) await new Promise(r => setTimeout(r, 5000));
+            // Intervalo normal de 10 segundos entre tentativas
+            await new Promise(r => setTimeout(r, 10000));
         }
         if (!completed && jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Timeout na deAPI.'; }
     };
