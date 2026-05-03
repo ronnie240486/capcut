@@ -1488,23 +1488,10 @@ async function startServer() {
                     const slugs: string[] = availableModels.map((m: any) => m.slug);
                     console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
 
-                        if (needsVoiceClone) {
-                            // Procurar modelo que suporta clonagem (Chatterbox e Qwen3 suportam)
-                            const cloneCapable = availableModels.find((m: any) =>
-                                m.slug === 'Chatterbox' ||
-                                m.slug.toLowerCase().includes('qwen') ||
-                                m.info?.features?.supports_voice_clone === true
-                            );
-                            if (cloneCapable) {
-                                mappedModel = cloneCapable.slug;
-                                mode = 'voice_clone';
-                                console.log(`[Deapi Audio] Usando modelo com suporte a clonagem: ${mappedModel}`);
-                            } else {
-                                console.log(`[Deapi Audio] Modelo selecionado para clonagem: ${mappedModel}`);
-                            }
-                        } else if (!slugs.includes(mappedModel)) {
+                        if (!slugs.includes(mappedModel)) {
                             mappedModel = slugs[0];
                         }
+                        console.log(`[Deapi Audio] Modelo final selecionado: ${mappedModel} (Clonagem: ${needsVoiceClone})`);
 
                         const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
                         const voices = modelInfo?.languages?.[0]?.voices;
