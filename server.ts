@@ -1460,16 +1460,7 @@ async function startServer() {
             const needsVoiceDesign = (resolvedType === 'design' || selectedVoiceDescription.length > 0);
 
             let defaultVoiceSlug: string | undefined;
-            let mode: string = 'custom_voice';
-            if (mappedModel.toLowerCase().includes('qwen')) {
-                mode = mappedModel.toLowerCase().includes('design') ? 'voice_design' : 'voice_clone';
-            } else if (mappedModel === 'Chatterbox') {
-                mode = 'custom_voice';
-            } else if (needsVoiceClone) {
-                mode = 'voice_clone';
-            } else if (needsVoiceDesign) {
-                mode = 'voice_design';
-            }
+            let mode: string = needsVoiceClone ? 'voice_clone' : (needsVoiceDesign ? 'voice_design' : (mappedModel.toLowerCase().includes('qwen') ? 'voice_clone' : 'custom_voice'));
 
             let availableModels: any[] = [];
             const cacheKey = `audio_${filterType}`;
@@ -1600,31 +1591,14 @@ async function startServer() {
                             form.append('speed', finalSpeed);
                             form.append('sample_rate', finalSampleRate);
                             
-                            let finalMode = 'custom_voice';
-                            if (mappedModel.toLowerCase().includes('qwen')) {
-                                finalMode = mappedModel.toLowerCase().includes('design') ? 'voice_design' : 'voice_clone';
-                            } else if (mappedModel === 'Chatterbox') {
-                                finalMode = 'custom_voice';
-                            } else if (resolvedType === 'clone' || needsVoiceClone) {
-                                finalMode = 'voice_clone';
-                            } else if (selectedVoiceDescription || mappedModel.toLowerCase().includes('design')) {
-                                finalMode = 'voice_design';
-                            }
-                            form.append('mode', finalMode);
-
-                            // Remover parâmetro voice se for clone ou design para evitar conflitos (conforme playground Deapi)
-                            if (finalMode === 'custom_voice') {
+                            if (resolvedType !== 'clone' && !needsVoiceClone) {
                                 form.append('voice', finalVoice);
                             }
+                            
+                            const finalMode = (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : (selectedVoiceDescription ? 'voice_design' : (mappedModel.toLowerCase().includes('qwen') ? 'voice_clone' : 'custom_voice'));
+                            form.append('mode', finalMode); 
 
-                            const voiceDesc = selectedVoiceDescription || req.body.voice_description || req.body.voiceDescription || "";
-                            if (voiceDesc) {
-                                form.append('voice_description', voiceDesc);
-                            }
-                            // Forçar instruct se for modo design ou modelo design
-                            if (finalMode === 'voice_design' || mappedModel.toLowerCase().includes('design')) {
-                                form.append('instruct', voiceDesc || "A clear natural voice");
-                            }
+                            if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
                             
                             const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
                             if (finalRefText) {
@@ -1678,59 +1652,28 @@ async function startServer() {
                         }
 
                         form.append('lang', finalLang);
-                        
-                        let finalMode = 'custom_voice';
-                        if (mappedModel.toLowerCase().includes('qwen')) {
-                            finalMode = mappedModel.toLowerCase().includes('design') ? 'voice_design' : 'voice_clone';
-                        } else if (mappedModel === 'Chatterbox') {
-                            finalMode = 'custom_voice';
-                        } else if (resolvedType === 'clone' || needsVoiceClone) {
-                            finalMode = 'voice_clone';
-                        } else if (selectedVoiceDescription || mappedModel.toLowerCase().includes('design')) {
-                            finalMode = 'voice_design';
-                        }
+                        const finalMode = (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : (selectedVoiceDescription ? 'voice_design' : (mappedModel.toLowerCase().includes('qwen') ? 'voice_clone' : 'custom_voice'));
                         form.append('mode', finalMode);
-
-                        // Remover parâmetro voice se for clone ou design para evitar conflitos (conforme playground Deapi)
-                        if (finalMode === 'custom_voice') {
-                            form.append('voice', finalVoice);
-                        }
-
-                        const voiceDescV1 = selectedVoiceDescription || req.body.voice_description || req.body.voiceDescription || "";
-                        if (voiceDescV1) {
-                            form.append('voice_description', voiceDescV1);
-                        }
-                        // Forçar instruct se for modo design ou modelo design
-                        if (finalMode === 'voice_design' || mappedModel.toLowerCase().includes('design')) {
-                            form.append('instruct', voiceDescV1 || "A clear natural voice");
-                        }
+                        if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
                         
                         form.append('speed', String(req.body.speed || 1));
                         form.append('format', req.body.format || 'mp3');
                         form.append('sample_rate', String(req.body.sample_rate || 24000));
+
                         if (resolvedType === 'clone' || needsVoiceClone) {
                             if (hasRefAudio) {
                                 try {
                                     const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
                                     const buffer = Buffer.from(base64Data, 'base64');
-                                    
-                                    // Log de tamanho para ajudar o usuário
-                                    console.log(`[Deapi Audio] Tamanho do áudio de referência: ${(buffer.length / 1024 / 1024).toFixed(2)}MB`);
-                                    if (buffer.length > 10 * 1024 * 1024) {
-                                        console.warn('[Deapi Audio] AVISO: Áudio maior que 10MB pode ser rejeitado.');
-                                    }
-
                                     const blob = new (await import('node:buffer')).Blob([buffer], { type: 'audio/mpeg' });
                                     form.append('ref_audio', blob, 'ref.mp3');
                                 } catch (e) {
                                     console.warn('[Deapi Audio] Failed to attach ref_audio file:', e);
                                 }
                             }
-                        }
-                        
-                        const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
-                        if (finalRefText) form.append('ref_text', finalRefText);
-                    } else if (resolvedType === 'design' || req.body.type === 'design') {
+                            const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
+                            if (finalRefText) form.append('ref_text', finalRefText);
+                        } else if (resolvedType === 'design' || req.body.type === 'design') {
                             const voiceDescription = req.body.voice_description || req.body.voiceDescription;
                             if (voiceDescription) {
                                 form.append('voice_description', voiceDescription);
@@ -1751,24 +1694,20 @@ async function startServer() {
 
                     if (response.ok) {
                         const data: any = await response.json();
-                        console.log(`[Deapi Audio] Success Response from ${ep.url}:`, JSON.stringify(data));
                         
                         // TENTAR CAPTURAR URL DIRETA (Para modelos rápidos como Qwen3 com pouco texto)
                         const result = data.data || data;
                         const directUrl = result.output_file_url || result.url || result.audio_url || result.download_url || (result.output && result.output[0]);
                         
                         if (directUrl) {
-                            console.log(`[Job ${jobId}] URL direta encontrada na resposta inicial.`);
-                            jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = directUrl; jobs[jobId].progress = 100;
-                            success = true;
-                            break;
+                            console.log(`[Job ${jobId}] Áudio recebido diretamente na resposta!`);
+                            jobs[jobId].status = 'completed';
+                            jobs[jobId].downloadUrl = directUrl;
+                            jobs[jobId].progress = 100;
+                        } else {
+                            handleDeapiTask(jobId, data, deapiKey, baseUrl);
                         }
                         
-                        const currentTaskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id || data.data?.job_id;
-                        console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${currentTaskId}`);
-                        handleDeapiTask(jobId, data, deapiKey, baseUrl).catch(err => {
-                            console.error(`[Job ${jobId}] Erro no monitoramento em segundo plano:`, err);
-                        });
                         success = true;
                         break;
                     } else {
@@ -1794,33 +1733,26 @@ async function startServer() {
 
     // Helper to handle Deapi task/job response
     const handleDeapiTask = async (jobId: string, data: any, deapiKey: string, baseUrl: string) => {
-        console.log(`[Job ${jobId}] handleDeapiTask chamado com dados:`, JSON.stringify(data));
-        // Captura agressiva de ID ou URL direta
-        const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id || data.data?.job_id;
-        const directUrl = data.url || data.audio_url || data.data?.url || data.result_url || data.data?.result_url || data.data?.audio_url || (data.output && data.output[0]);
+        const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id;
         
-        if (directUrl) {
-            console.log(`[Job ${jobId}] URL direta encontrada na resposta inicial.`);
-            jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = directUrl; jobs[jobId].progress = 100;
-            return;
-        }
-
         if (!taskId) {
-            console.error(`[Job ${jobId}] Resposta da Deapi sem ID:`, JSON.stringify(data));
+            const directUrl = data.url || data.audio_url || data.data?.url || data.result_url || data.data?.result_url;
+            if (directUrl) {
+                jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = directUrl; jobs[jobId].progress = 100;
+                return;
+            }
             throw new Error('Deapi não retornou request_id nem URL direta.');
         }
 
         let completed = false;
         let attempts = 0;
         let rateLimitCount = 0;
-        // Espera inicial de 30 segundos para evitar 429 imediato
-        await new Promise(r => setTimeout(r, 30000));
+        await new Promise(r => setTimeout(r, 3000));
 
         while (!completed && attempts < 60 && jobs[jobId]) {
             attempts++;
-            console.log(`[Job ${jobId}] Tentativa de polling #${attempts} para taskId: ${taskId}`);
             try {
-                // Inverter ordem: Tentar v1 task_status primeiro, depois v2 jobs, e por fim request-status
+                // Tentar primeiro o endpoint de status v1 que é mais comum para txt2audio
                 let pollRes = await fetch(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                 });
@@ -1830,43 +1762,27 @@ async function startServer() {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     });
                 }
-                
-                if (!pollRes.ok) {
-                    pollRes = await fetch(`${baseUrl}/api/v1/client/request-status/${taskId}`, {
-                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
-                    });
-                }
 
                 if (pollRes.ok) {
                     rateLimitCount = 0;
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
-                    const status = (result.status || result.state || result.task_status || "").toLowerCase();
-                    console.log(`[Job ${jobId}] Resposta de status recebida: ${status}`);
-                    console.log(`[Job ${jobId}] Dados completos:`, JSON.stringify(result));
-                    
-                    if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done' || status === 'finished') {
-                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url || result.data?.audio_url || (result.output && result.output[0]) || result.file_url;
+                    const status = (result.status || "").toLowerCase();
+                    if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
+                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
                         if (resultUrl) {
-                            console.log(`[Job ${jobId}] Áudio pronto! URL: ${resultUrl}`);
                             jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = resultUrl; jobs[jobId].progress = 100;
                             completed = true;
                         }
                     } else if (status === 'failed' || status === 'error') {
                         throw new Error(result.error || result.message || 'Deapi processing failed');
                     }
-                } else {
-                    console.warn(`[Job ${jobId}] Falha ao consultar status. HTTP ${pollRes.status}`);
-                }
-                
-                if (pollRes.status === 429) {
+                } else if (pollRes.status === 429) {
                     rateLimitCount++;
-                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 60s...`);
-                    await new Promise(r => setTimeout(r, 60000));
+                    await new Promise(r => setTimeout(r, 10000));
                 }
             } catch (e) { console.warn(`[Job ${jobId}] Polling error:`, e); }
-            // Intervalo normal de 20 segundos entre tentativas para respeitar a API
-            await new Promise(r => setTimeout(r, 20000));
+            if (!completed) await new Promise(r => setTimeout(r, 5000));
         }
         if (!completed && jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Timeout na deAPI.'; }
     };
