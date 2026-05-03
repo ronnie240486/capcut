@@ -1708,21 +1708,29 @@ async function startServer() {
                         form.append('speed', String(req.body.speed || 1));
                         form.append('format', req.body.format || 'mp3');
                         form.append('sample_rate', String(req.body.sample_rate || 24000));
-
                         if (resolvedType === 'clone' || needsVoiceClone) {
                             if (hasRefAudio) {
                                 try {
                                     const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
                                     const buffer = Buffer.from(base64Data, 'base64');
+                                    
+                                    // Log de tamanho para ajudar o usuário
+                                    console.log(`[Deapi Audio] Tamanho do áudio de referência: ${(buffer.length / 1024 / 1024).toFixed(2)}MB`);
+                                    if (buffer.length > 10 * 1024 * 1024) {
+                                        console.warn('[Deapi Audio] AVISO: Áudio maior que 10MB pode ser rejeitado.');
+                                    }
+
                                     const blob = new (await import('node:buffer')).Blob([buffer], { type: 'audio/mpeg' });
                                     form.append('ref_audio', blob, 'ref.mp3');
                                 } catch (e) {
                                     console.warn('[Deapi Audio] Failed to attach ref_audio file:', e);
                                 }
                             }
-                            const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
-                            if (finalRefText) form.append('ref_text', finalRefText);
-                        } else if (resolvedType === 'design' || req.body.type === 'design') {
+                        }
+                        
+                        const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
+                        if (finalRefText) form.append('ref_text', finalRefText);
+                    } else if (resolvedType === 'design' || req.body.type === 'design') {
                             const voiceDescription = req.body.voice_description || req.body.voiceDescription;
                             if (voiceDescription) {
                                 form.append('voice_description', voiceDescription);
@@ -1805,10 +1813,10 @@ async function startServer() {
         let completed = false;
         let attempts = 0;
         let rateLimitCount = 0;
-        // Espera inicial maior para dar tempo à Deapi
-        await new Promise(r => setTimeout(r, 10000));
+        // Espera inicial de 30 segundos para evitar 429 imediato
+        await new Promise(r => setTimeout(r, 30000));
 
-        while (!completed && attempts < 100 && jobs[jobId]) {
+        while (!completed && attempts < 60 && jobs[jobId]) {
             attempts++;
             console.log(`[Job ${jobId}] Tentativa de polling #${attempts} para taskId: ${taskId}`);
             try {
@@ -1853,12 +1861,12 @@ async function startServer() {
                 
                 if (pollRes.status === 429) {
                     rateLimitCount++;
-                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 30s...`);
-                    await new Promise(r => setTimeout(r, 30000));
+                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 60s...`);
+                    await new Promise(r => setTimeout(r, 60000));
                 }
             } catch (e) { console.warn(`[Job ${jobId}] Polling error:`, e); }
-            // Intervalo normal de 10 segundos entre tentativas
-            await new Promise(r => setTimeout(r, 10000));
+            // Intervalo normal de 20 segundos entre tentativas para respeitar a API
+            await new Promise(r => setTimeout(r, 20000));
         }
         if (!completed && jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Timeout na deAPI.'; }
     };
