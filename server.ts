@@ -1459,17 +1459,23 @@ async function startServer() {
                     }
                     form.append('lang', finalLang);
 
-                    // Lógica de Modo Crítica
+                    // Lógica de Modo Crítica - TRAVA DE SEGURANÇA REFORÇADA
                     let finalMode = 'custom_voice';
-                    if (mappedModel.toLowerCase().includes('qwen')) {
-                        finalMode = mappedModel.toLowerCase().includes('design') ? 'voice_design' : 'voice_clone';
+                    const modelLower = mappedModel.toLowerCase();
+                    
+                    if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
+                        finalMode = 'voice_design';
+                    } else if (modelLower.includes('qwen')) {
+                        finalMode = 'voice_clone';
                     } else if (mappedModel === 'Chatterbox') {
                         finalMode = 'custom_voice';
                     } else if (resolvedType === 'clone' || needsVoiceClone) {
                         finalMode = 'voice_clone';
-                    } else if (selectedVoiceDescription || mappedModel.toLowerCase().includes('design')) {
+                    } else if (selectedVoiceDescription) {
                         finalMode = 'voice_design';
                     }
+                    
+                    console.log(`[Deapi Audio] Mapeamento Final: Modelo=${mappedModel}, Modo=${finalMode}`);
                     form.append('mode', finalMode);
 
                     // Parâmetros Adicionais
@@ -2701,7 +2707,5 @@ async function startServer() {
         });
     }, 15 * 60 * 1000);
 }
-
-startServer();
 
 startServer();
