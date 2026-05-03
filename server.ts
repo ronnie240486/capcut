@@ -27,7 +27,7 @@ async function startServer() {
     app.use(cors({
         origin: '*',
         methods: ['GET', 'POST', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-gemini-api-key', 'x-deapi-api-key', 'x-epidemic-token', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
     }));
 
     app.use(express.json({ limit: '5gb' }));
@@ -1483,42 +1483,25 @@ async function startServer() {
                 }
             }
 
-            let modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
-
             try {
                 if (availableModels.length > 0) {
                     const slugs: string[] = availableModels.map((m: any) => m.slug);
                     console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
 
-                    // Se não tiver modelo selecionado ou o selecionado não existe, pega o primeiro
-                    if (!mappedModel || !slugs.includes(mappedModel)) {
-                        mappedModel = slugs[0];
-                    }
+                        if (!slugs.includes(mappedModel)) {
+                            mappedModel = slugs[0];
+                        }
+                        console.log(`[Deapi Audio] Modelo final selecionado: ${mappedModel} (Clonagem: ${needsVoiceClone})`);
 
-                    // Segurança para Clonagem: Se precisa de clonagem, buscar modelo compatível
-                    if (needsVoiceClone) {
-                        const cloneCapable = availableModels.find((m: any) => 
-                            m.slug === 'Chatterbox' || 
-                            m.slug.toLowerCase().includes('qwen') || 
-                            m.info?.features?.supports_voice_clone === true
-                        );
-                        if (cloneCapable) {
-                            mappedModel = cloneCapable.slug;
-                            console.log(`[Deapi Audio] Switched to cloning-capable model: ${mappedModel}`);
+                        const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
+                        const voices = modelInfo?.languages?.[0]?.voices;
+                        if (voices && voices.length > 0) {
+                            defaultVoiceSlug = voices[0].slug;
                         }
                     }
-
-                    console.log(`[Deapi Audio] Modelo final selecionado: ${mappedModel} (Clonagem: ${needsVoiceClone})`);
-
-                    modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
-                    const voices = modelInfo?.languages?.[0]?.voices;
-                    if (voices && voices.length > 0) {
-                        defaultVoiceSlug = voices[0].slug;
-                    }
+                } catch (e) {
+                    console.error("[Deapi Audio] Could not fetch model list:", e);
                 }
-            } catch (e) {
-                console.error("[Deapi Audio] Model resolution error:", e);
-            }
 
             let response: any;
             let success = false;
@@ -1587,18 +1570,16 @@ async function startServer() {
                             // Lógica de Modo Crítica - TRAVA DE SEGURANÇA REFORÇADA
                             let finalMode = 'custom_voice';
                             const modelLower = mappedModel.toLowerCase();
-                            const supportsClone = (modelLower.includes('qwen') && !modelLower.includes('base')) || modelLower.includes('chatterbox') || !!modelInfo?.info?.features?.supports_voice_clone;
-                            const supportsDesign = modelLower.includes('design') || !!modelInfo?.info?.features?.supports_voice_design;
-
-                            if ((modelLower.includes('voicedesign') || modelLower.includes('design')) && supportsDesign) {
+                            
+                            if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
                                 finalMode = 'voice_design';
-                            } else if (supportsClone && (needsVoiceClone || (modelLower.includes('qwen') && !modelLower.includes('base')))) {
+                            } else if (modelLower.includes('qwen')) {
                                 finalMode = 'voice_clone';
-                            } else if (modelLower.includes('chatterbox')) {
-                                finalMode = 'voice_clone'; // Chatterbox is primarily for cloning
-                            } else if (needsVoiceClone && supportsClone) {
+                            } else if (mappedModel.toLowerCase().includes('chatterbox')) {
+                                finalMode = 'custom_voice';
+                            } else if (resolvedType === 'clone' || needsVoiceClone) {
                                 finalMode = 'voice_clone';
-                            } else if (selectedVoiceDescription && supportsDesign) {
+                            } else if (selectedVoiceDescription) {
                                 finalMode = 'voice_design';
                             }
                             
@@ -1671,9 +1652,7 @@ async function startServer() {
                         }
 
                         form.append('lang', finalLang);
-                        const modelLower = mappedModel.toLowerCase();
-                        const isCloningModel = (modelLower.includes('qwen') && !modelLower.includes('base')) || modelLower.includes('chatterbox') || !!modelInfo?.info?.features?.supports_voice_clone;
-                        form.append('mode', (needsVoiceClone && isCloningModel) ? 'voice_clone' : 'custom_voice');
+                        form.append('mode', (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : 'custom_voice');
                         form.append('speed', String(req.body.speed || 1));
                         form.append('format', req.body.format || 'mp3');
                         form.append('sample_rate', String(req.body.sample_rate || 24000));
@@ -1683,7 +1662,7 @@ async function startServer() {
                                 try {
                                     const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
                                     const buffer = Buffer.from(base64Data, 'base64');
-                                    const blob = new Blob([buffer], { type: 'audio/mpeg' });
+                                    const blob = new (await import('node:buffer')).Blob([buffer], { type: 'audio/mpeg' });
                                     form.append('ref_audio', blob, 'ref.mp3');
                                 } catch (e) {
                                     console.warn('[Deapi Audio] Failed to attach ref_audio file:', e);
@@ -1761,8 +1740,8 @@ async function startServer() {
         
         console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
         
-        // Espera inicial de 5s para o Deapi registrar a tarefa
-        await new Promise(r => setTimeout(r, 5000));
+        // Espera inicial de 30s para evitar 429
+        await new Promise(r => setTimeout(r, 30000));
 
         while (!completed && attempts < 100 && jobs[jobId]) {
             attempts++;
@@ -1789,8 +1768,8 @@ async function startServer() {
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
                     const status = (result.status || "").toLowerCase();
-                    if (['completed', 'succeeded', 'success', 'done', 'finish', 'ready'].includes(status)) {
-                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url || result.data?.url;
+                    if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
+                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
                         if (resultUrl) {
                             jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = resultUrl; jobs[jobId].progress = 100;
                             completed = true;
@@ -2906,4 +2885,4 @@ async function startServer() {
     }, 15 * 60 * 1000);
 }
 
-startServer(););
+startServer();
