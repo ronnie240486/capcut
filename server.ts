@@ -1652,7 +1652,7 @@ async function startServer() {
                         }
 
                         form.append('lang', finalLang);
-                        form.append('mode', (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : 'custom_voice');
+                        form.append('mode', mode);
                         form.append('speed', String(req.body.speed || 1));
                         form.append('format', req.body.format || 'mp3');
                         form.append('sample_rate', String(req.body.sample_rate || 24000));
