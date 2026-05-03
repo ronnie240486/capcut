@@ -1421,135 +1421,313 @@ async function startServer() {
         try {
             const baseUrl = "https://api.deapi.ai";
 
+            // PRIORIDADE PARA O ENDPOINT V1 CONFORME SOLICITADO (CURL DO PLAYGROUND)
             const ENDPOINTS = [
-                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' },
-                { url: `${baseUrl}/api/v2/audio/speech`, version: 'v2' }
+                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
             ];
+            
+            if (resolvedType !== 'clone') {
+                let deapiV2Path = '/api/v2/audio/speech';
+                if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
+                ENDPOINTS.push({ url: `${baseUrl}${deapiV2Path}`, version: 'v2' });
+            }
 
-            let mappedModel = model || 'Kokoro';
+            // Resolve model slug dynamically — never hardcode
+            let mappedModel = model || '';
+            // Normalize legacy/internal aliases to real Deapi slugs.
+            const LEGACY_ALIASES: Record<string, string> = {
+                'cloning': '',        // resolved dynamically to a voice_clone capable model
+                'cloning-v1': '',     // same
+                'txt2audio': 'Kokoro',
+                'sfx': 'F5-TTS',      // Reasonable fallback if sfx-specific model not selected
+                'kokoro': 'Kokoro'    // normalize lowercase to canonical
+            };
+            if (mappedModel in LEGACY_ALIASES) {
+                mappedModel = LEGACY_ALIASES[mappedModel];
+            }
+            if (!mappedModel) {
+                if (resolvedType === 'sfx') mappedModel = 'F5-TTS';
+                else mappedModel = 'Kokoro';
+            }
+
+            // Fetch live model list — resolve model + capabilities + default voice
+            const filterType = resolvedType === 'sfx' ? 'txt2sfx' : 'txt2audio';
             const hasRefAudio = !!(voiceBase64 && voiceBase64.length > 10);
             const hasAudioFile = !!(audioFile && audioFile.length > 10);
             const hasAudioUrl  = !!(audioUrl  && typeof audioUrl === 'string' && audioUrl.startsWith('http'));
             const hasAnyRefAudio = hasRefAudio || hasAudioFile || hasAudioUrl;
             const needsVoiceClone = resolvedType === 'clone' && hasAnyRefAudio;
+            const needsVoiceDesign = (resolvedType === 'design' || selectedVoiceDescription.length > 0);
 
+            let defaultVoiceSlug: string | undefined;
+            let mode: string = needsVoiceClone ? 'voice_clone' : (needsVoiceDesign ? 'voice_design' : 'custom_voice');
+
+            let availableModels: any[] = [];
+            const cacheKey = `audio_${filterType}`;
+            const cached = deapiModelCache[cacheKey];
+
+            if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
+                availableModels = cached.data;
+            } else {
+                try {
+                    const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=${filterType}`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                    });
+                    if (mRes.ok) {
+                        const mData = await mRes.json();
+                        availableModels = mData.data || [];
+                        deapiModelCache[cacheKey] = { data: availableModels, timestamp: Date.now() };
+                    }
+                } catch (e) {
+                    console.error("[Deapi Audio] Could not fetch model list:", e);
+                }
+            }
+
+            try {
+                if (availableModels.length > 0) {
+                    const slugs: string[] = availableModels.map((m: any) => m.slug);
+                    console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
+
+                        if (needsVoiceClone) {
+                            // Procurar modelo que suporta clonagem (Chatterbox e Qwen3 suportam)
+                            const cloneCapable = availableModels.find((m: any) =>
+                                m.slug === 'Chatterbox' ||
+                                m.slug.toLowerCase().includes('qwen') ||
+                                m.info?.features?.supports_voice_clone === true
+                            );
+                            if (cloneCapable) {
+                                mappedModel = cloneCapable.slug;
+                                mode = 'voice_clone';
+                                console.log(`[Deapi Audio] Usando modelo com suporte a clonagem: ${mappedModel}`);
+                            } else {
+                                console.log(`[Deapi Audio] Modelo selecionado para clonagem: ${mappedModel}`);
+                            }
+                        } else if (!slugs.includes(mappedModel)) {
+                            mappedModel = slugs[0];
+                        }
+
+                        const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
+                        const voices = modelInfo?.languages?.[0]?.voices;
+                        if (voices && voices.length > 0) {
+                            defaultVoiceSlug = voices[0].slug;
+                        }
+                    }
+                } catch (e) {
+                    console.error("[Deapi Audio] Could not fetch model list:", e);
+                }
+
+            let response: any;
             let success = false;
             let lastError = "";
 
             for (const ep of ENDPOINTS) {
                 console.log(`[Deapi Audio] Attempting ${ep.url} | type=${resolvedType} model=${mappedModel}`);
                 try {
-                    const form = new FormData();
-                    const finalPrompt = prompt || req.body.text || '';
-                    form.append(ep.version === 'v2' && resolvedType === 'sfx' ? 'caption' : 'text', finalPrompt);
-                    form.append('model', mappedModel);
-                    
-                    // Normalização de Idioma
-                    const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
-                    let finalLang = normalizedLang;
-                    if (mappedModel.toLowerCase().includes('qwen')) {
-                        const qwenLangMap: Record<string, string> = {
-                            'pt-br': 'Portuguese', 'portuguese': 'Portuguese', 'en-us': 'English', 'english': 'English',
-                            'es': 'Spanish', 'spanish': 'Spanish', 'fr-fr': 'French', 'french': 'French',
-                            'it': 'Italian', 'italian': 'Italian', 'ja': 'Japanese', 'japanese': 'Japanese',
-                            'ko': 'Korean', 'korean': 'Korean', 'ru': 'Russian', 'russian': 'Russian',
-                            'de': 'German', 'german': 'German'
+                    let fetchOptions: any;
+
+                    if (ep.version === 'v2') {
+                        const form = new FormData();
+                        // SFX v2 uses 'caption', Speech v2 uses 'text'
+                        if (resolvedType === 'sfx') {
+                            form.append('caption', prompt || '');
+                        } else {
+                            form.append('text', prompt || '');
+                        }
+                        
+                        form.append('model', mappedModel);
+                        form.append('format', req.body.format || 'mp3');
+                        
+                        if (resolvedType === 'sfx') {
+                            form.append('duration', String(req.body.duration || 10));
+                        } else {
+                            // Garantir campos obrigatórios para evitar erro 422 no Deapi (especialmente Kokoro)
+                            // Normalizar idioma para valores aceitos pela deAPI
+                            const langMap: Record<string, string> = {
+                                'pt-br': 'pt-br',
+                                'portuguese': 'pt-br',
+                                'pt': 'pt-br',
+                                'en-us': 'en-us',
+                                'en-gb': 'en-gb',
+                                'english': 'en-us',
+                                'es': 'es',
+                                'spanish': 'es',
+                                'fr-fr': 'fr-fr',
+                                'french': 'fr-fr',
+                                'hi': 'hi',
+                                'hindi': 'hi',
+                                'it': 'it',
+                                'italian': 'it'
+                            };
+                            const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
+                            let finalLang = langMap[normalizedLang] || 'pt-br';
+
+                            if (mappedModel.toLowerCase().includes('qwen')) {
+                                const qwenLangMap: Record<string, string> = {
+                                    'pt-br': 'Portuguese', 'portuguese': 'Portuguese', 'en-us': 'English', 'english': 'English',
+                                    'es': 'Spanish', 'spanish': 'Spanish', 'fr-fr': 'French', 'french': 'French',
+                                    'it': 'Italian', 'italian': 'Italian', 'ja': 'Japanese', 'japanese': 'Japanese',
+                                    'ko': 'Korean', 'korean': 'Korean', 'ru': 'Russian', 'russian': 'Russian',
+                                    'de': 'German', 'german': 'German'
+                                };
+                                finalLang = qwenLangMap[normalizedLang] || qwenLangMap[finalLang] || 'Portuguese';
+                            }
+
+                            const finalSpeed = String(req.body.speed || '1.0');
+                            const finalSampleRate = String(req.body.sample_rate || '24000');
+                            const finalVoice = req.body.voice || selectedVoice || defaultVoiceSlug || 'af_bella';
+
+                            form.append('lang', finalLang);
+                            form.append('speed', finalSpeed);
+                            form.append('sample_rate', finalSampleRate);
+                            
+                            // Lógica de Modo Crítica - TRAVA DE SEGURANÇA REFORÇADA
+                            let finalMode = 'custom_voice';
+                            const modelLower = mappedModel.toLowerCase();
+                            
+                            if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
+                                finalMode = 'voice_design';
+                            } else if (modelLower.includes('qwen')) {
+                                finalMode = 'voice_clone';
+                            } else if (mappedModel.toLowerCase().includes('chatterbox')) {
+                                finalMode = 'custom_voice';
+                            } else if (resolvedType === 'clone' || needsVoiceClone) {
+                                finalMode = 'voice_clone';
+                            } else if (selectedVoiceDescription) {
+                                finalMode = 'voice_design';
+                            }
+                            
+                            console.log(`[Deapi Audio] Mapeamento Final: Modelo=${mappedModel}, Modo=${finalMode}`);
+                            form.append('mode', finalMode);
+
+                            // Evitar conflito de 'voice' em modos de criação/clonagem
+                            if (finalMode === 'custom_voice') {
+                                form.append('voice', finalVoice);
+                            }
+
+                            // Descrição e Instruct para Voice Design
+                            const voiceDesc = selectedVoiceDescription || req.body.voice_description || req.body.voiceDescription || "";
+                            if (voiceDesc) {
+                                form.append('voice_description', voiceDesc);
+                            }
+                            if (finalMode === 'voice_design' || modelLower.includes('design')) {
+                                form.append('instruct', voiceDesc || "A clear natural voice");
+                            }
+                            
+                            const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
+                            if (finalRefText) {
+                                form.append('ref_text', finalRefText);
+                            }
+                        }
+
+                        if (hasRefAudio && resolvedType !== 'sfx') {
+                            try {
+                                const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
+                                const buffer = Buffer.from(base64Data, 'base64');
+                                const blob = new Blob([buffer], { type: 'audio/mpeg' });
+                                form.append('ref_audio', blob, 'ref.mp3');
+                            } catch (blobErr) {
+                                console.warn('[Deapi Audio] Ref audio attach failed:', blobErr);
+                            }
+                        }
+
+                        if (hasAudioFile && resolvedType === 'dubbing') {
+                             try {
+                                const base64Data = audioFile.replace(/^data:[^;]+;base64,/, '');
+                                const buffer = Buffer.from(base64Data, 'base64');
+                                const blob = new Blob([buffer], { type: 'audio/mpeg' });
+                                form.append('audio_file', blob, 'dub.mp3');
+                            } catch (blobErr) {
+                                console.warn('[Deapi Audio] Dub file attach failed:', blobErr);
+                            }
+                        }
+                        fetchOptions = {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' },
+                            body: form
                         };
-                        finalLang = qwenLangMap[normalizedLang] || 'Portuguese';
-                    }
-                    form.append('lang', finalLang);
+                    } else {
+                        // v1 implementation (Multipart) - Required for ref_audio as file
+                        const form = new FormData();
+                        form.append('text', prompt || req.body.text || '');
+                        form.append('model', mappedModel);
+                        
+                        const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
+                        let finalLang = normalizedLang;
+                        if (mappedModel.toLowerCase().includes('qwen')) {
+                            const qwenLangMap: Record<string, string> = {
+                                'pt-br': 'Portuguese', 'portuguese': 'Portuguese', 'en-us': 'English', 'english': 'English',
+                                'es': 'Spanish', 'spanish': 'Spanish', 'fr-fr': 'French', 'french': 'French',
+                                'it': 'Italian', 'italian': 'Italian', 'ja': 'Japanese', 'japanese': 'Japanese',
+                                'ko': 'Korean', 'korean': 'Korean', 'ru': 'Russian', 'russian': 'Russian',
+                                'de': 'German', 'german': 'German'
+                            };
+                            finalLang = qwenLangMap[normalizedLang] || 'Portuguese';
+                        }
 
-                    // Lógica de Modo Crítica - TRAVA DE SEGURANÇA REFORÇADA
-                    let finalMode = 'custom_voice';
-                    const modelLower = mappedModel.toLowerCase();
-                    
-                    if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
-                        finalMode = 'voice_design';
-                    } else if (modelLower.includes('qwen')) {
-                        finalMode = 'voice_clone';
-                    } else if (mappedModel === 'Chatterbox') {
-                        finalMode = 'custom_voice';
-                    } else if (resolvedType === 'clone' || needsVoiceClone) {
-                        finalMode = 'voice_clone';
-                    } else if (selectedVoiceDescription) {
-                        finalMode = 'voice_design';
-                    }
-                    
-                    console.log(`[Deapi Audio] Mapeamento Final: Modelo=${mappedModel}, Modo=${finalMode}`);
-                    form.append('mode', finalMode);
+                        form.append('lang', finalLang);
+                        form.append('mode', (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : 'custom_voice');
+                        form.append('speed', String(req.body.speed || 1));
+                        form.append('format', req.body.format || 'mp3');
+                        form.append('sample_rate', String(req.body.sample_rate || 24000));
 
-                    // Parâmetros Adicionais
-                    form.append('speed', String(req.body.speed || 1));
-                    form.append('sample_rate', String(req.body.sample_rate || 24000));
-                    form.append('format', req.body.format || 'mp3');
+                        if (resolvedType === 'clone' || needsVoiceClone) {
+                            if (hasRefAudio) {
+                                try {
+                                    const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
+                                    const buffer = Buffer.from(base64Data, 'base64');
+                                    const blob = new (await import('node:buffer')).Blob([buffer], { type: 'audio/mpeg' });
+                                    form.append('ref_audio', blob, 'ref.mp3');
+                                } catch (e) {
+                                    console.warn('[Deapi Audio] Failed to attach ref_audio file:', e);
+                                }
+                            }
+                            const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
+                            if (finalRefText) form.append('ref_text', finalRefText);
+                        } else {
+                            form.append('voice', req.body.voice || selectedVoice || defaultVoiceSlug || 'af_bella');
+                        }
 
-                    // Evitar conflito de 'voice' em modos de criação/clonagem
-                    if (finalMode === 'custom_voice') {
-                        form.append('voice', req.body.voice || selectedVoice || 'af_bella');
-                    }
-
-                    // Descrição e Instruct para Voice Design
-                    const voiceDesc = selectedVoiceDescription || req.body.voice_description || req.body.voiceDescription || "";
-                    if (voiceDesc) {
-                        form.append('voice_description', voiceDesc);
-                    }
-                    if (finalMode === 'voice_design' || modelLower.includes('design')) {
-                        form.append('instruct', voiceDesc || "A clear natural voice");
-                    }
-
-                    // Áudio de Referência para Clonagem
-                    if (hasRefAudio && (finalMode === 'voice_clone' || finalMode === 'custom_voice')) {
-                        try {
-                            const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
-                            const buffer = Buffer.from(base64Data, 'base64');
-                            console.log(`[Deapi Audio] Ref Audio Size: ${(buffer.length / 1024 / 1024).toFixed(2)}MB`);
-                            const blob = new Blob([buffer], { type: 'audio/mpeg' });
-                            form.append('ref_audio', blob, 'ref.mp3');
-                        } catch (e) { console.warn('[Deapi Audio] Ref audio attach failed:', e); }
+                        fetchOptions = {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${deapiKey}` },
+                            body: form
+                        };
                     }
 
-                    const fetchOptions = {
-                        method: 'POST',
-                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' },
-                        body: form
-                    };
+                    response = await fetch(ep.url, fetchOptions);
 
-                    const response = await fetch(ep.url, fetchOptions);
                     if (response.ok) {
                         const data: any = await response.json();
-                        const currentTaskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.job_id;
                         
-                        console.log(`[Job ${jobId}] Sucesso! Iniciando monitoramento: ${currentTaskId}`);
-                        
-                        // Tentar capturar URL direta se disponível
+                        // TENTAR CAPTURAR URL DIRETA (Para modelos rápidos como Qwen3 com pouco texto)
                         const result = data.data || data;
-                        const directUrl = result.output_file_url || result.url || result.audio_url || result.download_url;
+                        const directUrl = result.output_file_url || result.url || result.audio_url || result.download_url || (result.output && result.output[0]);
                         
                         if (directUrl) {
+                            console.log(`[Job ${jobId}] Áudio recebido diretamente na resposta!`);
                             jobs[jobId].status = 'completed';
                             jobs[jobId].downloadUrl = directUrl;
                             jobs[jobId].progress = 100;
                         } else {
-                            // Monitoramento em segundo plano desacoplado
-                            handleDeapiTask(jobId, data, deapiKey, baseUrl).catch(err => {
-                                console.error(`[Job ${jobId}] Erro no monitoramento:`, err);
-                            });
+                            handleDeapiTask(jobId, data, deapiKey, baseUrl);
                         }
                         
                         success = true;
                         break;
                     } else {
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text}`;
+                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
                         console.warn(`[Deapi Audio] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
                     lastError = e.message;
-                    console.warn(`[Deapi Audio] Error on ${ep.url}: ${e.message}`);
+                    console.warn(`[Deapi Audio] Fetch error on ${ep.url}: ${e.message}`);
                 }
             }
 
-            if (!success) throw new Error(lastError);
+            if (!success) {
+                throw new Error(`Deapi Audio falhou em todos os endpoints tentados. Último erro: ${lastError}`);
+            }
 
         } catch (e: any) {
             console.error(`[Job ${jobId}] Deapi Audio Error:`, e);
@@ -1557,21 +1735,32 @@ async function startServer() {
         }
     });
 
+    // Helper to handle Deapi task/job response
     const handleDeapiTask = async (jobId: string, data: any, deapiKey: string, baseUrl: string) => {
-        const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.job_id;
-        if (!taskId) return;
+        const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id;
+        
+        if (!taskId) {
+            const directUrl = data.url || data.audio_url || data.data?.url || data.result_url || data.data?.result_url;
+            if (directUrl) {
+                jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = directUrl; jobs[jobId].progress = 100;
+                return;
+            }
+            throw new Error('Deapi não retornou request_id nem URL direta.');
+        }
 
         let completed = false;
         let attempts = 0;
         
+        console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
+        
         // Espera inicial de 30s para evitar 429
         await new Promise(r => setTimeout(r, 30000));
 
-        while (!completed && attempts < 60 && jobs[jobId]) {
+        while (!completed && attempts < 100 && jobs[jobId]) {
             attempts++;
-            console.log(`[Job ${jobId}] Polling #${attempts} para taskId: ${taskId}`);
+            console.log(`[Job ${jobId}] Tentativa de polling #${attempts} para taskId: ${taskId}`);
             try {
-                // Tentar v1 task_status primeiro (mais estável para áudio)
+                // Tentar primeiro o endpoint de status v1 que é mais comum para txt2audio
                 let pollRes = await fetch(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                 });
@@ -1581,14 +1770,19 @@ async function startServer() {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     });
                 }
+                
+                if (pollRes.status === 429) {
+                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 60s...`);
+                    await new Promise(r => setTimeout(r, 60000));
+                    continue;
+                }
 
                 if (pollRes.ok) {
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
-                    const status = (result.status || result.state || result.task_status || "").toLowerCase();
-                    
-                    if (['completed', 'succeeded', 'success', 'done', 'finished'].includes(status)) {
-                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.file_url;
+                    const status = (result.status || "").toLowerCase();
+                    if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
+                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
                         if (resultUrl) {
                             jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = resultUrl; jobs[jobId].progress = 100;
                             completed = true;
@@ -1596,12 +1790,8 @@ async function startServer() {
                     } else if (status === 'failed' || status === 'error') {
                         throw new Error(result.error || result.message || 'Deapi processing failed');
                     }
-                } else if (pollRes.status === 429) {
-                    console.warn(`[Job ${jobId}] Rate limit (429). Aguardando 60s...`);
-                    await new Promise(r => setTimeout(r, 60000));
                 }
             } catch (e) { console.warn(`[Job ${jobId}] Polling error:`, e); }
-            
             if (!completed) await new Promise(r => setTimeout(r, 20000));
         }
         if (!completed && jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Timeout na deAPI.'; }
@@ -1714,7 +1904,6 @@ async function startServer() {
                         form.append('lyrics', lyrics || '[Instrumental]');
                         form.append('duration', String(resolvedDuration));
                         form.append('inference_steps', String(steps || 8));
-                        form.append('mode', 'custom_voice'); // Music v2 often requires a mode, default to custom_voice
                         form.append('guidance_scale', String(userGuidance || guidanceScale));
                         form.append('seed', String(seed || -1));
                         form.append('format', outputFormat || 'mp3');
