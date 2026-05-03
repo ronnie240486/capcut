@@ -1809,6 +1809,7 @@ async function startServer() {
 
         while (!completed && attempts < 60 && jobs[jobId]) {
             attempts++;
+            console.log(`[Job ${jobId}] Tentativa de polling #${attempts} para taskId: ${taskId}`);
             try {
                 // Tentar múltiplos endpoints de status para garantir compatibilidade
                 let pollRes = await fetch(`${baseUrl}/api/v1/client/request-status/${taskId}`, {
@@ -1832,7 +1833,8 @@ async function startServer() {
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
                     const status = (result.status || result.state || result.task_status || "").toLowerCase();
-                    console.log(`[Job ${jobId}] Polling status: ${status}`, JSON.stringify(result));
+                    console.log(`[Job ${jobId}] Resposta de status recebida: ${status}`);
+                    console.log(`[Job ${jobId}] Dados completos:`, JSON.stringify(result));
                     
                     if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done' || status === 'finished') {
                         const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url || result.data?.audio_url || (result.output && result.output[0]) || result.file_url;
@@ -1844,7 +1846,11 @@ async function startServer() {
                     } else if (status === 'failed' || status === 'error') {
                         throw new Error(result.error || result.message || 'Deapi processing failed');
                     }
-                } else if (pollRes.status === 429) {
+                } else {
+                    console.warn(`[Job ${jobId}] Falha ao consultar status. HTTP ${pollRes.status}`);
+                }
+                
+                if (pollRes.status === 429) {
                     rateLimitCount++;
                     await new Promise(r => setTimeout(r, 10000));
                 }
