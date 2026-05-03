@@ -1812,19 +1812,19 @@ async function startServer() {
             attempts++;
             console.log(`[Job ${jobId}] Tentativa de polling #${attempts} para taskId: ${taskId}`);
             try {
-                // Tentar múltiplos endpoints de status para garantir compatibilidade
-                let pollRes = await fetch(`${baseUrl}/api/v1/client/request-status/${taskId}`, {
+                // Inverter ordem: Tentar v1 task_status primeiro, depois v2 jobs, e por fim request-status
+                let pollRes = await fetch(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                 });
                 
                 if (!pollRes.ok) {
-                    pollRes = await fetch(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
+                    pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     });
                 }
                 
                 if (!pollRes.ok) {
-                    pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
+                    pollRes = await fetch(`${baseUrl}/api/v1/client/request-status/${taskId}`, {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     });
                 }
@@ -1853,8 +1853,8 @@ async function startServer() {
                 
                 if (pollRes.status === 429) {
                     rateLimitCount++;
-                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 20s...`);
-                    await new Promise(r => setTimeout(r, 20000));
+                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 30s...`);
+                    await new Promise(r => setTimeout(r, 30000));
                 }
             } catch (e) { console.warn(`[Job ${jobId}] Polling error:`, e); }
             // Intervalo normal de 10 segundos entre tentativas
