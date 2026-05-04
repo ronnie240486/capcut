@@ -20,6 +20,8 @@ import voiceAutomation from './video-engine/voice-automation.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const MODEL_UI_MAP = { Qwen3_TTS_12Hz_1_7B_Clone: 'qwen3-tts-1.7b' };
+
 const app = express();
 const PORT = 3000;
 
@@ -1372,8 +1374,7 @@ async function startServer() {
                 ENDPOINTS.push({ url: `${baseUrl}${deapiV2Path}`, version: 'v2' });
             }
 
-            const MODEL_UI_MAP = { Qwen3_TTS_12Hz_1_7B_Clone: 'qwen3-tts-1.7b' };
-let mappedModel = MODEL_UI_MAP[model] || model || '';
+            let mappedModel = MODEL_UI_MAP[model] || model || '';
             const LEGACY_ALIASES: Record<string, string> = {
                 'cloning': '',
                 'cloning-v1': '',
@@ -1423,51 +1424,44 @@ let mappedModel = MODEL_UI_MAP[model] || model || '';
             try {
                 if (availableModels.length > 0) {
                     const slugs: string[] = availableModels.map((m: any) => m.slug);
-if (mappedModel && !slugs.includes(mappedModel)) { console.warn('[Deapi Audio] Modelo inválido:', mappedModel); mappedModel = ''; }
-if (!mappedModel || !slugs.includes(mappedModel)) { mappedModel = slugs[0]; }
                     console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
 
                     // ── MODEL CAPABILITY ROUTING (FIX) ────────────────────────────────
                     // Not all models support all modes. Route to a capable model instead
                     // of blindly using the first one, which causes 422 errors.
                     // e.g. Kokoro does NOT support voice_clone mode.
-                    const CLONE_CAPABLE_KEYWORDS  = ['qwen3', 'chatterbox', 'f5', 'clone'];
-                    const DESIGN_CAPABLE_KEYWORDS  = ['voicedesign', 'design', 'qwen3'];
+                    const slugs: string[] = availableModels.map((m: any) => m.slug);
 
-                    if (needsVoiceClone) {
-                        const currentSupportsClone = CLONE_CAPABLE_KEYWORDS.some(k =>
-                            mappedModel.toLowerCase().includes(k)
-                        );
-                        if (!currentSupportsClone) {
-                            const cloneModel = slugs.find(s =>
-                                CLONE_CAPABLE_KEYWORDS.some(k => s.toLowerCase().includes(k))
-                            );
-                            if (cloneModel) {
-                                console.log(`[Deapi Audio] Switching to clone-capable model: ${cloneModel} (was: ${mappedModel})`);
-                                mappedModel = cloneModel;
-                            } else {
-                                console.warn(`[Deapi Audio] No clone-capable model found among: ${slugs.join(', ')} — voice_clone will likely fail.`);
-                            }
-                        }
-                    } else if (needsVoiceDesign) {
-                        const currentSupportsDesign = DESIGN_CAPABLE_KEYWORDS.some(k =>
-                            mappedModel.toLowerCase().includes(k)
-                        );
-                        if (!currentSupportsDesign) {
-                            const designModel = slugs.find(s =>
-                                DESIGN_CAPABLE_KEYWORDS.some(k => s.toLowerCase().includes(k))
-                            );
-                            if (designModel) {
-                                console.log(`[Deapi Audio] Switching to voice-design-capable model: ${designModel} (was: ${mappedModel})`);
-                                mappedModel = designModel;
-                            }
-                        }
-                    } else if (!slugs.includes(mappedModel)) {
-                        mappedModel = slugs[0];
-                    }
-                    // ── END MODEL CAPABILITY ROUTING ──────────────────────────────────
+if (mappedModel && !slugs.includes(mappedModel)) {
+    console.warn('[Deapi Audio] Modelo inválido:', mappedModel);
+    mappedModel = '';
+}
 
-                    console.log(`[Deapi Audio] Modelo final selecionado: ${mappedModel} (Clonagem: ${needsVoiceClone})`);
+const CLONE_MODELS = slugs.filter(s =>
+    s.toLowerCase().includes('qwen')
+);
+
+const DESIGN_MODELS = slugs.filter(s =>
+    s.toLowerCase().includes('design')
+);
+
+if (needsVoiceClone) {
+    if (CLONE_MODELS.length > 0) {
+        mappedModel = CLONE_MODELS[0];
+    } else {
+        throw new Error('Nenhum modelo suporta voice_clone');
+    }
+} else if (needsVoiceDesign) {
+    if (DESIGN_MODELS.length > 0) {
+        mappedModel = DESIGN_MODELS[0];
+    }
+} else {
+    if (!mappedModel || !slugs.includes(mappedModel)) {
+        mappedModel = slugs[0];
+    }
+}
+
+console.log(`[Deapi Audio] Modelo FINAL selecionado: ${mappedModel}`);
 
                     const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
                     const voices = modelInfo?.languages?.[0]?.voices;
@@ -1545,7 +1539,7 @@ if (!mappedModel || !slugs.includes(mappedModel)) { mappedModel = slugs[0]; }
                             
                             if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
                                 finalMode = 'voice_design';
-                            } else if (modelLower.includes('qwen') || modelLower.includes('chatterbox') || modelLower.includes('f5')) {
+                            } else if (modelLower.includes('qwen') || modelLower.includes('f5')) {
                                 // These models support voice_clone — use it if requested
                                 finalMode = needsVoiceClone ? 'voice_clone' : 'custom_voice';
                             } else if (resolvedType === 'clone' || needsVoiceClone) {
@@ -1805,8 +1799,6 @@ if (!mappedModel || !slugs.includes(mappedModel)) { mappedModel = slugs[0]; }
             try {
                 if (availableModels.length > 0) {
                     const slugs: string[] = availableModels.map((m: any) => m.slug);
-if (mappedModel && !slugs.includes(mappedModel)) { console.warn('[Deapi Audio] Modelo inválido:', mappedModel); mappedModel = ''; }
-if (!mappedModel || !slugs.includes(mappedModel)) { mappedModel = slugs[0]; }
                     console.log(`[Deapi Music] Available models: ${slugs.join(', ')}`);
                     if (!slugs.includes(mappedModel)) {
                         const fallback = slugs.find(s => s.toLowerCase().includes('ace')) || slugs[0];
