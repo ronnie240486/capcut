@@ -1423,45 +1423,18 @@ async function startServer() {
 
             try {
                 if (availableModels.length > 0) {
-                    const slugs: string[] = availableModels.map((m: any) => m.slug);
-                    console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
+                    console.log("MODELOS COMPLETOS:", JSON.stringify(availableModels, null, 2));
 
-                    // ── MODEL CAPABILITY ROUTING (FIX) ────────────────────────────────
-                    // Not all models support all modes. Route to a capable model instead
-                    // of blindly using the first one, which causes 422 errors.
-                    // e.g. Kokoro does NOT support voice_clone mode.
-                    const slugs: string[] = availableModels.map((m: any) => m.slug);
+                    const slugs = availableModels.map(m => m.slug);
 
-if (mappedModel && !slugs.includes(mappedModel)) {
-    console.warn('[Deapi Audio] Modelo inválido:', mappedModel);
-    mappedModel = '';
-}
+                    if (mappedModel && !slugs.includes(mappedModel)) {
+                      console.warn("Modelo inválido:", mappedModel);
+                      mappedModel = '';
+                    }
 
-const CLONE_MODELS = slugs.filter(s =>
-    s.toLowerCase().includes('qwen')
-);
-
-const DESIGN_MODELS = slugs.filter(s =>
-    s.toLowerCase().includes('design')
-);
-
-if (needsVoiceClone) {
-    if (CLONE_MODELS.length > 0) {
-        mappedModel = CLONE_MODELS[0];
-    } else {
-        throw new Error('Nenhum modelo suporta voice_clone');
-    }
-} else if (needsVoiceDesign) {
-    if (DESIGN_MODELS.length > 0) {
-        mappedModel = DESIGN_MODELS[0];
-    }
-} else {
-    if (!mappedModel || !slugs.includes(mappedModel)) {
-        mappedModel = slugs[0];
-    }
-}
-
-console.log(`[Deapi Audio] Modelo FINAL selecionado: ${mappedModel}`);
+                    if (!mappedModel || !slugs.includes(mappedModel)) {
+                      mappedModel = slugs[0];
+                    }
 
                     const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
                     const voices = modelInfo?.languages?.[0]?.voices;
@@ -1567,6 +1540,11 @@ console.log(`[Deapi Audio] Modelo FINAL selecionado: ${mappedModel}`);
                             if (finalRefText) {
                                 form.append('ref_text', finalRefText);
                             }
+
+                            console.log("PAYLOAD (V2):", {
+                              model: mappedModel,
+                              mode: finalMode,
+                            });
                         }
 
                         if (hasRefAudio && resolvedType !== 'sfx') {
@@ -1636,6 +1614,11 @@ console.log(`[Deapi Audio] Modelo FINAL selecionado: ${mappedModel}`);
                         } else {
                             form.append('voice', req.body.voice || selectedVoice || defaultVoiceSlug || 'af_bella');
                         }
+
+                        console.log("PAYLOAD (V1):", {
+                          model: mappedModel,
+                          mode: (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : 'custom_voice',
+                        });
 
                         fetchOptions = {
                             method: 'POST',
