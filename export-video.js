@@ -212,6 +212,7 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             '-pix_fmt', 'yuv420p',
             '-r', String(fps),
             '-vsync', 'cfr',
+            '-max_muxing_queue_size', '2048', 
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ac', '2',
@@ -227,4 +228,3 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
         console.error("Export Build Error:", e);
         throw e;
     }
-};
