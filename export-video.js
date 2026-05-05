@@ -208,21 +208,14 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
-            '-crf', '24',
-            '-x264-params', 'ref=1:bframes=0:rc-lookahead=0:weightp=0', // Minimum memory footprint
-            '-maxrate', '6M',
-            '-bufsize', '3M',
+            '-crf', '22', 
             '-pix_fmt', 'yuv420p',
             '-r', String(fps),
-            '-vsync', 'cfr', // Use CFR for better stability on heavy timelines
-            '-max_muxing_queue_size', '256',
-            '-profile:v', 'main',
-            '-level', '3.1',
+            '-vsync', 'cfr',
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ac', '2',
             '-ar', '44100',
-            '-tune', 'fastdecode',
             '-t', String(totalDuration + 0.1),
             '-movflags', '+faststart',
             '-y',
