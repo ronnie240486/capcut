@@ -633,21 +633,24 @@ async function startServer() {
             }
         }
         
-        // Add max_muxing_queue_size as an output option before the final output file
-        // Detect if the command already has an output path (usually the last argument or before -y)
+        // Add max_muxing_queue_size as an output option before the final output file if not already present
         finalArgs = [...finalArgs, ...processedArgs];
         
-        // Find the position for output options (before the last argument if it's a file, or before -y if at end)
-        let outputPos = finalArgs.length - 1;
-        if (finalArgs[outputPos] === '-y' && outputPos > 0) {
-            outputPos--; // Move before -y if it's the last arg
-        }
-        
-        if (outputPos >= 0) {
-            finalArgs.splice(outputPos, 0, '-max_muxing_queue_size', '4096');
+        if (!finalArgs.includes('-max_muxing_queue_size')) {
+            // Find the last real output file (ignoring -y if at the very end)
+            let outputPos = finalArgs.length - 1;
+            while (outputPos > 0 && (finalArgs[outputPos] === '-y' || finalArgs[outputPos].startsWith('-'))) {
+                outputPos--;
+            }
+            
+            // Re-check: the outputPos should be the index of the output filename
+            // We want to insert output options just before it
+            if (outputPos >= 0 && !finalArgs[outputPos].startsWith('-')) {
+                 finalArgs.splice(outputPos, 0, '-max_muxing_queue_size', '4096');
+            }
         }
 
-        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
+        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})... CMD: ffmpeg ${finalArgs.join(' ')}`);
 
         try {
             const ffmpeg = spawn('ffmpeg', finalArgs);
@@ -2345,7 +2348,6 @@ async function startServer() {
                 '-ac', '2',
                 '-ar', '44100',
                 '-movflags', '+faststart',
-                '-max_muxing_queue_size', '4096',
                 '-y', outputPath
             ];
 
@@ -2377,7 +2379,10 @@ async function startServer() {
     app.get('/api/process/status/:jobId', (req: any, res: any) => {
         const job = jobs[req.params.jobId];
         if (!job) return res.status(404).json({ status: 'not_found' });
-        res.json(job);
+        
+        // Optimize: Don't echo back massive input params or file lists in status checks
+        const { params, files, ...statusOnly } = job;
+        res.json(statusOnly);
     });
 
     app.get('/api/process/download/:jobId', (req: any, res: any) => {
