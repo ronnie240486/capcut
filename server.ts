@@ -23,6 +23,14 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
+// Global Error Handlers to prevent "Lost Process"
+process.on('uncaughtException', (err) => {
+    console.error('[CRITICAL] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 async function startServer() {
     app.use(cors({
         origin: '*',
@@ -30,8 +38,8 @@ async function startServer() {
         allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
     }));
 
-    app.use(express.json({ limit: '5gb' }));
-    app.use(express.urlencoded({ extended: true, limit: '5gb' }));
+    app.use(express.json({ limit: '100mb' }));
+    app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
     // Helper for safe JSON parsing in Node environment
     async function safeJson(response: any) {
@@ -603,9 +611,9 @@ async function startServer() {
         // Adding probe limits to prevent runaway memory
         let finalArgs = [
             '-hide_banner', '-loglevel', 'info', '-stats', 
-            '-threads', '4', 
-            '-probesize', '500M', 
-            '-analyzeduration', '500M',
+            '-threads', '1', 
+            '-probesize', '50M', 
+            '-analyzeduration', '50M',
             '-reinit_filter', '0', 
             '-hwaccel', 'none'
         ];
@@ -633,22 +641,9 @@ async function startServer() {
             }
         }
         
-        // Add max_muxing_queue_size as an output option before the final output file if not already present
+        // Do NOT auto-inject output options here anymore to avoid syntax errors. 
+        // Callers are responsible for adding their own output options.
         finalArgs = [...finalArgs, ...processedArgs];
-        
-        if (!finalArgs.includes('-max_muxing_queue_size')) {
-            // Find the last real output file (ignoring -y if at the very end)
-            let outputPos = finalArgs.length - 1;
-            while (outputPos > 0 && (finalArgs[outputPos] === '-y' || finalArgs[outputPos].startsWith('-'))) {
-                outputPos--;
-            }
-            
-            // Re-check: the outputPos should be the index of the output filename
-            // We want to insert output options just before it
-            if (outputPos >= 0 && !finalArgs[outputPos].startsWith('-')) {
-                 finalArgs.splice(outputPos, 0, '-max_muxing_queue_size', '4096');
-            }
-        }
 
         console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})... CMD: ffmpeg ${finalArgs.join(' ')}`);
 
@@ -2381,8 +2376,11 @@ async function startServer() {
         if (!job) return res.status(404).json({ status: 'not_found' });
         
         // Optimize: Don't echo back massive input params or file lists in status checks
-        const { params, files, ...statusOnly } = job;
-        res.json(statusOnly);
+        // Also strip long error messages that might truncate JSON
+        const { params, files, error, ...statusOnly } = job;
+        const cleanedError = error ? (error.length > 1000 ? error.substring(0, 1000) + '...' : error) : undefined;
+        
+        res.json({ ...statusOnly, error: cleanedError });
     });
 
     app.get('/api/process/download/:jobId', (req: any, res: any) => {
