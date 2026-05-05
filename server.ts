@@ -607,8 +607,7 @@ async function startServer() {
             '-probesize', '500M', 
             '-analyzeduration', '500M',
             '-reinit_filter', '0', 
-            '-hwaccel', 'none',
-            '-max_muxing_queue_size', '4096'
+            '-hwaccel', 'none'
         ];
         const processedArgs: string[] = [];
         let filterScriptPath: string | null = null;
@@ -633,7 +632,15 @@ async function startServer() {
                 processedArgs.push(args[i]);
             }
         }
+        
+        // Add max_muxing_queue_size as an output option before the final output file
+        // The last argument in args is usually the output path
         finalArgs = [...finalArgs, ...processedArgs];
+        const lastIndex = finalArgs.length - 1;
+        if (lastIndex >= 0) {
+            const outputPath = finalArgs[lastIndex];
+            finalArgs.splice(lastIndex, 0, '-max_muxing_queue_size', '4096');
+        }
 
         console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
 
