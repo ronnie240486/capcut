@@ -1421,36 +1421,34 @@ async function startServer() {
         try {
             const baseUrl = "https://api.deapi.ai";
 
-            // PRIORIDADE PARA O ENDPOINT V1 CONFORME SOLICITADO (CURL DO PLAYGROUND)
-            const ENDPOINTS = [
-                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
-            ];
+            // PRIORIDADE PARA O ENDPOINT V2 SE DISPONÍVEL (MELHOR SUPORTE A CLONAGEM)
+            const ENDPOINTS = [];
             
-            if (resolvedType !== 'clone') {
-                let deapiV2Path = '/api/v2/audio/speech';
-                if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
-                ENDPOINTS.push({ url: `${baseUrl}${deapiV2Path}`, version: 'v2' });
-            }
+            // Adicionar V2 primeiro se suportado
+            const deapiV2Path = resolvedType === 'sfx' ? '/api/v2/audio/sfx' : '/api/v2/audio/speech';
+            ENDPOINTS.push({ url: `${baseUrl}${deapiV2Path}`, version: 'v2' });
+            
+            // Fallback para V1
+            ENDPOINTS.push({ url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' });
 
-            // Resolve model slug dynamically — never hardcode
+            // Resolve model slug dynamically
             let mappedModel = model || '';
-            // Normalize legacy/internal aliases to real Deapi slugs.
             const LEGACY_ALIASES: Record<string, string> = {
-                'cloning': '',        // resolved dynamically to a voice_clone capable model
-                'cloning-v1': '',     // same
+                'cloning': 'Qwen3_TTS_12Hz_1_7B_Base',
+                'cloning-v1': 'Qwen3_TTS_12Hz_1_7B_Base',
                 'txt2audio': 'Kokoro',
-                'sfx': 'F5-TTS',      // Reasonable fallback if sfx-specific model not selected
-                'kokoro': 'Kokoro'    // normalize lowercase to canonical
+                'sfx': 'F5-TTS',
+                'kokoro': 'Kokoro',
+                'Qwen3_TTS_12Hz_1_7B_Clone': 'Qwen3_TTS_12Hz_1_7B_Base'
             };
             if (mappedModel in LEGACY_ALIASES) {
                 mappedModel = LEGACY_ALIASES[mappedModel];
             }
             if (!mappedModel) {
-                if (resolvedType === 'sfx') mappedModel = 'F5-TTS';
-                else mappedModel = 'Kokoro';
+                mappedModel = resolvedType === 'sfx' ? 'F5-TTS' : 'Kokoro';
             }
 
-            // Fetch live model list — resolve model + capabilities + default voice
+            // Fetch live model list
             const filterType = resolvedType === 'sfx' ? 'txt2sfx' : 'txt2audio';
             const hasRefAudio = !!(voiceBase64 && voiceBase64.length > 10);
             const hasAudioFile = !!(audioFile && audioFile.length > 10);
@@ -1574,7 +1572,13 @@ async function startServer() {
                             if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
                                 finalMode = 'voice_design';
                             } else if (modelLower.includes('qwen')) {
-                                finalMode = 'voice_clone';
+                                // Qwen3 1.7B na Deapi costuma usar voice_clone para clonagem zero-shot no V2
+                                // Se for explicitly 'design' no nome, usamos voice_design
+                                if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
+                                    finalMode = 'voice_design';
+                                } else {
+                                    finalMode = 'voice_clone';
+                                }
                             } else if (mappedModel.toLowerCase().includes('chatterbox')) {
                                 finalMode = 'custom_voice';
                             } else if (resolvedType === 'clone' || needsVoiceClone) {
@@ -1770,8 +1774,12 @@ async function startServer() {
                     const status = (result.status || "").toLowerCase();
                     if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
                         const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
+                        const duration = result.duration || result.audio_duration || (result.data && result.data.duration);
                         if (resultUrl) {
-                            jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = resultUrl; jobs[jobId].progress = 100;
+                            jobs[jobId].status = 'completed'; 
+                            jobs[jobId].downloadUrl = resultUrl; 
+                            if (duration) jobs[jobId].duration = Number(duration);
+                            jobs[jobId].progress = 100;
                             completed = true;
                         }
                     } else if (status === 'failed' || status === 'error') {
