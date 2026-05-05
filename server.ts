@@ -634,12 +634,17 @@ async function startServer() {
         }
         
         // Add max_muxing_queue_size as an output option before the final output file
-        // The last argument in args is usually the output path
+        // Detect if the command already has an output path (usually the last argument or before -y)
         finalArgs = [...finalArgs, ...processedArgs];
-        const lastIndex = finalArgs.length - 1;
-        if (lastIndex >= 0) {
-            const outputPath = finalArgs[lastIndex];
-            finalArgs.splice(lastIndex, 0, '-max_muxing_queue_size', '4096');
+        
+        // Find the position for output options (before the last argument if it's a file, or before -y if at end)
+        let outputPos = finalArgs.length - 1;
+        if (finalArgs[outputPos] === '-y' && outputPos > 0) {
+            outputPos--; // Move before -y if it's the last arg
+        }
+        
+        if (outputPos >= 0) {
+            finalArgs.splice(outputPos, 0, '-max_muxing_queue_size', '4096');
         }
 
         console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
@@ -2361,8 +2366,7 @@ async function startServer() {
 
         setTimeout(() => {
             handleExportVideo(jobs[jobId], uploadDir, (id: string, args: string[], dur: number) => {
-                const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
-                createFFmpegJob(id, safeArgs, dur);
+                createFFmpegJob(id, args, dur);
             }).catch((err: Error) => {
                 if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Configuração do Export falhou: ' + err.message; }
             });
