@@ -31,6 +31,17 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('[CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
+// Added for graceful shutdown support
+const handleShutdown = () => {
+    console.log('[System] Shutting down... Saving jobs.');
+    // We already have saveJobs, but let's make sure it's called
+    // In many environments (like Cloud Run), we only have a few seconds
+    process.exit(0);
+};
+
+process.on('SIGTERM', handleShutdown);
+process.on('SIGINT', handleShutdown);
+
 async function startServer() {
     app.use(cors({
         origin: '*',
@@ -574,17 +585,59 @@ async function startServer() {
 
     // ─── JOB STORE ────────────────────────────────────────────────────────────
     const jobs: Record<string, any> = {};
+    const JOBS_FILE = path.join(__dirname, 'jobs_persistence.json');
+
+    // Load jobs from disk on startup
+    try {
+        if (fs.existsSync(JOBS_FILE)) {
+            const data = fs.readFileSync(JOBS_FILE, 'utf8');
+            const persisted = JSON.parse(data);
+            Object.keys(persisted).forEach(id => {
+                const job = persisted[id];
+                // If the server restarted, any job that was 'processing' is now dead
+                if (job.status === 'processing') {
+                    job.status = 'failed';
+                    job.error = 'Processo interrompido (reinício do servidor). Provável falta de memória no vídeo anterior.';
+                }
+            });
+            Object.assign(jobs, persisted);
+            console.log(`[System] Restored ${Object.keys(persisted).length} jobs from disk.`);
+        }
+    } catch (err) {
+        console.error("[System] Failed to restore jobs:", err);
+    }
+
+    function saveJobs() {
+        try {
+            const toPersist: any = {};
+            // Only keep recent or non-massive data in the persistence file
+            for (const id in jobs) {
+                const job = jobs[id];
+                if (job.status === 'processing' || job.status === 'queued') {
+                    // Strip huge params or file lists for persistence
+                    const { params, files, ...statusOnly } = job;
+                    toPersist[id] = statusOnly;
+                }
+            }
+            fs.writeFileSync(JOBS_FILE, JSON.stringify(toPersist));
+        } catch (err) {
+            console.error("[System] Failed to save jobs:", err);
+        }
+    }
 
     setInterval(() => {
         const now = Date.now();
+        let changed = false;
         Object.keys(jobs).forEach(id => {
             if (now - jobs[id].startTime > 3600000) {
                 if (jobs[id].outputPath && fs.existsSync(jobs[id].outputPath)) {
                     try { fs.unlinkSync(jobs[id].outputPath); } catch(e) {}
                 }
                 delete jobs[id];
+                changed = true;
             }
         });
+        if (changed) saveJobs();
     }, 3600000);
 
     function timeToSeconds(timeStr: string): number {
@@ -598,6 +651,8 @@ async function startServer() {
         if (!jobs[jobId]) jobs[jobId] = { id: jobId, startTime: Date.now() };
         jobs[jobId].status = 'processing';
         jobs[jobId].progress = 0;
+        jobs[jobId].expectedDuration = expectedDuration;
+        saveJobs();
 
         if (res && !res.headersSent) res.status(202).json({ jobId });
 
@@ -606,16 +661,15 @@ async function startServer() {
            console.error("[Backend] CRITICAL: DEAPI_API_KEY IS NOT CONFIGURED!");
         }
 
-        // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
-        // Limitation: Limit threads for Cloud Run stability
-        // Adding probe limits to prevent runaway memory
+        // Optimization for long videos (2h+)
         let finalArgs = [
-            '-hide_banner', '-loglevel', 'info', '-stats', 
+            '-hide_banner', '-loglevel', 'error', '-stats', 
             '-threads', '1', 
-            '-probesize', '50M', 
-            '-analyzeduration', '50M',
+            '-probesize', '32M', 
+            '-analyzeduration', '32M',
             '-reinit_filter', '0', 
-            '-hwaccel', 'none'
+            '-hwaccel', 'none',
+            '-fflags', '+genpts+igndts'
         ];
         const processedArgs: string[] = [];
         let filterScriptPath: string | null = null;
@@ -666,7 +720,11 @@ async function startServer() {
 
             ffmpeg.on('error', (err: Error) => {
                 console.error(`[Job ${jobId}] Spawn Error:`, err);
-                if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = err.message; }
+                if (jobs[jobId]) { 
+                    jobs[jobId].status = 'failed'; 
+                    jobs[jobId].error = err.message; 
+                    saveJobs();
+                }
                 if (filterScriptPath && fs.existsSync(filterScriptPath)) fs.unlinkSync(filterScriptPath);
             });
 
@@ -689,12 +747,14 @@ async function startServer() {
                     jobs[jobId].status = 'completed';
                     jobs[jobId].progress = 100;
                     jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                    saveJobs();
                 } else {
-                    const errorMsg = wasKilled ? `Processo encerrado pelo sistema (${signal}). Tente reduzir a complexidade do vídeo.` : stderr.trim();
+                    const errorMsg = wasKilled ? `Processo interrompido (provável falta de memória). Tente exportar com menos cenas ou efeitos.` : stderr.trim();
                     console.error(`[Job ${jobId}] Failed. Code: ${code}. Signal: ${signal}. File Size: ${fileSize}`, errorMsg);
                     jobs[jobId].status = 'failed';
-                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
+                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Duração excedeu os limites do servidor.');
                     if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
+                    saveJobs();
                 }
             });
         } catch (e: any) {
@@ -2316,11 +2376,10 @@ async function startServer() {
             // Se existir narração, garantir que a duração total do vídeo coincida com a narração para não cortar o final
             if (narrationPath && fs.existsSync(narrationPath)) {
                 try {
-                    const durationStr = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${narrationPath}"`).toString().trim();
-                    const audioDuration = parseFloat(durationStr);
-                    if (!isNaN(audioDuration) && audioDuration > 0) {
-                        console.log(`[Autopilot] Narration duration detected: ${audioDuration}s (Plan was ${totalDuration}s)`);
-                        totalDuration = Math.max(audioDuration, totalDuration);
+                    const info = await getStreamInfo(narrationPath);
+                    if (info.duration > 0) {
+                        console.log(`[Autopilot] Narration duration detected: ${info.duration}s (Plan was ${totalDuration}s)`);
+                        totalDuration = Math.max(info.duration, totalDuration);
                     }
                 } catch (err) {
                     console.error("[Autopilot] Failed to probe narration duration:", err);
