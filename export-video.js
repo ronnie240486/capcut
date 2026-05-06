@@ -115,10 +115,16 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             totalDuration = clips.reduce((sum, c) => Math.max(sum, c.start + (c.duration || 0)), 0);
             job.files.forEach(f => media[f.originalname] = { type: 'video' });
         } else if (projectState) {
-            const state = JSON.parse(projectState);
-            clips = state.clips;
-            media = state.media;
-            totalDuration = state.totalDuration;
+            let state;
+            try {
+                state = typeof projectState === 'string' ? JSON.parse(projectState) : projectState;
+            } catch (pErr) {
+                console.error("[Export] ProjectState parse error:", pErr);
+                throw new Error("Falha ao processar dados do projeto. O projeto pode ser muito grande ou estar corrompido.");
+            }
+            clips = state.clips || [];
+            media = state.media || {};
+            totalDuration = state.totalDuration || 0;
             exportConfig = state.exportConfig || {};
         } else {
             throw new Error("Missing projectState or plan");
@@ -187,42 +193,48 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
                 inputs.push('-i', narrationPath);
                 
                 // Mix narration into the final audio
-                // Use a safer label for the narration
                 const narrLabel = `narr_${Date.now()}`;
                 filterComplex += `;[${narrationIdx}:a]volume=1.8[${narrLabel}];${outputMapAudio}[${narrLabel}]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[mixeda]`;
                 outputMapAudio = '[mixeda]';
-                console.log(`[Export] Integrated narration file: ${narrationFile} at index ${narrationIdx}`);
-            } else {
-                console.warn(`[Export] Narration file invalid or missing audio: ${narrationFile}`);
             }
         }
+
+        const filterScriptPath = path.join(uploadDir, `filter_${job.id}.txt`);
+        fs.writeFileSync(filterScriptPath, filterComplex);
 
         const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
         job.outputPath = outputPath;
 
         const args = [
             ...inputs,
-            '-filter_complex', filterComplex,
+            '-filter_complex_script', filterScriptPath,
             '-map', outputMapVideo,
             '-map', outputMapAudio,
             
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
-            '-crf', '22', 
+            '-crf', '24', // Slightly higher CRF for faster encoding/less RAM
             '-pix_fmt', 'yuv420p',
             '-r', String(fps),
             '-vsync', 'cfr',
-            '-max_muxing_queue_size', '2048', 
+            '-max_muxing_queue_size', '4096', // Increased for long/complex vids
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ac', '2',
             '-ar', '44100',
             '-t', String(totalDuration + 0.1),
             '-movflags', '+faststart',
+            '-threads', '2', // Use 2 threads instead of default for speed while remaining safe
             '-y',
             outputPath
         ];
 
+        onStart(job.id, args, totalDuration || 30);
+    } catch (e) {
+        console.error("Export Build Error:", e);
+        throw e;
+    }
+};
         onStart(job.id, args, totalDuration || 30);
     } catch (e) {
         console.error("Export Build Error:", e);
