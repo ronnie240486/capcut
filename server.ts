@@ -613,11 +613,9 @@ async function startServer() {
             // Only keep recent or non-massive data in the persistence file
             for (const id in jobs) {
                 const job = jobs[id];
-                if (job.status === 'processing' || job.status === 'queued') {
-                    // Strip huge params or file lists for persistence
-                    const { params, files, ...statusOnly } = job;
-                    toPersist[id] = statusOnly;
-                }
+                // Keep all statuses for a while to ensure client sees the result after restart
+                const { params, files, ...statusOnly } = job;
+                toPersist[id] = statusOnly;
             }
             fs.writeFileSync(JOBS_FILE, JSON.stringify(toPersist));
         } catch (err) {
