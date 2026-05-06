@@ -126,6 +126,8 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             media = state.media || {};
             totalDuration = state.totalDuration || 0;
             exportConfig = state.exportConfig || {};
+            // Free memory from the massive projectState string after parsing
+            delete job.params.projectState;
         } else {
             throw new Error("Missing projectState or plan");
         }
@@ -213,18 +215,18 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
-            '-crf', '24', // Slightly higher CRF for faster encoding/less RAM
+            '-crf', '28', // Higher CRF = less memory/bitrate
             '-pix_fmt', 'yuv420p',
             '-r', String(fps),
             '-vsync', 'cfr',
-            '-max_muxing_queue_size', '4096', // Increased for long/complex vids
+            '-max_muxing_queue_size', '8192', // Much higher for 2h videos
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ac', '2',
             '-ar', '44100',
             '-t', String(totalDuration + 0.1),
             '-movflags', '+faststart',
-            '-threads', '2', // Use 2 threads instead of default for speed while remaining safe
+            '-threads', '1', // STRICT limit to save memory on long renders
             '-y',
             outputPath
         ];
@@ -235,8 +237,3 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
         throw e;
     }
 };
-        onStart(job.id, args, totalDuration || 30);
-    } catch (e) {
-        console.error("Export Build Error:", e);
-        throw e;
-    }
