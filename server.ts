@@ -411,7 +411,7 @@ async function startServer() {
 
     const uploadAny = multer({
         storage,
-        limits: { fieldSize: 100 * 1024 * 1024, fileSize: 10240 * 1024 * 1024 } // 10GB for chunked assembly
+        limits: { fieldSize: 500 * 1024 * 1024, fileSize: 10240 * 1024 * 1024 } // 500MB field size for massive پروژه states
     }).any();
 
     const uploadSingle = multer({ storage }).single('file');
@@ -2416,6 +2416,7 @@ async function startServer() {
 
     // ─── EXPORT ───────────────────────────────────────────────────────────────
     app.post('/api/export/start', uploadAny, (req: any, res: any) => {
+        console.log(`[Export] Start request received for job at ${new Date().toISOString()}`);
         const jobId = `export_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'pending', files: (req as any).files || [], params: req.body, startTime: Date.now() };
         res.status(202).json({ jobId });
