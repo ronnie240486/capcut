@@ -23,6 +23,25 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
+// Global Error Handlers to prevent "Lost Process"
+process.on('uncaughtException', (err) => {
+    console.error('[CRITICAL] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Added for graceful shutdown support
+const handleShutdown = () => {
+    console.log('[System] Shutting down... Saving jobs.');
+    // We already have saveJobs, but let's make sure it's called
+    // In many environments (like Cloud Run), we only have a few seconds
+    process.exit(0);
+};
+
+process.on('SIGTERM', handleShutdown);
+process.on('SIGINT', handleShutdown);
+
 async function startServer() {
     app.use(cors({
         origin: '*',
@@ -30,8 +49,8 @@ async function startServer() {
         allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
     }));
 
-    app.use(express.json({ limit: '5gb' }));
-    app.use(express.urlencoded({ extended: true, limit: '5gb' }));
+    app.use(express.json({ limit: '100mb' }));
+    app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
     // Helper for safe JSON parsing in Node environment
     async function safeJson(response: any) {
@@ -566,17 +585,59 @@ async function startServer() {
 
     // ─── JOB STORE ────────────────────────────────────────────────────────────
     const jobs: Record<string, any> = {};
+    const JOBS_FILE = path.join(__dirname, 'jobs_persistence.json');
+
+    // Load jobs from disk on startup
+    try {
+        if (fs.existsSync(JOBS_FILE)) {
+            const data = fs.readFileSync(JOBS_FILE, 'utf8');
+            const persisted = JSON.parse(data);
+            Object.keys(persisted).forEach(id => {
+                const job = persisted[id];
+                // If the server restarted, any job that was 'processing' is now dead
+                if (job.status === 'processing') {
+                    job.status = 'failed';
+                    job.error = 'Processo interrompido (reinício do servidor). Provável falta de memória no vídeo anterior.';
+                }
+            });
+            Object.assign(jobs, persisted);
+            console.log(`[System] Restored ${Object.keys(persisted).length} jobs from disk.`);
+        }
+    } catch (err) {
+        console.error("[System] Failed to restore jobs:", err);
+    }
+
+    function saveJobs() {
+        try {
+            const toPersist: any = {};
+            // Only keep recent or non-massive data in the persistence file
+            for (const id in jobs) {
+                const job = jobs[id];
+                if (job.status === 'processing' || job.status === 'queued') {
+                    // Strip huge params or file lists for persistence
+                    const { params, files, ...statusOnly } = job;
+                    toPersist[id] = statusOnly;
+                }
+            }
+            fs.writeFileSync(JOBS_FILE, JSON.stringify(toPersist));
+        } catch (err) {
+            console.error("[System] Failed to save jobs:", err);
+        }
+    }
 
     setInterval(() => {
         const now = Date.now();
+        let changed = false;
         Object.keys(jobs).forEach(id => {
             if (now - jobs[id].startTime > 3600000) {
                 if (jobs[id].outputPath && fs.existsSync(jobs[id].outputPath)) {
                     try { fs.unlinkSync(jobs[id].outputPath); } catch(e) {}
                 }
                 delete jobs[id];
+                changed = true;
             }
         });
+        if (changed) saveJobs();
     }, 3600000);
 
     function timeToSeconds(timeStr: string): number {
@@ -590,6 +651,8 @@ async function startServer() {
         if (!jobs[jobId]) jobs[jobId] = { id: jobId, startTime: Date.now() };
         jobs[jobId].status = 'processing';
         jobs[jobId].progress = 0;
+        jobs[jobId].expectedDuration = expectedDuration;
+        saveJobs();
 
         if (res && !res.headersSent) res.status(202).json({ jobId });
 
@@ -598,17 +661,15 @@ async function startServer() {
            console.error("[Backend] CRITICAL: DEAPI_API_KEY IS NOT CONFIGURED!");
         }
 
-        // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
-        // Limitation: Limit threads for Cloud Run stability
-        // Adding probe limits to prevent runaway memory
+        // Optimization for long videos (2h+)
         let finalArgs = [
-            '-hide_banner', '-loglevel', 'info', '-stats', 
-            '-threads', '4', 
-            '-probesize', '500M', 
-            '-analyzeduration', '500M',
+            '-hide_banner', '-loglevel', 'error', '-stats', 
+            '-threads', '1', 
+            '-probesize', '32M', 
+            '-analyzeduration', '32M',
             '-reinit_filter', '0', 
             '-hwaccel', 'none',
-            '-max_muxing_queue_size', '4096'
+            '-fflags', '+genpts+igndts'
         ];
         const processedArgs: string[] = [];
         let filterScriptPath: string | null = null;
@@ -633,9 +694,12 @@ async function startServer() {
                 processedArgs.push(args[i]);
             }
         }
+        
+        // Do NOT auto-inject output options here anymore to avoid syntax errors. 
+        // Callers are responsible for adding their own output options.
         finalArgs = [...finalArgs, ...processedArgs];
 
-        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
+        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})... CMD: ffmpeg ${finalArgs.join(' ')}`);
 
         try {
             const ffmpeg = spawn('ffmpeg', finalArgs);
@@ -656,7 +720,11 @@ async function startServer() {
 
             ffmpeg.on('error', (err: Error) => {
                 console.error(`[Job ${jobId}] Spawn Error:`, err);
-                if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = err.message; }
+                if (jobs[jobId]) { 
+                    jobs[jobId].status = 'failed'; 
+                    jobs[jobId].error = err.message; 
+                    saveJobs();
+                }
                 if (filterScriptPath && fs.existsSync(filterScriptPath)) fs.unlinkSync(filterScriptPath);
             });
 
@@ -679,12 +747,14 @@ async function startServer() {
                     jobs[jobId].status = 'completed';
                     jobs[jobId].progress = 100;
                     jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                    saveJobs();
                 } else {
-                    const errorMsg = wasKilled ? `Processo encerrado pelo sistema (${signal}). Tente reduzir a complexidade do vídeo.` : stderr.trim();
+                    const errorMsg = wasKilled ? `Processo interrompido (provável falta de memória). Tente exportar com menos cenas ou efeitos.` : stderr.trim();
                     console.error(`[Job ${jobId}] Failed. Code: ${code}. Signal: ${signal}. File Size: ${fileSize}`, errorMsg);
                     jobs[jobId].status = 'failed';
-                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
+                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Duração excedeu os limites do servidor.');
                     if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
+                    saveJobs();
                 }
             });
         } catch (e: any) {
@@ -1421,36 +1491,34 @@ async function startServer() {
         try {
             const baseUrl = "https://api.deapi.ai";
 
-            // PRIORIDADE PARA O ENDPOINT V1 CONFORME SOLICITADO (CURL DO PLAYGROUND)
-            const ENDPOINTS = [
-                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
-            ];
+            // PRIORIDADE PARA O ENDPOINT V2 SE DISPONÍVEL (MELHOR SUPORTE A CLONAGEM)
+            const ENDPOINTS = [];
             
-            if (resolvedType !== 'clone') {
-                let deapiV2Path = '/api/v2/audio/speech';
-                if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
-                ENDPOINTS.push({ url: `${baseUrl}${deapiV2Path}`, version: 'v2' });
-            }
+            // Adicionar V2 primeiro se suportado
+            const deapiV2Path = resolvedType === 'sfx' ? '/api/v2/audio/sfx' : '/api/v2/audio/speech';
+            ENDPOINTS.push({ url: `${baseUrl}${deapiV2Path}`, version: 'v2' });
+            
+            // Fallback para V1
+            ENDPOINTS.push({ url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' });
 
-            // Resolve model slug dynamically — never hardcode
+            // Resolve model slug dynamically
             let mappedModel = model || '';
-            // Normalize legacy/internal aliases to real Deapi slugs.
             const LEGACY_ALIASES: Record<string, string> = {
-                'cloning': '',        // resolved dynamically to a voice_clone capable model
-                'cloning-v1': '',     // same
+                'cloning': 'Qwen3_TTS_12Hz_1_7B_Base',
+                'cloning-v1': 'Qwen3_TTS_12Hz_1_7B_Base',
                 'txt2audio': 'Kokoro',
-                'sfx': 'F5-TTS',      // Reasonable fallback if sfx-specific model not selected
-                'kokoro': 'Kokoro'    // normalize lowercase to canonical
+                'sfx': 'F5-TTS',
+                'kokoro': 'Kokoro',
+                'Qwen3_TTS_12Hz_1_7B_Clone': 'Qwen3_TTS_12Hz_1_7B_Base'
             };
             if (mappedModel in LEGACY_ALIASES) {
                 mappedModel = LEGACY_ALIASES[mappedModel];
             }
             if (!mappedModel) {
-                if (resolvedType === 'sfx') mappedModel = 'F5-TTS';
-                else mappedModel = 'Kokoro';
+                mappedModel = resolvedType === 'sfx' ? 'F5-TTS' : 'Kokoro';
             }
 
-            // Fetch live model list — resolve model + capabilities + default voice
+            // Fetch live model list
             const filterType = resolvedType === 'sfx' ? 'txt2sfx' : 'txt2audio';
             const hasRefAudio = !!(voiceBase64 && voiceBase64.length > 10);
             const hasAudioFile = !!(audioFile && audioFile.length > 10);
@@ -1574,7 +1642,13 @@ async function startServer() {
                             if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
                                 finalMode = 'voice_design';
                             } else if (modelLower.includes('qwen')) {
-                                finalMode = 'voice_clone';
+                                // Qwen3 1.7B na Deapi costuma usar voice_clone para clonagem zero-shot no V2
+                                // Se for explicitly 'design' no nome, usamos voice_design
+                                if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
+                                    finalMode = 'voice_design';
+                                } else {
+                                    finalMode = 'voice_clone';
+                                }
                             } else if (mappedModel.toLowerCase().includes('chatterbox')) {
                                 finalMode = 'custom_voice';
                             } else if (resolvedType === 'clone' || needsVoiceClone) {
@@ -1770,8 +1844,12 @@ async function startServer() {
                     const status = (result.status || "").toLowerCase();
                     if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
                         const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
+                        const duration = result.duration || result.audio_duration || (result.data && result.data.duration);
                         if (resultUrl) {
-                            jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = resultUrl; jobs[jobId].progress = 100;
+                            jobs[jobId].status = 'completed'; 
+                            jobs[jobId].downloadUrl = resultUrl; 
+                            if (duration) jobs[jobId].duration = Number(duration);
+                            jobs[jobId].progress = 100;
                             completed = true;
                         }
                     } else if (status === 'failed' || status === 'error') {
@@ -2298,11 +2376,10 @@ async function startServer() {
             // Se existir narração, garantir que a duração total do vídeo coincida com a narração para não cortar o final
             if (narrationPath && fs.existsSync(narrationPath)) {
                 try {
-                    const durationStr = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${narrationPath}"`).toString().trim();
-                    const audioDuration = parseFloat(durationStr);
-                    if (!isNaN(audioDuration) && audioDuration > 0) {
-                        console.log(`[Autopilot] Narration duration detected: ${audioDuration}s (Plan was ${totalDuration}s)`);
-                        totalDuration = Math.max(audioDuration, totalDuration);
+                    const info = await getStreamInfo(narrationPath);
+                    if (info.duration > 0) {
+                        console.log(`[Autopilot] Narration duration detected: ${info.duration}s (Plan was ${totalDuration}s)`);
+                        totalDuration = Math.max(info.duration, totalDuration);
                     }
                 } catch (err) {
                     console.error("[Autopilot] Failed to probe narration duration:", err);
@@ -2325,7 +2402,6 @@ async function startServer() {
                 '-ac', '2',
                 '-ar', '44100',
                 '-movflags', '+faststart',
-                '-max_muxing_queue_size', '4096',
                 '-y', outputPath
             ];
 
@@ -2346,8 +2422,7 @@ async function startServer() {
 
         setTimeout(() => {
             handleExportVideo(jobs[jobId], uploadDir, (id: string, args: string[], dur: number) => {
-                const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
-                createFFmpegJob(id, safeArgs, dur);
+                createFFmpegJob(id, args, dur);
             }).catch((err: Error) => {
                 if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Configuração do Export falhou: ' + err.message; }
             });
@@ -2358,7 +2433,13 @@ async function startServer() {
     app.get('/api/process/status/:jobId', (req: any, res: any) => {
         const job = jobs[req.params.jobId];
         if (!job) return res.status(404).json({ status: 'not_found' });
-        res.json(job);
+        
+        // Optimize: Don't echo back massive input params or file lists in status checks
+        // Also strip long error messages that might truncate JSON
+        const { params, files, error, ...statusOnly } = job;
+        const cleanedError = error ? (error.length > 1000 ? error.substring(0, 1000) + '...' : error) : undefined;
+        
+        res.json({ ...statusOnly, error: cleanedError });
     });
 
     app.get('/api/process/download/:jobId', (req: any, res: any) => {
