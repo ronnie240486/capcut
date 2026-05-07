@@ -159,7 +159,7 @@ export default {
                 }
 
                 let moveApplied = false;
-                if (clip.properties && clip.properties.movement) {
+                if (clip.properties && clip.properties.movement && clip.properties.movement.type !== 'none') {
                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
                     if (moveFilter) {
                         addFilter(moveFilter);
@@ -167,9 +167,13 @@ export default {
                     }
                 } 
                 
+                // Only apply default movement if it's an image and actually DOES something (not static 1.0 zoom)
                 if (!moveApplied && clip.type === 'image') {
                     const staticMove = presetGenerator.getMovementFilter('', duration, true, {}, targetRes, targetFps);
-                    addFilter(staticMove);
+                    // Check if the filter is more than just a identity scale
+                    if (staticMove && !staticMove.includes("z='1.0'") && !staticMove.includes("z='1'")) {
+                        addFilter(staticMove);
+                    }
                 }
 
                 mainTrackLabels.push({
@@ -211,9 +215,11 @@ export default {
                     const hasExplicitTrans = !!nextClip.transition;
                     let transDur = hasExplicitTrans ? trans.duration : 0.0; 
                     
-                    // Safety check: transDur cannot be longer than either clip
-                    const prevClipDur = mainTrackLabels[i-1].duration;
-                    transDur = Math.min(transDur, prevClipDur * 0.4, nextClip.duration * 0.4);
+                    // Memory Safety: If there are too many main track clips (e.g. > 40), 
+                    // force reduce transition duration or use overlay fallback for non-critical scenes
+                    if (mainTrackLabels.length > 40) {
+                        transDur = Math.min(transDur, 0.3);
+                    }
 
                     const offset = currentVideoTime - transDur;
                     const actualOffset = Math.max(0, offset);
@@ -429,14 +435,28 @@ export default {
             }
         });
 
-        // --- GERAR AUDIO FINAL ---
+        // --- GERAR AUDIO FINAL (OTIMIZADO) ---
         let finalAudio = '[final_audio_out]';
         const amixInputs = finalAudioSegments.length;
         
         if (amixInputs > 0) {
-            // Using a single amix at the end is MUCH more RAM-efficient than chaining
-            // Added dropout_transition=0 and normalize=0 to minimize processing
-            filterChain += `${finalAudioSegments.join('')}amix=inputs=${amixInputs}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
+            // For very high number of segments, we split into stages to avoid memory issues with amix
+            if (amixInputs > 50) {
+                let currentBatch = [];
+                let mixedLabels = [];
+                for(let i=0; i < amixInputs; i++) {
+                    currentBatch.push(finalAudioSegments[i]);
+                    if (currentBatch.length === 30 || i === amixInputs - 1) {
+                        const batchLabel = `mixed_batch_${mixedLabels.length}`;
+                        filterChain += `${currentBatch.join('')}amix=inputs=${currentBatch.length}:duration=longest:dropout_transition=0:normalize=0[${batchLabel}];`;
+                        mixedLabels.push(`[${batchLabel}]`);
+                        currentBatch = [];
+                    }
+                }
+                filterChain += `${mixedLabels.join('')}amix=inputs=${mixedLabels.length}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
+            } else {
+                filterChain += `${finalAudioSegments.join('')}amix=inputs=${amixInputs}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
+            }
         } else {
             filterChain += `${baseAudioStream}acopy[final_audio_out];`;
         }
