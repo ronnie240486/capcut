@@ -679,10 +679,10 @@ async function startServer() {
                 processedArgs.push('-filter_complex_script', filterScriptPath);
                 i++; // Skip the next arg as we handled it
             } else if (args[i] === '-i') {
-                // Lower queue size to handle many inputs without consuming too much memory
+                // Extremely low queue size to minimize buffering in memory
                 const isLavfi = i > 0 && args[i-1] === 'lavfi';
                 if (!isLavfi) {
-                    processedArgs.push('-thread_queue_size', '64');
+                    processedArgs.push('-thread_queue_size', '8');
                 }
                 processedArgs.push('-i');
             } else {
@@ -690,8 +690,10 @@ async function startServer() {
             }
         }
         
-        // Do NOT auto-inject output options here anymore to avoid syntax errors. 
-        // Callers are responsible for adding their own output options.
+        // Add more memory-limiting global flags
+        finalArgs.push('-filter_threads', '1');
+        finalArgs.push('-filter_complex_threads', '1');
+        
         finalArgs = [...finalArgs, ...processedArgs];
 
         console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})... CMD: ffmpeg ${finalArgs.join(' ')}`);
