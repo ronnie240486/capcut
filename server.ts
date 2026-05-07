@@ -2185,234 +2185,46 @@ async function startServer() {
     // Recebe os arquivos do usuário + plano gerado pela IA e monta o vídeo final
     app.post('/api/autopilot/render', uploadAny, async (req: any, res: any) => {
         const jobId = `autopilot_${Date.now()}`;
-        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        jobs[jobId] = { id: jobId, status: 'pending', files: (req as any).files || [], params: req.body, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        try {
-            const files: any[] = (req as any).files || [];
-            const plan = JSON.parse(req.body.plan || '{}');
-            const stockFiles = JSON.parse(req.body.stockFiles || '[]');
-            const narrationFile = req.body.narrationFile; // filename salvo em uploads/
-
-            if (!plan.scenes || plan.scenes.length === 0) {
-                throw new Error('Plano de cenas inválido ou vazio.');
-            }
-
-            const uploadedDir = uploadDir;
-            const outputPath = path.join(uploadedDir, `autopilot_${Date.now()}.mp4`);
-            jobs[jobId].outputPath = outputPath;
-
-            // Mapear arquivos enviados pelo index
-            const fileMap: Record<number, string> = {};
-            files.forEach((f: any, i: number) => { fileMap[i] = f.path; });
-
-            // Mapear stock files pelo nome
-            const stockMap: Record<string, string> = {};
-            stockFiles.forEach((s: any) => {
-                if (s && s.filename) {
-                    stockMap[s.originalname || s.filename] = path.join(uploadedDir, s.filename);
+        setTimeout(() => {
+            handleExportVideo(jobs[jobId], uploadDir, (id: string, args: string[], dur: number) => {
+                createFFmpegJob(id, args, dur);
+            }).catch((err: Error) => {
+                console.error('[Autopilot Export] Failed:', err);
+                if (jobs[jobId]) { 
+                    jobs[jobId].status = 'failed'; 
+                    jobs[jobId].error = 'Processamento Autopilot falhou: ' + err.message; 
                 }
             });
+        }, 100);
+    });
 
-            // Narração
-            const narrationPath = narrationFile ? path.join(uploadedDir, narrationFile) : null;
+    // Cleanup
+    // More cleanup
 
-            // Construir inputs e filter_complex para o FFmpeg
-            const inputs: string[] = [];
-            const filterParts: string[] = [];
-            const videoLabels: string[] = [];
-            let inputIdx = 0;
 
-            // Adicionar narração primeiro se existir
-            let narrationInputIdx = -1;
-            if (narrationPath && fs.existsSync(narrationPath)) {
-                inputs.push('-i', narrationPath);
-                narrationInputIdx = inputIdx++;
-            }
+    // Cleanup finally complete
 
-            // Processar cada cena do plano
-            for (let i = 0; i < plan.scenes.length; i++) {
-                const scene = plan.scenes[i];
-                let filePath = '';
-
-                // Tentar usar arquivo do usuário pelo índice
-                if (scene.fileIndex !== undefined && fileMap[scene.fileIndex]) {
-                    filePath = fileMap[scene.fileIndex];
-                }
-                // Fallback: tentar stock file pelo tópico
-                if (!filePath && scene.stockTopic) {
-                    const stockKey = Object.keys(stockMap).find(k =>
-                        k.toLowerCase().includes(scene.stockTopic?.toLowerCase() || '')
-                    );
-                    if (stockKey) filePath = stockMap[stockKey];
-                }
-                // Fallback: qualquer arquivo disponível
-                if (!filePath && Object.keys(fileMap).length > 0) {
-                    filePath = fileMap[i % Object.keys(fileMap).length];
-                }
-
-                if (!filePath || !fs.existsSync(filePath)) {
-                    // Fallback se o arquivo não existir: usar um fundo colorido com o tema da cena
-                    const duration = scene.duration || 3;
-                    const sceneLabel = `scene_v${i}`;
-                    const colors = ['darkblue', 'darkgreen', 'darkred', 'purple', 'black'];
-                    const color = colors[i % colors.length];
-                    
-                    let filterChain = `color=c=${color}:s=1280x720:d=${duration}[vbg${i}];[vbg${i}]setsar=1`;
-                    
-                    // Se tiver subtitle, já colocamos aqui também para não ficar totalmente vazio
-                    if (scene.subtitle) {
-                        const cleanSub = scene.subtitle
-                            .replace(/\\/g, '\\\\\\\\')
-                            .replace(/'/g, "'\\''")
-                            .replace(/:/g, '\\:')
-                            .toUpperCase();
-                        const fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
-                        const fontArg = fs.existsSync(fontPath) ? `:fontfile='${fontPath}'` : '';
-                        filterChain += `,drawtext=text='${cleanSub}'${fontArg}:fontcolor=white:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=15:line_spacing=5:x=(w-text_w)/2:y=h-text_h-100:fix_bounds=1`;
-                    }
-                    
-                    filterParts.push(`${filterChain},fps=30,format=yuv420p[${sceneLabel}]`);
-                    videoLabels.push(`[${sceneLabel}]`);
-                    continue;
-                }
-
-                const streamInfo = await getStreamInfo(filePath);
-                const isImage = ['.jpg', '.jpeg', '.png', '.webp'].some(ext => filePath.toLowerCase().endsWith(ext));
-                const duration = scene.duration || 3;
-
-                if (isImage) {
-                    // Imagens estáticas precisam de loop e tempo definido na entrada
-                    inputs.push('-loop', '1', '-t', duration.toString(), '-i', filePath);
-                } else {
-                    inputs.push('-i', filePath);
-                }
-                const vIdx = inputIdx++;
-
-                const startTime = scene.startTime || 0;
-                const sceneLabel = `scene_v${i}`;
-
-                // Aplicar trim, scale, efeito e formato
-                let filterChain = "";
-                if (isImage) {
-                    filterChain = `[${vIdx}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:-1:-1:color=black`;
-                } else if (streamInfo.hasVideo) {
-                    filterChain = `[${vIdx}:v]trim=start=${startTime}:duration=${duration},setpts=PTS-STARTPTS`;
-                } else {
-                    // Fallback para áudio-only ou arquivos sem vídeo: fundo preto de 1280x720
-                    filterChain = `color=c=black:s=1280x720:d=${duration}[vbg${i}];[vbg${i}]setsar=1`;
-                }
-
-                // Movimentos Cinematográficos (Zoom/Pan)
-                if (scene.movement === 'zoom_in') {
-                    filterChain += `,scale=8000:-1,zoompan=z='min(zoom+0.0015,1.5)':d=125:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720`;
-                } else if (scene.movement === 'zoom_out') {
-                    filterChain += `,scale=8000:-1,zoompan=z='max(1.5-0.0015*on,1)':d=125:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720`;
-                } else if (scene.movement === 'pan_left') {
-                    filterChain += `,scale=8000:-1,zoompan=z=1.3:x='(iw-iw/zoom)-(on/125)*(iw-iw/zoom)':y='ih/2-(ih/zoom/2)':d=125:s=1280x720`;
-                } else if (scene.movement === 'pan_right') {
-                    filterChain += `,scale=8000:-1,zoompan=z=1.3:x='(on/125)*(iw-iw/zoom)':y='ih/2-(ih/zoom/2)':d=125:s=1280x720`;
-                } else {
-                    filterChain += `,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:-1:-1:color=black`;
-                }
-
-                filterChain += `,setsar=1,fps=30,format=yuv420p`;
-
-                // Aplicar filtro de efeito se existir
-                const effectMap: Record<string, string> = {
-                    'vivid': 'eq=saturation=1.5:contrast=1.1',
-                    'noir': 'hue=s=0,eq=contrast=1.5',
-                    'warm': 'colorbalance=rs=0.1:bs=-0.1',
-                    'cool': 'colorbalance=bs=0.1:rs=-0.1',
-                    'vintage': 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131,eq=contrast=0.9',
-                    'dreamy': 'boxblur=luma_radius=2:luma_power=1',
-                    'sharp': 'unsharp=5:5:1.5:5:5:0.0'
-                };
-                if (scene.filter && effectMap[scene.filter]) {
-                    filterChain += `,${effectMap[scene.filter]}`;
-                }
-
-                // Legendas (Subtitles) - Burn-in
-                if (scene.subtitle) {
-                    // Robust escaping for FFmpeg drawtext
-                    const cleanSub = scene.subtitle
-                        .replace(/\\/g, '\\\\\\\\') // Escape \
-                        .replace(/'/g, "'\\''")      // Escape '
-                        .replace(/:/g, '\\:')       // Escape :
-                        .toUpperCase();
-                    
-                    // fontfile fallback - common paths in Linux
-                    const fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
-                    const fontArg = fs.existsSync(fontPath) ? `:fontfile='${fontPath}'` : '';
-                    
-                    // Subtitle at bottom with a robust box
-                    filterChain += `,drawtext=text='${cleanSub}'${fontArg}:fontcolor=white:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=15:line_spacing=5:x=(w-text_w)/2:y=h-text_h-100:fix_bounds=1`;
-                }
-
-                filterParts.push(`${filterChain}[${sceneLabel}]`);
-                videoLabels.push(`[${sceneLabel}]`);
-            }
-
-            if (videoLabels.length === 0) throw new Error('Nenhuma cena válida para renderizar.');
-
-            jobs[jobId].progress = 30;
-
-            // Concatenar todas as cenas
-            const concatLabel = '[final_v]';
-            filterParts.push(`${videoLabels.join('')}concat=n=${videoLabels.length}:v=1:a=0${concatLabel}`);
-
-            let filterComplex = filterParts.join(';');
-            const mapArgs: string[] = ['-map', concatLabel];
-
-            // Adicionar narração se disponível
-            if (narrationInputIdx >= 0) {
-                mapArgs.push('-map', `${narrationInputIdx}:a`);
-            }
-
-            let totalDuration = plan.scenes.reduce((s: number, sc: any) => s + (sc.duration || 3), 0);
-
-            // Se existir narração, garantir que a duração total do vídeo coincida com a narração para não cortar o final
-            if (narrationPath && fs.existsSync(narrationPath)) {
-                try {
-                    const info = await getStreamInfo(narrationPath);
-                    if (info.duration > 0) {
-                        console.log(`[Autopilot] Narration duration detected: ${info.duration}s (Plan was ${totalDuration}s)`);
-                        totalDuration = Math.max(info.duration, totalDuration);
-                    }
-                } catch (err) {
-                    console.error("[Autopilot] Failed to probe narration duration:", err);
-                }
-            }
-
-            const args = [
-                ...inputs,
-                '-filter_complex', filterComplex,
-                ...mapArgs,
-                '-t', totalDuration.toFixed(2),
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',
-                '-crf', '23',
-                '-pix_fmt', 'yuv420p',
-                '-r', '30',
-                '-vsync', '1',
-                '-c:a', 'aac',
-                '-b:a', '192k',
-                '-ac', '2',
-                '-ar', '44100',
-                '-movflags', '+faststart',
-                '-y', outputPath
-            ];
-
-            createFFmpegJob(jobId, args, totalDuration);
-
+    // Proxy para o Freesound para evitar CORS no frontend
+    app.get('/api/freesound/search', async (req, res) => {
+        try {
+            const { query, token } = req.query;
+            if (!query || !token) return res.status(400).json({ error: 'Query and token required' });
+            
+            const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(query as string)}&token=${token}&fields=id,name,previews,duration,username`;
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`Freesound returned ${response.status}`);
+            const data = await response.json();
+            res.json(data);
         } catch (e: any) {
-            console.error('[Autopilot] Failed:', e);
-            jobs[jobId].status = 'failed';
-            jobs[jobId].error = e.message;
+            console.error('[Freesound Proxy] Error:', e);
+            res.status(500).json({ error: e.message });
         }
     });
 
-    // ─── EXPORT ───────────────────────────────────────────────────────────────
+    // ─── EXPORT ───
     app.post('/api/export/start', uploadAny, (req: any, res: any) => {
         console.log(`[Export] Start request received for job at ${new Date().toISOString()}`);
         const jobId = `export_${Date.now()}`;
