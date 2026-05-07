@@ -371,15 +371,6 @@ export default {
                      if (fx) filters.push(fx);
                  }
 
-                 if (clip.properties?.movement) {
-                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, clip.duration, clip.type === 'image', clip.properties.movement.config, true, targetRes, targetFps);
-                     if (moveFilter) filters.push(moveFilter);
-                 }
-                 
-                 if (clip.properties?.opacity !== undefined && clip.properties.opacity < 1) {
-                     filters.push(`format=yuva420p,colorchannelmixer=aa=${clip.properties.opacity}`);
-                 }
-                 
                  if (clip.properties?.transform?.rotation) {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
                  }
@@ -387,6 +378,15 @@ export default {
                  const scaleVal = clip.properties?.transform?.scale || 0.5;
                  const targetW = Math.max(2, Math.floor(targetRes.w * scaleVal / 2) * 2);
                  filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p`);
+
+                 if (clip.properties?.movement && clip.properties.movement.type !== 'none') {
+                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, clip.duration, clip.type === 'image', clip.properties.movement.config, true, targetRes, targetFps);
+                     if (moveFilter) filters.push(moveFilter);
+                 }
+                 
+                 if (clip.properties?.opacity !== undefined && clip.properties.opacity < 1) {
+                     filters.push(`format=yuva420p,colorchannelmixer=aa=${clip.properties.opacity}`);
+                 }
 
                  filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
                  overlayInputLabel = `[${processedLabel}]`;
