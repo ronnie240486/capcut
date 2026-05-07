@@ -60,19 +60,67 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
                     fileName = job.files[s.fileIndex]?.originalname || '';
                 }
 
-                assembledClips.push({
-                    id: `magic_${i}`,
-                    fileName: fileName,
-                    start: s.startTime || (i === 0 ? 0 : assembledClips[assembledClips.length-1].start + (assembledClips[assembledClips.length-1].duration || 0)),
-                    duration: s.duration,
-                    effect: s.filter || null,
-                    transition: s.transition || 'fade',
-                    track: 'video',
-                    properties: {
-                        movement: s.movement ? { type: s.movement, config: {} } : null,
-                        fit: 'cover'
-                    }
-                });
+                const layout = s.layout || 'fullscreen';
+                const startTime = s.startTime || (i === 0 ? 0 : assembledClips.reduce((max, c) => Math.max(max, c.start + (c.duration || 0)), 0));
+
+                if (layout === 'overlay_pop') {
+                    // Background Layer
+                    assembledClips.push({
+                        id: `scene_bg_${i}`,
+                        fileName: fileName,
+                        start: startTime,
+                        duration: s.duration,
+                        effect: 'boxblur=luma_radius=20:luma_power=1,eq=brightness=-0.1',
+                        transition: s.transition || 'fade',
+                        track: 'video',
+                        properties: {
+                            movement: s.movement ? { type: s.movement, config: {} } : { type: 'kenBurns', config: {} },
+                            fit: 'cover'
+                        }
+                    });
+
+                    // Foreground Overlay Layer
+                    assembledClips.push({
+                        id: `scene_ov_${i}`,
+                        fileName: fileName,
+                        start: startTime,
+                        duration: s.duration,
+                        track: 'camada',
+                        properties: {
+                            transform: { scale: 0.8, x: 0, y: 0 },
+                            movement: s.movement ? { type: s.movement, config: {} } : null
+                        }
+                    });
+                } else if (layout === 'impact_shake') {
+                    assembledClips.push({
+                        id: `scene_impact_${i}`,
+                        fileName: fileName,
+                        start: startTime,
+                        duration: s.duration,
+                        effect: s.filter || null,
+                        transition: s.transition || 'fade',
+                        track: 'video',
+                        properties: {
+                            movement: { type: 'shake-hard', config: { intensity: 1.5, speed: 2 } },
+                            fit: 'cover'
+                        }
+                    });
+                } else {
+                    // Default Fullscreen
+                    assembledClips.push({
+                        id: `magic_${i}`,
+                        fileName: fileName,
+                        start: startTime,
+                        duration: s.duration,
+                        effect: s.filter || null,
+                        transition: s.transition || 'fade',
+                        track: 'video',
+                        properties: {
+                            movement: s.movement ? { type: s.movement, config: {} } : null,
+                            fit: 'cover'
+                        }
+                    });
+                }
 
                 const subtitleText = s.subtitle || s.subtitles;
                 if (subtitleText) {
