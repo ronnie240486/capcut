@@ -63,26 +63,31 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
                 assembledClips.push({
                     id: `magic_${i}`,
                     fileName: fileName,
-                    start: s.startTime,
+                    start: s.startTime || (i === 0 ? 0 : assembledClips[assembledClips.length-1].start + (assembledClips[assembledClips.length-1].duration || 0)),
                     duration: s.duration,
-                    effects: s.filter ? [s.filter] : [],
+                    effect: s.filter || null,
                     transition: s.transition || 'fade',
-                    track: 'video'
+                    track: 'video',
+                    properties: {
+                        movement: s.movement ? { type: s.movement, config: {} } : null,
+                        fit: 'cover'
+                    }
                 });
 
-                if (s.subtitles) {
+                const subtitleText = s.subtitle || s.subtitles;
+                if (subtitleText) {
                     assembledClips.push({
                         id: `magic_sub_${i}`,
                         type: 'text',
                         track: 'subtitle',
-                        start: s.startTime,
+                        start: s.startTime || (assembledClips[assembledClips.length-1]?.start || 0),
                         duration: s.duration,
                         properties: {
-                            text: s.subtitles,
+                            text: subtitleText,
                             textDesign: { 
                                 color: 'white', 
-                                stroke: { width: 2, color: 'black' },
-                                animation: { in: 'fade-in', out: 'fade-out', duration: 0.5 }
+                                stroke: { width: 4, color: 'black' },
+                                animation: { in: 'fade-in', out: 'fade-out', duration: 0.3 }
                             },
                             transform: { y: 280, scale: 0.75 }
                         }
