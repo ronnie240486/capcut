@@ -59,11 +59,21 @@ export default {
         const projectDuration = Math.max(explicitTotalDuration, maxClipEnd, 1);
 
         const mainTrackClips = clips.filter(c => c.track === 'video').sort((a, b) => a.start - b.start);
-        const overlayClips = clips.filter(c => 
-            ['text', 'subtitle', 'camada', 'camadas', 'camada1', 'camada2', 'camada3', 'camada4', 'camada5', 'overlay', 'sticker'].includes(String(c.track).toLowerCase())
-        ).sort((a, b) => {
-            const trackOrder = { camada: 1, camada1: 1, camada2: 2, camada3: 3, camada4: 4, camada5: 5, text: 6, subtitle: 7, overlay: 8, sticker: 9 };
-            const trackDiff = (trackOrder[String(a.track).toLowerCase()] || 10) - (trackOrder[String(b.track).toLowerCase()] || 10);
+        const overlayClips = clips.filter(c => {
+            const track = String(c.track || '').toLowerCase();
+            return ['text', 'subtitle', 'overlay', 'sticker', 'camada'].some(t => track.includes(t));
+        }).sort((a, b) => {
+            const getOrder = (t) => {
+                const tr = String(t || '').toLowerCase().replace(/\s+/g, '');
+                if (tr === 'camada' || tr === 'camadas') return 1;
+                if (tr.startsWith('camada')) {
+                    const num = parseInt(tr.replace('camada', ''));
+                    return isNaN(num) ? 1 : num;
+                }
+                const trackOrder = { text: 10, subtitle: 11, overlay: 12, sticker: 13 };
+                return trackOrder[tr] || 15;
+            };
+            const trackDiff = getOrder(a.track) - getOrder(b.track);
             if (trackDiff !== 0) return trackDiff;
             return a.start - b.start;
         });
@@ -161,7 +171,7 @@ export default {
 
                 let moveApplied = false;
                 if (clip.properties && clip.properties.movement && clip.properties.movement.type !== 'none') {
-                    const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
+                    const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, false, targetRes, targetFps);
                     if (moveFilter) {
                         addFilter(moveFilter);
                         moveApplied = true;
@@ -170,7 +180,7 @@ export default {
                 
                 // Only apply default movement if it's an image and actually DOES something (not static 1.0 zoom)
                 if (!moveApplied && clip.type === 'image') {
-                    const staticMove = presetGenerator.getMovementFilter('', duration, true, {}, targetRes, targetFps);
+                    const staticMove = presetGenerator.getMovementFilter('', duration, true, {}, false, targetRes, targetFps);
                     // Check if the filter is more than just a identity scale
                     if (staticMove && !staticMove.includes("z='1.0'") && !staticMove.includes("z='1'")) {
                         addFilter(staticMove);
@@ -362,7 +372,7 @@ export default {
                  }
 
                  if (clip.properties?.movement) {
-                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, clip.duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
+                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, clip.duration, clip.type === 'image', clip.properties.movement.config, true, targetRes, targetFps);
                      if (moveFilter) filters.push(moveFilter);
                  }
                  
