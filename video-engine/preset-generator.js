@@ -207,24 +207,20 @@ export default {
             postFilters.push(`rotate=a='${0.15 * intensity}*sin(2*PI*t*${speed}/2)':c=black@0:ow=iw:oh=ih`);
             z = '1.1';
         } else if (id === 'ken-burns' || id === 'kenburns' || id === 'kenBurns') {
-            // Smooth Ken Burns: smoothstep progression (ease-in-out) to minimize jitter perception
             const progress = `(on/${frames})`;
-            const smoothProgress = `(0.5-0.5*cos(PI*${progress}))`;
-            z = `1.05 + ${0.4 * intensity}*${smoothProgress}`;
-            x = `(iw-iw/zoom)/2`;
-            y = `(ih-ih/zoom)/2`;
+            z = `1.0 + ${0.3 * intensity}*${progress}`;
+            x = `iw/2-(iw/zoom/2)`;
+            y = `ih/2-(ih/zoom/2)`;
         } else if (id === 'zoom-in' || id === 'zoom-in-slow') {
             const progress = `(on/${frames})`;
-            const smoothProgress = `(0.5-0.5*cos(PI*${progress}))`;
-            z = `1.05 + ${0.5 * intensity}*${smoothProgress}`;
-            x = `(iw-iw/zoom)/2`;
-            y = `(ih-ih/zoom)/2`;
+            z = `1.0 + ${0.4 * intensity}*${progress}`;
+            x = `iw/2-(iw/zoom/2)`;
+            y = `ih/2-(ih/zoom/2)`;
         } else if (id === 'zoom-out' || id === 'zoom-out-slow') {
             const progress = `(on/${frames})`;
-            const smoothProgress = `(0.5-0.5*cos(PI*${progress}))`;
-            z = `1.5 - ${0.5 * intensity}*${smoothProgress}`;
-            x = `(iw-iw/zoom)/2`;
-            y = `(ih-ih/zoom)/2`;
+            z = `1.4 - ${0.4 * intensity}*${progress}`;
+            x = `iw/2-(iw/zoom/2)`;
+            y = `ih/2-(ih/zoom/2)`;
         } else if (id === 'zoom-crash-in') {
             const progress = `(on/${frames})`;
             z = `1.0 + ${2.5 * intensity}*${progress}*${progress}`;
@@ -436,8 +432,8 @@ export default {
         // Apply zoompan only if not overlay. Overlays should NOT use zoompan as it forces 1280x720.
         if (!isOverlay) {
             const dValFinal = isImage ? frames : 1;
-            // Use 2x scaling before zoompan to provide more sub-pixel data for smoother interpolation
-            const preScaleFinal = `scale=${w*2}:${h*2}:force_original_aspect_ratio=increase,crop=${w*2}:${h*2},`;
+            // Use target resolution directly to save memory and avoid "Job failed" errors
+            const preScaleFinal = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},`;
             zoomPanFilter = `${preScaleFinal}zoompan=z='${z}':x='${x}':y='${y}':d=${dValFinal}:s=${w}x${h}:fps=${fps}`;
         } else {
             // Overlays use simpler transformations to avoid forcing a 1280x720 output size
