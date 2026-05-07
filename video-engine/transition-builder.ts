@@ -60,7 +60,7 @@ export default {
 
         const mainTrackClips = clips.filter(c => c.track === 'video').sort((a, b) => a.start - b.start);
         const overlayClips = clips.filter(c => 
-            ['text', 'subtitle', 'camada', 'camada1', 'camada2', 'camada3', 'camada4', 'camada5', 'overlay', 'sticker'].includes(String(c.track).toLowerCase())
+            ['text', 'subtitle', 'camada', 'camadas', 'camada1', 'camada2', 'camada3', 'camada4', 'camada5', 'overlay', 'sticker'].includes(String(c.track).toLowerCase())
         ).sort((a, b) => {
             const trackOrder = { camada: 1, camada1: 1, camada2: 2, camada3: 3, camada4: 4, camada5: 5, text: 6, subtitle: 7, overlay: 8, sticker: 9 };
             const trackDiff = (trackOrder[String(a.track).toLowerCase()] || 10) - (trackOrder[String(b.track).toLowerCase()] || 10);
@@ -138,7 +138,8 @@ export default {
                 }
 
                 if (clip.effect) {
-                    const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
+                    let fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
+                    if (!fx && clip.effect.includes('=')) fx = clip.effect;
                     if (fx) addFilter(fx);
                 }
                 
@@ -355,7 +356,8 @@ export default {
                  }
                  
                  if (clip.effect) {
-                     const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
+                     let fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
+                     if (!fx && clip.effect.includes('=')) fx = clip.effect;
                      if (fx) filters.push(fx);
                  }
 
