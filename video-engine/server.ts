@@ -661,8 +661,8 @@ async function startServer() {
         let finalArgs = [
             '-hide_banner', '-loglevel', 'error', '-stats', 
             '-threads', '1', 
-            '-probesize', '32M', 
-            '-analyzeduration', '32M',
+            '-probesize', '8M', 
+            '-analyzeduration', '8M',
             '-reinit_filter', '0', 
             '-hwaccel', 'none',
             '-fflags', '+genpts+igndts'
@@ -679,11 +679,10 @@ async function startServer() {
                 processedArgs.push('-filter_complex_script', filterScriptPath);
                 i++; // Skip the next arg as we handled it
             } else if (args[i] === '-i') {
-                // Higher queue size to handle many inputs without blocking,
-                // but avoid it for lavfi/virtual devices which can be sensitive to option placement
+                // Lower queue size to handle many inputs without consuming too much memory
                 const isLavfi = i > 0 && args[i-1] === 'lavfi';
                 if (!isLavfi) {
-                    processedArgs.push('-thread_queue_size', '512');
+                    processedArgs.push('-thread_queue_size', '64');
                 }
                 processedArgs.push('-i');
             } else {
