@@ -59,11 +59,11 @@ export default {
         const projectDuration = Math.max(explicitTotalDuration, maxClipEnd, 1);
 
         const mainTrackClips = clips.filter(c => c.track === 'video').sort((a, b) => a.start - b.start);
-        const trackOrder = { camada: 1, camada2: 2, camada3: 3, text: 4, subtitle: 5 };
         const overlayClips = clips.filter(c => 
-            ['text', 'subtitle', 'camada', 'camada2', 'camada3'].includes(c.track)
+            ['text', 'subtitle', 'camada', 'camada1', 'camada2', 'camada3', 'camada4', 'camada5', 'overlay', 'sticker'].includes(String(c.track).toLowerCase())
         ).sort((a, b) => {
-            const trackDiff = (trackOrder[a.track] || 0) - (trackOrder[b.track] || 0);
+            const trackOrder = { camada: 1, camada1: 1, camada2: 2, camada3: 3, camada4: 4, camada5: 5, text: 6, subtitle: 7, overlay: 8, sticker: 9 };
+            const trackDiff = (trackOrder[String(a.track).toLowerCase()] || 10) - (trackOrder[String(b.track).toLowerCase()] || 10);
             if (trackDiff !== 0) return trackDiff;
             return a.start - b.start;
         });
@@ -81,14 +81,14 @@ export default {
              const bgIdx = inputIndexCounter++;
              filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
         } else {
-             inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
-             baseVideoStream = `[${inputIndexCounter++}:v]`;
+             // Avoid -f lavfi -i sources which can be misinterpreted by FFmpeg job argument normalization
+             filterChain += `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${projectDuration},setsar=1[bg_base_source];`;
+             baseVideoStream = `[bg_base_source]`;
         }
 
         let baseAudioStream = '[base_audio_silence]';
-        inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
-        const silenceIdx = inputIndexCounter++;
-        filterChain += `[${silenceIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[base_audio_silence];`;
+        // Avoid -f lavfi -i sources for audio silence too
+        filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${projectDuration},aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[base_audio_silence];`;
 
         // --- 1. PROCESSAR TRILHA PRINCIPAL (VIDEO) ---
         let mainTrackVideoStream = null;
@@ -159,7 +159,7 @@ export default {
                 }
 
                 let moveApplied = false;
-                if (clip.properties && clip.properties.movement) {
+                if (clip.properties && clip.properties.movement && clip.properties.movement.type !== 'none') {
                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
                     if (moveFilter) {
                         addFilter(moveFilter);
@@ -167,111 +167,85 @@ export default {
                     }
                 } 
                 
+                // Only apply default movement if it's an image and actually DOES something (not static 1.0 zoom)
                 if (!moveApplied && clip.type === 'image') {
                     const staticMove = presetGenerator.getMovementFilter('', duration, true, {}, targetRes, targetFps);
-                    addFilter(staticMove);
+                    // Check if the filter is more than just a identity scale
+                    if (staticMove && !staticMove.includes("z='1.0'") && !staticMove.includes("z='1'")) {
+                        addFilter(staticMove);
+                    }
                 }
 
                 mainTrackLabels.push({
                     label: currentV,
                     duration: duration,
-                    transition: clip.transition
+                    transition: clip.transition,
+                    id: clip.id,
+                    idx: idx
                 });
+            });
 
-                const mediaInfo = mediaLibrary[clip.fileName];
-            if (clip.type === 'video' && mediaInfo?.hasAudio) {
-                const audioLabel = `a_main_${i}`;
-                const start = clip.mediaStartOffset || 0;
-                const vol = clip.properties.volume !== undefined ? clip.properties.volume : 1;
-                const delay = Math.round(accumulatedDurationForAudio * 1000);
-                
-                let audioFilters = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
-                if (clip.properties && clip.properties.audioDeepSync) {
-                    audioFilters += ',bass=g=15,volume=1.5';
-                }
+            if (mainTrackLabels.length > 0) {
+                let currentMixV = mainTrackLabels[0].label;
+                let currentVideoTime = mainTrackLabels[0].duration;
 
-                filterChain += `[${idx}:a]${audioFilters},atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${vol},adelay=${delay}|${delay}[${audioLabel}];`;
-                finalAudioSegments.push(`[${audioLabel}]`);
-            }
-            
-            accumulatedDurationForAudio = 0; // Use actual calculated offsets for audio sync
-         });
-
-         if (mainTrackLabels.length > 0) {
-            let currentMixV = mainTrackLabels[0].label;
-            let currentMixA = null; // To handle audio crossfades if needed, but we'll stick to synced adelays
-            
-            let currentVideoTime = mainTrackLabels[0].duration;
-
-            // First clip audio
-            const firstClip = mainTrackClips[0];
-            const firstMedia = mediaLibrary[firstClip.fileName];
-            if (firstClip.type === 'video' && firstMedia?.hasAudio) {
-                const audioLabel = `a_main_0`;
-                const start = firstClip.mediaStartOffset || 0;
-                const vol = firstClip.properties?.volume !== undefined ? firstClip.properties.volume : 1;
-                filterChain += `[0:a]${safeAudioFormat},atrim=start=${start}:duration=${firstClip.duration},asetpts=PTS-STARTPTS,volume=${vol},adelay=0|0[${audioLabel}];`;
-                finalAudioSegments.push(`[${audioLabel}]`);
-            }
-
-            for (let i = 1; i < mainTrackLabels.length; i++) {
-                const nextClip = mainTrackLabels[i];
-                const trans = nextClip.transition || { id: 'fade', duration: 0.5 };
-                const hasExplicitTrans = !!nextClip.transition;
-                let transDur = hasExplicitTrans ? trans.duration : 0.0; 
-                
-                // Safety check: transDur cannot be longer than either clip
-                const prevClipDur = mainTrackLabels[i-1].duration;
-                transDur = Math.min(transDur, prevClipDur * 0.4, nextClip.duration * 0.4);
-
-                const offset = currentVideoTime - transDur;
-                const actualOffset = Math.max(0, offset);
-
-                let transId = presetGenerator.getTransitionXfade(trans.id);
-                if (!transId) transId = 'fade';
-
-                const nextLabelV = `mix_v_${i}`;
-                
-                if (transDur > 0 && hasExplicitTrans) {
-                    filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${actualOffset}[${nextLabelV}];`;
-                    currentVideoTime = actualOffset + nextClip.duration;
-                } else {
-                    const overlayLabelV = `ovm_v_${i}`;
-                    filterChain += `${currentMixV}${nextClip.label}overlay=enable='gt(t,${currentVideoTime})':eof_action=pass[${overlayLabelV}];`;
-                    currentVideoTime += nextClip.duration;
-                    currentMixV = `[${overlayLabelV}]`;
-                    
-                    // Update audio sync for sequential clips
-                    const nextAudioClip = mainTrackClips[i];
-                    const nextMedia = mediaLibrary[nextAudioClip.fileName];
-                    if (nextAudioClip.type === 'video' && nextMedia?.hasAudio) {
+                // Sync main track audio (if any)
+                mainTrackClips.forEach((clip, i) => {
+                    const mediaInfo = mediaLibrary[clip.fileName];
+                    const filePath = fileMap[clip.fileName];
+                    if (clip.type === 'video' && mediaInfo?.hasAudio && filePath) {
                         const audioLabel = `a_main_${i}`;
-                        const start = nextAudioClip.mediaStartOffset || 0;
-                        const vol = nextAudioClip.properties?.volume !== undefined ? nextAudioClip.properties.volume : 1;
-                        const delay = Math.round(currentVideoTime - nextAudioClip.duration) * 1000;
-                        filterChain += `[${i}:a]${safeAudioFormat},atrim=start=${start}:duration=${nextAudioClip.duration},asetpts=PTS-STARTPTS,volume=${vol},adelay=${delay}|${delay}[${audioLabel}];`;
+                        const start = clip.mediaStartOffset || 0;
+                        const vol = clip.properties?.volume !== undefined ? clip.properties.volume : 1;
+                        
+                        // Find the video input index for this clip from our processed mainTrackLabels
+                        const clipInfo = mainTrackLabels.find(l => l.id === clip.id);
+                        if (!clipInfo) return;
+
+                        filterChain += `[${clipInfo.idx}:a]${safeAudioFormat},atrim=start=${start}:duration=${clip.duration},asetpts=PTS-STARTPTS,volume=${vol},adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}[${audioLabel}];`;
                         finalAudioSegments.push(`[${audioLabel}]`);
                     }
-                    continue; 
-                }
-                
-                // Handle audio for xfade clips (we just delay it to match the offset)
-                const nextAudioClip = mainTrackClips[i];
-                const nextMedia = mediaLibrary[nextAudioClip.fileName];
-                if (nextAudioClip.type === 'video' && nextMedia?.hasAudio) {
-                    const audioLabel = `a_main_${i}`;
-                    const start = nextAudioClip.mediaStartOffset || 0;
-                    const vol = nextAudioClip.properties?.volume !== undefined ? nextAudioClip.properties.volume : 1;
-                    const delay = Math.round(actualOffset * 1000);
-                    filterChain += `[${i}:a]${safeAudioFormat},atrim=start=${start}:duration=${nextAudioClip.duration},asetpts=PTS-STARTPTS,volume=${vol},adelay=${delay}|${delay}[${audioLabel}];`;
-                    finalAudioSegments.push(`[${audioLabel}]`);
-                }
+                });
 
-                currentMixV = `[${nextLabelV}]`;
+                for (let i = 1; i < mainTrackLabels.length; i++) {
+                    const nextClip = mainTrackLabels[i];
+                    let trans = nextClip.transition || { id: 'fade', duration: 0.5 };
+                    if (typeof trans === 'string') trans = { id: trans, duration: 0.5 };
+                    
+                    const hasExplicitTrans = !!nextClip.transition;
+                    let transDur = hasExplicitTrans ? trans.duration : 0.0; 
+                    
+                    // Memory Safety: If there are too many main track clips (e.g. > 40), 
+                    // force reduce transition duration or use overlay fallback for non-critical scenes
+                    if (mainTrackLabels.length > 40) {
+                        transDur = Math.min(transDur, 0.3);
+                    }
+
+                    const offset = currentVideoTime - transDur;
+                    const actualOffset = Math.max(0, offset);
+
+                    let transId = presetGenerator.getTransitionXfade(trans.id);
+                    if (!transId) transId = 'fade';
+
+                    const nextLabelV = `mix_v_${i}`;
+                    
+                    if (transDur > 0 && hasExplicitTrans) {
+                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${actualOffset}[${nextLabelV}];`;
+                        currentVideoTime = actualOffset + nextClip.duration;
+                    } else {
+                        const overlayLabelV = `ovm_v_${i}`;
+                        filterChain += `${currentMixV}${nextClip.label}overlay=enable='gt(t,${currentVideoTime})':eof_action=pass[${overlayLabelV}];`;
+                        currentVideoTime += nextClip.duration;
+                        currentMixV = `[${overlayLabelV}]`;
+                        // Note: Audio sync is already handled by the pre-loop above using absolute start times
+                        continue; 
+                    }
+                    
+                    currentMixV = `[${nextLabelV}]`;
+                }
+                mainTrackVideoStream = currentMixV;
             }
-            mainTrackVideoStream = currentMixV;
-         }
-    }
+        }
 
     let finalComp = baseVideoStream;
     
@@ -367,6 +341,7 @@ export default {
                  }
                  
                  const idx = inputIndexCounter++;
+                 clip.inputIdx = idx;
                  const rawLabel = `[${idx}:v]`;
                  const processedLabel = `ov_proc_${i}`;
                  
@@ -384,16 +359,20 @@ export default {
                      if (fx) filters.push(fx);
                  }
 
-                 if (clip.properties.movement) {
+                 if (clip.properties?.movement) {
                      const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, clip.duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
                      if (moveFilter) filters.push(moveFilter);
                  }
                  
-                 if (clip.properties.transform?.rotation) {
+                 if (clip.properties?.opacity !== undefined && clip.properties.opacity < 1) {
+                     filters.push(`format=yuva420p,colorchannelmixer=aa=${clip.properties.opacity}`);
+                 }
+                 
+                 if (clip.properties?.transform?.rotation) {
                      filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
                  }
                  
-                 const scaleVal = clip.properties.transform?.scale || 0.5;
+                 const scaleVal = clip.properties?.transform?.scale || 0.5;
                  const targetW = Math.max(2, Math.floor(targetRes.w * scaleVal / 2) * 2);
                  filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p`);
 
@@ -441,33 +420,43 @@ export default {
         });
 
         overlayClips.forEach((clip, i) => {
-            if (clip.type === 'video') {
-                const filePath = fileMap[clip.fileName];
+            if (clip.type === 'video' && clip.inputIdx !== undefined) {
                 const mediaInfo = mediaLibrary[clip.fileName];
-                if (!filePath || !mediaInfo?.hasAudio) return;
+                if (!mediaInfo?.hasAudio) return;
                 
-                inputs.push('-i', filePath);
-                const idx = inputIndexCounter++;
                 const lbl = `layer_audio_${i}`;
-                
                 const startTrim = clip.mediaStartOffset || 0;
                 const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
                 const delayMs = Math.round(clip.start * 1000);
                 const dur = Math.max(0.1, clip.duration);
                 
-                filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${dur},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
+                filterChain += `[${clip.inputIdx}:a]atrim=start=${startTrim}:duration=${dur},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
                 finalAudioSegments.push(`[${lbl}]`);
             }
         });
 
-        // --- GERAR AUDIO FINAL ---
+        // --- GERAR AUDIO FINAL (OTIMIZADO) ---
         let finalAudio = '[final_audio_out]';
         const amixInputs = finalAudioSegments.length;
         
         if (amixInputs > 0) {
-            // Using a single amix at the end is MUCH more RAM-efficient than chaining
-            // Added dropout_transition=0 and normalize=0 to minimize processing
-            filterChain += `${finalAudioSegments.join('')}amix=inputs=${amixInputs}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
+            // For very high number of segments, we split into stages to avoid memory issues with amix
+            if (amixInputs > 50) {
+                let currentBatch = [];
+                let mixedLabels = [];
+                for(let i=0; i < amixInputs; i++) {
+                    currentBatch.push(finalAudioSegments[i]);
+                    if (currentBatch.length === 30 || i === amixInputs - 1) {
+                        const batchLabel = `mixed_batch_${mixedLabels.length}`;
+                        filterChain += `${currentBatch.join('')}amix=inputs=${currentBatch.length}:duration=longest:dropout_transition=0:normalize=0[${batchLabel}];`;
+                        mixedLabels.push(`[${batchLabel}]`);
+                        currentBatch = [];
+                    }
+                }
+                filterChain += `${mixedLabels.join('')}amix=inputs=${mixedLabels.length}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
+            } else {
+                filterChain += `${finalAudioSegments.join('')}amix=inputs=${amixInputs}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
+            }
         } else {
             filterChain += `${baseAudioStream}acopy[final_audio_out];`;
         }
