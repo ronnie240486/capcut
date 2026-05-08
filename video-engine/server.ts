@@ -66,18 +66,22 @@ async function startServer() {
 
     // Proxy para Freesound para evitar CORS
     app.get('/api/sound-search', async (req: any, res: any) => {
-        const { q, key, page = 1 } = req.query;
+        let { q, key, page = 1 } = req.query;
         const token = key; 
         
         if (!q || !token) {
             console.error('[Sound Search] Missing q or key');
             return res.status(400).json({ error: 'Missing query or key. Verifique sua chave API nas configurações.' });
         }
+
+        // Simplify query to improve Freesound search results
+        let simplifiedQ = String(q).split(/\s+/).filter(w => w.length > 2).slice(0, 4).join(' ');
+        if (!simplifiedQ) simplifiedQ = String(q);
         
-        console.log(`[Sound Search] Received request for: ${q} with key length: ${token.length} page: ${page}`);
+        console.log(`[Sound Search] Received request for: ${q} (simplified: ${simplifiedQ}) with key length: ${token.length} page: ${page}`);
         
         try {
-            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,username&page=${page}&page_size=6`;
+            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(simplifiedQ)}&token=${token}&fields=id,name,previews,duration,username&page=${page}&page_size=6`;
             console.log(`[Sound Search] Requesting Freesound: ${endpoint}`);
             
             const searchRes = await fetch(endpoint, {
@@ -1943,11 +1947,28 @@ async function startServer() {
             const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 0;
             
             // Sensible defaults if model limits are unknown or specifically for ACE/Turbo models
-            const defaultTarget = mappedModel.toLowerCase().includes('ace') ? 0.7 : 5;
+            // Some models require at least 1.0 guidance scale and 8 steps
+            const defaultTarget = mappedModel.toLowerCase().includes('ace') ? 1.0 : 5;
             const guidanceScale = Math.min(Math.max(defaultTarget, minGuidance), maxGuidance);
 
             const resolvedDuration = duration || 30;
-            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s guidance_scale=${guidanceScale.toFixed(1)}`);
+            let resolvedSteps = steps ? Number(steps) : 8;
+            let resolvedGuidance = userGuidance ? Number(userGuidance) : guidanceScale;
+
+            // ACE-Step and Turbo models have extremely strict limits (8 steps, 1.0 guidance)
+            // that results in 422 if not exactly followed.
+            if (mappedModel.toLowerCase().includes('ace') || mappedModel.toLowerCase().includes('turbo')) {
+                resolvedSteps = 8;
+                resolvedGuidance = 1.0;
+            }
+
+            // Force vocal emphasis if lyrics are provided
+            let finalPrompt = prompt || '';
+            if (lyrics && lyrics !== '[Instrumental]' && !finalPrompt.toLowerCase().includes('vocal')) {
+                finalPrompt = `[Vocal] ${finalPrompt}`;
+            }
+
+            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s steps=${resolvedSteps} guidance=${resolvedGuidance.toFixed(1)}`);
 
             let response: any;
             let success = false;
@@ -1961,12 +1982,12 @@ async function startServer() {
                     if (ep.version === 'v2') {
                         // v2 requires multipart/form-data
                         const form = new FormData();
-                        form.append('caption', prompt || '');
+                        form.append('caption', finalPrompt);
                         form.append('model', mappedModel);
                         form.append('lyrics', lyrics || '[Instrumental]');
                         form.append('duration', String(resolvedDuration));
-                        form.append('inference_steps', String(steps || 8));
-                        form.append('guidance_scale', String(userGuidance || guidanceScale));
+                        form.append('inference_steps', String(resolvedSteps));
+                        form.append('guidance_scale', String(resolvedGuidance));
                         form.append('seed', String(seed || -1));
                         form.append('format', outputFormat || 'mp3');
                         if (vocalLanguage) form.append('vocal_language', vocalLanguage);
@@ -1997,14 +2018,14 @@ async function startServer() {
                                 'Accept': 'application/json'
                             },
                             body: JSON.stringify({
-                                caption: prompt || '',
-                                prompt: prompt || '',
+                                caption: finalPrompt,
+                                prompt: finalPrompt,
                                 lyrics: lyrics || '[Instrumental]',
                                 model: mappedModel,
                                 duration: resolvedDuration,
                                 vocal_language: vocalLanguage,
-                                inference_steps: steps || 8,
-                                guidance_scale: userGuidance || guidanceScale,
+                                inference_steps: resolvedSteps,
+                                guidance_scale: resolvedGuidance,
                                 seed: seed || -1,
                                 format: outputFormat || 'mp3'
                             })
@@ -2209,14 +2230,18 @@ async function startServer() {
     // Proxy para o Freesound para evitar CORS no frontend
     app.get('/api/freesound/search', async (req, res) => {
         try {
-            const { query, token, ...rest } = req.query;
+            let { query, token, ...rest } = req.query;
             if (!query || !token) return res.status(400).json({ error: 'Query and token required' });
             
+            // Simplify query to improve Freesound search results
+            let simplifiedQuery = String(query).split(/\s+/).filter(w => w.length > 2).slice(0, 4).join(' ');
+            if (!simplifiedQuery) simplifiedQuery = String(query);
+
             const extraParams = Object.entries(rest)
                 .map(([k, v]) => `&${k}=${encodeURIComponent(v as string)}`)
                 .join('');
 
-            const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(query as string)}&token=${token}&fields=id,name,previews,duration,username${extraParams}`;
+            const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(simplifiedQuery)}&token=${token}&fields=id,name,previews,duration,username${extraParams}`;
             const response = await fetch(url);
             if (!response.ok) throw new Error(`Freesound returned ${response.status}`);
             const data = await response.json();
@@ -2779,5 +2804,3 @@ async function startServer() {
         });
     }, 15 * 60 * 1000);
 }
-
-startServer();
