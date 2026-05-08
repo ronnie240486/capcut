@@ -288,6 +288,10 @@ export default {
                  let x = '(w-text_w)/2';
                  let y = '(h-text_h)/2';
                  
+                 if (clip.track === 'subtitle') {
+                     y = `(h-text_h)-${Math.round(80 * scaleFactor)}`;
+                 }
+                 
                  if (clip.properties.transform) {
                      const t = clip.properties.transform;
                      if (t.x) x += `+(${t.x}*${scaleFactor})`;
@@ -313,13 +317,20 @@ export default {
                      }
                  }
 
+                 const escapeColor = (col) => {
+                     if (!col) return 'black';
+                     // FFmpeg's drawtext filter parsing is sensitive to commas in rgba() when part of a filter_complex
+                     // We escape commas and parentheses for safety.
+                     return col.replace(/,/g, '\\,').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+                 };
+
                  if (clip.properties.textDesign?.stroke) {
                      const s = clip.properties.textDesign.stroke;
-                     if (s.width > 0) styles += `:borderw=${s.width * scaleFactor}:bordercolor=${s.color || 'black'}`;
+                     if (s.width > 0) styles += `:borderw=${s.width * scaleFactor}:bordercolor=${escapeColor(s.color || 'black')}`;
                  }
                  if (clip.properties.textDesign?.shadow) {
                      const sh = clip.properties.textDesign.shadow;
-                     if (sh.x || sh.y) styles += `:shadowx=${(sh.x || 2) * scaleFactor}:shadowy=${(sh.y || 2) * scaleFactor}:shadowcolor=${sh.color || 'black@0.5'}`;
+                     if (sh.x || sh.y) styles += `:shadowx=${(sh.x || 2) * scaleFactor}:shadowy=${(sh.y || 2) * scaleFactor}:shadowcolor=${escapeColor(sh.color || 'black@0.5')}`;
                  }
                  
                  const fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"; 
