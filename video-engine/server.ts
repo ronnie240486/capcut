@@ -1968,6 +1968,11 @@ async function startServer() {
                 finalPrompt = `[Vocal] ${finalPrompt}`;
             }
 
+            // API Limit: 300 characters for caption
+            if (finalPrompt.length > 300) {
+                finalPrompt = finalPrompt.substring(0, 297) + '...';
+            }
+
             console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s steps=${resolvedSteps} guidance=${resolvedGuidance.toFixed(1)}`);
 
             let response: any;
@@ -2804,3 +2809,5 @@ async function startServer() {
         });
     }, 15 * 60 * 1000);
 }
+
+startServer();
