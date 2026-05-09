@@ -65,9 +65,8 @@ async function startServer() {
     }
 
     // Helper for fetch with exponential backoff for 429
-    async function fetchWithRetry(url: string, options: any, maxRetries = 3) {
+    async function fetchWithRetry(url: string, options: any, maxRetries = 5) {
         let lastStatus = 0;
-        let lastBody = "";
         
         for (let i = 0; i <= maxRetries; i++) {
             try {
@@ -75,7 +74,7 @@ async function startServer() {
                 lastStatus = response.status;
                 
                 if (response.status === 429 && i < maxRetries) {
-                    const wait = Math.pow(2, i) * 2000; // 2s, 4s, 8s
+                    const wait = Math.pow(2, i) * 3000; // 3s, 6s, 12s, 24s, 48s
                     console.warn(`[Retry] Status 429 on ${url}. Waiting ${wait}ms before retry ${i + 1}/${maxRetries}`);
                     await new Promise(r => setTimeout(r, wait));
                     continue;
@@ -84,7 +83,7 @@ async function startServer() {
                 return response;
             } catch (e: any) {
                 if (i === maxRetries) throw e;
-                const wait = Math.pow(2, i) * 1000;
+                const wait = Math.pow(2, i) * 1500;
                 await new Promise(r => setTimeout(r, wait));
             }
         }
@@ -1854,12 +1853,12 @@ async function startServer() {
             console.log(`[Job ${jobId}] Tentativa de polling #${attempts} para taskId: ${taskId}`);
             try {
                 // Tentar primeiro o endpoint de status v1 que é mais comum para txt2audio
-                let pollRes = await fetch(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
+                let pollRes = await fetchWithRetry(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                 });
                 
                 if (!pollRes.ok) {
-                    pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
+                    pollRes = await fetchWithRetry(`${baseUrl}/api/v2/jobs/${taskId}`, {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     });
                 }
