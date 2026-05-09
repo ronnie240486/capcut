@@ -64,6 +64,33 @@ async function startServer() {
         }
     }
 
+    // Helper for fetch with exponential backoff for 429
+    async function fetchWithRetry(url: string, options: any, maxRetries = 3) {
+        let lastStatus = 0;
+        let lastBody = "";
+        
+        for (let i = 0; i <= maxRetries; i++) {
+            try {
+                const response = await fetch(url, options);
+                lastStatus = response.status;
+                
+                if (response.status === 429 && i < maxRetries) {
+                    const wait = Math.pow(2, i) * 2000; // 2s, 4s, 8s
+                    console.warn(`[Retry] Status 429 on ${url}. Waiting ${wait}ms before retry ${i + 1}/${maxRetries}`);
+                    await new Promise(r => setTimeout(r, wait));
+                    continue;
+                }
+                
+                return response;
+            } catch (e: any) {
+                if (i === maxRetries) throw e;
+                const wait = Math.pow(2, i) * 1000;
+                await new Promise(r => setTimeout(r, wait));
+            }
+        }
+        throw new Error(`Failed after ${maxRetries} retries. Last status: ${lastStatus}`);
+    }
+
     // Proxy para Freesound para evitar CORS
     app.get('/api/sound-search', async (req: any, res: any) => {
         let { q, key, page = 1 } = req.query;
@@ -1408,7 +1435,7 @@ async function startServer() {
 
             console.log(`[Deapi Image] Action: ${action || 'generation'} -> ${endpoint}`);
 
-            const response = await fetch(endpoint, {
+            const response = await fetchWithRetry(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1756,7 +1783,7 @@ async function startServer() {
                         };
                     }
 
-                    response = await fetch(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -1778,7 +1805,11 @@ async function startServer() {
                         break;
                     } else {
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        if (response.status === 429) {
+                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                        } else {
+                            lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        }
                         console.warn(`[Deapi Audio] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
@@ -2037,7 +2068,7 @@ async function startServer() {
                         };
                     }
 
-                    response = await fetch(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -2046,7 +2077,11 @@ async function startServer() {
                         break;
                     } else {
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        if (response.status === 429) {
+                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                        } else {
+                            lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        }
                         console.warn(`[Deapi Music] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
@@ -2179,7 +2214,7 @@ async function startServer() {
                         };
                     }
 
-                    response = await fetch(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -2188,7 +2223,11 @@ async function startServer() {
                         break;
                     } else {
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        if (response.status === 429) {
+                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                        } else {
+                            lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        }
                         console.warn(`[Deapi Transcribe] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
