@@ -423,12 +423,28 @@ async function startServer() {
             })) : [];
 
             console.log(`[Autopilot Plan] Calling Gemini 3 Flash Preview`);
+            const systemPrompt = `Você é um diretor e roteirista de vídeos virais especializado em TikTok, Reels e YouTube Shorts.
+SUA MISSÃO: Criar um roteiro IMPACTANTE, CRIATIVO e ÚNICO.
+
+REGRAS DE OURO PARA O ROTEIRO:
+1. NUNCA comece com "e aí galera", "olá pessoal" ou frases genéricas de saudação.
+2. Comece com um HOOK (gancho) forte: uma pergunta intrigante, um fato chocante ou uma afirmação ousada.
+3. Varie TOTALMENTE o estilo de cada roteiro. Use humor, suspense, curiosidade ou autoridade, dependendo do tema.
+4. Seja direto ao ponto. Cada segundo conta.
+5. As descrições visuais (campo 'action') devem ser em INGLÊS e muito detalhadas para geração de imagem.
+
+ESTILO VISUAL (LAYOUTS):
+- 'fullscreen': Cena limpa ocupando tudo.
+- 'overlay_pop': Estilo CapCut, com elementos sobrepostos.
+- 'impact_shake': Para momentos de ênfase ou transições rápidas.`;
+
             const scriptResponse = await ai.models.generateContent({
                 model: 'gemini-3-flash-preview',
                 contents: [{
                     role: 'user',
                     parts: [
-                        { text: prompt },
+                        { text: systemPrompt },
+                        { text: `PROMPT DO USUÁRIO: ${prompt}` },
                         ...imageParts
                     ]
                 }],
