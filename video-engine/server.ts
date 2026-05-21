@@ -227,6 +227,205 @@ async function startServer() {
     // ─── AUTOPILOT ROUTES ──────────────────────────────────────────────────────
     // Diagnostic - already at line 35
     
+    app.post('/api/ai/edit-image', async (req: any, res: any) => {
+        try {
+            const { image, mimeType, prompt, aspectRatio } = req.body;
+            const apiKey = getGeminiKey(req);
+            
+            if (!apiKey) return res.status(401).json({ error: "Chave Gemini não configurada." });
+            
+            const ai = new GoogleGenAI({ 
+                apiKey,
+                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+            });
+
+            const config: any = {};
+            if (aspectRatio) config.imageConfig = { aspectRatio: aspectRatio as any };
+
+            const result = await ai.models.generateContent({
+                model: 'gemini-2.5-flash-image',
+                config: Object.keys(config).length > 0 ? config : undefined,
+                contents: {
+                    role: 'user',
+                    parts: [
+                        { inlineData: { data: image, mimeType: mimeType || 'image/jpeg' } },
+                        { text: prompt }
+                    ]
+                }
+            });
+
+            let base64 = "";
+            for (const part of result.candidates?.[0]?.content?.parts || []) {
+                if (part.inlineData?.data) {
+                    base64 = part.inlineData.data;
+                    break;
+                }
+            }
+
+            if (!base64) return res.status(500).json({ error: "A IA não retornou uma imagem editada." });
+            res.json({ image: base64 });
+        } catch (e: any) {
+            console.error('[Gemini Edit Image] Failed:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post('/api/ai/remove-background', async (req: any, res: any) => {
+        try {
+            const { image, mimeType } = req.body;
+            const apiKey = getGeminiKey(req);
+            
+            if (!apiKey) return res.status(401).json({ error: "Chave Gemini não configurada." });
+            
+            const ai = new GoogleGenAI({ 
+                apiKey,
+                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+            });
+
+            const result = await ai.models.generateContent({
+                model: 'gemini-2.5-flash-image',
+                contents: {
+                    role: 'user',
+                    parts: [
+                        { inlineData: { data: image, mimeType: mimeType || 'image/jpeg' } },
+                        { text: "Remove the background from this image. Return ONLY the subject on a transparent background as an image." }
+                    ]
+                }
+            });
+
+            let base64 = "";
+            for (const part of result.candidates?.[0]?.content?.parts || []) {
+                if (part.inlineData?.data) {
+                    base64 = part.inlineData.data;
+                    break;
+                }
+            }
+
+            if (!base64) return res.status(500).json({ error: "A IA não retornou uma imagem com fundo removido." });
+            res.json({ image: base64 });
+        } catch (e: any) {
+            console.error('[Gemini Remove BG] Failed:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post('/api/ai/generate-video', async (req: any, res: any) => {
+        try {
+            const { prompt, aspectRatio, resolution, model, image, lastFrame } = req.body;
+            const apiKey = getGeminiKey(req);
+            if (!apiKey) return res.status(401).json({ error: "Chave Gemini não configurada." });
+            const ai = new GoogleGenAI({ apiKey });
+            const payload: any = {
+                model: model || 'veo-3.1-lite-generate-preview',
+                prompt,
+                config: { resolution: resolution || '720p', aspectRatio: aspectRatio || '16:9', numberOfVideos: 1 }
+            };
+            if (image) payload.image = { imageBytes: image, mimeType: 'image/png' };
+            if (lastFrame) payload.config.lastFrame = { imageBytes: lastFrame, mimeType: 'image/png' };
+
+            const operation = await ai.models.generateVideos(payload);
+            res.json({ operationName: operation.name });
+        } catch (e: any) {
+            console.error('[Gemini Video] Failed:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.get('/api/ai/video-status/:name', async (req: any, res: any) => {
+        try {
+            const apiKey = getGeminiKey(req);
+            const ai = new GoogleGenAI({ apiKey });
+            // Correct SDK usage: pass an object with an 'operation' property
+            const operation = await ai.operations.getVideosOperation({ 
+                operation: { name: req.params.name } as any 
+            });
+            res.json(operation);
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post('/api/ai/generate-image', async (req: any, res: any) => {
+        try {
+            const { prompt, aspectRatio } = req.body;
+            const apiKey = getGeminiKey(req);
+            const ai = new GoogleGenAI({ apiKey });
+            const result = await ai.models.generateContent({
+                model: "gemini-2.5-flash-image",
+                contents: [{ role: "user", parts: [{ text: prompt }] }],
+                config: { imageConfig: { aspectRatio: aspectRatio || "1:1" } } as any
+            });
+            let base64 = "";
+            for (const part of result.candidates?.[0]?.content?.parts || []) {
+                if (part.inlineData?.data) { base64 = part.inlineData.data; break; }
+            }
+            res.json({ image: base64 });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post('/api/ai/generate-music', async (req: any, res: any) => {
+        try {
+            const { prompt, usePro } = req.body;
+            const apiKey = getGeminiKey(req);
+            const ai = new GoogleGenAI({ apiKey });
+            const model = usePro ? "google/lyria-3-pro-preview" : "google/lyria-3-clip-preview";
+            const response = await ai.models.generateContentStream({
+                model,
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                config: { responseModalities: [Modality.AUDIO] } as any
+            });
+            let audioBase64 = "";
+            for await (const chunk of response) {
+                for (const part of chunk.candidates?.[0]?.content?.parts || []) {
+                    if (part.inlineData?.data) audioBase64 += part.inlineData.data;
+                }
+            }
+            res.json({ audio: audioBase64 });
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post('/api/ai/transcribe', async (req: any, res: any) => {
+        try {
+            const { audio, mimeType } = req.body;
+            const apiKey = getGeminiKey(req);
+            const ai = new GoogleGenAI({ apiKey });
+            const prompt = `Transcreva este áudio. Retorne APENAS um JSON: {"text": "texto completo", "timestamps": [{"start": 0.0, "end": 2.0, "text": "fala 1"}]}`;
+            const result = await ai.models.generateContent({
+                model: "gemini-3-flash-preview",
+                contents: [{ role: "user", parts: [{ inlineData: { data: audio, mimeType } }, { text: prompt }] }],
+                config: { responseMimeType: "application/json" } as any
+            });
+            res.json(JSON.parse(result.text || "{}"));
+        } catch (e: any) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    app.post('/api/ai/completion', async (req: any, res: any) => {
+        try {
+            const { messages, model, config } = req.body;
+            const apiKey = getGeminiKey(req);
+            const ai = new GoogleGenAI({ apiKey });
+            const contents = messages.map((m: any) => ({
+                role: m.role === 'assistant' ? 'model' : m.role,
+                parts: Array.isArray(m.content) ? m.content : [{ text: String(m.content) }]
+            }));
+            const result = await ai.models.generateContent({
+                model: model || "gemini-3-flash-preview",
+                contents,
+                config
+            });
+            res.json({ text: result.text });
+        } catch (e: any) {
+            console.error("[Gemini Completion Error]", e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
     app.post('/api/autopilot/generate-plan', async (req: any, res: any) => {
         console.log("[Autopilot] generate-plan request received");
         try {
@@ -684,7 +883,8 @@ async function startServer() {
 
         const deapi_key = process.env.DEAPI_API_KEY || '';
         if (!deapi_key) {
-           console.error("[Backend] CRITICAL: DEAPI_API_KEY IS NOT CONFIGURED!");
+           // Only log if we are actually about to use a Deapi feature
+           // For now, removing the redundant log here since specific endpoints handle it
         }
 
         // Optimization for long videos (2h+)
@@ -1017,8 +1217,8 @@ async function startServer() {
                         model: mappedModel,
                         width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
                         height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
-                        frames: frames || 121, 
-                        fps: fps || 24,
+                        frames: Math.min(frames || 120, 120), 
+                        fps: Math.max(fps || 30, 30),
                         steps: 1,   
                         seed: parseInt(randomSeed),
                         include_audio: mappedModel.includes('ltx-video-v2.0') || mappedModel.includes('ltx-2-19b') || !!format,
@@ -1502,7 +1702,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription, refText, ref_text } = req.body;
+        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription, refText, ref_text, retries } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
         const resolvedType = type || 'speech';
         const resolvedLang = text || targetLanguage || 'pt-br';
@@ -1782,7 +1982,7 @@ async function startServer() {
                         };
                     }
 
-                    response = await fetchWithRetry(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions, retries ? Number(retries) : 5);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -1907,7 +2107,7 @@ async function startServer() {
             prompt, model, duration, apiKey, 
             lyrics, vocalLanguage, 
             steps, seed, guidanceScale: userGuidance, 
-            outputFormat, referenceAudio 
+            outputFormat, referenceAudio, retries
         } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
 
@@ -2067,7 +2267,7 @@ async function startServer() {
                         };
                     }
 
-                    response = await fetchWithRetry(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions, retries ? Number(retries) : 5);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -2112,7 +2312,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { url, file, audioUrl, audioFile, apiKey } = req.body;
+        const { url, file, audioUrl, audioFile, apiKey, retries } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
 
         if (!deapiKey) {
@@ -2213,7 +2413,7 @@ async function startServer() {
                         };
                     }
 
-                    response = await fetchWithRetry(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions, retries ? Number(retries) : 5);
 
                     if (response.ok) {
                         const data: any = await response.json();
