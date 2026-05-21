@@ -53,13 +53,25 @@ export default {
         const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
         const targetFps = parseInt(exportConfig.fps) || 30;
         
+        // Flatten unified clips (children) to ensure all segments are processed
+        const flatClips = clips.flatMap(c => 
+            (c.children && c.children.length > 0) 
+            ? c.children.map(child => ({
+                ...child,
+                id: `${c.id}_child_${child.id}`,
+                track: c.track, // Children inherit track from parent
+                start: c.start + (child.start || 0)
+            })) 
+            : [c]
+        );
+
         const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
 
-        const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + (parseFloat(c.duration) || 5)), 0);
+        const maxClipEnd = flatClips.reduce((max, c) => Math.max(max, c.start + (parseFloat(c.duration) || 5)), 0);
         const projectDuration = Math.max(explicitTotalDuration, maxClipEnd, 1);
 
-        const mainTrackClips = clips.filter(c => c.track === 'video').sort((a, b) => a.start - b.start);
-        const overlayClips = clips.filter(c => {
+        const mainTrackClips = flatClips.filter(c => c.track === 'video').sort((a, b) => a.start - b.start);
+        const overlayClips = flatClips.filter(c => {
             const track = String(c.track || '').toLowerCase();
             return ['text', 'subtitle', 'overlay', 'sticker', 'camada'].some(t => track.includes(t));
         }).sort((a, b) => {
@@ -78,7 +90,7 @@ export default {
             return a.start - b.start;
         });
 
-        const audioClips = clips.filter(c => 
+        const audioClips = flatClips.filter(c => 
             ['audio', 'narration', 'music', 'sfx'].includes(c.track) ||
             (c.type === 'audio' && !['video', 'camada', 'camada2', 'camada3', 'text'].includes(c.track))
         );
@@ -248,7 +260,7 @@ export default {
                         currentVideoTime = actualOffset + nextClip.duration;
                     } else {
                         const overlayLabelV = `ovm_v_${i}`;
-                        filterChain += `${currentMixV}${nextClip.label}overlay=enable='gt(t,${currentVideoTime})':eof_action=pass[${overlayLabelV}];`;
+                        filterChain += `${currentMixV}${nextClip.label}overlay=format=auto:enable='gt(t,${currentVideoTime})':eof_action=pass[${overlayLabelV}];`;
                         currentVideoTime += nextClip.duration;
                         currentMixV = `[${overlayLabelV}]`;
                         // Note: Audio sync is already handled by the pre-loop above using absolute start times
