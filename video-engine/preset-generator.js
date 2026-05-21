@@ -339,7 +339,7 @@ export default {
             } else if (id.includes('pulse')) {
                 postFilters.push(`boxblur=luma_radius='${blurVal/2}*(1+sin(2*PI*t*${speed}))':luma_power=1`);
             } else if (id.includes('zoom')) {
-                z = `min(zoom+${0.005 * speed},1.8)`;
+                z = `min(1+${0.005 * fps * speed}*t,1.8)`;
                 postFilters.push(`boxblur=luma_radius=${Math.round(5 * intensity)}:luma_power=1`);
             } else if (id.includes('motion')) {
                 postFilters.push(`boxblur=luma_radius=${Math.round(8 * intensity)}:luma_power=1`);
@@ -445,7 +445,7 @@ export default {
             z = '1.1';
             postFilters.push(`eq=eval=frame:brightness='${0.2 * intensity}+${0.2 * intensity}*sin(${10 * speed}*t)'`);
         } else if (isImage && !id) {
-            z = `min(zoom+0.0015,1.5)`; 
+            z = `min(1+0.0015*${fps}*t,1.5)`; 
         }
 
         // Apply movement using scale+crop instead of zoompan for better stability and stream support
