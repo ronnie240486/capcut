@@ -1120,7 +1120,9 @@ async function startServer() {
 
         const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, frames, fps, format, sample_rate, speed } = req.body;
         
-        if (model && model.startsWith('deapi-')) {
+        console.log(`[AI Video] Request received. Model: ${model}, Provider check...`);
+
+        if (model && (model.startsWith('deapi-') || model.includes('ltx-') || model.includes('animate-diff') || model.includes('svd'))) {
             const deapiModel = model.replace('deapi-', '');
             const deapiKey = apiKey || getDeapiKey(req);
 
