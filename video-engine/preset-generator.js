@@ -96,7 +96,7 @@ export default {
             'noir': 'hue=s=0,eq=contrast=1.5:brightness=-0.1',
             'vintage-warm': 'colorbalance=rs=0.3:gs=0:bs=-0.3,eq=saturation=0.8:contrast=1.1',
             'cyberpunk': 'eq=contrast=1.4:saturation=2,colorbalance=rs=0.2:bs=0.3',
-            'dreamy-blur': 'gblur=sigma=2,eq=brightness=0.1:saturation=1.2',
+            'dreamy-blur': 'gblur=sigma=20,eq=brightness=0.1:saturation=1.2',
             'morpheus-glass': 'gblur=sigma=1:steps=1,vignette=angle=PI/6', 
             'morpheus-ether': 'colorbalance=rs=0.1:gs=0.2:bs=0.3,vignette=angle=PI/3',
             'morpheus-neon': 'curves=preset=vintage,eq=saturation=1.5',
@@ -474,7 +474,7 @@ export default {
         const validPF = postFilters.filter(f => f && f.trim().length > 0);
         const finalFilterChain = [zoomPanFilter, ...validPF].filter(Boolean).join(',');
         
-        return finalFilterChain ? `${finalFilterChain},format=yuv420p` : null;
+        return finalFilterChain ? `${finalFilterChain},format=${isOverlay ? 'yuva420p' : 'yuv420p'}` : null;
     },
 
     getTransitionXfade: (id) => {
