@@ -176,7 +176,10 @@ export default {
         let postFilters = [];
         
         // Handle moveId being an object or string
-        const id = typeof moveId === 'object' ? moveId?.type : (moveId || '');
+        let id = typeof moveId === 'object' ? moveId?.type : (moveId || '');
+        // Normalize IDs: convert underscores to hyphens and remove common prefixes for better matching
+        id = id.replace(/_/g, '-');
+        
         const actualConfig = typeof moveId === 'object' ? { ...config, ...(moveId?.config || {}) } : config;
         const speed = actualConfig.speed || 1;
         const intensity = actualConfig.intensity || 1;
@@ -212,13 +215,13 @@ export default {
             z = `1.1 + ${0.4 * intensity}*${eased}`;
             x = `iw/2-(iw/zoom/2)`;
             y = `ih/2-(ih/zoom/2)`;
-        } else if (id === 'zoom-in' || id === 'zoom-in-slow') {
+        } else if (id === 'zoom-in' || id === 'zoom-in-slow' || id === 'zoom-slow-in' || id === 'zoom-fast-in') {
             const progress = `(t/${durationSec})`;
             const eased = `(3*pow(${progress},2)-2*pow(${progress},3))`;
             z = `1.1 + ${0.5 * intensity}*${eased}`;
             x = `iw/2-(iw/zoom/2)`;
             y = `ih/2-(ih/zoom/2)`;
-        } else if (id === 'zoom-out' || id === 'zoom-out-slow') {
+        } else if (id === 'zoom-out' || id === 'zoom-out-slow' || id === 'zoom-slow-out' || id === 'zoom-fast-out') {
             const progress = `(t/${durationSec})`;
             const eased = `(3*pow(${progress},2)-2*pow(${progress},3))`;
             z = `1.6 - ${0.5 * intensity}*${eased}`;
@@ -236,8 +239,8 @@ export default {
             y = `ih/2-(ih/zoom/2)`;
         } else if (id.includes('zoom') || id === 'dolly-zoom' || id === 'mov-dolly-vertigo') {
             const progress = `(t/${durationSec})`;
-            if (id.includes('zoom-in')) z = `1.1 + ${0.8 * intensity}*${progress}`;
-            else if (id.includes('zoom-out')) z = `2.0 - ${0.8 * intensity}*${progress}`;
+            if (id.includes('zoom-in') || id.includes('zoom-slow-in') || id.includes('zoom-fast-in')) z = `1.1 + ${0.8 * intensity}*${progress}`;
+            else if (id.includes('zoom-out') || id.includes('zoom-slow-out')) z = `2.0 - ${0.8 * intensity}*${progress}`;
             else if (id.includes('crash-in')) z = `1.1 + ${3.5 * intensity}*pow(${progress},2)`;
             else if (id.includes('crash-out')) z = `5.0 - ${4.0 * intensity}*pow(${progress},2)`;
             else if (id.includes('pulse')) z = `1.2 + ${0.15 * intensity}*sin(PI*${progress})`;
@@ -281,22 +284,24 @@ export default {
         } else if (id === 'mov-digital-tear') {
             z = '1.1';
             postFilters.push(`geq=r='if(gt(sin(Y/10+t*10),0),p(X+${20 * intensity},Y),p(X,Y))':g='p(X,Y)':b='if(lt(sin(Y/10+t*10),0),p(X-${20 * intensity},Y),p(X,Y))'`);
-        } else if (id.includes('mov-pan-')) {
+        } else if (id.includes('mov-pan-') || id.includes('pan-')) {
             z = '1.3'; 
             const dur = actualConfig.duration || durationSec;
             const progress = `(min(1,t/${dur}))`;
             const rightX = '(iw-ow)';
             const bottomY = '(ih-oh)';
-            if (id.includes('slow-l')) x = `${rightX} - (${rightX})*${progress}`; 
-            else if (id.includes('slow-r')) x = `(${rightX})*${progress}`;
-            else if (id.includes('slow-u')) y = `${bottomY} - (${bottomY})*${progress}`;
-            else if (id.includes('slow-d')) y = `(${bottomY})*${progress}`;
+            if (id.includes('slow-l') || id.includes('pan-left')) x = `${rightX} - (${rightX})*${progress}`; 
+            else if (id.includes('slow-r') || id.includes('pan-right')) x = `(${rightX})*${progress}`;
+            else if (id.includes('slow-u') || id.includes('pan-up')) y = `${bottomY} - (${bottomY})*${progress}`;
+            else if (id.includes('slow-d') || id.includes('pan-down')) y = `(${bottomY})*${progress}`;
             else if (id.includes('fast-l')) x = `${rightX} - (${rightX})*(min(1,1.5*${progress}))`;
             else if (id.includes('fast-r')) x = `(${rightX})*(min(1,1.5*${progress}))`;
             else if (id.includes('diag-tl')) { x = `${rightX}*(1-${progress})`; y = `${bottomY}*(1-${progress})`; }
             else if (id.includes('diag-tr')) { x = `${rightX}*${progress}`; y = `${bottomY}*(1-${progress})`; }
             else if (id.includes('diag-bl')) { x = `${rightX}*(1-${progress})`; y = `${bottomY}*${progress}`; }
             else if (id.includes('diag-br')) { x = `${rightX}*${progress}`; y = `${bottomY}*${progress}`; }
+            else if (id.includes('left')) x = `${rightX} - (${rightX})*${progress}`;
+            else if (id.includes('right')) x = `(${rightX})*${progress}`;
         } else if (id === 'mov-glitch-vortex') {
             z = '1.3';
             postFilters.push(`lenscorrection=k1=${0.2 * intensity}*sin(${speed}*t)`);
