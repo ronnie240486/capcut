@@ -56,12 +56,32 @@ export default {
         // Flatten unified clips (children) to ensure all segments are processed
         const flatClips = clips.flatMap(c => 
             (c.children && c.children.length > 0) 
-            ? c.children.map(child => ({
-                ...child,
-                id: `${c.id}_child_${child.id}`,
-                track: c.track, // Children inherit track from parent
-                start: c.start + (child.start || 0)
-            })) 
+            ? c.children.map(child => {
+                const childProps = child.properties || {};
+                const parentProps = c.properties || {};
+                
+                // Deep merge transform if it exists
+                const mergedTransform = {
+                    ...(parentProps.transform || {}),
+                    ...(childProps.transform || {})
+                };
+
+                return {
+                    ...child,
+                    id: `${c.id}_child_${child.id}`,
+                    track: child.track || c.track, // Prioritize child track if set, otherwise inherit from parent
+                    start: c.start + (child.start || 0),
+                    // Inherit properties but favor child ones
+                    properties: {
+                        ...parentProps,
+                        ...childProps,
+                        transform: mergedTransform
+                    },
+                    // Inherit transition and effect
+                    transition: child.transition || c.transition,
+                    effect: child.effect || c.effect
+                };
+            }) 
             : [c]
         );
 
@@ -420,7 +440,8 @@ export default {
 
             const nextCompLabel = `comp_${i}`;
             const startTime = parseFloat(clip.start.toFixed(4));
-            const endTime = parseFloat((startTime + clip.duration).toFixed(4));
+            const duration = parseFloat((clip.duration || 1).toFixed(4));
+            const endTime = parseFloat((startTime + duration).toFixed(4));
             
             let overlayX = '(W-w)/2';
             let overlayY = '(H-h)/2';
