@@ -133,7 +133,10 @@ export default {
                     currentV = `[${nextLabel}]`;
                 };
 
-                addFilter(SCALE_FILTER);
+                const fitMode = clip.properties?.fit || 'contain';
+                const forceRatio = fitMode === 'cover' ? 'increase' : 'decrease';
+                const currentScaleFilter = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=${forceRatio}:flags=fast_bilinear,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
+                addFilter(currentScaleFilter);
 
                 if (clip.type !== 'image') {
                     const start = clip.mediaStartOffset || 0;
@@ -262,7 +265,7 @@ export default {
     
     if (mainTrackVideoStream) {
         const compLabel = `comp_base`;
-        filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
+        filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=format=auto:x=0:y=0:eof_action=pass[${compLabel}];`;
         finalComp = `[${compLabel}]`;
     }
 
@@ -287,6 +290,10 @@ export default {
                  
                  let x = '(w-text_w)/2';
                  let y = '(h-text_h)/2';
+                 
+                 if (clip.track === 'subtitle') {
+                     y = `(h-text_h)-${Math.round(80 * scaleFactor)}`;
+                 }
                  
                  if (clip.properties.transform) {
                      const t = clip.properties.transform;
@@ -313,13 +320,20 @@ export default {
                      }
                  }
 
+                 const escapeColor = (col) => {
+                     if (!col) return 'black';
+                     // FFmpeg's drawtext filter parsing is sensitive to commas in rgba() when part of a filter_complex
+                     // We escape commas and parentheses for safety.
+                     return col.replace(/,/g, '\\,').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+                 };
+
                  if (clip.properties.textDesign?.stroke) {
                      const s = clip.properties.textDesign.stroke;
-                     if (s.width > 0) styles += `:borderw=${s.width * scaleFactor}:bordercolor=${s.color || 'black'}`;
+                     if (s.width > 0) styles += `:borderw=${s.width * scaleFactor}:bordercolor=${escapeColor(s.color || 'black')}`;
                  }
                  if (clip.properties.textDesign?.shadow) {
                      const sh = clip.properties.textDesign.shadow;
-                     if (sh.x || sh.y) styles += `:shadowx=${(sh.x || 2) * scaleFactor}:shadowy=${(sh.y || 2) * scaleFactor}:shadowcolor=${sh.color || 'black@0.5'}`;
+                     if (sh.x || sh.y) styles += `:shadowx=${(sh.x || 2) * scaleFactor}:shadowy=${(sh.y || 2) * scaleFactor}:shadowcolor=${escapeColor(sh.color || 'black@0.5')}`;
                  }
                  
                  const fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"; 
@@ -408,7 +422,7 @@ export default {
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
             // Removed redundant fifo buffer per overlay to save memory on Cloud Run
-            filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
+            filterChain += `${finalComp}[${shiftedLabel}]overlay=format=auto:x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
 
