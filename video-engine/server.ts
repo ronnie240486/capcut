@@ -309,28 +309,6 @@ async function startServer() {
         }
     });
 
-    app.post('/api/ai/generate-video', async (req: any, res: any) => {
-        try {
-            const { prompt, aspectRatio, resolution, model, image, lastFrame } = req.body;
-            const apiKey = getGeminiKey(req);
-            if (!apiKey) return res.status(401).json({ error: "Chave Gemini não configurada." });
-            const ai = new GoogleGenAI({ apiKey });
-            const payload: any = {
-                model: model || 'veo-3.1-lite-generate-preview',
-                prompt,
-                config: { resolution: resolution || '720p', aspectRatio: aspectRatio || '16:9', numberOfVideos: 1 }
-            };
-            if (image) payload.image = { imageBytes: image, mimeType: 'image/png' };
-            if (lastFrame) payload.config.lastFrame = { imageBytes: lastFrame, mimeType: 'image/png' };
-
-            const operation = await ai.models.generateVideos(payload);
-            res.json({ operationName: operation.name });
-        } catch (e: any) {
-            console.error('[Gemini Video] Failed:', e);
-            res.status(500).json({ error: e.message });
-        }
-    });
-
     app.get('/api/ai/video-status/:name', async (req: any, res: any) => {
         try {
             const apiKey = getGeminiKey(req);
