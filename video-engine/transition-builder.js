@@ -133,7 +133,10 @@ export default {
                     currentV = `[${nextLabel}]`;
                 };
 
-                addFilter(SCALE_FILTER);
+                const fitMode = clip.properties?.fit || 'contain';
+                const forceRatio = fitMode === 'cover' ? 'increase' : 'decrease';
+                const currentScaleFilter = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=${forceRatio}:flags=fast_bilinear,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
+                addFilter(currentScaleFilter);
 
                 if (clip.type !== 'image') {
                     const start = clip.mediaStartOffset || 0;
@@ -262,7 +265,7 @@ export default {
     
     if (mainTrackVideoStream) {
         const compLabel = `comp_base`;
-        filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
+        filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=format=auto:x=0:y=0:eof_action=pass[${compLabel}];`;
         finalComp = `[${compLabel}]`;
     }
 
@@ -419,7 +422,7 @@ export default {
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
             // Removed redundant fifo buffer per overlay to save memory on Cloud Run
-            filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
+            filterChain += `${finalComp}[${shiftedLabel}]overlay=format=auto:x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
 
