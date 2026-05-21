@@ -85,7 +85,7 @@ export default {
             : [c]
         );
 
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
 
         const maxClipEnd = flatClips.reduce((max, c) => Math.max(max, c.start + (parseFloat(c.duration) || 5)), 0);
         const projectDuration = Math.max(explicitTotalDuration, maxClipEnd, 1);
@@ -119,7 +119,7 @@ export default {
         let baseVideoStream = '[bg_base]';
         const bgFile = fileMap['background']; 
         if (bgFile) {
-             inputs.push('-loop', '1', '-t', projectDuration.toString(), '-s', `${targetRes.w}x${targetRes.h}`, '-i', bgFile);
+             inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', bgFile);
              const bgIdx = inputIndexCounter++;
              filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
         } else {
@@ -150,7 +150,8 @@ export default {
                 const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
 
                 if (clip.type === 'image') {
-                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-s', `${targetRes.w}x${targetRes.h}`, '-i', filePath); 
+                    // Removed -s to allow fit filters to handle aspect ratio correctly
+                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath); 
                 } else {
                     inputs.push('-i', filePath);
                 }
@@ -166,8 +167,11 @@ export default {
                 };
 
                 const fitMode = clip.properties?.fit || 'contain';
-                const forceRatio = fitMode === 'cover' ? 'increase' : 'decrease';
-                const currentScaleFilter = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=${forceRatio}:flags=fast_bilinear,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
+                const fitFilter = fitMode === 'cover' 
+                    ? `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,crop=${targetRes.w}:${targetRes.h}`
+                    : `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,pad=${targetRes.w}:${targetRes.h}:(ow-iw)/2:(oh-ih)/2:color=black`;
+                
+                const currentScaleFilter = `${fitFilter}:flags=fast_bilinear,setsar=1,fps=${targetFps},format=yuv420p`;
                 addFilter(currentScaleFilter);
 
                 if (clip.type !== 'image') {
@@ -301,7 +305,7 @@ export default {
         finalComp = `[${compLabel}]`;
     }
 
-    overlayClips.forEach((clip, i) => {
+        overlayClips.forEach((clip, i) => {
             let overlayInputLabel = '';
             
             if (clip.type === 'text') {
