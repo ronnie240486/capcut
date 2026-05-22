@@ -36,11 +36,33 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
         let media = {};
         let exportConfig = {};
 
+        const fps = parseInt(exportConfig.fps) || 30;
+        const fileMap = {};
+
         if (plan) {
             const p = JSON.parse(plan);
             const stockFilesParsed = job.params.stockFiles ? JSON.parse(job.params.stockFiles) : [];
             const assembledClips = [];
             
+            // Handle Background Music if present in plan
+            if (p.bgMusic) {
+                const musicName = p.bgMusic.name || 'background_music.mp3';
+                const musicFile = job.files.find(f => f.originalname === musicName || f.path.includes(musicName));
+                if (musicFile) {
+                    assembledClips.push({
+                        id: 'magic_bg_music',
+                        type: 'audio',
+                        track: 'music',
+                        fileName: musicName,
+                        start: 0,
+                        duration: 9999, // Will be trimmed by buildTimeline
+                        properties: { volume: p.bgMusic.volume || 0.3 }
+                    });
+                    fileMap[musicName] = musicFile.path;
+                    media[musicName] = { type: 'audio' };
+                }
+            }
+
             p.scenes.forEach((s, i) => {
                 let fileName = '';
                 if (s.stockTopic) {
@@ -60,29 +82,82 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
                     fileName = job.files[s.fileIndex]?.originalname || '';
                 }
 
-                assembledClips.push({
-                    id: `magic_${i}`,
-                    fileName: fileName,
-                    start: s.startTime,
-                    duration: s.duration,
-                    effects: s.filter ? [s.filter] : [],
-                    transition: s.transition || 'fade',
-                    track: 'video'
-                });
+                const layout = s.layout || 'fullscreen';
+                const startTime = s.startTime || (i === 0 ? 0 : assembledClips.reduce((max, c) => Math.max(max, c.start + (c.duration || 0)), 0));
 
-                if (s.subtitles) {
+                if (layout === 'overlay_pop') {
+                    // Background Layer
+                    assembledClips.push({
+                        id: `scene_bg_${i}`,
+                        fileName: fileName,
+                        start: startTime,
+                        duration: s.duration,
+                        effect: 'boxblur=luma_radius=20:luma_power=1,eq=brightness=-0.1',
+                        transition: s.transition || 'fade',
+                        track: 'video',
+                        properties: {
+                            movement: s.movement ? { type: s.movement, config: {} } : { type: 'kenBurns', config: {} },
+                            fit: 'cover'
+                        }
+                    });
+
+                    // Foreground Overlay Layer
+                    assembledClips.push({
+                        id: `scene_ov_${i}`,
+                        fileName: fileName,
+                        start: startTime,
+                        duration: s.duration,
+                        track: 'camada',
+                        properties: {
+                            transform: { scale: 0.8, x: 0, y: 0 },
+                            movement: s.movement ? { type: s.movement, config: {} } : null
+                        }
+                    });
+                } else if (layout === 'impact_shake') {
+                    assembledClips.push({
+                        id: `scene_impact_${i}`,
+                        fileName: fileName,
+                        start: startTime,
+                        duration: s.duration,
+                        effect: s.filter || null,
+                        transition: s.transition || 'fade',
+                        track: 'video',
+                        properties: {
+                            movement: { type: 'shake-hard', config: { intensity: 1.5, speed: 2 } },
+                            fit: 'cover'
+                        }
+                    });
+                } else {
+                    // Default Fullscreen
+                    assembledClips.push({
+                        id: `magic_${i}`,
+                        fileName: fileName,
+                        start: startTime,
+                        duration: s.duration,
+                        effect: s.filter || null,
+                        transition: s.transition || 'fade',
+                        track: 'video',
+                        properties: {
+                            movement: s.movement ? { type: s.movement, config: {} } : null,
+                            fit: 'cover'
+                        }
+                    });
+                }
+
+                const subtitleText = s.subtitle || s.subtitles;
+                if (subtitleText) {
                     assembledClips.push({
                         id: `magic_sub_${i}`,
                         type: 'text',
                         track: 'subtitle',
-                        start: s.startTime,
+                        start: s.startTime || (assembledClips[assembledClips.length-1]?.start || 0),
                         duration: s.duration,
                         properties: {
-                            text: s.subtitles,
+                            text: subtitleText,
                             textDesign: { 
                                 color: 'white', 
-                                stroke: { width: 2, color: 'black' },
-                                animation: { in: 'fade-in', out: 'fade-out', duration: 0.5 }
+                                stroke: { width: 4, color: 'black' },
+                                animation: { in: 'fade-in', out: 'fade-out', duration: 0.3 }
                             },
                             transform: { y: 280, scale: 0.75 }
                         }
@@ -113,21 +188,32 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
 
             clips = assembledClips;
             totalDuration = clips.reduce((sum, c) => Math.max(sum, c.start + (c.duration || 0)), 0);
-            job.files.forEach(f => media[f.originalname] = { type: 'video' });
+            job.files.forEach(f => {
+                if (!media[f.originalname]) {
+                    media[f.originalname] = { type: f.mimetype?.includes('audio') ? 'audio' : 'video' };
+                }
+            });
         } else if (projectState) {
-            const state = JSON.parse(projectState);
-            clips = state.clips;
-            media = state.media;
-            totalDuration = state.totalDuration;
+            let state;
+            try {
+                state = typeof projectState === 'string' ? JSON.parse(projectState) : projectState;
+            } catch (pErr) {
+                console.error("[Export] ProjectState parse error:", pErr);
+                throw new Error("Falha ao processar dados do projeto. O projeto pode ser muito grande ou estar corrompido.");
+            }
+            clips = state.clips || [];
+            media = state.media || {};
+            totalDuration = state.totalDuration || 0;
             exportConfig = state.exportConfig || {};
+            // Free memory from the massive projectState string after parsing
+            delete job.params.projectState;
         } else {
             throw new Error("Missing projectState or plan");
         }
 
-        const fps = parseInt(exportConfig.fps) || 30;
-        const fileMap = {};
         if (job.files && job.files.length > 0) {
             for (const f of job.files) {
+                if (fileMap[f.originalname]) continue;
                 const info = await validateAndProbe(f.path);
                 
                 if (info.isValid) {
@@ -187,44 +273,38 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
                 inputs.push('-i', narrationPath);
                 
                 // Mix narration into the final audio
-                // Use a safer label for the narration
                 const narrLabel = `narr_${Date.now()}`;
                 filterComplex += `;[${narrationIdx}:a]volume=1.8[${narrLabel}];${outputMapAudio}[${narrLabel}]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[mixeda]`;
                 outputMapAudio = '[mixeda]';
-                console.log(`[Export] Integrated narration file: ${narrationFile} at index ${narrationIdx}`);
-            } else {
-                console.warn(`[Export] Narration file invalid or missing audio: ${narrationFile}`);
             }
         }
+
+        const filterScriptPath = path.join(uploadDir, `filter_${job.id}.txt`);
+        fs.writeFileSync(filterScriptPath, filterComplex);
 
         const outputPath = path.join(uploadDir, `export_${Date.now()}.mp4`);
         job.outputPath = outputPath;
 
         const args = [
             ...inputs,
-            '-filter_complex', filterComplex,
+            '-filter_complex_script', filterScriptPath,
             '-map', outputMapVideo,
             '-map', outputMapAudio,
             
             '-c:v', 'libx264',
-            '-preset', 'superfast',
-            '-crf', '24',
-            '-x264-params', 'ref=1:bframes=0:rc-lookahead=0:weightp=0', // Minimum memory footprint
-            '-maxrate', '6M',
-            '-bufsize', '3M',
+            '-preset', 'ultrafast',
+            '-crf', '28', // Higher CRF = less memory/bitrate
             '-pix_fmt', 'yuv420p',
             '-r', String(fps),
-            '-vsync', 'cfr', // Use CFR for better stability on heavy timelines
-            '-max_muxing_queue_size', '1024',
-            '-profile:v', 'main',
-            '-level', '3.1',
+            '-vsync', 'cfr',
+            '-max_muxing_queue_size', '8192', // Much higher for 2h videos
             '-c:a', 'aac',
             '-b:a', '128k',
             '-ac', '2',
             '-ar', '44100',
-            '-tune', 'fastdecode',
             '-t', String(totalDuration + 0.1),
             '-movflags', '+faststart',
+            '-threads', '1', // STRICT limit to save memory on long renders
             '-y',
             outputPath
         ];
