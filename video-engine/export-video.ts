@@ -36,22 +36,66 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
         let media = {};
         let exportConfig = {};
 
+        const fps = parseInt(exportConfig.fps) || 30;
+        const fileMap = {};
+
         if (plan) {
             const p = JSON.parse(plan);
             const stockFilesParsed = job.params.stockFiles ? JSON.parse(job.params.stockFiles) : [];
             const assembledClips = [];
+
+            // Helper to find a file in job.files or stockFiles
+            const findFile = (name) => {
+                if (!name) return null;
+                // Check job.files (uploaded)
+                let f = job.files.find(fi => fi.originalname === name || fi.originalname.includes(name));
+                if (f) return f;
+                // Check stockFiles (downloaded by autopilot)
+                f = stockFilesParsed.find(si => si.originalname === name || si.originalname.includes(name));
+                return f;
+            };
             
+            // Handle Background Music if present in plan
+            if (p.bgMusic) {
+                const musicName = (typeof p.bgMusic === 'object' ? p.bgMusic.name : p.bgMusic) || 'background_music.mp3';
+                const musicFile = findFile(musicName);
+                if (musicFile) {
+                    assembledClips.push({
+                        id: 'magic_bg_music',
+                        type: 'audio',
+                        track: 'music',
+                        fileName: musicFile.originalname,
+                        start: 0,
+                        duration: 9999, // Will be trimmed by buildTimeline
+                        properties: { volume: (typeof p.bgMusic === 'object' ? (p.bgMusic.volume || 0.3) : 0.3) }
+                    });
+                    fileMap[musicFile.originalname] = musicFile.path;
+                    media[musicFile.originalname] = { type: 'audio' };
+                }
+            }
+
+            // Identify which stock files are NOT music to use them for scenes
+            const sceneStockFiles = stockFilesParsed.filter(s => {
+                const musicName = (typeof p.bgMusic === 'object' ? p.bgMusic.name : p.bgMusic);
+                return s.originalname !== musicName;
+            });
+
+            let lastEndTime = 0;
+            const getFileType = (name) => {
+                const ext = path.extname(name || '').toLowerCase();
+                if (['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'].includes(ext)) return 'image';
+                if (['.mp4', '.mov', '.avi', '.mkv', '.webm', '.ts'].includes(ext)) return 'video';
+                return 'video'; // Default
+            };
+
             p.scenes.forEach((s, i) => {
                 let fileName = '';
                 if (s.stockTopic) {
-                    const stock = stockFilesParsed.shift();
+                    const stock = sceneStockFiles.shift();
                     if (stock) {
                         fileName = stock.originalname;
                         if (!job.files.some(f => f.originalname === fileName)) {
-                            job.files.push({
-                                originalname: fileName,
-                                path: stock.path
-                            });
+                            fileMap[fileName] = stock.path; // Ensure it's in the map
                         }
                     }
                 }
@@ -60,13 +104,17 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
                     fileName = job.files[s.fileIndex]?.originalname || '';
                 }
 
+                const fileType = getFileType(fileName);
                 const layout = s.layout || 'fullscreen';
-                const startTime = s.startTime || (i === 0 ? 0 : assembledClips.reduce((max, c) => Math.max(max, c.start + (c.duration || 0)), 0));
+                const startTime = s.startTime !== undefined ? s.startTime : lastEndTime;
+                const duration = s.duration || 5;
+                lastEndTime = startTime + duration;
 
                 if (layout === 'overlay_pop') {
                     // Background Layer
                     assembledClips.push({
                         id: `scene_bg_${i}`,
+                        type: fileType,
                         fileName: fileName,
                         start: startTime,
                         duration: s.duration,
@@ -82,6 +130,7 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
                     // Foreground Overlay Layer
                     assembledClips.push({
                         id: `scene_ov_${i}`,
+                        type: fileType,
                         fileName: fileName,
                         start: startTime,
                         duration: s.duration,
@@ -94,6 +143,7 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
                 } else if (layout === 'impact_shake') {
                     assembledClips.push({
                         id: `scene_impact_${i}`,
+                        type: fileType,
                         fileName: fileName,
                         start: startTime,
                         duration: s.duration,
@@ -109,6 +159,7 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
                     // Default Fullscreen
                     assembledClips.push({
                         id: `magic_${i}`,
+                        type: fileType,
                         fileName: fileName,
                         start: startTime,
                         duration: s.duration,
@@ -166,7 +217,11 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
 
             clips = assembledClips;
             totalDuration = clips.reduce((sum, c) => Math.max(sum, c.start + (c.duration || 0)), 0);
-            job.files.forEach(f => media[f.originalname] = { type: 'video' });
+            job.files.forEach(f => {
+                if (!media[f.originalname]) {
+                    media[f.originalname] = { type: f.mimetype?.includes('audio') ? 'audio' : 'video' };
+                }
+            });
         } else if (projectState) {
             let state;
             try {
@@ -185,10 +240,9 @@ export const handleExportVideo = async (job, uploadDir, onStart) => {
             throw new Error("Missing projectState or plan");
         }
 
-        const fps = parseInt(exportConfig.fps) || 30;
-        const fileMap = {};
         if (job.files && job.files.length > 0) {
             for (const f of job.files) {
+                if (fileMap[f.originalname]) continue;
                 const info = await validateAndProbe(f.path);
                 
                 if (info.isValid) {
