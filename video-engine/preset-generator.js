@@ -112,6 +112,7 @@ export default {
             'warm': 'colorbalance=rs=0.1:bs=-0.1,eq=saturation=1.1',
             'cool': 'colorbalance=bs=0.1:rs=-0.1,eq=saturation=1.1',
             'vivid': 'eq=saturation=1.5:contrast=1.1',
+            'sharp': 'unsharp=5:5:1.5:5:5:0.0,eq=contrast=1.1',
             'mono': 'hue=s=0',
             'vintage': 'sepia=0.6,eq=contrast=0.9:brightness=0.1',
             'vintage-cool': 'colorbalance=bs=0.3:rs=-0.2,eq=saturation=0.8:contrast=1.1',
@@ -211,22 +212,35 @@ export default {
             z = '1.15';
         } else if (id === 'ken-burns' || id === 'kenburns' || id === 'kenBurns') {
             const progress = `(t/${durationSec})`;
-            const eased = `(3*pow(${progress},2)-2*pow(${progress},3))`;
-            z = `1.1 + ${0.4 * intensity}*${eased}`;
-            x = `iw/2-(iw/zoom/2)`;
-            y = `ih/2-(ih/zoom/2)`;
+            z = `1.1 + ${0.4 * intensity}*${progress}`;
+            x = `iw/2-(iw/zoom/2) - (iw/8)*${progress}`;
+            y = `ih/2-(ih/zoom/2) - (ih/8)*${progress}`;
         } else if (id === 'zoom-in' || id === 'zoom-in-slow' || id === 'zoom-slow-in' || id === 'zoom-fast-in') {
             const progress = `(t/${durationSec})`;
-            const eased = `(3*pow(${progress},2)-2*pow(${progress},3))`;
-            z = `1.1 + ${0.5 * intensity}*${eased}`;
+            z = `1.0 + ${0.6 * intensity}*${progress}`;
             x = `iw/2-(iw/zoom/2)`;
             y = `ih/2-(ih/zoom/2)`;
         } else if (id === 'zoom-out' || id === 'zoom-out-slow' || id === 'zoom-slow-out' || id === 'zoom-fast-out') {
             const progress = `(t/${durationSec})`;
-            const eased = `(3*pow(${progress},2)-2*pow(${progress},3))`;
-            z = `1.6 - ${0.5 * intensity}*${eased}`;
+            z = `1.6 - ${0.6 * intensity}*${progress}`;
             x = `iw/2-(iw/zoom/2)`;
             y = `ih/2-(ih/zoom/2)`;
+        } else if (id === 'pan-left') {
+            const progress = `(t/${durationSec})`;
+            z = '1.2';
+            x = `iw/2-(iw/zoom/2) + (iw/10)*${progress}`;
+        } else if (id === 'pan-right') {
+            const progress = `(t/${durationSec})`;
+            z = '1.2';
+            x = `iw/2-(iw/zoom/2) - (iw/10)*${progress}`;
+        } else if (id === 'tilt-up') {
+            const progress = `(t/${durationSec})`;
+            z = '1.2';
+            y = `ih/2-(ih/zoom/2) + (ih/10)*${progress}`;
+        } else if (id === 'tilt-down') {
+            const progress = `(t/${durationSec})`;
+            z = '1.2';
+            y = `ih/2-(ih/zoom/2) - (ih/10)*${progress}`;
         } else if (id === 'zoom-crash-in') {
             const progress = `(t/${durationSec})`;
             z = `1.1 + ${3.0 * intensity}*pow(${progress},2)`;
@@ -453,27 +467,29 @@ export default {
             z = `min(1+0.0015*${fps}*t,1.5)`; 
         }
 
-        // Apply movement using scale+crop instead of zoompan for better stability and stream support
+        // Apply movement
         if (!isOverlay) {
             const zoomExpr = z;
-            const xExpr = x.replace(/zoom/g, zoomExpr).replace(/iw/g, `(iw*${zoomExpr})`).replace(/ih/g, `(ih*${zoomExpr})`);
-            const yExpr = y.replace(/zoom/g, zoomExpr).replace(/iw/g, `(iw*${zoomExpr})`).replace(/ih/g, `(ih*${zoomExpr})`);
+            // Simplified centering logic that works better with scale+crop
+            // We use min/max to ensure x and y stay within valid boundaries (crop filter fails if x<0 or x+ow > iw)
+            const rawX = x.replace('iw/2-(iw/zoom/2)', '0').replace('iw/2-(iw/zoom/2)'.replace(/\s+/g, ''), '0');
+            const rawY = y.replace('ih/2-(ih/zoom/2)', '0').replace('ih/2-(ih/zoom/2)'.replace(/\s+/g, ''), '0');
             
-            // Clean up expressions - in our scale+crop model:
-            // x = (iw - ow)/2 for centering
-            // After scale=w=iw*z:h=720*z, iw is the zoomed width, ow is target width (w)
-            const finalX = x.includes('iw/2') ? `(iw-${w})/2` : x.replace(/zoom/g, zoomExpr).replace(/iw/g, `(iw)`).replace(/ih/g, `(ih)`);
-            const finalY = y.includes('ih/2') ? `(ih-${h})/2` : y.replace(/zoom/g, zoomExpr).replace(/iw/g, `(iw)`).replace(/ih/g, `(ih)`);
+            const finalX = `min(max(0,(iw-ow)/2 + (${rawX})),iw-ow)`.replace(' + (0)', '').replace(' + 0', '');
+            const finalY = `min(max(0,(ih-oh)/2 + (${rawY})),ih-oh)`.replace(' + (0)', '').replace(' + 0', '');
 
             const scalePart = `scale=w='max(${w},trunc(iw*${zoomExpr}/2)*2)':h='max(${h},trunc(ih*${zoomExpr}/2)*2)':eval=frame`;
             const cropPart = `crop=w=${w}:h=${h}:x='${finalX}':y='${finalY}'`;
             
             zoomPanFilter = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},${scalePart},${cropPart}`;
         } else {
-            // Overlays use simpler transformations
+            // Overlays use simpler transformations to avoid issues with varying output dimensions
+            // We only apply scale for zoom, which the overlay filter handles naturally by centering
             if (z !== '1.0' && z !== '1') {
                 postFilters.push(`scale=w='trunc(iw*${z}/2)*2':h='trunc(ih*${z}/2)*2':eval=frame`);
             }
+            
+            // If movement includes rotation or other post-filters, they are already in postFilters
         }
         
         const validPF = postFilters.filter(f => f && f.trim().length > 0);
@@ -482,7 +498,8 @@ export default {
         return finalFilterChain ? `${finalFilterChain},format=${isOverlay ? 'yuva420p' : 'yuv420p'}` : null;
     },
 
-    getTransitionXfade: (id) => {
+    getTransitionXfade: (moveId) => {
+        const id = (moveId || 'fade').replace(/_/g, '-');
         const map = {
             'fade': 'fade', 'crossfade': 'fade', 'mix': 'fade', 'dissolve': 'dissolve',
             'blur-dissolve': 'distance', 'filter-blur': 'distance',
