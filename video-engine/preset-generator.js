@@ -191,7 +191,7 @@ export default {
         let x = centerX;
         let y = centerY;
 
-        const time = 't';
+        const time = 'it';
 
         if (id === 'pulse') {
             z = `1.1 + ${0.1 * intensity}*sin(2*PI*${time}*${speed})`;
@@ -209,38 +209,53 @@ export default {
         } else if (id === 'pendulum') {
             postFilters.push(`rotate=a='${0.15 * intensity} * sin(2 * PI * t * ${speed} / 2)':c=black@0:ow=iw:oh=ih`);
             z = '1.15';
-        } else if (id === 'ken-burns' || id === 'kenburns' || id === 'kenBurns') {
-            const progress = `(t/${durationSec})`;
-            const eased = `(3*pow(${progress},2)-2*pow(${progress},3))`;
-            z = `1.1 + ${0.4 * intensity}*${eased}`;
-            x = `iw/2-(iw/zoom/2)`;
-            y = `ih/2-(ih/zoom/2)`;
-        } else if (id === 'zoom-in' || id === 'zoom-in-slow') {
-            const progress = `(t/${durationSec})`;
+        } else if (id.includes('zoom-in') || id.includes('slow-in') || id.includes('fast-in')) {
+            const progress = `(${time}/${durationSec})`;
             const eased = `(3*pow(${progress},2)-2*pow(${progress},3))`;
             z = `1.1 + ${0.5 * intensity}*${eased}`;
             x = `iw/2-(iw/zoom/2)`;
             y = `ih/2-(ih/zoom/2)`;
-        } else if (id === 'zoom-out' || id === 'zoom-out-slow') {
-            const progress = `(t/${durationSec})`;
+        } else if (id.includes('zoom-out') || id.includes('slow-out') || id.includes('fast-out')) {
+            const progress = `(${time}/${durationSec})`;
             const eased = `(3*pow(${progress},2)-2*pow(${progress},3))`;
             z = `1.6 - ${0.5 * intensity}*${eased}`;
             x = `iw/2-(iw/zoom/2)`;
             y = `ih/2-(ih/zoom/2)`;
+        } else if (id === 'ken-burns' || id === 'kenburns' || id === 'kenBurns') {
+            const progress = `(${time}/${durationSec})`;
+            const eased = `(3*pow(${progress},2)-2*pow(${progress},3))`;
+            const { startScale = 1.0, endScale = 1.4, startX = 0, startY = 0, endX = 0, endY = 0 } = actualConfig;
+            z = `${startScale} + (${endScale - startScale}) * ${eased}`;
+            const sx = `(iw-iw/zoom)/2 + (${startX}*iw/100)`;
+            const ex = `(iw-iw/zoom)/2 + (${endX}*iw/100)`;
+            const sy = `(ih-ih/zoom)/2 + (${startY}*ih/100)`;
+            const ey = `(ih-ih/zoom)/2 + (${endY}*ih/100)`;
+            x = `${sx} + (${ex}-${sx})*${eased}`;
+            y = `${sy} + (${ey}-${sy})*${eased}`;
+        } else if (id === 'parallax') {
+            const progress = `(${time}/${durationSec})`;
+            const { intensity: pInt = 5, direction = 0 } = actualConfig;
+            const eased = `(sin(${progress}*PI))`;
+            z = `1.1 + ${0.15 * pInt / 5}*${eased}`;
+            const angle = direction * Math.PI / 180;
+            const dx = Math.cos(angle) * 50 * (pInt / 5);
+            const dy = Math.sin(angle) * 50 * (pInt / 5);
+            x = `(iw-iw/zoom)/2 + ${dx}*${eased}`;
+            y = `(ih-ih/zoom)/2 + ${dy}*${eased}`;
         } else if (id === 'zoom-crash-in') {
-            const progress = `(t/${durationSec})`;
+            const progress = `(${time}/${durationSec})`;
             z = `1.1 + ${3.0 * intensity}*pow(${progress},2)`;
             x = `iw/2-(iw/zoom/2)`;
             y = `ih/2-(ih/zoom/2)`;
         } else if (id === 'zoom-crash-out') {
-            const progress = `(t/${durationSec})`;
+            const progress = `(${time}/${durationSec})`;
             z = `4.5 - ${3.5 * intensity}*pow(${progress},2)`;
             x = `iw/2-(iw/zoom/2)`;
             y = `ih/2-(ih/zoom/2)`;
         } else if (id.includes('zoom') || id === 'dolly-zoom' || id === 'mov-dolly-vertigo') {
-            const progress = `(t/${durationSec})`;
-            if (id.includes('zoom-in')) z = `1.1 + ${0.8 * intensity}*${progress}`;
-            else if (id.includes('zoom-out')) z = `2.0 - ${0.8 * intensity}*${progress}`;
+            const progress = `(min(1,${time}/${durationSec}))`;
+            if (id.includes('zoom-in') || id.includes('slow-in') || id.includes('fast-in')) z = `1.1 + ${0.8 * intensity}*${progress}`;
+            else if (id.includes('zoom-out') || id.includes('slow-out') || id.includes('fast-out')) z = `2.0 - ${0.8 * intensity}*${progress}`;
             else if (id.includes('crash-in')) z = `1.1 + ${3.5 * intensity}*pow(${progress},2)`;
             else if (id.includes('crash-out')) z = `5.0 - ${4.0 * intensity}*pow(${progress},2)`;
             else if (id.includes('pulse')) z = `1.2 + ${0.15 * intensity}*sin(PI*${progress})`;
@@ -287,9 +302,9 @@ export default {
         } else if (id.includes('mov-pan-')) {
             z = '1.3'; 
             const dur = actualConfig.duration || durationSec;
-            const progress = `(min(1,t/${dur}))`;
-            const rightX = '(iw-ow)';
-            const bottomY = '(ih-oh)';
+            const progress = `(min(1,${time}/${dur}))`;
+            const rightX = '(iw-iw/zoom)';
+            const bottomY = '(ih-ih/zoom)';
             if (id.includes('slow-l')) x = `${rightX} - (${rightX})*${progress}`; 
             else if (id.includes('slow-r')) x = `(${rightX})*${progress}`;
             else if (id.includes('slow-u')) y = `${bottomY} - (${bottomY})*${progress}`;
@@ -448,25 +463,14 @@ export default {
             z = '1.1';
             postFilters.push(`eq=eval=frame:brightness='${0.2 * intensity}+${0.2 * intensity}*sin(${10 * speed}*t)'`);
         } else if (isImage && !id) {
-            z = `min(zoom+0.0015,1.5)`; 
+            z = `zoom+0.0015`; 
         }
 
-        // Apply movement using scale+crop instead of zoompan for better stability and stream support
+        // Use zoompan for better movement support and stability in FFmpeg
         if (!isOverlay) {
-            const zoomExpr = z;
-            const xExpr = x.replace(/zoom/g, zoomExpr).replace(/iw/g, `(iw*${zoomExpr})`).replace(/ih/g, `(ih*${zoomExpr})`);
-            const yExpr = y.replace(/zoom/g, zoomExpr).replace(/iw/g, `(iw*${zoomExpr})`).replace(/ih/g, `(ih*${zoomExpr})`);
-            
-            // Clean up expressions - in our scale+crop model:
-            // x = (iw - ow)/2 for centering
-            // After scale=w=iw*z:h=720*z, iw is the zoomed width, ow is target width (w)
-            const finalX = x.includes('iw/2') ? `(iw-${w})/2` : x.replace(/zoom/g, zoomExpr).replace(/iw/g, `(iw)`).replace(/ih/g, `(ih)`);
-            const finalY = y.includes('ih/2') ? `(ih-${h})/2` : y.replace(/zoom/g, zoomExpr).replace(/iw/g, `(iw)`).replace(/ih/g, `(ih)`);
-
-            const scalePart = `scale=w='max(${w},trunc(iw*${zoomExpr}/2)*2)':h='max(${h},trunc(ih*${zoomExpr}/2)*2)':eval=frame`;
-            const cropPart = `crop=w=${w}:h=${h}:x='${finalX}':y='${finalY}'`;
-            
-            zoomPanFilter = `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},${scalePart},${cropPart}`;
+            // zoompan expects 'it' for absolute time in some contexts, but also supports 'on'
+            // We use the expressions directly as they are now configured for zoompan
+            zoomPanFilter = `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${fps}`;
         } else {
             // Overlays use simpler transformations
             if (z !== '1.0' && z !== '1') {
@@ -534,4 +538,4 @@ export default {
         };
         return map[id] || 'fade';
     }
-};
+}
