@@ -191,7 +191,8 @@ export default {
         let x = centerX;
         let y = centerY;
 
-        const time = 'it';
+        // Use 'on' (frame number) for zoompan (main tracks) and 't' (time) for overlays
+        const time = isOverlay ? 't' : `(on/${fps})`;
 
         if (id === 'pulse') {
             z = `1.1 + ${0.1 * intensity}*sin(2*PI*${time}*${speed})`;
@@ -222,16 +223,26 @@ export default {
             x = `iw/2-(iw/zoom/2)`;
             y = `ih/2-(ih/zoom/2)`;
         } else if (id === 'ken-burns' || id === 'kenburns' || id === 'kenBurns') {
-            const progress = `(${time}/${durationSec})`;
+            const progress = `(min(1,${time}/${durationSec}))`;
             const eased = `(3*pow(${progress},2)-2*pow(${progress},3))`;
-            const { startScale = 1.0, endScale = 1.4, startX = 0, startY = 0, endX = 0, endY = 0 } = actualConfig;
-            z = `${startScale} + (${endScale - startScale}) * ${eased}`;
-            const sx = `(iw-iw/zoom)/2 + (${startX}*iw/100)`;
-            const ex = `(iw-iw/zoom)/2 + (${endX}*iw/100)`;
-            const sy = `(ih-ih/zoom)/2 + (${startY}*ih/100)`;
-            const ey = `(ih-ih/zoom)/2 + (${endY}*ih/100)`;
-            x = `${sx} + (${ex}-${sx})*${eased}`;
-            y = `${sy} + (${ey}-${sy})*${eased}`;
+            const sStart = parseFloat(actualConfig.startScale) || 1.0;
+            const sEnd = parseFloat(actualConfig.endScale) || 1.4;
+            const offStartX = parseFloat(actualConfig.startX) || 0;
+            const offStartY = parseFloat(actualConfig.startY) || 0;
+            const offEndX = parseFloat(actualConfig.endX) || 0;
+            const offEndY = parseFloat(actualConfig.endY) || 0;
+            
+            z = `${sStart} + (${sEnd - sStart}) * ${eased}`;
+            
+            // In zoompan, x and y are offsets in the input image.
+            // Center is (iw-iw/zoom)/2. We add offsets proportional to the view size.
+            const baseX = `(iw-iw/zoom)/2`;
+            const baseY = `(ih-ih/zoom)/2`;
+            const rangeX = `(iw/zoom)*${offEndX-offStartX}/100`;
+            const rangeY = `(ih/zoom)*${offEndY-offStartY}/100`;
+            
+            x = `clip(${baseX} + (iw/zoom)*${offStartX}/100 + ${rangeX}*${eased}, 0, iw-iw/zoom)`;
+            y = `clip(${baseY} + (ih/zoom)*${offStartY}/100 + ${rangeY}*${eased}, 0, ih-ih/zoom)`;
         } else if (id === 'parallax') {
             const progress = `(${time}/${durationSec})`;
             const { intensity: pInt = 5, direction = 0 } = actualConfig;
@@ -346,7 +357,7 @@ export default {
             const pSize = Math.max(2, Math.round(10 * intensity));
             postFilters.push(`scale=iw/${pSize}:-1,scale=${w}:${h}:flags=neighbor`);
         } else if (id === 'mov-spiral-zoom') {
-            z = `1.1 + ${0.7 * intensity}*t/${durationSec}`;
+            z = `1.1 + ${0.7 * intensity}*${time}/${durationSec}`;
             postFilters.push(`rotate=a='${speed}*t*t':c=black@0:ow=iw:oh=ih`);
         } else if (id.includes('blur') || id.includes('defocus')) {
             const blurVal = Math.max(1, Math.round(10 * intensity));
@@ -380,10 +391,10 @@ export default {
             else if (id.includes('float')) { z = `1.2 + ${0.2 * intensity}*sin(${speed}*${time})`; postFilters.push(`rotate=a='${0.05 * intensity}*sin(${speed}*${time})':c=black@0:ow=iw:oh=ih`); }
         } else if (id.includes('slide-in') || id === 'pop-in' || id === 'fade-in' || id === 'swing-in') {
             const dur = (actualConfig.duration || 1) / speed;
-            if (id === 'slide-in-left') { x = `(iw-ow)/2 - (iw)*(1-min(t/dur,1))`; z = '1.1'; }
-            else if (id === 'slide-in-right') { x = `(iw-ow)/2 + (iw)*(1-min(t/dur,1))`; z = '1.1'; }
-            else if (id === 'slide-in-bottom') { y = `(ih-oh)/2 + (ih)*(1-min(t/dur,1))`; z = '1.1'; }
-            else if (id === 'pop-in') { z = `if(lt(t,${dur}), max(0.1, t/${dur}), 1.1)`; }
+            if (id === 'slide-in-left') { x = `(iw-ow)/2 - (iw)*(1-min(${time}/dur,1))`; z = '1.1'; }
+            else if (id === 'slide-in-right') { x = `(iw-ow)/2 + (iw)*(1-min(${time}/dur,1))`; z = '1.1'; }
+            else if (id === 'slide-in-bottom') { y = `(ih-oh)/2 + (ih)*(1-min(${time}/dur,1))`; z = '1.1'; }
+            else if (id === 'pop-in') { z = `if(lt(${time},${dur}), max(0.1, ${time}/${dur}), 1.1)`; }
             else if (id === 'fade-in') { z = '1.1'; postFilters.push(`fade=t=in:st=0:d=${dur}`); }
             else if (id === 'swing-in') { z = '1.2'; postFilters.push(`rotate=a='if(lt(t,${dur}), -10*(1-t/${dur})*PI/180, 0)':c=black@0:ow=iw:oh=ih`); }
         } else if (id.includes('elastic') || id.includes('bounce') || id.includes('jelly') || id.includes('spring') || id.includes('squash') || id === 'mov-tada') {
@@ -454,8 +465,8 @@ export default {
             postFilters.push(`perspective=x0='iw/10*sin(t*${speed})':y0=0:x1='iw-iw/10*sin(t*${speed})':y1=0:x2=0:y2=ih:x3=iw:y3=ih`);
         } else if (id === 'mov-ai-cinematic-shake') {
             z = '1.15';
-            x = `${centerX} + ${10 * intensity}*sin(2*PI*t*${speed}/2)`;
-            y = `${centerY} + ${10 * intensity}*cos(2*PI*t*${speed}/1.5)`;
+            x = `${centerX} + ${10 * intensity}*sin(2*PI*${time}*${speed}/2)`;
+            y = `${centerY} + ${10 * intensity}*cos(2*PI*${time}*${speed}/1.5)`;
         } else if (id === 'photo-flash') {
             z = '1.12';
             postFilters.push(`eq=eval=frame:brightness='${0.3 * intensity}+${0.5 * intensity}*sin(${25 * speed}*t)'`);
@@ -466,11 +477,14 @@ export default {
             z = `zoom+0.0015`; 
         }
 
-        // Use zoompan for better movement support and stability in FFmpeg
         if (!isOverlay) {
-            // zoompan expects 'it' for absolute time in some contexts, but also supports 'on'
-            // We use the expressions directly as they are now configured for zoompan
-            zoomPanFilter = `zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${fps}`;
+            // Ensure x and y are clipped to valid ranges for zoompan to prevent crashes
+            // Center default if not already a complex expression with clip
+            if (!x.includes('clip')) x = `clip(${x}, 0, iw-iw/zoom)`;
+            if (!y.includes('clip')) y = `clip(${y}, 0, ih-ih/zoom)`;
+            
+            // Format to yuv444p before zoompan can improve stability and quality in some FFmpeg versions
+            zoomPanFilter = `format=yuv444p,zoompan=z='${z}':x='${x}':y='${y}':d=1:s=${w}x${h}:fps=${fps}`;
         } else {
             // Overlays use simpler transformations
             if (z !== '1.0' && z !== '1') {
@@ -538,4 +552,4 @@ export default {
         };
         return map[id] || 'fade';
     }
-}
+};
