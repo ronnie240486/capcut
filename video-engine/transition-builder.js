@@ -147,7 +147,8 @@ export default {
                 const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
 
                 if (clip.type === 'image') {
-                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-s', `${targetRes.w}x${targetRes.h}`, '-i', filePath); 
+                    // Remove redundant -s to keep high-res for better zoom quality
+                    inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath); 
                 } else {
                     inputs.push('-i', filePath);
                 }
