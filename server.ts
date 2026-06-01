@@ -64,20 +64,50 @@ async function startServer() {
         }
     }
 
+    // Helper for fetch with exponential backoff for 429
+    async function fetchWithRetry(url: string, options: any, maxRetries = 5) {
+        let lastStatus = 0;
+        
+        for (let i = 0; i <= maxRetries; i++) {
+            try {
+                const response = await fetch(url, options);
+                lastStatus = response.status;
+                
+                if (response.status === 429 && i < maxRetries) {
+                    const wait = Math.pow(2, i) * 3000; // 3s, 6s, 12s, 24s, 48s
+                    console.warn(`[Retry] Status 429 on ${url}. Waiting ${wait}ms before retry ${i + 1}/${maxRetries}`);
+                    await new Promise(r => setTimeout(r, wait));
+                    continue;
+                }
+                
+                return response;
+            } catch (e: any) {
+                if (i === maxRetries) throw e;
+                const wait = Math.pow(2, i) * 1500;
+                await new Promise(r => setTimeout(r, wait));
+            }
+        }
+        throw new Error(`Failed after ${maxRetries} retries. Last status: ${lastStatus}`);
+    }
+
     // Proxy para Freesound para evitar CORS
     app.get('/api/sound-search', async (req: any, res: any) => {
-        const { q, key, page = 1 } = req.query;
+        let { q, key, page = 1 } = req.query;
         const token = key; 
         
         if (!q || !token) {
             console.error('[Sound Search] Missing q or key');
             return res.status(400).json({ error: 'Missing query or key. Verifique sua chave API nas configurações.' });
         }
+
+        // Simplify query to improve Freesound search results
+        let simplifiedQ = String(q).split(/\s+/).filter(w => w.length > 2).slice(0, 4).join(' ');
+        if (!simplifiedQ) simplifiedQ = String(q);
         
-        console.log(`[Sound Search] Received request for: ${q} with key length: ${token.length} page: ${page}`);
+        console.log(`[Sound Search] Received request for: ${q} (simplified: ${simplifiedQ}) with key length: ${token.length} page: ${page}`);
         
         try {
-            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,username&page=${page}&page_size=6`;
+            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(simplifiedQ)}&token=${token}&fields=id,name,previews,duration,username&page=${page}&page_size=6`;
             console.log(`[Sound Search] Requesting Freesound: ${endpoint}`);
             
             const searchRes = await fetch(endpoint, {
@@ -238,16 +268,14 @@ async function startServer() {
                                     type: Type.OBJECT,
                                     properties: {
                                         duration: { type: Type.NUMBER, description: "Duration in seconds" },
-                                        action: { type: Type.STRING, description: "Description of visuals" },
-                                        fileIndex: { type: Type.NUMBER, description: "Index of user file to use" },
-                                        filter: { type: Type.STRING, description: "Visual filter to apply" },
-                                        transition: { type: Type.STRING, description: "Transition type (fade, zoom, none)" },
-                                        movement: { type: Type.STRING, description: "Movement type (zoom_in, zoom_out, pan_left, pan_right, static)" },
-                                        subtitle: { type: Type.STRING, description: "The EXACT text from the 'script' spoken during this scene. Do not summarize." },
-                                        sfx: { type: Type.STRING, description: "Sound effect description" },
-                                        stockTopic: { type: Type.STRING, description: "Topic for stock footage if user clip is missing" }
+                                        action: { type: Type.STRING, description: "Description of visuals (Visual fields MUST be in English)" },
+                                        narration: { type: Type.STRING, description: "Narration text for this scene (SAME LANGUAGE AS INPUT)" },
+                                        layout: { type: Type.STRING, enum: ["fullscreen", "overlay_pop", "impact_shake"], description: "Visual layout style" },
+                                        transition: { type: Type.STRING, enum: ["fade", "zoom-in", "zoom-out", "slide-left", "slide-right", "blur", "none"], description: "Transition to next scene" },
+                                        movement: { type: Type.STRING, enum: ["kenBurns", "zoom-in", "zoom-out", "shake-hard", "none"], description: "Camera movement" },
+                                        sfxSearch: { type: Type.STRING, description: "Sound effect search term for Freesound (e.g. footsteps, wind)" }
                                     },
-                                    required: ["duration", "action", "subtitle"]
+                                    required: ["duration", "action", "narration", "layout", "sfxSearch"]
                                 }
                             }
                         },
@@ -347,18 +375,20 @@ async function startServer() {
             }
             const ai = new GoogleGenAI({ apiKey });
 
-            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${voice}`);
+            const validVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
+            const targetVoice = (voice && validVoices.includes(voice)) ? voice : 'Kore';
+
+            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${targetVoice}`);
             const ttsResponse = await ai.models.generateContent({
                 model: "gemini-3.1-flash-tts-preview",
                 contents: [{
-                    role: 'user',
                     parts: [{ text: finalPrompt }]
                 }],
                 config: {
                     responseModalities: ["AUDIO"],
                     speechConfig: {
                         voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: voice || 'live' },
+                            prebuiltVoiceConfig: { voiceName: targetVoice },
                         },
                     },
                 },
@@ -663,8 +693,8 @@ async function startServer() {
         let finalArgs = [
             '-hide_banner', '-loglevel', 'error', '-stats', 
             '-threads', '1', 
-            '-probesize', '32M', 
-            '-analyzeduration', '32M',
+            '-probesize', '8M', 
+            '-analyzeduration', '8M',
             '-reinit_filter', '0', 
             '-hwaccel', 'none',
             '-fflags', '+genpts+igndts'
@@ -681,11 +711,10 @@ async function startServer() {
                 processedArgs.push('-filter_complex_script', filterScriptPath);
                 i++; // Skip the next arg as we handled it
             } else if (args[i] === '-i') {
-                // Higher queue size to handle many inputs without blocking,
-                // but avoid it for lavfi/virtual devices which can be sensitive to option placement
+                // Extremely low queue size to minimize buffering in memory
                 const isLavfi = i > 0 && args[i-1] === 'lavfi';
                 if (!isLavfi) {
-                    processedArgs.push('-thread_queue_size', '512');
+                    processedArgs.push('-thread_queue_size', '8');
                 }
                 processedArgs.push('-i');
             } else {
@@ -693,8 +722,10 @@ async function startServer() {
             }
         }
         
-        // Do NOT auto-inject output options here anymore to avoid syntax errors. 
-        // Callers are responsible for adding their own output options.
+        // Add more memory-limiting global flags
+        finalArgs.push('-filter_threads', '1');
+        finalArgs.push('-filter_complex_threads', '1');
+        
         finalArgs = [...finalArgs, ...processedArgs];
 
         console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})... CMD: ffmpeg ${finalArgs.join(' ')}`);
@@ -1405,7 +1436,7 @@ async function startServer() {
 
             console.log(`[Deapi Image] Action: ${action || 'generation'} -> ${endpoint}`);
 
-            const response = await fetch(endpoint, {
+            const response = await fetchWithRetry(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1473,7 +1504,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription, refText, ref_text } = req.body;
+        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription, refText, ref_text, retries } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
         const resolvedType = type || 'speech';
         const resolvedLang = text || targetLanguage || 'pt-br';
@@ -1753,7 +1784,7 @@ async function startServer() {
                         };
                     }
 
-                    response = await fetch(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions, retries ? Number(retries) : 5);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -1775,7 +1806,11 @@ async function startServer() {
                         break;
                     } else {
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        if (response.status === 429) {
+                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                        } else {
+                            lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        }
                         console.warn(`[Deapi Audio] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
@@ -1820,12 +1855,12 @@ async function startServer() {
             console.log(`[Job ${jobId}] Tentativa de polling #${attempts} para taskId: ${taskId}`);
             try {
                 // Tentar primeiro o endpoint de status v1 que é mais comum para txt2audio
-                let pollRes = await fetch(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
+                let pollRes = await fetchWithRetry(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                 });
                 
                 if (!pollRes.ok) {
-                    pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
+                    pollRes = await fetchWithRetry(`${baseUrl}/api/v2/jobs/${taskId}`, {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     });
                 }
@@ -1874,7 +1909,7 @@ async function startServer() {
             prompt, model, duration, apiKey, 
             lyrics, vocalLanguage, 
             steps, seed, guidanceScale: userGuidance, 
-            outputFormat, referenceAudio 
+            outputFormat, referenceAudio, retries
         } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
 
@@ -1941,14 +1976,36 @@ async function startServer() {
             // Clamp guidance_scale to model limits
             // ACE-Step: max=1 (<=1 valid). Unknown models: default to 5.
             const maxGuidance = modelLimits.max_guidance_scale ?? modelLimits.max_guidance ?? 10;
-            const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 0;
+            const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 1;
             
             // Sensible defaults if model limits are unknown or specifically for ACE/Turbo models
-            const defaultTarget = mappedModel.toLowerCase().includes('ace') ? 0.7 : 5;
+            // Some models require at least 1.0 guidance scale and 8 steps
+            const defaultTarget = mappedModel.toLowerCase().includes('ace') ? 1.0 : 5;
             const guidanceScale = Math.min(Math.max(defaultTarget, minGuidance), maxGuidance);
 
             const resolvedDuration = duration || 30;
-            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s guidance_scale=${guidanceScale.toFixed(1)}`);
+            let resolvedSteps = steps ? Number(steps) : 8;
+            let resolvedGuidance = userGuidance ? Number(userGuidance) : guidanceScale;
+
+            // ACE-Step and Turbo models have extremely strict limits (8 steps, 1.0 guidance)
+            // that results in 422 if not exactly followed.
+            if (mappedModel.toLowerCase().includes('ace') || mappedModel.toLowerCase().includes('turbo')) {
+                resolvedSteps = Math.max(resolvedSteps, 8);
+                // We'll let the error handling below adjust guidance if 1.0 is wrong
+            }
+
+            // Force vocal emphasis if lyrics are provided
+            let finalPrompt = prompt || '';
+            if (lyrics && lyrics !== '[Instrumental]' && !finalPrompt.toLowerCase().includes('vocal')) {
+                finalPrompt = `[Vocal] ${finalPrompt}`;
+            }
+
+            // API Limit: 300 characters for caption
+            if (finalPrompt.length > 300) {
+                finalPrompt = finalPrompt.substring(0, 297) + '...';
+            }
+
+            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s steps=${resolvedSteps} guidance=${resolvedGuidance.toFixed(1)}`);
 
             let response: any;
             let success = false;
@@ -1962,12 +2019,12 @@ async function startServer() {
                     if (ep.version === 'v2') {
                         // v2 requires multipart/form-data
                         const form = new FormData();
-                        form.append('caption', prompt || '');
+                        form.append('caption', finalPrompt);
                         form.append('model', mappedModel);
                         form.append('lyrics', lyrics || '[Instrumental]');
                         form.append('duration', String(resolvedDuration));
-                        form.append('inference_steps', String(steps || 8));
-                        form.append('guidance_scale', String(userGuidance || guidanceScale));
+                        form.append('inference_steps', String(resolvedSteps));
+                        form.append('guidance_scale', String(resolvedGuidance));
                         form.append('seed', String(seed || -1));
                         form.append('format', outputFormat || 'mp3');
                         if (vocalLanguage) form.append('vocal_language', vocalLanguage);
@@ -1998,21 +2055,21 @@ async function startServer() {
                                 'Accept': 'application/json'
                             },
                             body: JSON.stringify({
-                                caption: prompt || '',
-                                prompt: prompt || '',
+                                caption: finalPrompt,
+                                prompt: finalPrompt,
                                 lyrics: lyrics || '[Instrumental]',
                                 model: mappedModel,
                                 duration: resolvedDuration,
                                 vocal_language: vocalLanguage,
-                                inference_steps: steps || 8,
-                                guidance_scale: userGuidance || guidanceScale,
+                                inference_steps: resolvedSteps,
+                                guidance_scale: resolvedGuidance,
                                 seed: seed || -1,
                                 format: outputFormat || 'mp3'
                             })
                         };
                     }
 
-                    response = await fetch(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions, retries ? Number(retries) : 5);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -2020,8 +2077,60 @@ async function startServer() {
                         success = true;
                         break;
                     } else {
+                        // Clone response to read text and still have a chance to handle JSON if needed
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        
+                        // Handle guidance_scale specifically with a retry
+                        if (response.status === 422 && text.includes('guidance_scale')) {
+                            console.log(`[Deapi Music] Guidance scale error detected: ${text}`);
+                            let adjusted = false;
+                            if (text.includes('at least 3')) {
+                                resolvedGuidance = 3.0;
+                                adjusted = true;
+                            } else if (text.includes('greater than 1')) {
+                                resolvedGuidance = 1.0;
+                                adjusted = true;
+                            }
+                            
+                            if (adjusted) {
+                                console.log(`[Deapi Music] Retrying with guidance_scale=${resolvedGuidance.toFixed(1)}`);
+                                const retryOptions = { ...fetchOptions };
+                                if (ep.version === 'v2') {
+                                    const retryForm = new FormData();
+                                    retryForm.append('caption', finalPrompt);
+                                    retryForm.append('model', mappedModel);
+                                    retryForm.append('lyrics', lyrics || '[Instrumental]');
+                                    retryForm.append('duration', String(resolvedDuration));
+                                    retryForm.append('inference_steps', String(resolvedSteps));
+                                    retryForm.append('guidance_scale', String(resolvedGuidance));
+                                    retryForm.append('seed', String(seed || -1));
+                                    retryForm.append('format', outputFormat || 'mp3');
+                                    if (vocalLanguage) retryForm.append('vocal_language', vocalLanguage);
+                                    retryOptions.body = retryForm;
+                                } else {
+                                    const body = JSON.parse(fetchOptions.body);
+                                    body.guidance_scale = resolvedGuidance;
+                                    retryOptions.body = JSON.stringify(body);
+                                }
+                                
+                                const retryRes = await fetch(ep.url, retryOptions);
+                                if (retryRes.ok) {
+                                    const data: any = await retryRes.json();
+                                    handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                                    success = true;
+                                    break;
+                                } else {
+                                    const retryText = await retryRes.text();
+                                    console.warn(`[Deapi Music] Retry failed: ${retryText}`);
+                                }
+                            }
+                        }
+
+                        if (response.status === 429) {
+                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                        } else {
+                            lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        }
                         console.warn(`[Deapi Music] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
@@ -2053,7 +2162,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { url, file, audioUrl, audioFile, apiKey } = req.body;
+        const { url, file, audioUrl, audioFile, apiKey, retries } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
 
         if (!deapiKey) {
@@ -2154,7 +2263,7 @@ async function startServer() {
                         };
                     }
 
-                    response = await fetch(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions, retries ? Number(retries) : 5);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -2163,7 +2272,11 @@ async function startServer() {
                         break;
                     } else {
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        if (response.status === 429) {
+                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                        } else {
+                            lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        }
                         console.warn(`[Deapi Transcribe] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
@@ -2210,12 +2323,29 @@ async function startServer() {
     // Proxy para o Freesound para evitar CORS no frontend
     app.get('/api/freesound/search', async (req, res) => {
         try {
-            const { query, token } = req.query;
+            let { query, token, ...rest } = req.query;
             if (!query || !token) return res.status(400).json({ error: 'Query and token required' });
             
-            const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(query as string)}&token=${token}&fields=id,name,previews,duration,username`;
-            const response = await fetch(url);
-            if (!response.ok) throw new Error(`Freesound returned ${response.status}`);
+            // Simplify query to improve Freesound search results
+            let simplifiedQuery = String(query).split(/\s+/).filter(w => w.length > 2).slice(0, 4).join(' ');
+            if (!simplifiedQuery) simplifiedQuery = String(query);
+
+            const extraParams = Object.entries(rest)
+                .map(([k, v]) => `&${k}=${encodeURIComponent(v as string)}`)
+                .join('');
+
+            const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(simplifiedQuery)}&token=${token}&fields=id,name,previews,duration,username${extraParams}`;
+            const response = await fetch(url, {
+                headers: {
+                    'Authorization': `Token ${token}`,
+                    'Accept': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
+            });
+            if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(`Freesound returned status ${response.status}: ${errText.substring(0, 200)}`);
+            }
             const data = await response.json();
             res.json(data);
         } catch (e: any) {
