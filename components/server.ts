@@ -23,6 +23,25 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
+// Global Error Handlers to prevent "Lost Process"
+process.on('uncaughtException', (err) => {
+    console.error('[CRITICAL] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Added for graceful shutdown support
+const handleShutdown = () => {
+    console.log('[System] Shutting down... Saving jobs.');
+    // We already have saveJobs, but let's make sure it's called
+    // In many environments (like Cloud Run), we only have a few seconds
+    process.exit(0);
+};
+
+process.on('SIGTERM', handleShutdown);
+process.on('SIGINT', handleShutdown);
+
 async function startServer() {
     app.use(cors({
         origin: '*',
@@ -30,8 +49,8 @@ async function startServer() {
         allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
     }));
 
-    app.use(express.json({ limit: '5gb' }));
-    app.use(express.urlencoded({ extended: true, limit: '5gb' }));
+    app.use(express.json({ limit: '100mb' }));
+    app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
     // Helper for safe JSON parsing in Node environment
     async function safeJson(response: any) {
@@ -45,20 +64,50 @@ async function startServer() {
         }
     }
 
+    // Helper for fetch with exponential backoff for 429
+    async function fetchWithRetry(url: string, options: any, maxRetries = 5) {
+        let lastStatus = 0;
+        
+        for (let i = 0; i <= maxRetries; i++) {
+            try {
+                const response = await fetch(url, options);
+                lastStatus = response.status;
+                
+                if (response.status === 429 && i < maxRetries) {
+                    const wait = Math.pow(2, i) * 3000; // 3s, 6s, 12s, 24s, 48s
+                    console.warn(`[Retry] Status 429 on ${url}. Waiting ${wait}ms before retry ${i + 1}/${maxRetries}`);
+                    await new Promise(r => setTimeout(r, wait));
+                    continue;
+                }
+                
+                return response;
+            } catch (e: any) {
+                if (i === maxRetries) throw e;
+                const wait = Math.pow(2, i) * 1500;
+                await new Promise(r => setTimeout(r, wait));
+            }
+        }
+        throw new Error(`Failed after ${maxRetries} retries. Last status: ${lastStatus}`);
+    }
+
     // Proxy para Freesound para evitar CORS
     app.get('/api/sound-search', async (req: any, res: any) => {
-        const { q, key, page = 1 } = req.query;
+        let { q, key, page = 1 } = req.query;
         const token = key; 
         
         if (!q || !token) {
             console.error('[Sound Search] Missing q or key');
             return res.status(400).json({ error: 'Missing query or key. Verifique sua chave API nas configurações.' });
         }
+
+        // Simplify query to improve Freesound search results
+        let simplifiedQ = String(q).split(/\s+/).filter(w => w.length > 2).slice(0, 4).join(' ');
+        if (!simplifiedQ) simplifiedQ = String(q);
         
-        console.log(`[Sound Search] Received request for: ${q} with key length: ${token.length} page: ${page}`);
+        console.log(`[Sound Search] Received request for: ${q} (simplified: ${simplifiedQ}) with key length: ${token.length} page: ${page}`);
         
         try {
-            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(q as string)}&token=${token}&fields=id,name,previews,duration,username&page=${page}&page_size=6`;
+            const endpoint = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(simplifiedQ)}&token=${token}&fields=id,name,previews,duration,username&page=${page}&page_size=6`;
             console.log(`[Sound Search] Requesting Freesound: ${endpoint}`);
             
             const searchRes = await fetch(endpoint, {
@@ -219,16 +268,14 @@ async function startServer() {
                                     type: Type.OBJECT,
                                     properties: {
                                         duration: { type: Type.NUMBER, description: "Duration in seconds" },
-                                        action: { type: Type.STRING, description: "Description of visuals" },
-                                        fileIndex: { type: Type.NUMBER, description: "Index of user file to use" },
-                                        filter: { type: Type.STRING, description: "Visual filter to apply" },
-                                        transition: { type: Type.STRING, description: "Transition type (fade, zoom, none)" },
-                                        movement: { type: Type.STRING, description: "Movement type (zoom_in, zoom_out, pan_left, pan_right, static)" },
-                                        subtitle: { type: Type.STRING, description: "The EXACT text from the 'script' spoken during this scene. Do not summarize." },
-                                        sfx: { type: Type.STRING, description: "Sound effect description" },
-                                        stockTopic: { type: Type.STRING, description: "Topic for stock footage if user clip is missing" }
+                                        action: { type: Type.STRING, description: "Description of visuals (Visual fields MUST be in English)" },
+                                        narration: { type: Type.STRING, description: "Narration text for this scene (SAME LANGUAGE AS INPUT)" },
+                                        layout: { type: Type.STRING, enum: ["fullscreen", "overlay_pop", "impact_shake"], description: "Visual layout style" },
+                                        transition: { type: Type.STRING, enum: ["fade", "zoom-in", "zoom-out", "slide-left", "slide-right", "blur", "none"], description: "Transition to next scene" },
+                                        movement: { type: Type.STRING, enum: ["kenBurns", "zoom-in", "zoom-out", "shake-hard", "none"], description: "Camera movement" },
+                                        sfxSearch: { type: Type.STRING, description: "Sound effect search term for Freesound (e.g. footsteps, wind)" }
                                     },
-                                    required: ["duration", "action", "subtitle"]
+                                    required: ["duration", "action", "narration", "layout", "sfxSearch"]
                                 }
                             }
                         },
@@ -328,18 +375,20 @@ async function startServer() {
             }
             const ai = new GoogleGenAI({ apiKey });
 
-            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${voice}`);
+            const validVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
+            const targetVoice = (voice && validVoices.includes(voice)) ? voice : 'Kore';
+
+            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${targetVoice}`);
             const ttsResponse = await ai.models.generateContent({
                 model: "gemini-3.1-flash-tts-preview",
                 contents: [{
-                    role: 'user',
                     parts: [{ text: finalPrompt }]
                 }],
                 config: {
                     responseModalities: ["AUDIO"],
                     speechConfig: {
                         voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: voice || 'live' },
+                            prebuiltVoiceConfig: { voiceName: targetVoice },
                         },
                     },
                 },
@@ -392,7 +441,7 @@ async function startServer() {
 
     const uploadAny = multer({
         storage,
-        limits: { fieldSize: 100 * 1024 * 1024, fileSize: 10240 * 1024 * 1024 } // 10GB for chunked assembly
+        limits: { fieldSize: 500 * 1024 * 1024, fileSize: 10240 * 1024 * 1024 } // 500MB field size for massive پروژه states
     }).any();
 
     const uploadSingle = multer({ storage }).single('file');
@@ -566,17 +615,57 @@ async function startServer() {
 
     // ─── JOB STORE ────────────────────────────────────────────────────────────
     const jobs: Record<string, any> = {};
+    const JOBS_FILE = path.join(__dirname, 'jobs_persistence.json');
+
+    // Load jobs from disk on startup
+    try {
+        if (fs.existsSync(JOBS_FILE)) {
+            const data = fs.readFileSync(JOBS_FILE, 'utf8');
+            const persisted = JSON.parse(data);
+            Object.keys(persisted).forEach(id => {
+                const job = persisted[id];
+                // If the server restarted, any job that was 'processing' is now dead
+                if (job.status === 'processing') {
+                    job.status = 'failed';
+                    job.error = 'Processo interrompido (reinício do servidor). Provável falta de memória no vídeo anterior.';
+                }
+            });
+            Object.assign(jobs, persisted);
+            console.log(`[System] Restored ${Object.keys(persisted).length} jobs from disk.`);
+        }
+    } catch (err) {
+        console.error("[System] Failed to restore jobs:", err);
+    }
+
+    function saveJobs() {
+        try {
+            const toPersist: any = {};
+            // Only keep recent or non-massive data in the persistence file
+            for (const id in jobs) {
+                const job = jobs[id];
+                // Keep all statuses for a while to ensure client sees the result after restart
+                const { params, files, ...statusOnly } = job;
+                toPersist[id] = statusOnly;
+            }
+            fs.writeFileSync(JOBS_FILE, JSON.stringify(toPersist));
+        } catch (err) {
+            console.error("[System] Failed to save jobs:", err);
+        }
+    }
 
     setInterval(() => {
         const now = Date.now();
+        let changed = false;
         Object.keys(jobs).forEach(id => {
             if (now - jobs[id].startTime > 3600000) {
                 if (jobs[id].outputPath && fs.existsSync(jobs[id].outputPath)) {
                     try { fs.unlinkSync(jobs[id].outputPath); } catch(e) {}
                 }
                 delete jobs[id];
+                changed = true;
             }
         });
+        if (changed) saveJobs();
     }, 3600000);
 
     function timeToSeconds(timeStr: string): number {
@@ -590,6 +679,8 @@ async function startServer() {
         if (!jobs[jobId]) jobs[jobId] = { id: jobId, startTime: Date.now() };
         jobs[jobId].status = 'processing';
         jobs[jobId].progress = 0;
+        jobs[jobId].expectedDuration = expectedDuration;
+        saveJobs();
 
         if (res && !res.headersSent) res.status(202).json({ jobId });
 
@@ -598,17 +689,15 @@ async function startServer() {
            console.error("[Backend] CRITICAL: DEAPI_API_KEY IS NOT CONFIGURED!");
         }
 
-        // Optimization: Use filter_complex_script if the filter is too long to avoid ARG_MAX issues
-        // Limitation: Limit threads for Cloud Run stability
-        // Adding probe limits to prevent runaway memory
+        // Optimization for long videos (2h+)
         let finalArgs = [
-            '-hide_banner', '-loglevel', 'info', '-stats', 
-            '-threads', '4', 
-            '-probesize', '500M', 
-            '-analyzeduration', '500M',
+            '-hide_banner', '-loglevel', 'error', '-stats', 
+            '-threads', '1', 
+            '-probesize', '8M', 
+            '-analyzeduration', '8M',
             '-reinit_filter', '0', 
             '-hwaccel', 'none',
-            '-max_muxing_queue_size', '4096'
+            '-fflags', '+genpts+igndts'
         ];
         const processedArgs: string[] = [];
         let filterScriptPath: string | null = null;
@@ -622,20 +711,24 @@ async function startServer() {
                 processedArgs.push('-filter_complex_script', filterScriptPath);
                 i++; // Skip the next arg as we handled it
             } else if (args[i] === '-i') {
-                // Higher queue size to handle many inputs without blocking,
-                // but avoid it for lavfi/virtual devices which can be sensitive to option placement
+                // Extremely low queue size to minimize buffering in memory
                 const isLavfi = i > 0 && args[i-1] === 'lavfi';
                 if (!isLavfi) {
-                    processedArgs.push('-thread_queue_size', '512');
+                    processedArgs.push('-thread_queue_size', '8');
                 }
                 processedArgs.push('-i');
             } else {
                 processedArgs.push(args[i]);
             }
         }
+        
+        // Add more memory-limiting global flags
+        finalArgs.push('-filter_threads', '1');
+        finalArgs.push('-filter_complex_threads', '1');
+        
         finalArgs = [...finalArgs, ...processedArgs];
 
-        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})...`);
+        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})... CMD: ffmpeg ${finalArgs.join(' ')}`);
 
         try {
             const ffmpeg = spawn('ffmpeg', finalArgs);
@@ -656,7 +749,11 @@ async function startServer() {
 
             ffmpeg.on('error', (err: Error) => {
                 console.error(`[Job ${jobId}] Spawn Error:`, err);
-                if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = err.message; }
+                if (jobs[jobId]) { 
+                    jobs[jobId].status = 'failed'; 
+                    jobs[jobId].error = err.message; 
+                    saveJobs();
+                }
                 if (filterScriptPath && fs.existsSync(filterScriptPath)) fs.unlinkSync(filterScriptPath);
             });
 
@@ -679,12 +776,14 @@ async function startServer() {
                     jobs[jobId].status = 'completed';
                     jobs[jobId].progress = 100;
                     jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                    saveJobs();
                 } else {
-                    const errorMsg = wasKilled ? `Processo encerrado pelo sistema (${signal}). Tente reduzir a complexidade do vídeo.` : stderr.trim();
+                    const errorMsg = wasKilled ? `Processo interrompido (provável falta de memória). Tente exportar com menos cenas ou efeitos.` : stderr.trim();
                     console.error(`[Job ${jobId}] Failed. Code: ${code}. Signal: ${signal}. File Size: ${fileSize}`, errorMsg);
                     jobs[jobId].status = 'failed';
-                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Verifique sua timeline.');
+                    jobs[jobId].error = `Erro ao renderizar. ` + (errorMsg.slice(-300) || 'Duração excedeu os limites do servidor.');
                     if (fileExists) try { fs.unlinkSync(jobs[jobId].outputPath); } catch(e) {}
+                    saveJobs();
                 }
             });
         } catch (e: any) {
@@ -1337,7 +1436,7 @@ async function startServer() {
 
             console.log(`[Deapi Image] Action: ${action || 'generation'} -> ${endpoint}`);
 
-            const response = await fetch(endpoint, {
+            const response = await fetchWithRetry(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1405,10 +1504,10 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription, refText, ref_text } = req.body;
+        const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription, refText, ref_text, retries } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
         const resolvedType = type || 'speech';
-        const resolvedLang = text || targetLanguage || 'en-us';
+        const resolvedLang = text || targetLanguage || 'pt-br';
         const selectedVoice = voice || '';
         const selectedVoiceDescription = voiceDescription || '';
 
@@ -1421,36 +1520,34 @@ async function startServer() {
         try {
             const baseUrl = "https://api.deapi.ai";
 
-            // v2 TTS/SFX/Clone endpoints (multipart/form-data). v1 fallback uses JSON.
-            // IMPORTANTE: Clonagem usa o mesmo endpoint /api/v2/audio/speech com mode=voice_clone
-            let deapiV2Path = '/api/v2/audio/speech';
-            if (resolvedType === 'sfx') deapiV2Path = '/api/v2/audio/sfx';
-            // Clonagem usa /api/v2/audio/speech com mode=voice_clone (não um endpoint separado)
+            // PRIORIDADE PARA O ENDPOINT V2 SE DISPONÍVEL (MELHOR SUPORTE A CLONAGEM)
+            const ENDPOINTS = [];
+            
+            // Adicionar V2 primeiro se suportado
+            const deapiV2Path = resolvedType === 'sfx' ? '/api/v2/audio/sfx' : '/api/v2/audio/speech';
+            ENDPOINTS.push({ url: `${baseUrl}${deapiV2Path}`, version: 'v2' });
+            
+            // Fallback para V1
+            ENDPOINTS.push({ url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' });
 
-            const ENDPOINTS = [
-                { url: `${baseUrl}${deapiV2Path}`, version: 'v2' },
-                { url: `${baseUrl}/api/v1/client/txt2audio`, version: 'v1' }
-            ];
-
-            // Resolve model slug dynamically — never hardcode
+            // Resolve model slug dynamically
             let mappedModel = model || '';
-            // Normalize legacy/internal aliases to real Deapi slugs.
             const LEGACY_ALIASES: Record<string, string> = {
-                'cloning': '',        // resolved dynamically to a voice_clone capable model
-                'cloning-v1': '',     // same
+                'cloning': 'Qwen3_TTS_12Hz_1_7B_Base',
+                'cloning-v1': 'Qwen3_TTS_12Hz_1_7B_Base',
                 'txt2audio': 'Kokoro',
-                'sfx': 'F5-TTS',      // Reasonable fallback if sfx-specific model not selected
-                'kokoro': 'Kokoro'    // normalize lowercase to canonical
+                'sfx': 'F5-TTS',
+                'kokoro': 'Kokoro',
+                'Qwen3_TTS_12Hz_1_7B_Clone': 'Qwen3_TTS_12Hz_1_7B_Base'
             };
             if (mappedModel in LEGACY_ALIASES) {
                 mappedModel = LEGACY_ALIASES[mappedModel];
             }
             if (!mappedModel) {
-                if (resolvedType === 'sfx') mappedModel = 'F5-TTS';
-                else mappedModel = 'Kokoro';
+                mappedModel = resolvedType === 'sfx' ? 'F5-TTS' : 'Kokoro';
             }
 
-            // Fetch live model list — resolve model + capabilities + default voice
+            // Fetch live model list
             const filterType = resolvedType === 'sfx' ? 'txt2sfx' : 'txt2audio';
             const hasRefAudio = !!(voiceBase64 && voiceBase64.length > 10);
             const hasAudioFile = !!(audioFile && audioFile.length > 10);
@@ -1488,38 +1585,10 @@ async function startServer() {
                     const slugs: string[] = availableModels.map((m: any) => m.slug);
                     console.log(`[Deapi Audio] Available ${filterType} models: ${slugs.join(', ')}`);
 
-                        if (needsVoiceClone) {
-                            // Procurar modelo que suporta clonagem (Chatterbox e Qwen3 suportam)
-                            const cloneCapable = availableModels.find((m: any) =>
-                                m.slug === 'Chatterbox' ||
-                                m.slug.toLowerCase().includes('qwen') ||
-                                m.info?.features?.supports_voice_clone === true
-                            );
-                            if (cloneCapable) {
-                                mappedModel = cloneCapable.slug;
-                                mode = 'voice_clone';
-                                console.log(`[Deapi Audio] Usando modelo com suporte a clonagem: ${mappedModel}`);
-                            } else if (mappedModel.toLowerCase().includes('qwen')) {
-                                // Forçar modo voice_clone se o modelo for Qwen3 mesmo que não esteja na lista filtrada
-                                mode = 'voice_clone';
-                                console.log(`[Deapi Audio] Forçando modo voice_clone para modelo Qwen: ${mappedModel}`);
-                            } else {
-                                // Se nenhum modelo de clonagem encontrado, usar Chatterbox como fallback
-                                const chatterbox = availableModels.find((m: any) => m.slug === 'Chatterbox');
-                                if (chatterbox) {
-                                    mappedModel = 'Chatterbox';
-                                    mode = 'voice_clone';
-                                    console.log(`[Deapi Audio] Usando Chatterbox para clonagem (fallback)`);
-                                } else {
-                                    // Último recurso: usar o primeiro modelo disponível
-                                    mappedModel = slugs[0];
-                                    mode = 'custom_voice';
-                                    console.warn('[Deapi Audio] Nenhum modelo com suporte a clonagem encontrado, usando custom_voice');
-                                }
-                            }
-                        } else if (!slugs.includes(mappedModel)) {
+                        if (!slugs.includes(mappedModel)) {
                             mappedModel = slugs[0];
                         }
+                        console.log(`[Deapi Audio] Modelo final selecionado: ${mappedModel} (Clonagem: ${needsVoiceClone})`);
 
                         const modelInfo = availableModels.find((m: any) => m.slug === mappedModel);
                         const voices = modelInfo?.languages?.[0]?.voices;
@@ -1574,24 +1643,66 @@ async function startServer() {
                                 'italian': 'it'
                             };
                             const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
-                            const finalLang = langMap[normalizedLang] || 'pt-br';
+                            let finalLang = langMap[normalizedLang] || 'pt-br';
+
+                            if (mappedModel.toLowerCase().includes('qwen')) {
+                                const qwenLangMap: Record<string, string> = {
+                                    'pt-br': 'Portuguese', 'portuguese': 'Portuguese', 'en-us': 'English', 'english': 'English',
+                                    'es': 'Spanish', 'spanish': 'Spanish', 'fr-fr': 'French', 'french': 'French',
+                                    'it': 'Italian', 'italian': 'Italian', 'ja': 'Japanese', 'japanese': 'Japanese',
+                                    'ko': 'Korean', 'korean': 'Korean', 'ru': 'Russian', 'russian': 'Russian',
+                                    'de': 'German', 'german': 'German'
+                                };
+                                finalLang = qwenLangMap[normalizedLang] || qwenLangMap[finalLang] || 'Portuguese';
+                            }
+
                             const finalSpeed = String(req.body.speed || '1.0');
                             const finalSampleRate = String(req.body.sample_rate || '24000');
-                            // Usar voz de melhor qualidade como fallback (af_bella é A- grade)
                             const finalVoice = req.body.voice || selectedVoice || defaultVoiceSlug || 'af_bella';
 
                             form.append('lang', finalLang);
                             form.append('speed', finalSpeed);
                             form.append('sample_rate', finalSampleRate);
-                            form.append('voice', finalVoice);
                             
-                            // Usar o modo resolvido (voice_clone, voice_design ou custom_voice)
-                            const finalMode = (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : (selectedVoiceDescription ? 'voice_design' : 'custom_voice');
-                            form.append('mode', finalMode); 
+                            // Lógica de Modo Crítica - TRAVA DE SEGURANÇA REFORÇADA
+                            let finalMode = 'custom_voice';
+                            const modelLower = mappedModel.toLowerCase();
+                            
+                            if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
+                                finalMode = 'voice_design';
+                            } else if (modelLower.includes('qwen')) {
+                                // Qwen3 1.7B na Deapi costuma usar voice_clone para clonagem zero-shot no V2
+                                // Se for explicitly 'design' no nome, usamos voice_design
+                                if (modelLower.includes('voicedesign') || modelLower.includes('design')) {
+                                    finalMode = 'voice_design';
+                                } else {
+                                    finalMode = 'voice_clone';
+                                }
+                            } else if (mappedModel.toLowerCase().includes('chatterbox')) {
+                                finalMode = 'custom_voice';
+                            } else if (resolvedType === 'clone' || needsVoiceClone) {
+                                finalMode = 'voice_clone';
+                            } else if (selectedVoiceDescription) {
+                                finalMode = 'voice_design';
+                            }
+                            
+                            console.log(`[Deapi Audio] Mapeamento Final: Modelo=${mappedModel}, Modo=${finalMode}`);
+                            form.append('mode', finalMode);
 
-                            if (selectedVoiceDescription) form.append('voice_description', selectedVoiceDescription);
+                            // Evitar conflito de 'voice' em modos de criação/clonagem
+                            if (finalMode === 'custom_voice') {
+                                form.append('voice', finalVoice);
+                            }
+
+                            // Descrição e Instruct para Voice Design
+                            const voiceDesc = selectedVoiceDescription || req.body.voice_description || req.body.voiceDescription || "";
+                            if (voiceDesc) {
+                                form.append('voice_description', voiceDesc);
+                            }
+                            if (finalMode === 'voice_design' || modelLower.includes('design')) {
+                                form.append('instruct', voiceDesc || "A clear natural voice");
+                            }
                             
-                            // Adicionar ref_text se disponível (importante para Qwen3 Clone)
                             const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
                             if (finalRefText) {
                                 form.append('ref_text', finalRefText);
@@ -1625,45 +1736,81 @@ async function startServer() {
                             body: form
                         };
                     } else {
-                        // v1 fallback
-                        const v1Payload: any = {
-                            text: prompt || '',
-                            prompt: prompt || '',
-                            caption: prompt || '',
-                            model: mappedModel,
-                            format: 'mp3'
-                        };
-                        if (resolvedType !== 'sfx') {
-                            v1Payload.mode = mode;
-                            v1Payload.lang = req.body.lang || resolvedLang || 'en-us';
-                            v1Payload.speed = String(req.body.speed || '1.0');
-                            v1Payload.sample_rate = String(req.body.sample_rate || '24000');
-                            if (selectedVoice) v1Payload.voice = selectedVoice;
-                            else if (defaultVoiceSlug) v1Payload.voice = defaultVoiceSlug;
+                        // v1 implementation (Multipart) - Required for ref_audio as file
+                        const form = new FormData();
+                        form.append('text', prompt || req.body.text || '');
+                        form.append('model', mappedModel);
+                        
+                        const normalizedLang = (req.body.lang || resolvedLang || 'pt-br').toLowerCase();
+                        let finalLang = normalizedLang;
+                        if (mappedModel.toLowerCase().includes('qwen')) {
+                            const qwenLangMap: Record<string, string> = {
+                                'pt-br': 'Portuguese', 'portuguese': 'Portuguese', 'en-us': 'English', 'english': 'English',
+                                'es': 'Spanish', 'spanish': 'Spanish', 'fr-fr': 'French', 'french': 'French',
+                                'it': 'Italian', 'italian': 'Italian', 'ja': 'Japanese', 'japanese': 'Japanese',
+                                'ko': 'Korean', 'korean': 'Korean', 'ru': 'Russian', 'russian': 'Russian',
+                                'de': 'German', 'german': 'German'
+                            };
+                            finalLang = qwenLangMap[normalizedLang] || 'Portuguese';
                         }
+
+                        form.append('lang', finalLang);
+                        form.append('mode', (resolvedType === 'clone' || needsVoiceClone) ? 'voice_clone' : 'custom_voice');
+                        form.append('speed', String(req.body.speed || 1));
+                        form.append('format', req.body.format || 'mp3');
+                        form.append('sample_rate', String(req.body.sample_rate || 24000));
+
+                        if (resolvedType === 'clone' || needsVoiceClone) {
+                            if (hasRefAudio) {
+                                try {
+                                    const base64Data = voiceBase64.replace(/^data:[^;]+;base64,/, '');
+                                    const buffer = Buffer.from(base64Data, 'base64');
+                                    const blob = new (await import('node:buffer')).Blob([buffer], { type: 'audio/mpeg' });
+                                    form.append('ref_audio', blob, 'ref.mp3');
+                                } catch (e) {
+                                    console.warn('[Deapi Audio] Failed to attach ref_audio file:', e);
+                                }
+                            }
+                            const finalRefText = ref_text || refText || req.body.refText || req.body.ref_text;
+                            if (finalRefText) form.append('ref_text', finalRefText);
+                        } else {
+                            form.append('voice', req.body.voice || selectedVoice || defaultVoiceSlug || 'af_bella');
+                        }
+
                         fetchOptions = {
                             method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${deapiKey}`,
-                                'Accept': 'application/json'
-                            },
-                            body: JSON.stringify(v1Payload)
+                            headers: { 'Authorization': `Bearer ${deapiKey}` },
+                            body: form
                         };
                     }
 
-                    response = await fetch(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions, retries ? Number(retries) : 5);
 
                     if (response.ok) {
                         const data: any = await response.json();
-                        // v2 response: { data: { request_id: "UUID" } }
-                        // v1 response: { data: { request_id: "UUID" } } — same shape
-                        handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                        
+                        // TENTAR CAPTURAR URL DIRETA (Para modelos rápidos como Qwen3 com pouco texto)
+                        const result = data.data || data;
+                        const directUrl = result.output_file_url || result.url || result.audio_url || result.download_url || (result.output && result.output[0]);
+                        
+                        if (directUrl) {
+                            console.log(`[Job ${jobId}] Áudio recebido diretamente na resposta!`);
+                            jobs[jobId].status = 'completed';
+                            jobs[jobId].downloadUrl = directUrl;
+                            jobs[jobId].progress = 100;
+                        } else {
+                            handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                        }
+                        
                         success = true;
                         break;
                     } else {
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        if (response.status === 429) {
+                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                        } else {
+                            lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        }
                         console.warn(`[Deapi Audio] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
@@ -1684,72 +1831,68 @@ async function startServer() {
 
     // Helper to handle Deapi task/job response
     const handleDeapiTask = async (jobId: string, data: any, deapiKey: string, baseUrl: string) => {
-        // Doc v2: data.request_id. Fallback para outros formatos comuns.
         const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id;
         
         if (!taskId) {
             const directUrl = data.url || data.audio_url || data.data?.url || data.result_url || data.data?.result_url;
             if (directUrl) {
-                jobs[jobId].status = 'completed';
-                jobs[jobId].downloadUrl = directUrl;
-                jobs[jobId].progress = 100;
+                jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = directUrl; jobs[jobId].progress = 100;
                 return;
             }
             throw new Error('Deapi não retornou request_id nem URL direta.');
         }
 
-        // Polling
         let completed = false;
         let attempts = 0;
-        while (!completed && attempts < 80 && jobs[jobId]) {
+        
+        console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
+        
+        // Espera inicial de 30s para evitar 429
+        await new Promise(r => setTimeout(r, 30000));
+
+        while (!completed && attempts < 100 && jobs[jobId]) {
             attempts++;
-            await new Promise(r => setTimeout(r, 4000));
+            console.log(`[Job ${jobId}] Tentativa de polling #${attempts} para taskId: ${taskId}`);
             try {
-                // Try v2 polling first
-                let pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
+                // Tentar primeiro o endpoint de status v1 que é mais comum para txt2audio
+                let pollRes = await fetchWithRetry(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
                     headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                 });
                 
-                // If v2 fails (404), try v1
-                if (!pollRes.ok && pollRes.status === 404) {
-                    pollRes = await fetch(`${baseUrl}/api/v1/client/request-status/${taskId}`, {
+                if (!pollRes.ok) {
+                    pollRes = await fetchWithRetry(`${baseUrl}/api/v2/jobs/${taskId}`, {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     });
+                }
+                
+                if (pollRes.status === 429) {
+                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 60s...`);
+                    await new Promise(r => setTimeout(r, 60000));
+                    continue;
                 }
 
                 if (pollRes.ok) {
                     const taskData: any = await pollRes.json();
                     const result = taskData.data || taskData;
                     const status = (result.status || "").toLowerCase();
-                    const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
-                    const resultText = result.result || result.data?.result;
-
                     if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
-                        if (resultText && !resultUrl) {
-                            jobs[jobId].status = 'completed';
-                            jobs[jobId].result = [resultText];
+                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
+                        const duration = result.duration || result.audio_duration || (result.data && result.data.duration);
+                        if (resultUrl) {
+                            jobs[jobId].status = 'completed'; 
+                            jobs[jobId].downloadUrl = resultUrl; 
+                            if (duration) jobs[jobId].duration = Number(duration);
                             jobs[jobId].progress = 100;
-                        } else {
-                            jobs[jobId].status = 'completed';
-                            jobs[jobId].downloadUrl = resultUrl;
-                            jobs[jobId].progress = 100;
+                            completed = true;
                         }
-                        completed = true;
                     } else if (status === 'failed' || status === 'error') {
                         throw new Error(result.error || result.message || 'Deapi processing failed');
                     }
-                } else if (pollRes.status === 429) {
-                    console.warn(`[Job ${jobId}] Deapi returned 429 (Rate Limit) during polling, backing off...`);
-                    await new Promise(r => setTimeout(r, 10000)); // Extra backoff
                 }
-            } catch (e) {
-                console.warn(`[Job ${jobId}] Polling attempt ${attempts} failed, continuing...`);
-            }
+            } catch (e) { console.warn(`[Job ${jobId}] Polling error:`, e); }
+            if (!completed) await new Promise(r => setTimeout(r, 20000));
         }
-        if (!completed && jobs[jobId]) {
-            jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Timeout na geração Deapi.';
-        }
+        if (!completed && jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Timeout na deAPI.'; }
     };
 
     // ─── DEAPI MUSIC GENERATION ────────────────────────────────────────────────
@@ -1766,7 +1909,7 @@ async function startServer() {
             prompt, model, duration, apiKey, 
             lyrics, vocalLanguage, 
             steps, seed, guidanceScale: userGuidance, 
-            outputFormat, referenceAudio 
+            outputFormat, referenceAudio, retries
         } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
 
@@ -1833,14 +1976,36 @@ async function startServer() {
             // Clamp guidance_scale to model limits
             // ACE-Step: max=1 (<=1 valid). Unknown models: default to 5.
             const maxGuidance = modelLimits.max_guidance_scale ?? modelLimits.max_guidance ?? 10;
-            const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 0;
+            const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 1;
             
             // Sensible defaults if model limits are unknown or specifically for ACE/Turbo models
-            const defaultTarget = mappedModel.toLowerCase().includes('ace') ? 0.7 : 5;
+            // Some models require at least 1.0 guidance scale and 8 steps
+            const defaultTarget = mappedModel.toLowerCase().includes('ace') ? 1.0 : 5;
             const guidanceScale = Math.min(Math.max(defaultTarget, minGuidance), maxGuidance);
 
             const resolvedDuration = duration || 30;
-            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s guidance_scale=${guidanceScale.toFixed(1)}`);
+            let resolvedSteps = steps ? Number(steps) : 8;
+            let resolvedGuidance = userGuidance ? Number(userGuidance) : guidanceScale;
+
+            // ACE-Step and Turbo models have extremely strict limits (8 steps, 1.0 guidance)
+            // that results in 422 if not exactly followed.
+            if (mappedModel.toLowerCase().includes('ace') || mappedModel.toLowerCase().includes('turbo')) {
+                resolvedSteps = Math.max(resolvedSteps, 8);
+                // We'll let the error handling below adjust guidance if 1.0 is wrong
+            }
+
+            // Force vocal emphasis if lyrics are provided
+            let finalPrompt = prompt || '';
+            if (lyrics && lyrics !== '[Instrumental]' && !finalPrompt.toLowerCase().includes('vocal')) {
+                finalPrompt = `[Vocal] ${finalPrompt}`;
+            }
+
+            // API Limit: 300 characters for caption
+            if (finalPrompt.length > 300) {
+                finalPrompt = finalPrompt.substring(0, 297) + '...';
+            }
+
+            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s steps=${resolvedSteps} guidance=${resolvedGuidance.toFixed(1)}`);
 
             let response: any;
             let success = false;
@@ -1854,12 +2019,12 @@ async function startServer() {
                     if (ep.version === 'v2') {
                         // v2 requires multipart/form-data
                         const form = new FormData();
-                        form.append('caption', prompt || '');
+                        form.append('caption', finalPrompt);
                         form.append('model', mappedModel);
                         form.append('lyrics', lyrics || '[Instrumental]');
                         form.append('duration', String(resolvedDuration));
-                        form.append('inference_steps', String(steps || 8));
-                        form.append('guidance_scale', String(userGuidance || guidanceScale));
+                        form.append('inference_steps', String(resolvedSteps));
+                        form.append('guidance_scale', String(resolvedGuidance));
                         form.append('seed', String(seed || -1));
                         form.append('format', outputFormat || 'mp3');
                         if (vocalLanguage) form.append('vocal_language', vocalLanguage);
@@ -1890,21 +2055,21 @@ async function startServer() {
                                 'Accept': 'application/json'
                             },
                             body: JSON.stringify({
-                                caption: prompt || '',
-                                prompt: prompt || '',
+                                caption: finalPrompt,
+                                prompt: finalPrompt,
                                 lyrics: lyrics || '[Instrumental]',
                                 model: mappedModel,
                                 duration: resolvedDuration,
                                 vocal_language: vocalLanguage,
-                                inference_steps: steps || 8,
-                                guidance_scale: userGuidance || guidanceScale,
+                                inference_steps: resolvedSteps,
+                                guidance_scale: resolvedGuidance,
                                 seed: seed || -1,
                                 format: outputFormat || 'mp3'
                             })
                         };
                     }
 
-                    response = await fetch(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions, retries ? Number(retries) : 5);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -1912,8 +2077,60 @@ async function startServer() {
                         success = true;
                         break;
                     } else {
+                        // Clone response to read text and still have a chance to handle JSON if needed
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        
+                        // Handle guidance_scale specifically with a retry
+                        if (response.status === 422 && text.includes('guidance_scale')) {
+                            console.log(`[Deapi Music] Guidance scale error detected: ${text}`);
+                            let adjusted = false;
+                            if (text.includes('at least 3')) {
+                                resolvedGuidance = 3.0;
+                                adjusted = true;
+                            } else if (text.includes('greater than 1')) {
+                                resolvedGuidance = 1.0;
+                                adjusted = true;
+                            }
+                            
+                            if (adjusted) {
+                                console.log(`[Deapi Music] Retrying with guidance_scale=${resolvedGuidance.toFixed(1)}`);
+                                const retryOptions = { ...fetchOptions };
+                                if (ep.version === 'v2') {
+                                    const retryForm = new FormData();
+                                    retryForm.append('caption', finalPrompt);
+                                    retryForm.append('model', mappedModel);
+                                    retryForm.append('lyrics', lyrics || '[Instrumental]');
+                                    retryForm.append('duration', String(resolvedDuration));
+                                    retryForm.append('inference_steps', String(resolvedSteps));
+                                    retryForm.append('guidance_scale', String(resolvedGuidance));
+                                    retryForm.append('seed', String(seed || -1));
+                                    retryForm.append('format', outputFormat || 'mp3');
+                                    if (vocalLanguage) retryForm.append('vocal_language', vocalLanguage);
+                                    retryOptions.body = retryForm;
+                                } else {
+                                    const body = JSON.parse(fetchOptions.body);
+                                    body.guidance_scale = resolvedGuidance;
+                                    retryOptions.body = JSON.stringify(body);
+                                }
+                                
+                                const retryRes = await fetch(ep.url, retryOptions);
+                                if (retryRes.ok) {
+                                    const data: any = await retryRes.json();
+                                    handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                                    success = true;
+                                    break;
+                                } else {
+                                    const retryText = await retryRes.text();
+                                    console.warn(`[Deapi Music] Retry failed: ${retryText}`);
+                                }
+                            }
+                        }
+
+                        if (response.status === 429) {
+                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                        } else {
+                            lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        }
                         console.warn(`[Deapi Music] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
@@ -1945,7 +2162,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { url, file, audioUrl, audioFile, apiKey } = req.body;
+        const { url, file, audioUrl, audioFile, apiKey, retries } = req.body;
         const deapiKey = apiKey || getDeapiKey(req);
 
         if (!deapiKey) {
@@ -2046,7 +2263,7 @@ async function startServer() {
                         };
                     }
 
-                    response = await fetch(ep.url, fetchOptions);
+                    response = await fetchWithRetry(ep.url, fetchOptions, retries ? Number(retries) : 5);
 
                     if (response.ok) {
                         const data: any = await response.json();
@@ -2055,7 +2272,11 @@ async function startServer() {
                         break;
                     } else {
                         const text = await response.text();
-                        lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        if (response.status === 429) {
+                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                        } else {
+                            lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
+                        }
                         console.warn(`[Deapi Transcribe] Failed ${ep.url}: ${lastError}`);
                     }
                 } catch (e: any) {
@@ -2077,245 +2298,72 @@ async function startServer() {
     // Recebe os arquivos do usuário + plano gerado pela IA e monta o vídeo final
     app.post('/api/autopilot/render', uploadAny, async (req: any, res: any) => {
         const jobId = `autopilot_${Date.now()}`;
-        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        jobs[jobId] = { id: jobId, status: 'pending', files: (req as any).files || [], params: req.body, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        try {
-            const files: any[] = (req as any).files || [];
-            const plan = JSON.parse(req.body.plan || '{}');
-            const stockFiles = JSON.parse(req.body.stockFiles || '[]');
-            const narrationFile = req.body.narrationFile; // filename salvo em uploads/
-
-            if (!plan.scenes || plan.scenes.length === 0) {
-                throw new Error('Plano de cenas inválido ou vazio.');
-            }
-
-            const uploadedDir = uploadDir;
-            const outputPath = path.join(uploadedDir, `autopilot_${Date.now()}.mp4`);
-            jobs[jobId].outputPath = outputPath;
-
-            // Mapear arquivos enviados pelo index
-            const fileMap: Record<number, string> = {};
-            files.forEach((f: any, i: number) => { fileMap[i] = f.path; });
-
-            // Mapear stock files pelo nome
-            const stockMap: Record<string, string> = {};
-            stockFiles.forEach((s: any) => {
-                if (s && s.filename) {
-                    stockMap[s.originalname || s.filename] = path.join(uploadedDir, s.filename);
+        setTimeout(() => {
+            handleExportVideo(jobs[jobId], uploadDir, (id: string, args: string[], dur: number) => {
+                createFFmpegJob(id, args, dur);
+            }).catch((err: Error) => {
+                console.error('[Autopilot Export] Failed:', err);
+                if (jobs[jobId]) { 
+                    jobs[jobId].status = 'failed'; 
+                    jobs[jobId].error = 'Processamento Autopilot falhou: ' + err.message; 
                 }
             });
+        }, 100);
+    });
 
-            // Narração
-            const narrationPath = narrationFile ? path.join(uploadedDir, narrationFile) : null;
+    // Cleanup
+    // More cleanup
 
-            // Construir inputs e filter_complex para o FFmpeg
-            const inputs: string[] = [];
-            const filterParts: string[] = [];
-            const videoLabels: string[] = [];
-            let inputIdx = 0;
 
-            // Adicionar narração primeiro se existir
-            let narrationInputIdx = -1;
-            if (narrationPath && fs.existsSync(narrationPath)) {
-                inputs.push('-i', narrationPath);
-                narrationInputIdx = inputIdx++;
+    // Cleanup finally complete
+
+    // Proxy para o Freesound para evitar CORS no frontend
+    app.get('/api/freesound/search', async (req, res) => {
+        try {
+            let { query, token, ...rest } = req.query;
+            if (!query || !token) return res.status(400).json({ error: 'Query and token required' });
+            
+            // Simplify query to improve Freesound search results
+            let simplifiedQuery = String(query).split(/\s+/).filter(w => w.length > 2).slice(0, 4).join(' ');
+            if (!simplifiedQuery) simplifiedQuery = String(query);
+
+            const extraParams = Object.entries(rest)
+                .map(([k, v]) => `&${k}=${encodeURIComponent(v as string)}`)
+                .join('');
+
+            const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(simplifiedQuery)}&token=${token}&fields=id,name,previews,duration,username${extraParams}`;
+            const response = await fetch(url, {
+                headers: {
+                    'Authorization': `Token ${token}`,
+                    'Accept': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
+            });
+            if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(`Freesound returned status ${response.status}: ${errText.substring(0, 200)}`);
             }
-
-            // Processar cada cena do plano
-            for (let i = 0; i < plan.scenes.length; i++) {
-                const scene = plan.scenes[i];
-                let filePath = '';
-
-                // Tentar usar arquivo do usuário pelo índice
-                if (scene.fileIndex !== undefined && fileMap[scene.fileIndex]) {
-                    filePath = fileMap[scene.fileIndex];
-                }
-                // Fallback: tentar stock file pelo tópico
-                if (!filePath && scene.stockTopic) {
-                    const stockKey = Object.keys(stockMap).find(k =>
-                        k.toLowerCase().includes(scene.stockTopic?.toLowerCase() || '')
-                    );
-                    if (stockKey) filePath = stockMap[stockKey];
-                }
-                // Fallback: qualquer arquivo disponível
-                if (!filePath && Object.keys(fileMap).length > 0) {
-                    filePath = fileMap[i % Object.keys(fileMap).length];
-                }
-
-                if (!filePath || !fs.existsSync(filePath)) {
-                    // Fallback se o arquivo não existir: usar um fundo colorido com o tema da cena
-                    const duration = scene.duration || 3;
-                    const sceneLabel = `scene_v${i}`;
-                    const colors = ['darkblue', 'darkgreen', 'darkred', 'purple', 'black'];
-                    const color = colors[i % colors.length];
-                    
-                    let filterChain = `color=c=${color}:s=1280x720:d=${duration}[vbg${i}];[vbg${i}]setsar=1`;
-                    
-                    // Se tiver subtitle, já colocamos aqui também para não ficar totalmente vazio
-                    if (scene.subtitle) {
-                        const cleanSub = scene.subtitle
-                            .replace(/\\/g, '\\\\\\\\')
-                            .replace(/'/g, "'\\''")
-                            .replace(/:/g, '\\:')
-                            .toUpperCase();
-                        const fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
-                        const fontArg = fs.existsSync(fontPath) ? `:fontfile='${fontPath}'` : '';
-                        filterChain += `,drawtext=text='${cleanSub}'${fontArg}:fontcolor=white:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=15:line_spacing=5:x=(w-text_w)/2:y=h-text_h-100:fix_bounds=1`;
-                    }
-                    
-                    filterParts.push(`${filterChain},fps=30,format=yuv420p[${sceneLabel}]`);
-                    videoLabels.push(`[${sceneLabel}]`);
-                    continue;
-                }
-
-                const streamInfo = await getStreamInfo(filePath);
-                const isImage = ['.jpg', '.jpeg', '.png', '.webp'].some(ext => filePath.toLowerCase().endsWith(ext));
-                const duration = scene.duration || 3;
-
-                if (isImage) {
-                    // Imagens estáticas precisam de loop e tempo definido na entrada
-                    inputs.push('-loop', '1', '-t', duration.toString(), '-i', filePath);
-                } else {
-                    inputs.push('-i', filePath);
-                }
-                const vIdx = inputIdx++;
-
-                const startTime = scene.startTime || 0;
-                const sceneLabel = `scene_v${i}`;
-
-                // Aplicar trim, scale, efeito e formato
-                let filterChain = "";
-                if (isImage) {
-                    filterChain = `[${vIdx}:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:-1:-1:color=black`;
-                } else if (streamInfo.hasVideo) {
-                    filterChain = `[${vIdx}:v]trim=start=${startTime}:duration=${duration},setpts=PTS-STARTPTS`;
-                } else {
-                    // Fallback para áudio-only ou arquivos sem vídeo: fundo preto de 1280x720
-                    filterChain = `color=c=black:s=1280x720:d=${duration}[vbg${i}];[vbg${i}]setsar=1`;
-                }
-
-                // Movimentos Cinematográficos (Zoom/Pan)
-                if (scene.movement === 'zoom_in') {
-                    filterChain += `,scale=8000:-1,zoompan=z='min(zoom+0.0015,1.5)':d=125:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720`;
-                } else if (scene.movement === 'zoom_out') {
-                    filterChain += `,scale=8000:-1,zoompan=z='max(1.5-0.0015*on,1)':d=125:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720`;
-                } else if (scene.movement === 'pan_left') {
-                    filterChain += `,scale=8000:-1,zoompan=z=1.3:x='(iw-iw/zoom)-(on/125)*(iw-iw/zoom)':y='ih/2-(ih/zoom/2)':d=125:s=1280x720`;
-                } else if (scene.movement === 'pan_right') {
-                    filterChain += `,scale=8000:-1,zoompan=z=1.3:x='(on/125)*(iw-iw/zoom)':y='ih/2-(ih/zoom/2)':d=125:s=1280x720`;
-                } else {
-                    filterChain += `,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:-1:-1:color=black`;
-                }
-
-                filterChain += `,setsar=1,fps=30,format=yuv420p`;
-
-                // Aplicar filtro de efeito se existir
-                const effectMap: Record<string, string> = {
-                    'vivid': 'eq=saturation=1.5:contrast=1.1',
-                    'noir': 'hue=s=0,eq=contrast=1.5',
-                    'warm': 'colorbalance=rs=0.1:bs=-0.1',
-                    'cool': 'colorbalance=bs=0.1:rs=-0.1',
-                    'vintage': 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131,eq=contrast=0.9',
-                    'dreamy': 'boxblur=luma_radius=2:luma_power=1',
-                    'sharp': 'unsharp=5:5:1.5:5:5:0.0'
-                };
-                if (scene.filter && effectMap[scene.filter]) {
-                    filterChain += `,${effectMap[scene.filter]}`;
-                }
-
-                // Legendas (Subtitles) - Burn-in
-                if (scene.subtitle) {
-                    // Robust escaping for FFmpeg drawtext
-                    const cleanSub = scene.subtitle
-                        .replace(/\\/g, '\\\\\\\\') // Escape \
-                        .replace(/'/g, "'\\''")      // Escape '
-                        .replace(/:/g, '\\:')       // Escape :
-                        .toUpperCase();
-                    
-                    // fontfile fallback - common paths in Linux
-                    const fontPath = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
-                    const fontArg = fs.existsSync(fontPath) ? `:fontfile='${fontPath}'` : '';
-                    
-                    // Subtitle at bottom with a robust box
-                    filterChain += `,drawtext=text='${cleanSub}'${fontArg}:fontcolor=white:fontsize=44:box=1:boxcolor=black@0.6:boxborderw=15:line_spacing=5:x=(w-text_w)/2:y=h-text_h-100:fix_bounds=1`;
-                }
-
-                filterParts.push(`${filterChain}[${sceneLabel}]`);
-                videoLabels.push(`[${sceneLabel}]`);
-            }
-
-            if (videoLabels.length === 0) throw new Error('Nenhuma cena válida para renderizar.');
-
-            jobs[jobId].progress = 30;
-
-            // Concatenar todas as cenas
-            const concatLabel = '[final_v]';
-            filterParts.push(`${videoLabels.join('')}concat=n=${videoLabels.length}:v=1:a=0${concatLabel}`);
-
-            let filterComplex = filterParts.join(';');
-            const mapArgs: string[] = ['-map', concatLabel];
-
-            // Adicionar narração se disponível
-            if (narrationInputIdx >= 0) {
-                mapArgs.push('-map', `${narrationInputIdx}:a`);
-            }
-
-            let totalDuration = plan.scenes.reduce((s: number, sc: any) => s + (sc.duration || 3), 0);
-
-            // Se existir narração, garantir que a duração total do vídeo coincida com a narração para não cortar o final
-            if (narrationPath && fs.existsSync(narrationPath)) {
-                try {
-                    const durationStr = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${narrationPath}"`).toString().trim();
-                    const audioDuration = parseFloat(durationStr);
-                    if (!isNaN(audioDuration) && audioDuration > 0) {
-                        console.log(`[Autopilot] Narration duration detected: ${audioDuration}s (Plan was ${totalDuration}s)`);
-                        totalDuration = Math.max(audioDuration, totalDuration);
-                    }
-                } catch (err) {
-                    console.error("[Autopilot] Failed to probe narration duration:", err);
-                }
-            }
-
-            const args = [
-                ...inputs,
-                '-filter_complex', filterComplex,
-                ...mapArgs,
-                '-t', totalDuration.toFixed(2),
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',
-                '-crf', '23',
-                '-pix_fmt', 'yuv420p',
-                '-r', '30',
-                '-vsync', '1',
-                '-c:a', 'aac',
-                '-b:a', '192k',
-                '-ac', '2',
-                '-ar', '44100',
-                '-movflags', '+faststart',
-                '-max_muxing_queue_size', '4096',
-                '-y', outputPath
-            ];
-
-            createFFmpegJob(jobId, args, totalDuration);
-
+            const data = await response.json();
+            res.json(data);
         } catch (e: any) {
-            console.error('[Autopilot] Failed:', e);
-            jobs[jobId].status = 'failed';
-            jobs[jobId].error = e.message;
+            console.error('[Freesound Proxy] Error:', e);
+            res.status(500).json({ error: e.message });
         }
     });
 
-    // ─── EXPORT ───────────────────────────────────────────────────────────────
+    // ─── EXPORT ───
     app.post('/api/export/start', uploadAny, (req: any, res: any) => {
+        console.log(`[Export] Start request received for job at ${new Date().toISOString()}`);
         const jobId = `export_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'pending', files: (req as any).files || [], params: req.body, startTime: Date.now() };
         res.status(202).json({ jobId });
 
         setTimeout(() => {
             handleExportVideo(jobs[jobId], uploadDir, (id: string, args: string[], dur: number) => {
-                const safeArgs = [...args, '-max_muxing_queue_size', '4096'];
-                createFFmpegJob(id, safeArgs, dur);
+                createFFmpegJob(id, args, dur);
             }).catch((err: Error) => {
                 if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Configuração do Export falhou: ' + err.message; }
             });
@@ -2326,7 +2374,13 @@ async function startServer() {
     app.get('/api/process/status/:jobId', (req: any, res: any) => {
         const job = jobs[req.params.jobId];
         if (!job) return res.status(404).json({ status: 'not_found' });
-        res.json(job);
+        
+        // Optimize: Don't echo back massive input params or file lists in status checks
+        // Also strip long error messages that might truncate JSON
+        const { params, files, error, ...statusOnly } = job;
+        const cleanedError = error ? (error.length > 1000 ? error.substring(0, 1000) + '...' : error) : undefined;
+        
+        res.json({ ...statusOnly, error: cleanedError });
     });
 
     app.get('/api/process/download/:jobId', (req: any, res: any) => {
