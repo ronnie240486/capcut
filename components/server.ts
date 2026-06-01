@@ -2000,6 +2000,15 @@ async function startServer() {
 
             // Force vocal emphasis if lyrics are provided
             let finalPrompt = prompt || '';
+            
+            // Enforce heavy styles if detected in prompt to guide the model more effectively
+            const lowPrompt = finalPrompt.toLowerCase();
+            if (lowPrompt.includes('hard rock')) {
+                finalPrompt = `[HARD ROCK: Aggressive Distorted Guitars, Heavy Driving Drums] ${finalPrompt}`;
+            } else if (lowPrompt.includes('metal')) {
+                finalPrompt = `[HEAVY METAL: High-Gain Distortion, Powerful Double Kick Drums] ${finalPrompt}`;
+            }
+
             if (lyrics && lyrics !== '[Instrumental]' && !finalPrompt.toLowerCase().includes('vocal')) {
                 finalPrompt = `[Vocal] ${finalPrompt}`;
             }
