@@ -1980,18 +1980,22 @@ async function startServer() {
             
             // Sensible defaults if model limits are unknown or specifically for ACE/Turbo models
             // Some models require at least 1.0 guidance scale and 8 steps
-            const defaultTarget = mappedModel.toLowerCase().includes('ace') ? 1.0 : 5;
+            const defaultTarget = (mappedModel.toLowerCase().includes('ace') || mappedModel.toLowerCase().includes('turbo')) ? 1.0 : 5;
             const guidanceScale = Math.min(Math.max(defaultTarget, minGuidance), maxGuidance);
 
             const resolvedDuration = duration || 30;
             let resolvedSteps = steps ? Number(steps) : 8;
             let resolvedGuidance = userGuidance ? Number(userGuidance) : guidanceScale;
 
+            // Apply limits
+            resolvedGuidance = Math.min(Math.max(resolvedGuidance, minGuidance), maxGuidance);
+
             // ACE-Step and Turbo models have extremely strict limits (8 steps, 1.0 guidance)
             // that results in 422 if not exactly followed.
             if (mappedModel.toLowerCase().includes('ace') || mappedModel.toLowerCase().includes('turbo')) {
                 resolvedSteps = Math.max(resolvedSteps, 8);
-                // We'll let the error handling below adjust guidance if 1.0 is wrong
+                // For ACE models, guidance should be exactly 1.0 usually
+                if (maxGuidance <= 1.0) resolvedGuidance = 1.0;
             }
 
             // Force vocal emphasis if lyrics are provided
@@ -2081,20 +2085,28 @@ async function startServer() {
                         const text = await response.text();
                         
                         // Handle guidance_scale specifically with a retry
-                        if (response.status === 422 && text.includes('guidance_scale')) {
+                        if (response.status === 422 && text.toLowerCase().includes('guidance_scale')) {
                             console.log(`[Deapi Music] Guidance scale error detected: ${text}`);
                             let adjusted = false;
+                            let newGuidance = resolvedGuidance;
+
                             if (text.includes('at least 3')) {
-                                resolvedGuidance = 3.0;
+                                newGuidance = 3.0;
                                 adjusted = true;
                             } else if (text.includes('greater than 1')) {
-                                resolvedGuidance = 1.0;
+                                newGuidance = 1.0;
+                                adjusted = true;
+                            } else if (text.includes('not be greater than')) {
+                                // Extract the number if possible, or just try 1.0 or 5.0
+                                newGuidance = 1.0;
                                 adjusted = true;
                             }
                             
-                            if (adjusted) {
-                                console.log(`[Deapi Music] Retrying with guidance_scale=${resolvedGuidance.toFixed(1)}`);
-                                const retryOptions = { ...fetchOptions };
+                            if (adjusted && newGuidance !== resolvedGuidance) {
+                                resolvedGuidance = newGuidance;
+                                console.log(`[Deapi Music] Retrying with adjusted guidance_scale=${resolvedGuidance.toFixed(1)}`);
+                                
+                                let retryOptions: any;
                                 if (ep.version === 'v2') {
                                     const retryForm = new FormData();
                                     retryForm.append('caption', finalPrompt);
@@ -2106,22 +2118,51 @@ async function startServer() {
                                     retryForm.append('seed', String(seed || -1));
                                     retryForm.append('format', outputFormat || 'mp3');
                                     if (vocalLanguage) retryForm.append('vocal_language', vocalLanguage);
-                                    retryOptions.body = retryForm;
+                                    
+                                    retryOptions = {
+                                        method: 'POST',
+                                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' },
+                                        body: retryForm
+                                    };
                                 } else {
-                                    const body = JSON.parse(fetchOptions.body);
-                                    body.guidance_scale = resolvedGuidance;
-                                    retryOptions.body = JSON.stringify(body);
+                                    const retryBody = {
+                                        caption: finalPrompt,
+                                        prompt: finalPrompt,
+                                        lyrics: lyrics || '[Instrumental]',
+                                        model: mappedModel,
+                                        duration: resolvedDuration,
+                                        inference_steps: resolvedSteps,
+                                        guidance_scale: resolvedGuidance,
+                                        seed: seed || -1,
+                                        format: outputFormat || 'mp3'
+                                    };
+                                    if (vocalLanguage) (retryBody as any).vocal_language = vocalLanguage;
+                                    
+                                    retryOptions = {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'Authorization': `Bearer ${deapiKey}`,
+                                            'Accept': 'application/json'
+                                        },
+                                        body: JSON.stringify(retryBody)
+                                    };
                                 }
                                 
-                                const retryRes = await fetch(ep.url, retryOptions);
-                                if (retryRes.ok) {
-                                    const data: any = await retryRes.json();
-                                    handleDeapiTask(jobId, data, deapiKey, baseUrl);
-                                    success = true;
-                                    break;
-                                } else {
-                                    const retryText = await retryRes.text();
-                                    console.warn(`[Deapi Music] Retry failed: ${retryText}`);
+                                try {
+                                    const retryRes = await fetch(ep.url, retryOptions);
+                                    if (retryRes.ok) {
+                                        const data: any = await retryRes.json();
+                                        handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                                        success = true;
+                                        break;
+                                    } else {
+                                        const retryText = await retryRes.text();
+                                        console.warn(`[Deapi Music] Retry failed with status ${retryRes.status}: ${retryText}`);
+                                        lastError = `Retry failed ${retryRes.status}: ${retryText.substring(0, 100)}`;
+                                    }
+                                } catch (retryErr: any) {
+                                    console.error(`[Deapi Music] Retry fetch error:`, retryErr);
                                 }
                             }
                         }
