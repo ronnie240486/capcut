@@ -907,6 +907,23 @@ async function startServer() {
                     jobs[jobId].progress = 100;
                     jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
                     saveJobs();
+
+                    // Increment Video Count in Firestore
+                    const userId = jobs[jobId].params?.userId;
+                    if (userId) {
+                        try {
+                            firestore.collection('users').doc(userId).update({
+                                videoCount: admin.firestore.FieldValue.increment(1),
+                                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                            }).then(() => {
+                                console.log(`[Job ${jobId}] Video count incremented for user ${userId}`);
+                            }).catch(err => {
+                                console.error(`[Job ${jobId}] Firestore update error:`, err);
+                            });
+                        } catch (err) {
+                            console.error(`[Job ${jobId}] Firestore count error:`, err);
+                        }
+                    }
                 } else {
                     const errorMsg = wasKilled ? `Processo interrompido (provável falta de memória). Tente exportar com menos cenas ou efeitos.` : stderr.trim();
                     console.error(`[Job ${jobId}] Failed. Code: ${code}. Signal: ${signal}. File Size: ${fileSize}`, errorMsg);
@@ -2535,8 +2552,38 @@ async function startServer() {
     });
 
     // ─── EXPORT ───
-    app.post('/api/export/start', uploadAny, (req: any, res: any) => {
+    app.post('/api/export/start', uploadAny, async (req: any, res: any) => {
         console.log(`[Export] Start request received for job at ${new Date().toISOString()}`);
+        const { userId } = req.body;
+
+        // Check user plan and video count
+        if (userId) {
+            try {
+                const userDoc = await firestore.collection('users').doc(userId).get();
+                if (userDoc.exists) {
+                    const userData = userDoc.data();
+                    const plan = userData?.userPlan || 'free';
+                    const count = userData?.videoCount || 0;
+                    
+                    const limits: Record<string, number> = {
+                        'free': 3,
+                        'pro': 20,
+                        'agency': 50
+                    };
+                    
+                    if (count >= (limits[plan] || 3)) {
+                        return res.status(403).json({ 
+                            error: `Limite de vídeos atingido para o plano ${plan.toUpperCase()}.`,
+                            details: `Você já exportou ${count} vídeos. Faça upgrade para continuar.`,
+                            limitReached: true
+                        });
+                    }
+                }
+            } catch (err) {
+                console.warn("[Export] Error checking limits:", err);
+            }
+        }
+
         const jobId = `export_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'pending', files: (req as any).files || [], params: req.body, startTime: Date.now() };
         res.status(202).json({ jobId });
