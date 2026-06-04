@@ -10,6 +10,23 @@ import http from 'http';
 import { Readable } from 'stream';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Modality, Type } from "@google/genai";
+import { MercadoPagoConfig, Preference } from 'mercadopago';
+import admin from 'firebase-admin';
+
+import { getFirestore } from 'firebase-admin/firestore';
+
+// Initialize Firebase Admin
+if (!admin.apps.length) {
+    admin.initializeApp({
+        projectId: "gen-lang-client-0635778726"
+    });
+}
+const firestore = getFirestore("ai-studio-1d2a1402-5e45-4313-b178-96b8230a4ef8");
+
+// Initialize Mercado Pago
+const mpClient = new MercadoPagoConfig({
+    accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN || ''
+});
 
 // Engine Imports
 import { handleExportVideo } from './video-engine/export-video.js';
@@ -218,10 +235,123 @@ async function startServer() {
         res.json({ 
             status: 'ok', 
             hasKey: key.length > 0,
+            hasMP: !!process.env.MERCADOPAGO_ACCESS_TOKEN,
             keyNamesChecked: ['GEMINI_API_KEY', 'API_KEY', 'GOOGLE_API_KEY'],
             uptime: process.uptime(),
             env: process.env.NODE_ENV
         });
+    });
+
+    // ─── MERCADO PAGO ROUTES ───────────────────────────────────────────────────
+    app.post('/api/mercadopago/create-preference', async (req: any, res: any) => {
+        const { planId, userId, email, planName, planPrice } = req.body;
+
+        if (!process.env.MERCADOPAGO_ACCESS_TOKEN) {
+            console.error('[MercadoPago] Missing MERCADOPAGO_ACCESS_TOKEN in env');
+            return res.status(500).json({ error: 'Configuração do Mercado Pago incompleta (Token Ausente).' });
+        }
+
+        if (!planId || !userId || !email) {
+            return res.status(400).json({ error: 'Missing parameters: planId, userId, email are required.' });
+        }
+
+        try {
+            const preference = new Preference(mpClient);
+            
+            // Construct base URL for notifications and back_urls
+            // Prefer HTTPS. In AIS it is always HTTPS. 
+            const protocol = req.headers['x-forwarded-proto'] || 'https';
+            const host = req.headers.host;
+            const baseUrl = `${protocol}://${host}`;
+
+            console.log(`[MercadoPago] Creating preference for ${email}, plan: ${planName}, price: ${planPrice}, user: ${userId}`);
+
+            const response = await preference.create({
+                body: {
+                    items: [
+                        {
+                            id: planId,
+                            title: `Assinatura ProEdit - Plano ${planName}`,
+                            quantity: 1,
+                            unit_price: Number(planPrice),
+                            currency_id: 'BRL',
+                            description: `Upgrade para o plano ${planName} no ProEdit`
+                        }
+                    ],
+                    payer: {
+                        email: email
+                    },
+                    external_reference: userId,
+                    back_urls: {
+                        success: `${baseUrl}/?payment=success`,
+                        failure: `${baseUrl}/?payment=failure`,
+                        pending: `${baseUrl}/?payment=pending`
+                    },
+                    auto_return: 'approved',
+                    // notification_url is tricky in dev envs. 
+                    // Mercado Pago requires it to be a valid, public HTTPS URL.
+                    // If it's localhost or invalid, it will fail.
+                    notification_url: `${baseUrl}/api/mercadopago/webhook`
+                }
+            });
+
+            console.log(`[MercadoPago] Preference created successfully: ${response.id}`);
+            res.json({ id: response.id, init_point: response.init_point });
+        } catch (error: any) {
+            console.error('[MercadoPago] Error creating preference:', JSON.stringify(error, null, 2));
+            
+            // Extract meaningful error message from SDK if available
+            const message = error?.message || 'Falha ao criar preferência de pagamento.';
+            const details = error?.cause || error?.errors || error;
+            
+            res.status(500).json({ 
+                error: 'Falha ao iniciar checkout com Mercado Pago.', 
+                details: message,
+                raw: details
+            });
+        }
+    });
+
+    app.post('/api/mercadopago/webhook', async (req: any, res: any) => {
+        const { query } = req;
+        const topic = query.topic || query.type;
+        
+        console.log('[MercadoPago Webhook] Received:', topic, query);
+
+        try {
+            if (topic === 'payment' || topic === 'merchant_order') {
+                const paymentId = query.id || query['data.id'];
+                
+                // Fetch payment details to verify status
+                const paymentRes = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}`
+                    }
+                });
+                
+                if (paymentRes.ok) {
+                    const paymentData = await paymentRes.json();
+                    
+                    if (paymentData.status === 'approved') {
+                        const userId = paymentData.external_reference;
+                        const planId = paymentData.additional_info?.items?.[0]?.id || 'pro';
+                        
+                        console.log(`[MercadoPago] Payment Approved for User ${userId}. Plan: ${planId}`);
+                        
+                        // Update user plan in Firestore
+                        await firestore.collection('users').doc(userId).set({
+                            userPlan: planId,
+                            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                        }, { merge: true });
+                    }
+                }
+            }
+            
+            res.status(200).send('OK');
+        } catch (error: any) {
+            console.error('[MercadoPago Webhook] Error processing:', error);
+            res.status(500).send('Internal Server Error');
+        }
     });
 
     // ─── AUTOPILOT ROUTES ──────────────────────────────────────────────────────
