@@ -259,11 +259,20 @@ async function startServer() {
             const preference = new Preference(mpClient);
             
             // Construct base URL for notifications and back_urls
-            // Prefer HTTPS. In AIS it is always HTTPS. 
-            const protocol = req.headers['x-forwarded-proto'] || 'https';
-            const host = req.headers.host;
-            const baseUrl = `${protocol}://${host}`;
+            // Check process.env.APP_URL first, then headers
+            let baseUrl = process.env.APP_URL;
+            if (!baseUrl) {
+                const protocol = req.headers['x-forwarded-proto'] || 'https';
+                const host = req.headers.host;
+                baseUrl = `${protocol}://${host}`;
+            }
+            
+            // Remove trailing slash if present
+            if (baseUrl.endsWith('/')) {
+                baseUrl = baseUrl.slice(0, -1);
+            }
 
+            console.log(`[MercadoPago] Base URL: ${baseUrl}`);
             console.log(`[MercadoPago] Creating preference for ${email}, plan: ${planName}, price: ${planPrice}, user: ${userId}`);
 
             const response = await preference.create({
@@ -288,9 +297,6 @@ async function startServer() {
                         pending: `${baseUrl}/?payment=pending`
                     },
                     auto_return: 'approved',
-                    // notification_url is tricky in dev envs. 
-                    // Mercado Pago requires it to be a valid, public HTTPS URL.
-                    // If it's localhost or invalid, it will fail.
                     notification_url: `${baseUrl}/api/mercadopago/webhook`
                 }
             });
@@ -2567,8 +2573,8 @@ async function startServer() {
                     
                     const limits: Record<string, number> = {
                         'free': 3,
-                        'pro': 20,
-                        'agency': 50
+                        'pro': 50,
+                        'agency': 100
                     };
                     
                     if (count >= (limits[plan] || 3)) {
