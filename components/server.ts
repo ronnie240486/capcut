@@ -15,13 +15,25 @@ import admin from 'firebase-admin';
 
 import { getFirestore } from 'firebase-admin/firestore';
 
+// ES Module dirname fix
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 // Initialize Firebase Admin
+let firebaseConfig;
+try {
+    firebaseConfig = JSON.parse(fs.readFileSync(path.join(__dirname, 'firebase-applet-config.json'), 'utf8'));
+} catch (e) {
+    console.error('Failed to load firebase-applet-config.json:', e);
+    firebaseConfig = { projectId: "gen-lang-client-0635778726", firestoreDatabaseId: "ai-studio-1d2a1402-5e45-4313-b178-96b8230a4ef8" };
+}
+
 if (!admin.apps.length) {
     admin.initializeApp({
-        projectId: "gen-lang-client-0635778726"
+        projectId: firebaseConfig.projectId
     });
 }
-const firestore = getFirestore("ai-studio-1d2a1402-5e45-4313-b178-96b8230a4ef8");
+const firestore = getFirestore(firebaseConfig.firestoreDatabaseId || '(default)');
 
 // Initialize Mercado Pago
 const mpClient = new MercadoPagoConfig({
@@ -32,10 +44,6 @@ const mpClient = new MercadoPagoConfig({
 import { handleExportVideo } from './video-engine/export-video.js';
 import filterBuilder from './video-engine/filter-logic.js';
 import voiceAutomation from './video-engine/voice-automation.js';
-
-// ES Module dirname fix
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
@@ -2568,8 +2576,12 @@ async function startServer() {
                 const userDoc = await firestore.collection('users').doc(userId).get();
                 if (userDoc.exists) {
                     const userData = userDoc.data();
+                    const email = userData?.email;
                     const plan = userData?.userPlan || 'free';
                     const count = userData?.videoCount || 0;
+                    
+                    // Exemption for Admin/Creator
+                    const isAdmin = email === 'ronnie240486@gmail.com';
                     
                     const limits: Record<string, number> = {
                         'free': 3,
@@ -2577,7 +2589,7 @@ async function startServer() {
                         'agency': 100
                     };
                     
-                    if (count >= (limits[plan] || 3)) {
+                    if (!isAdmin && count >= (limits[plan] || 3)) {
                         return res.status(403).json({ 
                             error: `Limite de vídeos atingido para o plano ${plan.toUpperCase()}.`,
                             details: `Você já exportou ${count} vídeos. Faça upgrade para continuar.`,
