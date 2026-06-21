@@ -238,6 +238,142 @@ async function startServer() {
         return key;
     };
 
+    // ─── GEMINI AI ROUTES ──────────────────────────────────────────────────────
+    app.post('/api/ai/gemini/generate-music', async (req: any, res: any) => {
+        const { prompt, lyrics, usePro, duration = 30 } = req.body;
+        const apiKey = getGeminiKey(req);
+
+        if (!apiKey) {
+            return res.status(401).json({ 
+                error: "Nenhuma chave Gemini válida encontrada.",
+                details: "Configure sua chave API nas configurações do AI Studio."
+            });
+        }
+
+        try {
+            const ai = new GoogleGenAI({ 
+                apiKey,
+                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+            });
+            
+            // Choose the correct Lyria model
+            const model = usePro ? "lyria-3-pro-preview" : "lyria-3-clip-preview";
+            
+            // Build final prompt
+            let finalPrompt = prompt;
+            if (lyrics && lyrics.trim().length > 0) {
+                finalPrompt = `${prompt}\n\nVocal Lyrics: ${lyrics}`;
+            }
+
+            console.log(`[Gemini Music Server] Model: ${model}, Prompt length: ${finalPrompt.length}`);
+
+            const result = await ai.models.generateContentStream({
+                model,
+                contents: [{ role: 'user', parts: [{ text: finalPrompt }] }],
+                config: {
+                    responseModalities: [Modality.AUDIO]
+                } as any
+            });
+
+            let audioBase64 = "";
+            let mimeType = "audio/wav";
+
+            for await (const chunk of result) {
+                const parts = chunk.candidates?.[0]?.content?.parts;
+                if (!parts) continue;
+                for (const part of parts) {
+                    if (part.inlineData?.data) {
+                        if (!audioBase64 && part.inlineData.mimeType) {
+                            mimeType = part.inlineData.mimeType;
+                        }
+                        audioBase64 += part.inlineData.data;
+                    }
+                }
+            }
+
+            if (!audioBase64) {
+                throw new Error("Não foi possível extrair dados de áudio da resposta da IA.");
+            }
+
+            res.json({ audioBase64, mimeType });
+        } catch (e: any) {
+            console.error("[Gemini Music Server] Failure:", e);
+            
+            // Special handling for 403 / Whitelist issues
+            const errorMsg = e.message || String(e);
+            if (errorMsg.includes('403') || errorMsg.includes('PERMISSION_DENIED')) {
+                return res.status(403).json({ 
+                    error: "Acesso ao Lyria negado (403).",
+                    details: "Os modelos Lyria (Symphony AI) requerem acesso antecipado (EAP). Verifique se seu projeto tem permissão ou use uma chave API com acesso habilitado."
+                });
+            }
+
+            res.status(500).json({ 
+                error: "Falha ao gerar música com Gemini", 
+                details: errorMsg 
+            });
+        }
+    });
+
+    app.post('/api/ai/gemini/generate-img', async (req: any, res: any) => {
+        const { prompt, aspectRatio = '1:1' } = req.body;
+        const apiKey = getGeminiKey(req);
+        if (!apiKey) return res.status(401).json({ error: "API Key missing" });
+
+        try {
+            const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+            const result = await ai.models.generateContent({
+                model: "gemini-2.5-flash-image",
+                contents: [{ role: "user", parts: [{ text: prompt }] }],
+                config: {
+                    imageConfig: { aspectRatio: aspectRatio as any }
+                } as any
+            });
+
+            let base64 = "";
+            for (const part of result.candidates?.[0]?.content?.parts || []) {
+                if ((part as any).inlineData?.data) {
+                    base64 = (part as any).inlineData.data;
+                    break;
+                }
+            }
+
+            if (!base64) throw new Error("No image data generated");
+            res.json({ base64 });
+        } catch (e: any) {
+            console.error("[Gemini Img Server] Error:", e);
+            res.status(500).json({ error: e.message || "Failed to generate image" });
+        }
+    });
+
+    app.post('/api/ai/gemini/transcribe', async (req: any, res: any) => {
+        const { audioBase64, mimeType } = req.body;
+        const apiKey = getGeminiKey(req);
+        if (!apiKey) return res.status(401).json({ error: "API Key missing" });
+
+        try {
+            const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+            const prompt = `Transcreva este áudio. Retorne APENAS um JSON no formato: {"text": "texto completo", "timestamps": [{"start": 0.0, "end": 2.0, "text": "fala 1"}, ...]}`;
+
+            const result = await ai.models.generateContent({
+                model: "gemini-3-flash-preview",
+                contents: [{
+                    role: "user",
+                    parts: [
+                        { inlineData: { data: audioBase64, mimeType } },
+                        { text: prompt }
+                    ]
+                }],
+                config: { responseMimeType: "application/json" } as any
+            });
+
+            res.json(JSON.parse(result.text || "{}"));
+        } catch (e: any) {
+            console.error("[Gemini Transcribe Server] Error:", e);
+            res.status(500).json({ error: e.message || "Failed to transcribe" });
+        }
+    });
+
     // ─── HEALTH ────────────────────────────────────────────────────────────────
     app.get('/api/health', (req, res) => {
         const key = getGeminiKey();
