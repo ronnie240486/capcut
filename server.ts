@@ -26,7 +26,7 @@ try {
     firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
 } catch (e) {
     console.error('Failed to load firebase-applet-config.json:', e);
-    firebaseConfig = { projectId: "gen-lang-client-0635778726", firestoreDatabaseId: "ai-studio-1d2a1402-5e45-4313-b178-96b8230a4ef8" };
+    firebaseConfig = { projectId: "proedit-d601b", firestoreDatabaseId: "ai-studio-1d2a1402-5e45-4313-b178-96b8230a4ef8" };
 }
 
 if (!admin.apps.length) {
@@ -238,6 +238,100 @@ async function startServer() {
         return key;
     };
 
+    const parseGeminiError = (e: any) => {
+        const errorMsg = e?.message || String(e || "");
+        const errorStr = JSON.stringify(e || {});
+        
+        console.error("[Gemini Error Parsing] Error occurred:", errorMsg, "Str:", errorStr);
+
+        // Prepayment credits exhausted
+        if (
+            errorMsg.includes('prepayment credits') || 
+            errorStr.includes('prepayment credits') || 
+            errorMsg.includes('credits are depleted') || 
+            errorStr.includes('credits are depleted') ||
+            errorMsg.includes('RESOURCE_EXHAUSTED') ||
+            errorStr.includes('RESOURCE_EXHAUSTED') ||
+            errorMsg.includes('Quota exceeded') ||
+            errorStr.includes('Quota exceeded') ||
+            errorMsg.includes('429') ||
+            errorStr.includes('429')
+        ) {
+            return {
+                status: 402,
+                error: "Créditos esgotados no Google AI Studio",
+                details: "Seus créditos pré-pagos do Google AI Studio acabaram ou foram esgotados. Por favor, acesse o painel de faturamento em https://aistudio.google.com/ de faturamento do seu projeto para recarregar ou verificar sua conta.",
+                code: "CREDITS_EXHAUSTED"
+            };
+        }
+
+        // gRPC error or MakerSuite transient issues
+        if (
+            errorMsg.includes('Rpc failed') || 
+            errorStr.includes('Rpc failed') || 
+            errorMsg.includes('xhr error') || 
+            errorStr.includes('xhr error') ||
+            errorMsg.includes('ProxyUnaryCall') ||
+            errorStr.includes('ProxyUnaryCall') ||
+            errorMsg.includes('UNKNOWN') ||
+            errorStr.includes('UNKNOWN')
+        ) {
+            return {
+                status: 503,
+                error: "Instabilidade temporária na API do Gemini",
+                details: "Ocorreu um erro de comunicação temporário com os servidores do Google AI Studio (Erro de Conexão gRPC/XHR). Por favor, tente novamente em instantes.",
+                code: "TRANSIENT_RPC_ERROR"
+            };
+        }
+
+        // Whitelist / Early Access Program permissions
+        if (
+            errorMsg.includes('403') || 
+            errorStr.includes('403') || 
+            errorMsg.includes('PERMISSION_DENIED') || 
+            errorStr.includes('PERMISSION_DENIED')
+        ) {
+            return {
+                status: 403,
+                error: "Acesso Não Autorizado / Negado (403)",
+                details: "Este modelo ou recurso do Gemini requer permissões de acesso antecipado (EAP) ou a chave API fornecida não está autorizada a utilizá-lo nesta região geográfica.",
+                code: "PERMISSION_DENIED"
+            };
+        }
+
+        // General fallback
+        return {
+            status: 500,
+            error: "Falha na chamada da API do Gemini",
+            details: errorMsg,
+            code: "GENERAL_ERROR"
+        };
+    };
+
+    const executeWithRetry = async <T>(fn: () => Promise<T>, retries = 2, delayMs = 1500): Promise<T> => {
+        try {
+            return await fn();
+        } catch (e: any) {
+            const errorMsg = e?.message || String(e || "");
+            const errorStr = JSON.stringify(e || {});
+            
+            // Check if it is a transient connection/xhr error we should retry on
+            const isTransient = errorMsg.includes('Rpc failed') || 
+                                errorStr.includes('Rpc failed') || 
+                                errorMsg.includes('xhr error') || 
+                                errorStr.includes('xhr error') ||
+                                errorMsg.includes('ProxyUnaryCall') ||
+                                errorStr.includes('ProxyUnaryCall');
+            
+            if (isTransient && retries > 0) {
+                console.warn(`[Gemini Retry] Transient connection issue detected. Retrying in ${delayMs}ms... (${retries} attempts left). Error:`, errorMsg);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                return executeWithRetry(fn, retries - 1, delayMs * 1.5);
+            }
+            throw e;
+        }
+    };
+
     // ─── GEMINI AI ROUTES ──────────────────────────────────────────────────────
     app.post('/api/ai/gemini/generate-music', async (req: any, res: any) => {
         const { prompt, lyrics, usePro, duration = 30 } = req.body;
@@ -267,13 +361,13 @@ async function startServer() {
 
             console.log(`[Gemini Music Server] Model: ${model}, Prompt length: ${finalPrompt.length}`);
 
-            const result = await ai.models.generateContentStream({
+            const result = await executeWithRetry(() => ai.models.generateContentStream({
                 model,
                 contents: [{ role: 'user', parts: [{ text: finalPrompt }] }],
                 config: {
                     responseModalities: [Modality.AUDIO]
                 } as any
-            });
+            }));
 
             let audioBase64 = "";
             let mimeType = "audio/wav";
@@ -298,19 +392,11 @@ async function startServer() {
             res.json({ audioBase64, mimeType });
         } catch (e: any) {
             console.error("[Gemini Music Server] Failure:", e);
-            
-            // Special handling for 403 / Whitelist issues
-            const errorMsg = e.message || String(e);
-            if (errorMsg.includes('403') || errorMsg.includes('PERMISSION_DENIED')) {
-                return res.status(403).json({ 
-                    error: "Acesso ao Lyria negado (403).",
-                    details: "Os modelos Lyria (Symphony AI) requerem acesso antecipado (EAP). Verifique se seu projeto tem permissão ou use uma chave API com acesso habilitado."
-                });
-            }
-
-            res.status(500).json({ 
-                error: "Falha ao gerar música com Gemini", 
-                details: errorMsg 
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ 
+                error: parsed.error, 
+                details: parsed.details,
+                code: parsed.code
             });
         }
     });
@@ -322,13 +408,13 @@ async function startServer() {
 
         try {
             const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
-            const result = await ai.models.generateContent({
+            const result = await executeWithRetry(() => ai.models.generateContent({
                 model: "gemini-2.5-flash-image",
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
                 config: {
                     imageConfig: { aspectRatio: aspectRatio as any }
                 } as any
-            });
+            }));
 
             let base64 = "";
             for (const part of result.candidates?.[0]?.content?.parts || []) {
@@ -342,7 +428,12 @@ async function startServer() {
             res.json({ base64 });
         } catch (e: any) {
             console.error("[Gemini Img Server] Error:", e);
-            res.status(500).json({ error: e.message || "Failed to generate image" });
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ 
+                error: parsed.error, 
+                details: parsed.details,
+                code: parsed.code
+            });
         }
     });
 
@@ -355,7 +446,7 @@ async function startServer() {
             const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
             const prompt = `Transcreva este áudio. Retorne APENAS um JSON no formato: {"text": "texto completo", "timestamps": [{"start": 0.0, "end": 2.0, "text": "fala 1"}, ...]}`;
 
-            const result = await ai.models.generateContent({
+            const result = await executeWithRetry(() => ai.models.generateContent({
                 model: "gemini-3-flash-preview",
                 contents: [{
                     role: "user",
@@ -365,12 +456,17 @@ async function startServer() {
                     ]
                 }],
                 config: { responseMimeType: "application/json" } as any
-            });
+            }));
 
             res.json(JSON.parse(result.text || "{}"));
         } catch (e: any) {
             console.error("[Gemini Transcribe Server] Error:", e);
-            res.status(500).json({ error: e.message || "Failed to transcribe" });
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ 
+                error: parsed.error, 
+                details: parsed.details,
+                code: parsed.code
+            });
         }
     });
 
@@ -390,21 +486,26 @@ async function startServer() {
     // ─── MERCADO PAGO ROUTES ───────────────────────────────────────────────────
     app.post('/api/mercadopago/create-preference', async (req: any, res: any) => {
         const { planId, userId, email, planName, planPrice } = req.body;
+        const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
 
-        if (!process.env.MERCADOPAGO_ACCESS_TOKEN) {
+        console.log(`[MercadoPago] create-preference request for ${email}, plan: ${planName}, user: ${userId}`);
+
+        if (!accessToken) {
             console.error('[MercadoPago] Missing MERCADOPAGO_ACCESS_TOKEN in env');
-            return res.status(500).json({ error: 'Configuração do Mercado Pago incompleta (Token Ausente).' });
+            return res.status(500).json({ error: 'Configuração do Mercado Pago incompleta no servidor (Token Ausente).' });
         }
 
         if (!planId || !userId || !email) {
-            return res.status(400).json({ error: 'Missing parameters: planId, userId, email are required.' });
+            console.warn('[MercadoPago] Missing parameters:', { planId, userId, email });
+            return res.status(400).json({ error: 'Parâmetros ausentes: planId, userId e email são obrigatórios.' });
         }
 
         try {
+            // Initialize client inside route to ensure it uses the current env var value
+            const mpClient = new MercadoPagoConfig({ accessToken });
             const preference = new Preference(mpClient);
             
             // Construct base URL for notifications and back_urls
-            // Check process.env.APP_URL first, then headers
             let baseUrl = process.env.APP_URL;
             if (!baseUrl) {
                 const protocol = req.headers['x-forwarded-proto'] || 'https';
@@ -417,8 +518,7 @@ async function startServer() {
                 baseUrl = baseUrl.slice(0, -1);
             }
 
-            console.log(`[MercadoPago] Base URL: ${baseUrl}`);
-            console.log(`[MercadoPago] Creating preference for ${email}, plan: ${planName}, price: ${planPrice}, user: ${userId}`);
+            console.log(`[MercadoPago] Creating preference. Base URL: ${baseUrl}`);
 
             const response = await preference.create({
                 body: {
@@ -446,19 +546,19 @@ async function startServer() {
                 }
             });
 
-            console.log(`[MercadoPago] Preference created successfully: ${response.id}`);
+            console.log(`[MercadoPago] Preference created successfully! ID: ${response.id}, Init Point: ${response.init_point}`);
             res.json({ id: response.id, init_point: response.init_point });
         } catch (error: any) {
-            console.error('[MercadoPago] Error creating preference:', JSON.stringify(error, null, 2));
+            console.error('[MercadoPago] Error creating preference:', error);
             
-            // Extract meaningful error message from SDK if available
+            // Extract detailed error information
             const message = error?.message || 'Falha ao criar preferência de pagamento.';
             const details = error?.cause || error?.errors || error;
             
             res.status(500).json({ 
                 error: 'Falha ao iniciar checkout com Mercado Pago.', 
                 details: message,
-                raw: details
+                raw: typeof details === 'object' ? JSON.stringify(details) : String(details)
             });
         }
     });
@@ -1106,7 +1206,8 @@ async function startServer() {
         
         finalArgs = [...finalArgs, ...processedArgs];
 
-        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})... CMD: ffmpeg ${finalArgs.join(' ')}`);
+        const loggedCmd = `ffmpeg ${finalArgs.join(' ')}`.replace(/\-loglevel\s+error\b/g, '-loglevel err');
+        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})... CMD: ${loggedCmd}`);
 
         try {
             const ffmpeg = spawn('ffmpeg', finalArgs);
@@ -1782,7 +1883,11 @@ async function startServer() {
             if (!completed) throw new Error('Tempo limite de geração excedido.');
         } catch (e: any) {
             console.error(`[Job ${jobId}] AI Gen Failed:`, e);
-            if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = e.message; }
+            if (jobs[jobId]) { 
+                const parsed = parseGeminiError(e);
+                jobs[jobId].status = 'failed'; 
+                jobs[jobId].error = `${parsed.error}: ${parsed.details}`; 
+            }
         }
     });
 
@@ -3074,7 +3179,7 @@ async function startServer() {
                         'agency': 100
                     };
                     
-                    if (!isAdmin && count >= (limits[plan] || 3)) {
+                    if (count >= (limits[plan] || 3)) {
                         return res.status(403).json({ 
                             error: `Limite de vídeos atingido para o plano ${plan.toUpperCase()}.`,
                             details: `Você já exportou ${count} vídeos. Faça upgrade para continuar.`,
@@ -3116,8 +3221,9 @@ async function startServer() {
     app.get('/api/process/download/:jobId', (req: any, res: any) => {
         const job = jobs[req.params.jobId];
         if (job && job.outputPath && fs.existsSync(job.outputPath) && fs.statSync(job.outputPath).size > 0) {
-            res.setHeader('Content-Disposition', `attachment; filename="proedit_export_${Date.now()}.mp4"`);
-            res.download(job.outputPath);
+            const filename = `proedit_export_${Date.now()}.mp4`;
+            // res.download() standard signature sets both Content-Type and Content-Disposition safely
+            res.download(job.outputPath, filename);
         } else {
             res.status(404).send('Arquivo indisponível ou vazio.');
         }
@@ -3181,59 +3287,90 @@ async function startServer() {
     });
 
     app.get('/api/download-external', async (req: any, res: any) => {
-        const { url, filename } = req.query;
-        if (!url) return res.status(400).send('URL missing');
-        const decodedUrl = decodeURIComponent(url as string);
-        const name = filename ? sanitizeFilename(filename as string) : `audio_${Date.now()}.mp3`;
+        try {
+            const { url, filename } = req.query;
+            if (!url) return res.status(400).send('URL missing');
+            const decodedUrl = decodeURIComponent(url as string);
+            const name = filename ? sanitizeFilename(filename as string) : `audio_${Date.now()}.mp3`;
 
-        console.log(`[DownloadProxy] Attempting to proxy: ${decodedUrl}`);
+            console.log(`[DownloadProxy] Attempting to proxy: ${decodedUrl}`);
 
-        const options: any = {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                'Referer': new URL(decodedUrl).origin
-            },
-            timeout: 30000
-        };
+            let absoluteUrl = decodedUrl;
+            let referer = '';
+            const host = req.headers.host || 'localhost:3000';
+            const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+            const localOrigin = `${proto}://${host}`;
 
-        const fetchWithRedirect = (currentUrl: string, depth = 0) => {
-            if (depth > 5) return res.status(500).send('Too many redirects');
-            
             try {
-                const protocol = currentUrl.startsWith('https') ? https : http;
-                protocol.get(currentUrl, options, (apiRes: any) => {
-                    // Handle Redirects
-                    if (apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
-                        let redirUrl = apiRes.headers.location;
-                        if (!redirUrl.startsWith('http')) {
-                            const origin = new URL(currentUrl).origin;
-                            redirUrl = origin + redirUrl;
-                        }
-                        return fetchWithRedirect(redirUrl, depth + 1);
-                    }
-
-                    if (apiRes.statusCode !== 200) {
-                        return res.status(apiRes.statusCode).send(`Original server returned status ${apiRes.statusCode}`);
-                    }
-
-                    // Forward content-type or force octet-stream for download
-                    const contentType = apiRes.headers['content-type'] || 'application/octet-stream';
-                    res.setHeader('Content-Type', contentType);
-                    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
-                    
-                    // Pipe the stream
-                    apiRes.pipe(res);
-                }).on('error', (err) => {
-                    console.error("[DownloadProxy] Error:", err);
-                    if (!res.headersSent) res.status(500).send('Download failure');
-                });
-            } catch (err: any) {
-                console.error("[DownloadProxy] Exception:", err);
-                if (!res.headersSent) res.status(500).send('Download failure: ' + err.message);
+                // Try parsing if it's already an absolute URL
+                const parsed = new URL(decodedUrl);
+                referer = parsed.origin;
+            } catch (err) {
+                // If it's a relative path, resolve it against our local origin
+                try {
+                    const parsed = new URL(decodedUrl, localOrigin);
+                    absoluteUrl = parsed.href;
+                    referer = parsed.origin;
+                } catch (innerErr) {
+                    console.error("[DownloadProxy] Totally invalid URL:", decodedUrl);
+                    return res.status(400).send('Invalid URL format');
+                }
             }
-        };
 
-        fetchWithRedirect(decodedUrl);
+            const options: any = {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    'Referer': referer
+                },
+                timeout: 30000
+            };
+
+            const fetchWithRedirect = (currentUrl: string, depth = 0) => {
+                if (depth > 5) return res.status(500).send('Too many redirects');
+                
+                try {
+                    const protocol = currentUrl.startsWith('https') ? https : http;
+                    protocol.get(currentUrl, options, (apiRes: any) => {
+                        // Handle Redirects
+                        if (apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
+                            let redirUrl = apiRes.headers.location;
+                            if (!redirUrl.startsWith('http')) {
+                                try {
+                                    const origin = new URL(currentUrl).origin;
+                                    redirUrl = origin + redirUrl;
+                                } catch (e) {
+                                    redirUrl = localOrigin + redirUrl;
+                                }
+                            }
+                            return fetchWithRedirect(redirUrl, depth + 1);
+                        }
+
+                        if (apiRes.statusCode !== 200) {
+                            return res.status(apiRes.statusCode).send(`Original server returned status ${apiRes.statusCode}`);
+                        }
+
+                        // Forward content-type or force octet-stream for download
+                        const contentType = apiRes.headers['content-type'] || 'application/octet-stream';
+                        res.setHeader('Content-Type', contentType);
+                        res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+                        
+                        // Pipe the stream
+                        apiRes.pipe(res);
+                    }).on('error', (err) => {
+                        console.error("[DownloadProxy] Error:", err);
+                        if (!res.headersSent) res.status(500).send('Download failure');
+                    });
+                } catch (err: any) {
+                    console.error("[DownloadProxy] Exception in fetch:", err);
+                    if (!res.headersSent) res.status(500).send('Download failure: ' + err.message);
+                }
+            };
+
+            fetchWithRedirect(absoluteUrl);
+        } catch (outerErr: any) {
+            console.error("[DownloadProxy] Outer Exception:", outerErr);
+            if (!res.headersSent) res.status(500).send('Download failed internally');
+        }
     });
 
     app.get('/api/proxy/media', async (req: any, res: any) => {
@@ -3438,20 +3575,21 @@ Details / Subject: ${prompt || 'A song about technology, creation, and editing m
 
 Please output beautiful, rhyming, and highly rhythmic lyrics.`;
 
-            const response = await ai.models.generateContent({
+            const response = await executeWithRetry(() => ai.models.generateContent({
                 model: modelName,
                 contents: userPrompt,
                 config: {
                     systemInstruction,
                     temperature: 0.8
                 }
-            });
+            }));
 
             const lyricsText = response.text || "";
             res.json({ success: true, lyrics: lyricsText.trim() });
         } catch (e: any) {
             console.error("[GenerateLyricsError]", e);
-            res.status(500).json({ success: false, error: e.message || String(e) });
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ success: false, error: parsed.error, details: parsed.details, code: parsed.code });
         }
     });
 
@@ -3494,20 +3632,21 @@ Please output beautiful, rhyming, and highly rhythmic lyrics.`;
 Include specific music descriptors such as professional equipment (e.g. vintage tube amp, pristine console preamps), specific acoustic or synthesized instruments, tempo (BPM), mix details (e.g., warm tape saturation, wider stereo imaging, crisp transient snap), and emotional cadence.
 Ensure your response is highly concise, direct, and under 50 words, formatted perfectly as a single continuous prompt. Avoid preambles, introductory words, or markdown structures. Output only the final prompt.`;
 
-            const response = await ai.models.generateContent({
+            const response = await executeWithRetry(() => ai.models.generateContent({
                 model: modelName,
                 contents: `Enhance this music prompt: "${rawPrompt}". Type/Context: ${type || 'music'}.`,
                 config: {
                     systemInstruction,
                     temperature: 0.82
                 }
-            });
+            }));
 
             const enhancedResult = response.text || "";
             res.json({ success: true, enhancedPrompt: enhancedResult.trim() });
         } catch (e: any) {
             console.error("[EnhancePromptError]", e);
-            res.status(500).json({ success: false, error: e.message || String(e) });
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ success: false, error: parsed.error, details: parsed.details, code: parsed.code });
         }
     });
 
