@@ -9,11 +9,9 @@ import https from 'https';
 import http from 'http';
 import { Readable } from 'stream';
 import { tmpdir } from 'os';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { MercadoPagoConfig, Preference } from 'mercadopago';
 import admin from 'firebase-admin';
-
 import { getFirestore } from 'firebase-admin/firestore';
 
 // ES Module dirname fix
@@ -480,6 +478,19 @@ async function startServer() {
             keyNamesChecked: ['GEMINI_API_KEY', 'API_KEY', 'GOOGLE_API_KEY'],
             uptime: process.uptime(),
             env: process.env.NODE_ENV
+        });
+    });
+
+    // Diagnostic route to check server health and env vars
+    app.get('/api/diag', (req: any, res: any) => {
+        res.json({
+            status: 'ok',
+            time: new Date().toISOString(),
+            env: {
+                NODE_ENV: process.env.NODE_ENV,
+                HAS_MP_TOKEN: !!process.env.MERCADOPAGO_ACCESS_TOKEN,
+                MP_TOKEN_PREFIX: process.env.MERCADOPAGO_ACCESS_TOKEN ? process.env.MERCADOPAGO_ACCESS_TOKEN.substring(0, 10) + '...' : 'NONE'
+            }
         });
     });
 
@@ -3856,8 +3867,22 @@ Ensure your response is highly concise, direct, and under 50 words, formatted pe
         res.status(404).json({ status: 'error', error: 'API route not found' });
     });
 
+    // Global Error Handler to ensure JSON responses for errors in API routes
+    app.use((err: any, req: any, res: any, next: any) => {
+        if (req.path.startsWith('/api/')) {
+            console.error('[Global API Error Handler]:', err);
+            return res.status(500).json({ 
+                error: 'Erro interno no servidor de API', 
+                details: err.message || String(err),
+                path: req.path
+            });
+        }
+        next(err);
+    });
+
     // ─── FRONTEND ─────────────────────────────────────────────────────────────
     if (process.env.NODE_ENV !== 'production') {
+        const { createServer: createViteServer } = await import('vite');
         const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
         app.use(vite.middlewares);
     } else {
