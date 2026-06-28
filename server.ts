@@ -76,6 +76,14 @@ async function startServer() {
     app.use(express.json({ limit: '100mb' }));
     app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
+    // Request Logger for API routes to help debugging
+    app.use((req: any, res: any, next: any) => {
+        if (req.path.startsWith('/api/')) {
+            console.log(`[API Request Debug]: ${req.method} ${req.path}`);
+        }
+        next();
+    });
+
     // Helper for safe JSON parsing in Node environment
     async function safeJson(response: any) {
         try {
@@ -495,6 +503,10 @@ async function startServer() {
     });
 
     // ─── MERCADO PAGO ROUTES ───────────────────────────────────────────────────
+    app.get('/api/mercadopago/create-preference', (req: any, res: any) => {
+        res.json({ message: 'Mercado Pago API is active. Use POST to create a preference.' });
+    });
+
     app.post('/api/mercadopago/create-preference', async (req: any, res: any) => {
         const { planId, userId, email, planName, planPrice } = req.body;
         const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
