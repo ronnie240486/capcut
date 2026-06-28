@@ -43,110 +43,6 @@ import voiceAutomation from './video-engine/voice-automation.js';
 const app = express();
 const PORT = 3000;
 
-// VERY TOP MIDDLEWARE - Logger to see if requests are even hitting the server
-app.use((req: any, res: any, next: any) => {
-    if (req.path.startsWith('/api')) {
-        console.log(`[TOP DEBUG] ${req.method} ${req.path}`);
-    }
-    next();
-});
-
-// INITIAL MIDDLEWARE
-app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
-}));
-
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
-
-// TOP LEVEL API ROUTES
-app.get('/api/test-top', (req: any, res: any) => {
-    console.log(`[API PING] HIT!`);
-    res.json({ status: 'ok', message: 'API is reachable', timestamp: new Date().toISOString() });
-});
-
-app.post('/api/mercadopago/create-preference', async (req: any, res: any) => {
-    console.log(`[MercadoPago] create-preference HIT!`);
-    const { planId, userId, email, planName, planPrice } = req.body;
-    const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
-
-    if (!accessToken) {
-        console.error('[MercadoPago] Missing MERCADOPAGO_ACCESS_TOKEN');
-        return res.status(500).json({ error: 'Token do Mercado Pago não configurado no servidor.' });
-    }
-
-    try {
-        const mpClient = new MercadoPagoConfig({ accessToken });
-        const preference = new Preference(mpClient);
-        
-        let baseUrl = process.env.APP_URL;
-        if (!baseUrl) {
-            const protocol = req.headers['x-forwarded-proto'] || 'https';
-            const host = req.headers.host;
-            baseUrl = `${protocol}://${host}`;
-        }
-        if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
-
-        const response = await preference.create({
-            body: {
-                items: [{
-                    id: planId,
-                    title: `Assinatura ProEdit - Plano ${planName}`,
-                    quantity: 1,
-                    unit_price: Number(planPrice),
-                    currency_id: 'BRL',
-                }],
-                payer: { email: email },
-                external_reference: userId,
-                back_urls: {
-                    success: `${baseUrl}/?payment=success`,
-                    failure: `${baseUrl}/?payment=failure`,
-                    pending: `${baseUrl}/?payment=pending`
-                },
-                auto_return: 'approved',
-                notification_url: `${baseUrl}/api/mercadopago/webhook`
-            }
-        });
-
-        res.json({ id: response.id, init_point: response.init_point });
-    } catch (error: any) {
-        console.error('[MercadoPago] Error:', error);
-        res.status(500).json({ error: 'Falha ao iniciar Mercado Pago', details: error.message });
-    }
-});
-
-app.post('/api/mercadopago/webhook', async (req: any, res: any) => {
-    console.log('[MercadoPago Webhook] HIT!');
-    const { query } = req;
-    const topic = query.topic || query.type;
-    
-    try {
-        if (topic === 'payment') {
-            const paymentId = query.id || query['data.id'];
-            const paymentRes = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
-                headers: { 'Authorization': `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}` }
-            });
-            
-            if (paymentRes.ok) {
-                const paymentData: any = await paymentRes.json();
-                if (paymentData.status === 'approved') {
-                    const userId = paymentData.external_reference;
-                    const planId = paymentData.additional_info?.items?.[0]?.id || 'pro';
-                    await firestore.collection('users').doc(userId).set({
-                        userPlan: planId,
-                        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                    }, { merge: true });
-                }
-            }
-        }
-        res.status(200).send('OK');
-    } catch (error) {
-        res.status(500).send('Error');
-    }
-});
-
 // Global Error Handlers to prevent "Lost Process"
 process.on('uncaughtException', (err) => {
     console.error('[CRITICAL] Uncaught Exception:', err);
@@ -167,6 +63,122 @@ process.on('SIGTERM', handleShutdown);
 process.on('SIGINT', handleShutdown);
 
 async function startServer() {
+    // INITIAL MIDDLEWARE
+    app.use(cors({
+        origin: '*',
+        methods: ['GET', 'POST', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-epidemic-token', 'x-pexels-api-key', 'x-pixabay-api-key', 'x-unsplash-api-key']
+    }));
+
+    app.use(express.json({ limit: '100mb' }));
+    app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
+    // Request Logger for API routes to help debugging
+    app.use((req: any, res: any, next: any) => {
+        if (req.path.startsWith('/api/')) {
+            console.log(`[API GLOBAL DEBUG]: ${req.method} ${req.path}`);
+        }
+        next();
+    });
+
+    // VERY TOP API ROUTE - Most robust matching
+    app.all('/api/test-top', (req: any, res: any) => {
+        console.log(`[API PING HIT] Method: ${req.method}, Path: ${req.path}`);
+        res.setHeader('Content-Type', 'application/json');
+        res.json({ 
+            status: 'ok', 
+            message: 'API is reachable', 
+            timestamp: new Date().toISOString(),
+            env: process.env.NODE_ENV,
+            headers: req.headers
+        });
+    });
+
+    app.all('/ping-direct', (req: any, res: any) => {
+        res.json({ status: 'direct-ok' });
+    });
+
+    app.post('/api/mercadopago/create-preference', async (req: any, res: any) => {
+        console.log(`[MercadoPago] create-preference HIT!`);
+        const { planId, userId, email, planName, planPrice } = req.body;
+        const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+
+        if (!accessToken) {
+            console.error('[MercadoPago] Missing MERCADOPAGO_ACCESS_TOKEN');
+            return res.status(500).json({ error: 'Token do Mercado Pago não configurado no servidor.' });
+        }
+
+        try {
+            const mpClient = new MercadoPagoConfig({ accessToken });
+            const preference = new Preference(mpClient);
+            
+            let baseUrl = process.env.APP_URL;
+            if (!baseUrl) {
+                const protocol = req.headers['x-forwarded-proto'] || 'https';
+                const host = req.headers.host;
+                baseUrl = `${protocol}://${host}`;
+            }
+            if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
+
+            const response = await preference.create({
+                body: {
+                    items: [{
+                        id: planId,
+                        title: `Assinatura ProEdit - Plano ${planName}`,
+                        quantity: 1,
+                        unit_price: Number(planPrice),
+                        currency_id: 'BRL',
+                    }],
+                    payer: { email: email },
+                    external_reference: userId,
+                    back_urls: {
+                        success: `${baseUrl}/?payment=success`,
+                        failure: `${baseUrl}/?payment=failure`,
+                        pending: `${baseUrl}/?payment=pending`
+                    },
+                    auto_return: 'approved',
+                    notification_url: `${baseUrl}/api/mercadopago/webhook`
+                }
+            });
+
+            res.json({ id: response.id, init_point: response.init_point });
+        } catch (error: any) {
+            console.error('[MercadoPago] Error:', error);
+            res.status(500).json({ error: 'Falha ao iniciar Mercado Pago', details: error.message });
+        }
+    });
+
+    app.post('/api/mercadopago/webhook', async (req: any, res: any) => {
+        console.log('[MercadoPago Webhook] HIT!');
+        const { query } = req;
+        const topic = query.topic || query.type;
+        
+        try {
+            if (topic === 'payment') {
+                const paymentId = query.id || query['data.id'];
+                // Using global fetch (Node 18+)
+                const paymentRes = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+                    headers: { 'Authorization': `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}` }
+                });
+                
+                if (paymentRes.ok) {
+                    const paymentData: any = await paymentRes.json();
+                    if (paymentData.status === 'approved') {
+                        const userId = paymentData.external_reference;
+                        const planId = paymentData.additional_info?.items?.[0]?.id || 'pro';
+                        await firestore.collection('users').doc(userId).set({
+                            userPlan: planId,
+                            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                        }, { merge: true });
+                    }
+                }
+            }
+            res.status(200).send('OK');
+        } catch (error) {
+            res.status(500).send('Error');
+        }
+    });
+
     // Helper for safe JSON parsing in Node environment
     async function safeJson(response: any) {
         try {
