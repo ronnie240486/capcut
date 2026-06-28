@@ -15,8 +15,9 @@ import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 
 // ES Module dirname fix
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// @ts-ignore
+const __filename = typeof import.meta !== 'undefined' && import.meta.url ? fileURLToPath(import.meta.url) : (typeof __filename !== 'undefined' ? __filename : '');
+const __dirname = typeof import.meta !== 'undefined' && import.meta.url ? path.dirname(__filename) : (typeof __dirname !== 'undefined' ? __dirname : process.cwd());
 
 // Initialize Firebase Admin
 let firebaseConfig;
@@ -67,6 +68,15 @@ process.on('SIGTERM', handleShutdown);
 process.on('SIGINT', handleShutdown);
 
 async function startServer() {
+    // Absolute top test route
+    app.get('/api/test-top', (req: any, res: any) => {
+        res.json({ message: 'Absolute top API is working' });
+    });
+
+    app.post('/api/test-top', (req: any, res: any) => {
+        res.json({ message: 'Absolute top POST API is working', body: req.body });
+    });
+
     app.use(cors({
         origin: '*',
         methods: ['GET', 'POST', 'OPTIONS'],
@@ -79,9 +89,140 @@ async function startServer() {
     // Request Logger for API routes to help debugging
     app.use((req: any, res: any, next: any) => {
         if (req.path.startsWith('/api/')) {
-            console.log(`[API Request Debug]: ${req.method} ${req.path}`);
+            console.log(`[API GLOBAL DEBUG]: ${req.method} ${req.path} - Headers: ${JSON.stringify(req.headers)}`);
         }
         next();
+    });
+
+    // Test route at the very top
+    app.get('/api/test-top', (req: any, res: any) => {
+        res.json({ message: 'Top level API is working' });
+    });
+
+    // ─── MERCADO PAGO ROUTES ───────────────────────────────────────────────────
+    app.get('/api/mercadopago/create-preference', (req: any, res: any) => {
+        res.json({ message: 'Mercado Pago API is active. Use POST to create a preference.' });
+    });
+
+    app.post('/api/mercadopago/create-preference', async (req: any, res: any) => {
+        const { planId, userId, email, planName, planPrice } = req.body;
+        const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+
+        console.log(`[MercadoPago] create-preference request for ${email}, plan: ${planName}, user: ${userId}`);
+
+        if (!accessToken) {
+            console.error('[MercadoPago] Missing MERCADOPAGO_ACCESS_TOKEN in env');
+            return res.status(500).json({ error: 'Configuração do Mercado Pago incompleta no servidor (Token Ausente).' });
+        }
+
+        if (!planId || !userId || !email) {
+            console.warn('[MercadoPago] Missing parameters:', { planId, userId, email });
+            return res.status(400).json({ error: 'Parâmetros ausentes: planId, userId e email são obrigatórios.' });
+        }
+
+        try {
+            // Initialize client inside route to ensure it uses the current env var value
+            const mpClient = new MercadoPagoConfig({ accessToken });
+            const preference = new Preference(mpClient);
+            
+            // Construct base URL for notifications and back_urls
+            let baseUrl = process.env.APP_URL;
+            if (!baseUrl) {
+                const protocol = req.headers['x-forwarded-proto'] || 'https';
+                const host = req.headers.host;
+                baseUrl = `${protocol}://${host}`;
+            }
+            
+            // Remove trailing slash if present
+            if (baseUrl.endsWith('/')) {
+                baseUrl = baseUrl.slice(0, -1);
+            }
+
+            console.log(`[MercadoPago] Creating preference. Base URL: ${baseUrl}`);
+
+            const response = await preference.create({
+                body: {
+                    items: [
+                        {
+                            id: planId,
+                            title: `Assinatura ProEdit - Plano ${planName}`,
+                            quantity: 1,
+                            unit_price: Number(planPrice),
+                            currency_id: 'BRL',
+                            description: `Upgrade para o plano ${planName} no ProEdit`
+                        }
+                    ],
+                    payer: {
+                        email: email
+                    },
+                    external_reference: userId,
+                    back_urls: {
+                        success: `${baseUrl}/?payment=success`,
+                        failure: `${baseUrl}/?payment=failure`,
+                        pending: `${baseUrl}/?payment=pending`
+                    },
+                    auto_return: 'approved',
+                    notification_url: `${baseUrl}/api/mercadopago/webhook`
+                }
+            });
+
+            console.log(`[MercadoPago] Preference created successfully! ID: ${response.id}, Init Point: ${response.init_point}`);
+            res.json({ id: response.id, init_point: response.init_point });
+        } catch (error: any) {
+            console.error('[MercadoPago] Error creating preference:', error);
+            
+            // Extract detailed error information
+            const message = error?.message || 'Falha ao criar preferência de pagamento.';
+            const details = error?.cause || error?.errors || error;
+            
+            res.status(500).json({ 
+                error: 'Falha ao iniciar checkout com Mercado Pago.', 
+                details: message,
+                raw: typeof details === 'object' ? JSON.stringify(details) : String(details)
+            });
+        }
+    });
+
+    app.post('/api/mercadopago/webhook', async (req: any, res: any) => {
+        const { query } = req;
+        const topic = query.topic || query.type;
+        
+        console.log('[MercadoPago Webhook] Received:', topic, query);
+
+        try {
+            if (topic === 'payment' || topic === 'merchant_order') {
+                const paymentId = query.id || query['data.id'];
+                
+                // Fetch payment details to verify status
+                const paymentRes = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}`
+                    }
+                });
+                
+                if (paymentRes.ok) {
+                    const paymentData = await paymentRes.json();
+                    
+                    if (paymentData.status === 'approved') {
+                        const userId = paymentData.external_reference;
+                        const planId = paymentData.additional_info?.items?.[0]?.id || 'pro';
+                        
+                        console.log(`[MercadoPago] Payment Approved for User ${userId}. Plan: ${planId}`);
+                        
+                        // Update user plan in Firestore
+                        await firestore.collection('users').doc(userId).set({
+                            userPlan: planId,
+                            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                        }, { merge: true });
+                    }
+                }
+            }
+            
+            res.status(200).send('OK');
+        } catch (error: any) {
+            console.error('[MercadoPago Webhook] Error processing:', error);
+            res.status(500).send('Internal Server Error');
+        }
     });
 
     // Helper for safe JSON parsing in Node environment
@@ -500,132 +641,6 @@ async function startServer() {
                 MP_TOKEN_PREFIX: process.env.MERCADOPAGO_ACCESS_TOKEN ? process.env.MERCADOPAGO_ACCESS_TOKEN.substring(0, 10) + '...' : 'NONE'
             }
         });
-    });
-
-    // ─── MERCADO PAGO ROUTES ───────────────────────────────────────────────────
-    app.get('/api/mercadopago/create-preference', (req: any, res: any) => {
-        res.json({ message: 'Mercado Pago API is active. Use POST to create a preference.' });
-    });
-
-    app.post('/api/mercadopago/create-preference', async (req: any, res: any) => {
-        const { planId, userId, email, planName, planPrice } = req.body;
-        const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
-
-        console.log(`[MercadoPago] create-preference request for ${email}, plan: ${planName}, user: ${userId}`);
-
-        if (!accessToken) {
-            console.error('[MercadoPago] Missing MERCADOPAGO_ACCESS_TOKEN in env');
-            return res.status(500).json({ error: 'Configuração do Mercado Pago incompleta no servidor (Token Ausente).' });
-        }
-
-        if (!planId || !userId || !email) {
-            console.warn('[MercadoPago] Missing parameters:', { planId, userId, email });
-            return res.status(400).json({ error: 'Parâmetros ausentes: planId, userId e email são obrigatórios.' });
-        }
-
-        try {
-            // Initialize client inside route to ensure it uses the current env var value
-            const mpClient = new MercadoPagoConfig({ accessToken });
-            const preference = new Preference(mpClient);
-            
-            // Construct base URL for notifications and back_urls
-            let baseUrl = process.env.APP_URL;
-            if (!baseUrl) {
-                const protocol = req.headers['x-forwarded-proto'] || 'https';
-                const host = req.headers.host;
-                baseUrl = `${protocol}://${host}`;
-            }
-            
-            // Remove trailing slash if present
-            if (baseUrl.endsWith('/')) {
-                baseUrl = baseUrl.slice(0, -1);
-            }
-
-            console.log(`[MercadoPago] Creating preference. Base URL: ${baseUrl}`);
-
-            const response = await preference.create({
-                body: {
-                    items: [
-                        {
-                            id: planId,
-                            title: `Assinatura ProEdit - Plano ${planName}`,
-                            quantity: 1,
-                            unit_price: Number(planPrice),
-                            currency_id: 'BRL',
-                            description: `Upgrade para o plano ${planName} no ProEdit`
-                        }
-                    ],
-                    payer: {
-                        email: email
-                    },
-                    external_reference: userId,
-                    back_urls: {
-                        success: `${baseUrl}/?payment=success`,
-                        failure: `${baseUrl}/?payment=failure`,
-                        pending: `${baseUrl}/?payment=pending`
-                    },
-                    auto_return: 'approved',
-                    notification_url: `${baseUrl}/api/mercadopago/webhook`
-                }
-            });
-
-            console.log(`[MercadoPago] Preference created successfully! ID: ${response.id}, Init Point: ${response.init_point}`);
-            res.json({ id: response.id, init_point: response.init_point });
-        } catch (error: any) {
-            console.error('[MercadoPago] Error creating preference:', error);
-            
-            // Extract detailed error information
-            const message = error?.message || 'Falha ao criar preferência de pagamento.';
-            const details = error?.cause || error?.errors || error;
-            
-            res.status(500).json({ 
-                error: 'Falha ao iniciar checkout com Mercado Pago.', 
-                details: message,
-                raw: typeof details === 'object' ? JSON.stringify(details) : String(details)
-            });
-        }
-    });
-
-    app.post('/api/mercadopago/webhook', async (req: any, res: any) => {
-        const { query } = req;
-        const topic = query.topic || query.type;
-        
-        console.log('[MercadoPago Webhook] Received:', topic, query);
-
-        try {
-            if (topic === 'payment' || topic === 'merchant_order') {
-                const paymentId = query.id || query['data.id'];
-                
-                // Fetch payment details to verify status
-                const paymentRes = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
-                    headers: {
-                        'Authorization': `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}`
-                    }
-                });
-                
-                if (paymentRes.ok) {
-                    const paymentData = await paymentRes.json();
-                    
-                    if (paymentData.status === 'approved') {
-                        const userId = paymentData.external_reference;
-                        const planId = paymentData.additional_info?.items?.[0]?.id || 'pro';
-                        
-                        console.log(`[MercadoPago] Payment Approved for User ${userId}. Plan: ${planId}`);
-                        
-                        // Update user plan in Firestore
-                        await firestore.collection('users').doc(userId).set({
-                            userPlan: planId,
-                            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                        }, { merge: true });
-                    }
-                }
-            }
-            
-            res.status(200).send('OK');
-        } catch (error: any) {
-            console.error('[MercadoPago Webhook] Error processing:', error);
-            res.status(500).send('Internal Server Error');
-        }
     });
 
     // ─── AUTOPILOT ROUTES ──────────────────────────────────────────────────────
