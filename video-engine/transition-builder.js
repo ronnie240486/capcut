@@ -1,4 +1,6 @@
 
+import fs from 'fs';
+import path from 'path';
 import presetGenerator from './preset-generator.js';
 
 // Helper to escape text for drawtext filter
@@ -69,6 +71,7 @@ export default {
         let filterChain = '';
         
         let inputIndexCounter = 0;
+        const safeAudioFormat = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
 
         // --- CONFIGURAÇÃO DE RESOLUÇÃO E FPS ---
         const resMap = {
@@ -76,13 +79,28 @@ export default {
             '480p': { w: 854, h: 480 },
             '720p': { w: 1280, h: 720 },
             '1080p': { w: 1920, h: 1080 },
-            '4k': { w: 3840, h: 2160 }
+            '2k': { w: 2560, h: 1440 }, 
+            '4k': { w: 3840, h: 2160 }  
         };
         
-        const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
-        const targetFps = parseInt(exportConfig.fps) || 30;
+        let targetRes = resMap[exportConfig.resolution] || resMap['720p'];
+
+        let targetFps = parseInt(exportConfig.fps) || 30;
+        if (targetFps > 60) {
+            targetFps = 60; 
+        }
         
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
+        const isUltraHD = exportConfig.ultraHD === true || exportConfig.ultraHD === 'true';
+        const isUHD = exportConfig.resolution === '4k' || isUltraHD;
+        const scalingAlgorithm = 'bicubic'; // 'bicubic' is very safe and fast
+        const sharpenFilter = isUHD ? ',unsharp=3:3:0.5:3:3:0.0' : ''; 
+        
+        const isOpticalFlow = exportConfig.opticalFlow === true || exportConfig.opticalFlow === 'true';
+        const fpsFilter = isOpticalFlow 
+            ? `minterpolate=fps=${targetFps}:mi_mode=mci:mc_mode=obmc` 
+            : `fps=${targetFps}`;
+
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=${scalingAlgorithm},pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1${sharpenFilter},${fpsFilter},format=yuv420p`;
 
         const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + (parseFloat(c.duration) || 5)), 0);
         const projectDuration = Math.max(explicitTotalDuration, maxClipEnd, 1);
@@ -452,8 +470,6 @@ export default {
             filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
-
-        const safeAudioFormat = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
         
         audioClips.forEach((clip, i) => {
             const filePath = fileMap[clip.fileName];
@@ -492,7 +508,7 @@ export default {
         let finalAudio = '[final_audio_out]';
         const amixInputs = finalAudioSegments.length;
         
-        if (amixInputs > 0) {
+        if (amixInputs > 1) {
             // For very high number of segments, we split into stages to avoid memory issues with amix
             if (amixInputs > 50) {
                 let currentBatch = [];
@@ -510,8 +526,49 @@ export default {
             } else {
                 filterChain += `${finalAudioSegments.join('')}amix=inputs=${amixInputs}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
             }
+        } else if (amixInputs === 1) {
+            filterChain += `${finalAudioSegments[0]}anull[final_audio_out];`;
         } else {
-            filterChain += `${baseAudioStream}acopy[final_audio_out];`;
+            filterChain += `${baseAudioStream}anull[final_audio_out];`;
+        }
+
+        // --- WATERMARK (IMAGE OR TEXT) ---
+        let customWmImgPath = null;
+        if (exportConfig?.customWatermarkImage) {
+            customWmImgPath = fileMap[exportConfig.customWatermarkImage];
+        }
+
+        // FREE PLAN FALLBACK: If no custom watermark, and whiteLabel is false, use default ProEdit logo
+        if (!customWmImgPath && !exportConfig?.whiteLabel) {
+            const defaultLogoPath = path.join(process.cwd(), 'images', 'logo.png');
+            if (fs.existsSync(defaultLogoPath)) {
+                customWmImgPath = defaultLogoPath;
+            }
+        }
+
+        if (customWmImgPath) {
+            const wmIdx = inputIndexCounter++;
+            // Loop the watermark image for the entire project duration to avoid premature stream end
+            inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', customWmImgPath);
+            const wmLabel = `watermark_out`;
+            const wmW = Math.round(targetRes.w * 0.12); // 12% of video width
+            
+            filterChain += `;[${wmIdx}:v]scale=${wmW}:-1,format=yuva420p,colorchannelmixer=aa=0.5[wm_scaled];${finalComp}[wm_scaled]overlay=main_w-overlay_w-40:main_h-overlay_h-40:eof_action=pass[${wmLabel}]`;
+            finalComp = `[${wmLabel}]`;
+        } else {
+            let wmTxt = '';
+            if (exportConfig?.customWatermarkText) {
+                wmTxt = exportConfig.customWatermarkText;
+            } else if (!exportConfig?.whiteLabel) {
+                wmTxt = 'PROEDIT - IA VIDEO EDITOR';
+            }
+
+            if (wmTxt) {
+                const wmLabel = `watermark_out`;
+                const escapedWmTxt = wmTxt.replace(/'/g, "'\\''");
+                filterChain += `;${finalComp}drawtext=text='${escapedWmTxt}':fontcolor=white@0.3:fontsize=24:x=w-tw-40:y=h-th-40:shadowcolor=black@0.2:shadowx=1:shadowy=1[${wmLabel}]`;
+                finalComp = `[${wmLabel}]`;
+            }
         }
 
         if (filterChain.endsWith(';')) {
