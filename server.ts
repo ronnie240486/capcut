@@ -14,9 +14,18 @@ import { MercadoPagoConfig, Preference } from 'mercadopago';
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
 
-// ES Module dirname fix
-// @ts-ignore
-const __filename = fileURLToPath(import.meta.url);
+// ES Module / CommonJS compatibility
+const __filename = (function() {
+    try {
+        // @ts-ignore
+        if (typeof import.meta !== 'undefined' && import.meta.url) {
+            return fileURLToPath(import.meta.url);
+        }
+    } catch (e) {}
+    // @ts-ignore
+    if (typeof __filename !== 'undefined') return __filename;
+    return path.join(process.cwd(), 'server.ts');
+})();
 const __dirname = path.dirname(__filename);
 
 // Initialize Firebase Admin
@@ -99,16 +108,20 @@ async function startServer() {
     });
 
     app.post('/api/mercadopago/create-preference', async (req: any, res: any) => {
-        console.log(`[MercadoPago] create-preference HIT!`);
+        console.log(`[MercadoPago] create-preference HIT! Body:`, req.body);
         const { planId, userId, email, planName, planPrice } = req.body;
         const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
 
         if (!accessToken) {
             console.error('[MercadoPago] Missing MERCADOPAGO_ACCESS_TOKEN');
-            return res.status(500).json({ error: 'Token do Mercado Pago não configurado no servidor.' });
+            return res.status(500).json({ 
+                error: 'Token do Mercado Pago não configurado no servidor.',
+                details: 'A variável de ambiente MERCADOPAGO_ACCESS_TOKEN está vazia.'
+            });
         }
 
         try {
+            console.log(`[MercadoPago] Configuring client with token length: ${accessToken.length}`);
             const mpClient = new MercadoPagoConfig({ accessToken });
             const preference = new Preference(mpClient);
             
@@ -119,32 +132,39 @@ async function startServer() {
                 baseUrl = `${protocol}://${host}`;
             }
             if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
+            console.log(`[MercadoPago] Base URL for callbacks: ${baseUrl}`);
 
-            const response = await preference.create({
-                body: {
-                    items: [{
-                        id: planId,
-                        title: `Assinatura ProEdit - Plano ${planName}`,
-                        quantity: 1,
-                        unit_price: Number(planPrice),
-                        currency_id: 'BRL',
-                    }],
-                    payer: { email: email },
-                    external_reference: userId,
-                    back_urls: {
-                        success: `${baseUrl}/?payment=success`,
-                        failure: `${baseUrl}/?payment=failure`,
-                        pending: `${baseUrl}/?payment=pending`
-                    },
-                    auto_return: 'approved',
-                    notification_url: `${baseUrl}/api/mercadopago/webhook`
-                }
-            });
+            const preferenceBody = {
+                items: [{
+                    id: planId,
+                    title: `Assinatura ProEdit - Plano ${planName}`,
+                    quantity: 1,
+                    unit_price: Number(planPrice),
+                    currency_id: 'BRL',
+                }],
+                payer: { email: email },
+                external_reference: userId,
+                back_urls: {
+                    success: `${baseUrl}/?payment=success`,
+                    failure: `${baseUrl}/?payment=failure`,
+                    pending: `${baseUrl}/?payment=pending`
+                },
+                auto_return: 'approved',
+                notification_url: `${baseUrl}/api/mercadopago/webhook`
+            };
+
+            console.log(`[MercadoPago] Creating preference...`);
+            const response = await preference.create({ body: preferenceBody });
+            console.log(`[MercadoPago] Preference created successfully: ${response.id}`);
 
             res.json({ id: response.id, init_point: response.init_point });
         } catch (error: any) {
-            console.error('[MercadoPago] Error:', error);
-            res.status(500).json({ error: 'Falha ao iniciar Mercado Pago', details: error.message });
+            console.error('[MercadoPago] Error creating preference:', error);
+            res.status(500).json({ 
+                error: 'Falha ao iniciar Mercado Pago', 
+                details: error.message,
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            });
         }
     });
 
@@ -2590,9 +2610,10 @@ async function startServer() {
             const maxGuidance = modelLimits.max_guidance_scale ?? modelLimits.max_guidance ?? 10;
             const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 1;
             
-            // Sensible defaults if model limits are unknown or specifically for ACE/Turbo models
-            // Some models require at least 1.0 guidance scale and 8 steps
-            const defaultTarget = (mappedModel.toLowerCase().includes('ace') || mappedModel.toLowerCase().includes('turbo')) ? 1.0 : 5;
+            // Sensible defaults if model limits are unknown or specifically for Turbo models
+            // Turbo models MUST stay at 1.0 guidance. Base models shine at 3.5 - 5.0.
+            const isTurbo = mappedModel.toLowerCase().includes('turbo') || mappedModel.toLowerCase().includes('fast');
+            const defaultTarget = isTurbo ? 1.0 : 3.5;
             const guidanceScale = Math.min(Math.max(defaultTarget, minGuidance), maxGuidance);
 
             const resolvedDuration = duration || 30;
@@ -2602,12 +2623,15 @@ async function startServer() {
             // Apply limits
             resolvedGuidance = Math.min(Math.max(resolvedGuidance, minGuidance), maxGuidance);
 
-            // ACE-Step and Turbo models have extremely strict limits (8 steps, 1.0 guidance)
+            // Turbo models have extremely strict limits (8 steps, 1.0 guidance)
             // that results in 422 if not exactly followed.
-            if (mappedModel.toLowerCase().includes('ace') || mappedModel.toLowerCase().includes('turbo')) {
+            if (isTurbo) {
                 resolvedSteps = Math.max(resolvedSteps, 8);
-                // For ACE models, guidance should be exactly 1.0 usually
-                if (maxGuidance <= 1.0) resolvedGuidance = 1.0;
+                // For Turbo models, guidance should be exactly 1.0 usually
+                if (maxGuidance <= 1.0 || resolvedGuidance < 1.0) resolvedGuidance = 1.0;
+            } else if (mappedModel.toLowerCase().includes('ace')) {
+                // AceStep Base usually works best with 25-50 steps for high quality
+                if (!steps) resolvedSteps = 25;
             }
 
             // Force vocal emphasis if lyrics are provided
@@ -2900,13 +2924,20 @@ async function startServer() {
             try {
                 console.log(`[Suno API] Calling deAPI AceStep as seamless Suno fallback`);
                 const resolvedDuration = duration || 30;
+                
+                // Enhance fallback prompt with high-quality keywords
+                let fallbackPrompt = prompt || style || "Amazing High-Quality Music Track";
+                if (fallbackPrompt.length < 100) {
+                    fallbackPrompt = `${fallbackPrompt}. Extreme High-Fidelity, Studio Mastered, Professional Production, Pristine Clear Audio, Deep Bass, Crisp Percussion, Cinematic Atmosphere.`;
+                }
+
                 const form = new FormData();
-                form.append('caption', prompt || style || "Amazing Rock music track");
-                form.append('model', 'ACE-Step-v1.5-turbo');
+                form.append('caption', fallbackPrompt.substring(0, 300));
+                form.append('model', 'ACE-Step-v1.5-Base');
                 form.append('lyrics', lyrics || '[Instrumental]');
                 form.append('duration', String(resolvedDuration));
-                form.append('inference_steps', '8');
-                form.append('guidance_scale', '1.0');
+                form.append('inference_steps', '25');
+                form.append('guidance_scale', '3.5');
                 form.append('seed', '-1');
                 form.append('format', 'mp3');
 
@@ -3112,6 +3143,69 @@ async function startServer() {
 
 
     // Cleanup finally complete
+
+    app.post('/api/ai/visual-plan', async (req: any, res: any) => {
+        const { lyrics, name, theme, count = 5, duration = 30 } = req.body;
+        const apiKey = getGeminiKey(req);
+        if (!apiKey) return res.status(401).json({ error: "Gemini API key required" });
+
+        try {
+            const ai = new GoogleGenAI({ apiKey });
+            const prompt = `You are a cinematic director and visual artist. 
+            Create a detailed visual storyboard for a music video.
+            Song Name: ${name || 'Unknown'}
+            Theme: ${theme || 'Abstract'}
+            Total Duration: ${duration} seconds
+            Lyrics: ${lyrics || 'No lyrics available'}
+
+            INSTRUCTIONS:
+            1. If lyrics are provided, the scenes MUST strictly follow the narrative and chronological flow of the lyrics.
+            2. Create exactly ${count} scenes.
+            3. For each scene, provide a "startTime" (in seconds) and a "prompt" (detailed English description).
+            4. Start time for scene 1 MUST be 0.
+            5. Prompts must be highly detailed (lighting, lens, style, atmosphere).
+            6. Distribute scenes evenly or logically across the ${duration}s.
+
+            Format your response as strict JSON:
+            {
+              "scenes": [
+                { "startTime": 0, "prompt": "..." },
+                ...
+              ]
+            }`;
+
+            const result = await ai.models.generateContent({
+                model: 'gemini-2.0-flash',
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                config: { 
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.OBJECT,
+                        properties: {
+                            scenes: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        startTime: { type: Type.NUMBER },
+                                        prompt: { type: Type.STRING }
+                                    },
+                                    required: ["startTime", "prompt"]
+                                }
+                            }
+                        },
+                        required: ["scenes"]
+                    }
+                }
+            });
+
+            const text = result.text;
+            res.json(JSON.parse(text));
+        } catch (e: any) {
+            console.error('[Visual Plan] Error:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
 
     // Proxy para o Freesound para evitar CORS no frontend
     app.get('/api/freesound/search', async (req, res) => {
@@ -3618,11 +3712,11 @@ Please output beautiful, rhyming, and highly rhythmic lyrics.`;
                     }
                 }
             });
-            const modelName = "gemini-3.5-flash";
+            const modelName = "gemini-1.5-flash";
 
-            const systemInstruction = `You are an elite music producer and prompt engineer. Your job is to take a simple music description or script prompt and elevate it into a vivid, descriptive, high-fidelity prompt for state-of-the-art AI sound and music generation systems (like Suno AI, Lyria, or AudioCraft). 
+            const systemInstruction = `You are an elite music producer and prompt engineer. Your job is to take a simple music description or script prompt and elevate it into a vivid, descriptive, high-fidelity prompt for state-of-the-art AI sound and music generation systems (like Suno AI, Lyria, or AceStep). 
 Include specific music descriptors such as professional equipment (e.g. vintage tube amp, pristine console preamps), specific acoustic or synthesized instruments, tempo (BPM), mix details (e.g., warm tape saturation, wider stereo imaging, crisp transient snap), and emotional cadence.
-Ensure your response is highly concise, direct, and under 50 words, formatted perfectly as a single continuous prompt. Avoid preambles, introductory words, or markdown structures. Output only the final prompt.`;
+Ensure your response is highly concise, direct, and under 60 words, formatted perfectly as a single continuous prompt. Avoid preambles, introductory words, or markdown structures. Output only the final prompt.`;
 
             const response = await executeWithRetry(() => ai.models.generateContent({
                 model: modelName,
@@ -3820,9 +3914,20 @@ Ensure your entire output is valid, parsable JSON matching this schema. Do not w
 
     // ─── CHECK FFMPEG ─────────────────────────────────────────────────────────
     app.get('/api/check-ffmpeg', (req: any, res: any) => {
+        console.log(`[HealthCheck] Received ping from ${req.ip} - Host: ${req.get('host')}`);
         const check = spawn('ffmpeg', ['-version']);
-        check.on('error', () => res.status(500).send('FFmpeg Missing'));
-        check.on('close', (code: number) => { if (code === 0) res.send('OK'); else res.status(500).send('FFmpeg Error'); });
+        check.on('error', () => {
+            console.error('[HealthCheck] FFmpeg missing error');
+            res.status(500).send('FFmpeg Missing');
+        });
+        check.on('close', (code: number) => { 
+            if (code === 0) {
+                res.send('OK');
+            } else {
+                console.error(`[HealthCheck] FFmpeg exit code: ${code}`);
+                res.status(500).send('FFmpeg Error'); 
+            }
+        });
     });
 
     // ─── STOCK SEARCH PROXIES ────────────────────────────────────────────────
