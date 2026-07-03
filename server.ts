@@ -2623,15 +2623,12 @@ async function startServer() {
             // Apply limits
             resolvedGuidance = Math.min(Math.max(resolvedGuidance, minGuidance), maxGuidance);
 
-            // Turbo models have extremely strict limits (8 steps, 1.0 guidance)
+            // Turbo and AceStep models have extremely strict limits (8 steps maximum)
             // that results in 422 if not exactly followed.
-            if (isTurbo) {
-                resolvedSteps = Math.max(resolvedSteps, 8);
+            if (isTurbo || mappedModel.toLowerCase().includes('ace')) {
+                resolvedSteps = 8;
                 // For Turbo models, guidance should be exactly 1.0 usually
                 if (maxGuidance <= 1.0 || resolvedGuidance < 1.0) resolvedGuidance = 1.0;
-            } else if (mappedModel.toLowerCase().includes('ace')) {
-                // AceStep Base usually works best with 25-50 steps for high quality
-                if (!steps) resolvedSteps = 25;
             }
 
             // Force vocal emphasis if lyrics are provided
@@ -2936,8 +2933,8 @@ async function startServer() {
                 form.append('model', 'ACE-Step-v1.5-Base');
                 form.append('lyrics', lyrics || '[Instrumental]');
                 form.append('duration', String(resolvedDuration));
-                form.append('inference_steps', '25');
-                form.append('guidance_scale', '3.5');
+                form.append('inference_steps', '8');
+                form.append('guidance_scale', '1.0');
                 form.append('seed', '-1');
                 form.append('format', 'mp3');
 
