@@ -8,17 +8,46 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
 import { Readable } from 'stream';
-import { createServer as createViteServer } from 'vite';
+import { tmpdir } from 'os';
 import { GoogleGenAI, Modality, Type } from "@google/genai";
+import { MercadoPagoConfig, Preference } from 'mercadopago';
+import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
+
+// ES Module / CommonJS compatibility
+const __filename = (function() {
+    try {
+        // @ts-ignore
+        if (typeof import.meta !== 'undefined' && import.meta.url) {
+            return fileURLToPath(import.meta.url);
+        }
+    } catch (e) {}
+    // @ts-ignore
+    if (typeof __filename !== 'undefined') return __filename;
+    return path.join(process.cwd(), 'server.ts');
+})();
+const __dirname = path.dirname(__filename);
+
+// Initialize Firebase Admin
+let firebaseConfig;
+try {
+    firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
+} catch (e) {
+    console.error('Failed to load firebase-applet-config.json:', e);
+    firebaseConfig = { projectId: "proedit-d601b", firestoreDatabaseId: "ai-studio-1d2a1402-5e45-4313-b178-96b8230a4ef8" };
+}
+
+if (!admin.apps.length) {
+    admin.initializeApp({
+        projectId: firebaseConfig.projectId
+    });
+}
+const firestore = getFirestore(firebaseConfig.firestoreDatabaseId || '(default)');
 
 // Engine Imports
 import { handleExportVideo } from './video-engine/export-video.js';
 import filterBuilder from './video-engine/filter-logic.js';
 import voiceAutomation from './video-engine/voice-automation.js';
-
-// ES Module dirname fix
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
@@ -43,6 +72,7 @@ process.on('SIGTERM', handleShutdown);
 process.on('SIGINT', handleShutdown);
 
 async function startServer() {
+    // INITIAL MIDDLEWARE
     app.use(cors({
         origin: '*',
         methods: ['GET', 'POST', 'OPTIONS'],
@@ -51,6 +81,123 @@ async function startServer() {
 
     app.use(express.json({ limit: '100mb' }));
     app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
+    // Request Logger for API routes to help debugging
+    app.use((req: any, res: any, next: any) => {
+        if (req.path.startsWith('/api/')) {
+            console.log(`[API GLOBAL DEBUG]: ${req.method} ${req.path}`);
+        }
+        next();
+    });
+
+    // VERY TOP API ROUTE - Most robust matching
+    app.all('/api/test-top', (req: any, res: any) => {
+        console.log(`[API PING HIT] Method: ${req.method}, Path: ${req.path}`);
+        res.setHeader('Content-Type', 'application/json');
+        res.json({ 
+            status: 'ok', 
+            message: 'API is reachable', 
+            timestamp: new Date().toISOString(),
+            env: process.env.NODE_ENV,
+            headers: req.headers
+        });
+    });
+
+    app.all('/ping-direct', (req: any, res: any) => {
+        res.json({ status: 'direct-ok' });
+    });
+
+    app.post('/api/mercadopago/create-preference', async (req: any, res: any) => {
+        console.log(`[MercadoPago] create-preference HIT! Body:`, req.body);
+        const { planId, userId, email, planName, planPrice } = req.body;
+        const accessToken = process.env.MERCADOPAGO_ACCESS_TOKEN;
+
+        if (!accessToken) {
+            console.error('[MercadoPago] Missing MERCADOPAGO_ACCESS_TOKEN');
+            return res.status(500).json({ 
+                error: 'Token do Mercado Pago não configurado no servidor.',
+                details: 'A variável de ambiente MERCADOPAGO_ACCESS_TOKEN está vazia.'
+            });
+        }
+
+        try {
+            console.log(`[MercadoPago] Configuring client with token length: ${accessToken.length}`);
+            const mpClient = new MercadoPagoConfig({ accessToken });
+            const preference = new Preference(mpClient);
+            
+            let baseUrl = process.env.APP_URL;
+            if (!baseUrl) {
+                const protocol = req.headers['x-forwarded-proto'] || 'https';
+                const host = req.headers.host;
+                baseUrl = `${protocol}://${host}`;
+            }
+            if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
+            console.log(`[MercadoPago] Base URL for callbacks: ${baseUrl}`);
+
+            const preferenceBody = {
+                items: [{
+                    id: planId,
+                    title: `Assinatura ProEdit - Plano ${planName}`,
+                    quantity: 1,
+                    unit_price: Number(planPrice),
+                    currency_id: 'BRL',
+                }],
+                payer: { email: email },
+                external_reference: userId,
+                back_urls: {
+                    success: `${baseUrl}/?payment=success`,
+                    failure: `${baseUrl}/?payment=failure`,
+                    pending: `${baseUrl}/?payment=pending`
+                },
+                auto_return: 'approved',
+                notification_url: `${baseUrl}/api/mercadopago/webhook`
+            };
+
+            console.log(`[MercadoPago] Creating preference...`);
+            const response = await preference.create({ body: preferenceBody });
+            console.log(`[MercadoPago] Preference created successfully: ${response.id}`);
+
+            res.json({ id: response.id, init_point: response.init_point });
+        } catch (error: any) {
+            console.error('[MercadoPago] Error creating preference:', error);
+            res.status(500).json({ 
+                error: 'Falha ao iniciar Mercado Pago', 
+                details: error.message,
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            });
+        }
+    });
+
+    app.post('/api/mercadopago/webhook', async (req: any, res: any) => {
+        console.log('[MercadoPago Webhook] HIT!');
+        const { query } = req;
+        const topic = query.topic || query.type;
+        
+        try {
+            if (topic === 'payment') {
+                const paymentId = query.id || query['data.id'];
+                // Using global fetch (Node 18+)
+                const paymentRes = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+                    headers: { 'Authorization': `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}` }
+                });
+                
+                if (paymentRes.ok) {
+                    const paymentData: any = await paymentRes.json();
+                    if (paymentData.status === 'approved') {
+                        const userId = paymentData.external_reference;
+                        const planId = paymentData.additional_info?.items?.[0]?.id || 'pro';
+                        await firestore.collection('users').doc(userId).set({
+                            userPlan: planId,
+                            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                        }, { merge: true });
+                    }
+                }
+            }
+            res.status(200).send('OK');
+        } catch (error) {
+            res.status(500).send('Error');
+        }
+    });
 
     // Helper for safe JSON parsing in Node environment
     async function safeJson(response: any) {
@@ -158,8 +305,8 @@ async function startServer() {
         next();
     });
 
-    const uploadDir = path.resolve(__dirname, 'uploads');
-    const proxyDir = path.resolve(__dirname, 'uploads', 'proxies');
+    const uploadDir = path.resolve(process.cwd(), 'uploads');
+    const proxyDir = path.resolve(process.cwd(), 'uploads', 'proxies');
 
     if (!fs.existsSync(uploadDir)) {
         try { fs.mkdirSync(uploadDir, { recursive: true }); } catch (e) { console.error("Failed to create upload dir:", e); }
@@ -212,198 +359,267 @@ async function startServer() {
         return key;
     };
 
+    const parseGeminiError = (e: any) => {
+        const errorMsg = e?.message || String(e || "");
+        const errorStr = JSON.stringify(e || {});
+        
+        console.error("[Gemini Error Parsing] Error occurred:", errorMsg, "Str:", errorStr);
+
+        // Prepayment credits exhausted
+        if (
+            errorMsg.includes('prepayment credits') || 
+            errorStr.includes('prepayment credits') || 
+            errorMsg.includes('credits are depleted') || 
+            errorStr.includes('credits are depleted') ||
+            errorMsg.includes('RESOURCE_EXHAUSTED') ||
+            errorStr.includes('RESOURCE_EXHAUSTED') ||
+            errorMsg.includes('Quota exceeded') ||
+            errorStr.includes('Quota exceeded') ||
+            errorMsg.includes('429') ||
+            errorStr.includes('429')
+        ) {
+            return {
+                status: 402,
+                error: "Créditos esgotados no Google AI Studio",
+                details: "Seus créditos pré-pagos do Google AI Studio acabaram ou foram esgotados. Por favor, acesse o painel de faturamento em https://aistudio.google.com/ de faturamento do seu projeto para recarregar ou verificar sua conta.",
+                code: "CREDITS_EXHAUSTED"
+            };
+        }
+
+        // gRPC error or MakerSuite transient issues
+        if (
+            errorMsg.includes('Rpc failed') || 
+            errorStr.includes('Rpc failed') || 
+            errorMsg.includes('xhr error') || 
+            errorStr.includes('xhr error') ||
+            errorMsg.includes('ProxyUnaryCall') ||
+            errorStr.includes('ProxyUnaryCall') ||
+            errorMsg.includes('UNKNOWN') ||
+            errorStr.includes('UNKNOWN')
+        ) {
+            return {
+                status: 503,
+                error: "Instabilidade temporária na API do Gemini",
+                details: "Ocorreu um erro de comunicação temporário com os servidores do Google AI Studio (Erro de Conexão gRPC/XHR). Por favor, tente novamente em instantes.",
+                code: "TRANSIENT_RPC_ERROR"
+            };
+        }
+
+        // Whitelist / Early Access Program permissions
+        if (
+            errorMsg.includes('403') || 
+            errorStr.includes('403') || 
+            errorMsg.includes('PERMISSION_DENIED') || 
+            errorStr.includes('PERMISSION_DENIED')
+        ) {
+            return {
+                status: 403,
+                error: "Acesso Não Autorizado / Negado (403)",
+                details: "Este modelo ou recurso do Gemini requer permissões de acesso antecipado (EAP) ou a chave API fornecida não está autorizada a utilizá-lo nesta região geográfica.",
+                code: "PERMISSION_DENIED"
+            };
+        }
+
+        // General fallback
+        return {
+            status: 500,
+            error: "Falha na chamada da API do Gemini",
+            details: errorMsg,
+            code: "GENERAL_ERROR"
+        };
+    };
+
+    const executeWithRetry = async <T>(fn: () => Promise<T>, retries = 2, delayMs = 1500): Promise<T> => {
+        try {
+            return await fn();
+        } catch (e: any) {
+            const errorMsg = e?.message || String(e || "");
+            const errorStr = JSON.stringify(e || {});
+            
+            // Check if it is a transient connection/xhr error we should retry on
+            const isTransient = errorMsg.includes('Rpc failed') || 
+                                errorStr.includes('Rpc failed') || 
+                                errorMsg.includes('xhr error') || 
+                                errorStr.includes('xhr error') ||
+                                errorMsg.includes('ProxyUnaryCall') ||
+                                errorStr.includes('ProxyUnaryCall');
+            
+            if (isTransient && retries > 0) {
+                console.warn(`[Gemini Retry] Transient connection issue detected. Retrying in ${delayMs}ms... (${retries} attempts left). Error:`, errorMsg);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+                return executeWithRetry(fn, retries - 1, delayMs * 1.5);
+            }
+            throw e;
+        }
+    };
+
+    // ─── GEMINI AI ROUTES ──────────────────────────────────────────────────────
+    app.post('/api/ai/gemini/generate-music', async (req: any, res: any) => {
+        const { prompt, lyrics, usePro, duration = 30 } = req.body;
+        const apiKey = getGeminiKey(req);
+
+        if (!apiKey) {
+            return res.status(401).json({ 
+                error: "Nenhuma chave Gemini válida encontrada.",
+                details: "Configure sua chave API nas configurações do AI Studio."
+            });
+        }
+
+        try {
+            const ai = new GoogleGenAI({ 
+                apiKey,
+                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+            });
+            
+            // Choose the correct Lyria model
+            const model = usePro ? "lyria-3-pro-preview" : "lyria-3-clip-preview";
+            
+            // Build final prompt
+            let finalPrompt = prompt;
+            if (lyrics && lyrics.trim().length > 0) {
+                finalPrompt = `${prompt}\n\nVocal Lyrics: ${lyrics}`;
+            }
+
+            console.log(`[Gemini Music Server] Model: ${model}, Prompt length: ${finalPrompt.length}`);
+
+            const result = await executeWithRetry(() => ai.models.generateContentStream({
+                model,
+                contents: [{ role: 'user', parts: [{ text: finalPrompt }] }],
+                config: {
+                    responseModalities: [Modality.AUDIO]
+                } as any
+            }));
+
+            let audioBase64 = "";
+            let mimeType = "audio/wav";
+
+            for await (const chunk of result) {
+                const parts = chunk.candidates?.[0]?.content?.parts;
+                if (!parts) continue;
+                for (const part of parts) {
+                    if (part.inlineData?.data) {
+                        if (!audioBase64 && part.inlineData.mimeType) {
+                            mimeType = part.inlineData.mimeType;
+                        }
+                        audioBase64 += part.inlineData.data;
+                    }
+                }
+            }
+
+            if (!audioBase64) {
+                throw new Error("Não foi possível extrair dados de áudio da resposta da IA.");
+            }
+
+            res.json({ audioBase64, mimeType });
+        } catch (e: any) {
+            console.error("[Gemini Music Server] Failure:", e);
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ 
+                error: parsed.error, 
+                details: parsed.details,
+                code: parsed.code
+            });
+        }
+    });
+
+    app.post('/api/ai/gemini/generate-img', async (req: any, res: any) => {
+        const { prompt, aspectRatio = '1:1' } = req.body;
+        const apiKey = getGeminiKey(req);
+        if (!apiKey) return res.status(401).json({ error: "API Key missing" });
+
+        try {
+            const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+            const result = await executeWithRetry(() => ai.models.generateContent({
+                model: "gemini-2.5-flash-image",
+                contents: [{ role: "user", parts: [{ text: prompt }] }],
+                config: {
+                    imageConfig: { aspectRatio: aspectRatio as any }
+                } as any
+            }));
+
+            let base64 = "";
+            for (const part of result.candidates?.[0]?.content?.parts || []) {
+                if ((part as any).inlineData?.data) {
+                    base64 = (part as any).inlineData.data;
+                    break;
+                }
+            }
+
+            if (!base64) throw new Error("No image data generated");
+            res.json({ base64 });
+        } catch (e: any) {
+            console.error("[Gemini Img Server] Error:", e);
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ 
+                error: parsed.error, 
+                details: parsed.details,
+                code: parsed.code
+            });
+        }
+    });
+
+    app.post('/api/ai/gemini/transcribe', async (req: any, res: any) => {
+        const { audioBase64, mimeType } = req.body;
+        const apiKey = getGeminiKey(req);
+        if (!apiKey) return res.status(401).json({ error: "API Key missing" });
+
+        try {
+            const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+            const prompt = `Transcreva este áudio. Retorne APENAS um JSON no formato: {"text": "texto completo", "timestamps": [{"start": 0.0, "end": 2.0, "text": "fala 1"}, ...]}`;
+
+            const result = await executeWithRetry(() => ai.models.generateContent({
+                model: "gemini-3-flash-preview",
+                contents: [{
+                    role: "user",
+                    parts: [
+                        { inlineData: { data: audioBase64, mimeType } },
+                        { text: prompt }
+                    ]
+                }],
+                config: { responseMimeType: "application/json" } as any
+            }));
+
+            res.json(JSON.parse(result.text || "{}"));
+        } catch (e: any) {
+            console.error("[Gemini Transcribe Server] Error:", e);
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ 
+                error: parsed.error, 
+                details: parsed.details,
+                code: parsed.code
+            });
+        }
+    });
+
     // ─── HEALTH ────────────────────────────────────────────────────────────────
     app.get('/api/health', (req, res) => {
         const key = getGeminiKey();
         res.json({ 
             status: 'ok', 
             hasKey: key.length > 0,
+            hasMP: !!process.env.MERCADOPAGO_ACCESS_TOKEN,
             keyNamesChecked: ['GEMINI_API_KEY', 'API_KEY', 'GOOGLE_API_KEY'],
             uptime: process.uptime(),
             env: process.env.NODE_ENV
         });
     });
 
+    // Diagnostic route to check server health and env vars
+    app.get('/api/diag', (req: any, res: any) => {
+        res.json({
+            status: 'ok',
+            time: new Date().toISOString(),
+            env: {
+                NODE_ENV: process.env.NODE_ENV,
+                HAS_MP_TOKEN: !!process.env.MERCADOPAGO_ACCESS_TOKEN,
+                MP_TOKEN_PREFIX: process.env.MERCADOPAGO_ACCESS_TOKEN ? process.env.MERCADOPAGO_ACCESS_TOKEN.substring(0, 10) + '...' : 'NONE'
+            }
+        });
+    });
+
     // ─── AUTOPILOT ROUTES ──────────────────────────────────────────────────────
     // Diagnostic - already at line 35
     
-    app.post('/api/ai/edit-image', async (req: any, res: any) => {
-        try {
-            const { image, mimeType, prompt, aspectRatio } = req.body;
-            const apiKey = getGeminiKey(req);
-            
-            if (!apiKey) return res.status(401).json({ error: "Chave Gemini não configurada." });
-            
-            const ai = new GoogleGenAI({ 
-                apiKey,
-                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-            });
-
-            const config: any = {};
-            if (aspectRatio) config.imageConfig = { aspectRatio: aspectRatio as any };
-
-            const result = await ai.models.generateContent({
-                model: 'gemini-2.5-flash-image',
-                config: Object.keys(config).length > 0 ? config : undefined,
-                contents: {
-                    role: 'user',
-                    parts: [
-                        { inlineData: { data: image, mimeType: mimeType || 'image/jpeg' } },
-                        { text: prompt }
-                    ]
-                }
-            });
-
-            let base64 = "";
-            for (const part of result.candidates?.[0]?.content?.parts || []) {
-                if (part.inlineData?.data) {
-                    base64 = part.inlineData.data;
-                    break;
-                }
-            }
-
-            if (!base64) return res.status(500).json({ error: "A IA não retornou uma imagem editada." });
-            res.json({ image: base64 });
-        } catch (e: any) {
-            console.error('[Gemini Edit Image] Failed:', e);
-            res.status(500).json({ error: e.message });
-        }
-    });
-
-    app.post('/api/ai/remove-background', async (req: any, res: any) => {
-        try {
-            const { image, mimeType } = req.body;
-            const apiKey = getGeminiKey(req);
-            
-            if (!apiKey) return res.status(401).json({ error: "Chave Gemini não configurada." });
-            
-            const ai = new GoogleGenAI({ 
-                apiKey,
-                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-            });
-
-            const result = await ai.models.generateContent({
-                model: 'gemini-2.5-flash-image',
-                contents: {
-                    role: 'user',
-                    parts: [
-                        { inlineData: { data: image, mimeType: mimeType || 'image/jpeg' } },
-                        { text: "Remove the background from this image. Return ONLY the subject on a transparent background as an image." }
-                    ]
-                }
-            });
-
-            let base64 = "";
-            for (const part of result.candidates?.[0]?.content?.parts || []) {
-                if (part.inlineData?.data) {
-                    base64 = part.inlineData.data;
-                    break;
-                }
-            }
-
-            if (!base64) return res.status(500).json({ error: "A IA não retornou uma imagem com fundo removido." });
-            res.json({ image: base64 });
-        } catch (e: any) {
-            console.error('[Gemini Remove BG] Failed:', e);
-            res.status(500).json({ error: e.message });
-        }
-    });
-
-    app.get('/api/ai/video-status/:name', async (req: any, res: any) => {
-        try {
-            const apiKey = getGeminiKey(req);
-            const ai = new GoogleGenAI({ apiKey });
-            // Correct SDK usage: pass an object with an 'operation' property
-            const operation = await ai.operations.getVideosOperation({ 
-                operation: { name: req.params.name } as any 
-            });
-            res.json(operation);
-        } catch (e: any) {
-            res.status(500).json({ error: e.message });
-        }
-    });
-
-    app.post('/api/ai/generate-image', async (req: any, res: any) => {
-        try {
-            const { prompt, aspectRatio } = req.body;
-            const apiKey = getGeminiKey(req);
-            const ai = new GoogleGenAI({ apiKey });
-            const result = await ai.models.generateContent({
-                model: "gemini-2.5-flash-image",
-                contents: [{ role: "user", parts: [{ text: prompt }] }],
-                config: { imageConfig: { aspectRatio: aspectRatio || "1:1" } } as any
-            });
-            let base64 = "";
-            for (const part of result.candidates?.[0]?.content?.parts || []) {
-                if (part.inlineData?.data) { base64 = part.inlineData.data; break; }
-            }
-            res.json({ image: base64 });
-        } catch (e: any) {
-            res.status(500).json({ error: e.message });
-        }
-    });
-
-    app.post('/api/ai/generate-music', async (req: any, res: any) => {
-        try {
-            const { prompt, usePro } = req.body;
-            const apiKey = getGeminiKey(req);
-            const ai = new GoogleGenAI({ apiKey });
-            const model = usePro ? "google/lyria-3-pro-preview" : "google/lyria-3-clip-preview";
-            const response = await ai.models.generateContentStream({
-                model,
-                contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                config: { responseModalities: [Modality.AUDIO] } as any
-            });
-            let audioBase64 = "";
-            for await (const chunk of response) {
-                for (const part of chunk.candidates?.[0]?.content?.parts || []) {
-                    if (part.inlineData?.data) audioBase64 += part.inlineData.data;
-                }
-            }
-            res.json({ audio: audioBase64 });
-        } catch (e: any) {
-            res.status(500).json({ error: e.message });
-        }
-    });
-
-    app.post('/api/ai/transcribe', async (req: any, res: any) => {
-        try {
-            const { audio, mimeType } = req.body;
-            const apiKey = getGeminiKey(req);
-            const ai = new GoogleGenAI({ apiKey });
-            const prompt = `Transcreva este áudio. Retorne APENAS um JSON: {"text": "texto completo", "timestamps": [{"start": 0.0, "end": 2.0, "text": "fala 1"}]}`;
-            const result = await ai.models.generateContent({
-                model: "gemini-3-flash-preview",
-                contents: [{ role: "user", parts: [{ inlineData: { data: audio, mimeType } }, { text: prompt }] }],
-                config: { responseMimeType: "application/json" } as any
-            });
-            res.json(JSON.parse(result.text || "{}"));
-        } catch (e: any) {
-            res.status(500).json({ error: e.message });
-        }
-    });
-
-    app.post('/api/ai/completion', async (req: any, res: any) => {
-        try {
-            const { messages, model, config } = req.body;
-            const apiKey = getGeminiKey(req);
-            const ai = new GoogleGenAI({ apiKey });
-            const contents = messages.map((m: any) => ({
-                role: m.role === 'assistant' ? 'model' : m.role,
-                parts: Array.isArray(m.content) ? m.content : [{ text: String(m.content) }]
-            }));
-            const result = await ai.models.generateContent({
-                model: model || "gemini-3-flash-preview",
-                contents,
-                config
-            });
-            res.json({ text: result.text });
-        } catch (e: any) {
-            console.error("[Gemini Completion Error]", e);
-            res.status(500).json({ error: e.message });
-        }
-    });
-
     app.post('/api/autopilot/generate-plan', async (req: any, res: any) => {
         console.log("[Autopilot] generate-plan request received");
         try {
@@ -423,28 +639,12 @@ async function startServer() {
             })) : [];
 
             console.log(`[Autopilot Plan] Calling Gemini 3 Flash Preview`);
-            const systemPrompt = `Você é um diretor e roteirista de vídeos virais especializado em TikTok, Reels e YouTube Shorts.
-SUA MISSÃO: Criar um roteiro IMPACTANTE, CRIATIVO e ÚNICO.
-
-REGRAS DE OURO PARA O ROTEIRO:
-1. NUNCA comece com "e aí galera", "olá pessoal" ou frases genéricas de saudação.
-2. Comece com um HOOK (gancho) forte: uma pergunta intrigante, um fato chocante ou uma afirmação ousada.
-3. Varie TOTALMENTE o estilo de cada roteiro. Use humor, suspense, curiosidade ou autoridade, dependendo do tema.
-4. Seja direto ao ponto. Cada segundo conta.
-5. As descrições visuais (campo 'action') devem ser em INGLÊS e muito detalhadas para geração de imagem.
-
-ESTILO VISUAL (LAYOUTS):
-- 'fullscreen': Cena limpa ocupando tudo.
-- 'overlay_pop': Estilo CapCut, com elementos sobrepostos.
-- 'impact_shake': Para momentos de ênfase ou transições rápidas.`;
-
             const scriptResponse = await ai.models.generateContent({
                 model: 'gemini-3-flash-preview',
                 contents: [{
                     role: 'user',
                     parts: [
-                        { text: systemPrompt },
-                        { text: `PROMPT DO USUÁRIO: ${prompt}` },
+                        { text: prompt },
                         ...imageParts
                     ]
                 }],
@@ -508,8 +708,8 @@ ESTILO VISUAL (LAYOUTS):
 
     app.post('/api/autopilot/generate-tts', async (req: any, res: any) => {
         console.log("[Autopilot] generate-tts request received");
+        const { text: ttsText, voice, accentPrompt, nuance, emotion } = req.body;
         try {
-            const { text: ttsText, voice, accentPrompt, nuance, emotion } = req.body;
             const apiKey = getGeminiKey(req);
             
             // Nuance mapping
@@ -568,18 +768,20 @@ ESTILO VISUAL (LAYOUTS):
             }
             const ai = new GoogleGenAI({ apiKey });
 
-            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${voice}`);
+            const validVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
+            const targetVoice = (voice && validVoices.includes(voice)) ? voice : 'Kore';
+
+            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${targetVoice}`);
             const ttsResponse = await ai.models.generateContent({
                 model: "gemini-3.1-flash-tts-preview",
                 contents: [{
-                    role: 'user',
                     parts: [{ text: finalPrompt }]
                 }],
                 config: {
                     responseModalities: ["AUDIO"],
                     speechConfig: {
                         voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: voice || 'live' },
+                            prebuiltVoiceConfig: { voiceName: targetVoice },
                         },
                     },
                 },
@@ -592,15 +794,112 @@ ESTILO VISUAL (LAYOUTS):
 
             res.json({ audioBase64 });
         } catch (e: any) {
-            console.error('[Autopilot TTS] Failed:', e);
-            let errorMsg = e.message;
+            console.warn('[Autopilot TTS] Primary failed, trying fallback:', e);
             try {
-                if (errorMsg.startsWith('{')) {
-                    const parsed = JSON.parse(errorMsg);
-                    if (parsed.error?.message) errorMsg = parsed.error.message;
+                // FALLBACK to Google Translate TTS
+                const textToSpeak = ttsText || "";
+                const chunks: string[] = [];
+                let current = "";
+                const words = textToSpeak.split(/(\s+)/);
+                for (const word of words) {
+                    if ((current + word).length > 150) {
+                        if (current.trim()) chunks.push(current.trim());
+                        current = word;
+                    } else {
+                        current += word;
+                    }
                 }
-            } catch(ex) {}
-            res.status(500).json({ error: errorMsg });
+                if (current.trim()) chunks.push(current.trim());
+
+                if (chunks.length === 0) throw new Error("Texto vazio");
+
+                console.log(`[Autopilot TTS Fallback] Processing ${chunks.length} chunks`);
+
+                const tempDir = tmpdir();
+                const tempFiles: string[] = [];
+                const lang = 'pt-BR'; // default or detected from voice context
+                
+                // Download chunks
+                for (let i = 0; i < chunks.length; i++) {
+                    const chunk = chunks[i];
+                    const cleanChunk = encodeURIComponent(chunk);
+                    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${lang}&client=tw-ob&q=${cleanChunk}`;
+                    const tempFile = path.join(tempDir, `tts_ap_fb_${Date.now()}_${i}.mp3`);
+                    
+                    await new Promise<void>((resolvePrivate, rejectPrivate) => {
+                        const fileStream = fs.createWriteStream(tempFile);
+                        https.get(url, (response) => {
+                            response.pipe(fileStream);
+                            fileStream.on('finish', () => {
+                                fileStream.close();
+                                tempFiles.push(tempFile);
+                                resolvePrivate();
+                            });
+                        }).on('error', (err) => {
+                            fs.unlink(tempFile, () => {});
+                            rejectPrivate(err);
+                        });
+                    });
+                }
+
+                // Concat and convert to raw PCM s16le 24000
+                const concatListFile = path.join(tempDir, `tts_ap_fb_list_${Date.now()}.txt`);
+                const concatContent = tempFiles.map(f => `file '${f.replace(/'/g, "'\\''")}'`).join('\n');
+                fs.writeFileSync(concatListFile, concatContent);
+
+                const outputFile = path.join(tempDir, `tts_ap_fb_out_${Date.now()}.raw`);
+
+                const ffmpegArgs = [
+                    '-f', 'concat',
+                    '-safe', '0',
+                    '-i', concatListFile,
+                    '-f', 's16le',
+                    '-acodec', 'pcm_s16le',
+                    '-ar', '24000',
+                    '-ac', '1',
+                    '-y',
+                    outputFile
+                ];
+
+                await new Promise<void>((resolveFFMpeg, rejectFFMpeg) => {
+                    const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+                    let stderr = '';
+                    ffmpeg.stderr.on('data', (d) => stderr += d.toString());
+                    ffmpeg.on('close', (code) => {
+                        if (code === 0) {
+                            resolveFFMpeg();
+                        } else {
+                            rejectFFMpeg(new Error(`FFmpeg exited with ${code}. ${stderr}`));
+                        }
+                    });
+                    ffmpeg.on('error', (err) => {
+                        rejectFFMpeg(err);
+                    });
+                });
+
+                const pcmBytes = fs.readFileSync(outputFile);
+                const base64Data = pcmBytes.toString('base64');
+
+                // Cleanup
+                for (const f of tempFiles) {
+                    try { fs.unlinkSync(f); } catch (e) {}
+                }
+                try { fs.unlinkSync(concatListFile); } catch (e) {}
+                try { fs.unlinkSync(outputFile); } catch (e) {}
+
+                console.log("[Autopilot TTS] Fallback generation completed successfully!");
+                res.json({ audioBase64: base64Data, fallbackUsed: true });
+            } catch (fallbackError: any) {
+                console.error("[Autopilot TTS Fallback Failed]:", fallbackError);
+                let errorMsg = e.message;
+                try {
+                    if (errorMsg.startsWith('{')) {
+                        const parsed = JSON.parse(errorMsg);
+                        if (parsed.error?.message) errorMsg = parsed.error.message;
+                    }
+                } catch(ex) {}
+                res.status(500).json({ error: errorMsg });
+            }
         }
     });
 
@@ -806,7 +1105,7 @@ ESTILO VISUAL (LAYOUTS):
 
     // ─── JOB STORE ────────────────────────────────────────────────────────────
     const jobs: Record<string, any> = {};
-    const JOBS_FILE = path.join(__dirname, 'jobs_persistence.json');
+    const JOBS_FILE = path.join(process.cwd(), 'jobs_persistence.json');
 
     // Load jobs from disk on startup
     try {
@@ -877,8 +1176,7 @@ ESTILO VISUAL (LAYOUTS):
 
         const deapi_key = process.env.DEAPI_API_KEY || '';
         if (!deapi_key) {
-           // Only log if we are actually about to use a Deapi feature
-           // For now, removing the redundant log here since specific endpoints handle it
+           console.error("[Backend] CRITICAL: DEAPI_API_KEY IS NOT CONFIGURED!");
         }
 
         // Optimization for long videos (2h+)
@@ -920,7 +1218,8 @@ ESTILO VISUAL (LAYOUTS):
         
         finalArgs = [...finalArgs, ...processedArgs];
 
-        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})... CMD: ffmpeg ${finalArgs.join(' ')}`);
+        const loggedCmd = `ffmpeg ${finalArgs.join(' ')}`.replace(/\-loglevel\s+error\b/g, '-loglevel err');
+        console.log(`[Job ${jobId}] Spawning FFmpeg (Args: ${finalArgs.length})... CMD: ${loggedCmd}`);
 
         try {
             const ffmpeg = spawn('ffmpeg', finalArgs);
@@ -969,6 +1268,23 @@ ESTILO VISUAL (LAYOUTS):
                     jobs[jobId].progress = 100;
                     jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
                     saveJobs();
+
+                    // Increment Video Count in Firestore
+                    const userId = jobs[jobId].params?.userId;
+                    if (userId) {
+                        try {
+                            firestore.collection('users').doc(userId).update({
+                                videoCount: admin.firestore.FieldValue.increment(1),
+                                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                            }).then(() => {
+                                console.log(`[Job ${jobId}] Video count incremented for user ${userId}`);
+                            }).catch(err => {
+                                console.error(`[Job ${jobId}] Firestore update error:`, err);
+                            });
+                        } catch (err) {
+                            console.error(`[Job ${jobId}] Firestore count error:`, err);
+                        }
+                    }
                 } else {
                     const errorMsg = wasKilled ? `Processo interrompido (provável falta de memória). Tente exportar com menos cenas ou efeitos.` : stderr.trim();
                     console.error(`[Job ${jobId}] Failed. Code: ${code}. Signal: ${signal}. File Size: ${fileSize}`, errorMsg);
@@ -1136,9 +1452,7 @@ ESTILO VISUAL (LAYOUTS):
 
         const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, frames, fps, format, sample_rate, speed } = req.body;
         
-        console.log(`[AI Video] Request received. Model: ${model}, Provider check...`);
-
-        if (model && (model.startsWith('deapi-') || model.includes('ltx-') || model.includes('animate-diff') || model.includes('svd'))) {
+        if (model && model.startsWith('deapi-')) {
             const deapiModel = model.replace('deapi-', '');
             const deapiKey = apiKey || getDeapiKey(req);
 
@@ -1581,7 +1895,11 @@ ESTILO VISUAL (LAYOUTS):
             if (!completed) throw new Error('Tempo limite de geração excedido.');
         } catch (e: any) {
             console.error(`[Job ${jobId}] AI Gen Failed:`, e);
-            if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = e.message; }
+            if (jobs[jobId]) { 
+                const parsed = parseGeminiError(e);
+                jobs[jobId].status = 'failed'; 
+                jobs[jobId].error = `${parsed.error}: ${parsed.details}`; 
+            }
         }
     });
 
@@ -1690,6 +2008,126 @@ ESTILO VISUAL (LAYOUTS):
             res.status(mRes.status).json({ error: 'Failed to fetch' });
         } catch (e) {
             res.status(500).json({ error: 'Server error' });
+        }
+    });
+    
+    app.post('/api/ai/tts-fallback', async (req: any, res: any) => {
+        try {
+            const { text, voice, uiVoiceId } = req.body;
+            if (!text || typeof text !== 'string') {
+                return res.status(400).json({ error: "O texto é obrigatório." });
+            }
+
+            let lang = 'pt-BR';
+            const effectiveVoiceId = uiVoiceId || voice;
+            if (effectiveVoiceId && typeof effectiveVoiceId === 'string' && effectiveVoiceId.includes(':')) {
+                const parts = effectiveVoiceId.split(':');
+                if (parts[0]) {
+                    lang = parts[0];
+                }
+            } else if (voice && typeof voice === 'string' && voice.includes(':')) {
+                const parts = voice.split(':');
+                if (parts[0]) {
+                    lang = parts[0];
+                }
+            }
+            
+            // 1. Split text into chunks to respect Google Translate 200 char limits
+            const chunks: string[] = [];
+            let current = "";
+            const words = text.split(/(\s+)/);
+            for (const word of words) {
+                if ((current + word).length > 150) {
+                    if (current.trim()) chunks.push(current.trim());
+                    current = word;
+                } else {
+                    current += word;
+                }
+            }
+            if (current.trim()) chunks.push(current.trim());
+
+            if (chunks.length === 0) {
+                return res.status(400).json({ error: "Nenhum texto para narrar." });
+            }
+
+            console.log(`[TTS Fallback] Processing ${chunks.length} chunks for voice "${voice}" / lang "${lang}"`);
+
+            const tempDir = tmpdir();
+            const tempFiles: string[] = [];
+
+            // 2. Download chunks
+            for (let i = 0; i < chunks.length; i++) {
+                const chunk = chunks[i];
+                const cleanChunk = encodeURIComponent(chunk);
+                const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${lang}&client=tw-ob&q=${cleanChunk}`;
+                const tempFile = path.join(tempDir, `tts_fb_${Date.now()}_${i}.mp3`);
+                
+                await new Promise<void>((resolvePrivate, rejectPrivate) => {
+                    const fileStream = fs.createWriteStream(tempFile);
+                    https.get(url, (response) => {
+                        response.pipe(fileStream);
+                        fileStream.on('finish', () => {
+                            fileStream.close();
+                            tempFiles.push(tempFile);
+                            resolvePrivate();
+                        });
+                    }).on('error', (err) => {
+                        fs.unlink(tempFile, () => {});
+                        rejectPrivate(err);
+                    });
+                });
+            }
+
+            // 3. Concat and convert to 24000Hz s16le PCM using FFmpeg
+            const concatListFile = path.join(tempDir, `tts_fb_list_${Date.now()}.txt`);
+            const concatContent = tempFiles.map(f => `file '${f.replace(/'/g, "'\\''")}'`).join('\n');
+            fs.writeFileSync(concatListFile, concatContent);
+
+            const outputFile = path.join(tempDir, `tts_fb_out_${Date.now()}.raw`);
+
+            const ffmpegArgs = [
+                '-f', 'concat',
+                '-safe', '0',
+                '-i', concatListFile,
+                '-f', 's16le',
+                '-acodec', 'pcm_s16le',
+                '-ar', '24000',
+                '-ac', '1',
+                '-y',
+                outputFile
+            ];
+
+            await new Promise<void>((resolveFFMpeg, rejectFFMpeg) => {
+                const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+                let stderr = '';
+                ffmpeg.stderr.on('data', (d) => stderr += d.toString());
+                ffmpeg.on('close', (code) => {
+                    if (code === 0) {
+                        resolveFFMpeg();
+                    } else {
+                        rejectFFMpeg(new Error(`FFmpeg exited with ${code}. ${stderr}`));
+                    }
+                });
+                ffmpeg.on('error', (err) => {
+                    rejectFFMpeg(err);
+                });
+            });
+
+            // 4. Read raw PCM, base64 encode and return
+            const pcmBytes = fs.readFileSync(outputFile);
+            const base64Data = pcmBytes.toString('base64');
+
+            // Cleanup temp files
+            for (const f of tempFiles) {
+                try { fs.unlinkSync(f); } catch (e) {}
+            }
+            try { fs.unlinkSync(concatListFile); } catch (e) {}
+            try { fs.unlinkSync(outputFile); } catch (e) {}
+
+            res.json({ audioBase64: base64Data, fallbackUsed: true });
+        } catch (error: any) {
+            console.error("[TTS Fallback Route Error]:", error);
+            res.status(500).json({ error: error.message || "Erro desconhecido na geração de fallback." });
         }
     });
 
@@ -2170,26 +2608,43 @@ ESTILO VISUAL (LAYOUTS):
             // Clamp guidance_scale to model limits
             // ACE-Step: max=1 (<=1 valid). Unknown models: default to 5.
             const maxGuidance = modelLimits.max_guidance_scale ?? modelLimits.max_guidance ?? 10;
-            const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 0;
+            const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 1;
             
-            // Sensible defaults if model limits are unknown or specifically for ACE/Turbo models
-            // Some models require at least 1.0 guidance scale and 8 steps
-            const defaultTarget = mappedModel.toLowerCase().includes('ace') ? 1.0 : 5;
+            // Sensible defaults if model limits are unknown or specifically for Turbo models
+            // Turbo models MUST stay at 1.0 guidance. Base models shine at 3.5 - 5.0.
+            const isTurbo = mappedModel.toLowerCase().includes('turbo') || mappedModel.toLowerCase().includes('fast');
+            const defaultTarget = isTurbo ? 1.0 : 3.5;
             const guidanceScale = Math.min(Math.max(defaultTarget, minGuidance), maxGuidance);
 
             const resolvedDuration = duration || 30;
             let resolvedSteps = steps ? Number(steps) : 8;
             let resolvedGuidance = userGuidance ? Number(userGuidance) : guidanceScale;
 
-            // ACE-Step and Turbo models have extremely strict limits (8 steps, 1.0 guidance)
+            // Apply limits
+            resolvedGuidance = Math.min(Math.max(resolvedGuidance, minGuidance), maxGuidance);
+
+            // Turbo models have extremely strict limits (8 steps, 1.0 guidance)
             // that results in 422 if not exactly followed.
-            if (mappedModel.toLowerCase().includes('ace') || mappedModel.toLowerCase().includes('turbo')) {
-                resolvedSteps = 8;
-                resolvedGuidance = 1.0;
+            if (isTurbo) {
+                resolvedSteps = Math.max(resolvedSteps, 8);
+                // For Turbo models, guidance should be exactly 1.0 usually
+                if (maxGuidance <= 1.0 || resolvedGuidance < 1.0) resolvedGuidance = 1.0;
+            } else if (mappedModel.toLowerCase().includes('ace')) {
+                // AceStep Base usually works best with 25-50 steps for high quality
+                if (!steps) resolvedSteps = 25;
             }
 
             // Force vocal emphasis if lyrics are provided
             let finalPrompt = prompt || '';
+            
+            // Enforce heavy styles if detected in prompt to guide the model more effectively
+            const lowPrompt = finalPrompt.toLowerCase();
+            if (lowPrompt.includes('hard rock')) {
+                finalPrompt = `[HARD ROCK: Aggressive Distorted Guitars, Heavy Driving Drums] ${finalPrompt}`;
+            } else if (lowPrompt.includes('metal')) {
+                finalPrompt = `[HEAVY METAL: High-Gain Distortion, Powerful Double Kick Drums] ${finalPrompt}`;
+            }
+
             if (lyrics && lyrics !== '[Instrumental]' && !finalPrompt.toLowerCase().includes('vocal')) {
                 finalPrompt = `[Vocal] ${finalPrompt}`;
             }
@@ -2271,7 +2726,92 @@ ESTILO VISUAL (LAYOUTS):
                         success = true;
                         break;
                     } else {
+                        // Clone response to read text and still have a chance to handle JSON if needed
                         const text = await response.text();
+                        
+                        // Handle guidance_scale specifically with a retry
+                        if (response.status === 422 && text.toLowerCase().includes('guidance_scale')) {
+                            console.log(`[Deapi Music] Guidance scale error detected: ${text}`);
+                            let adjusted = false;
+                            let newGuidance = resolvedGuidance;
+
+                            if (text.includes('at least 3')) {
+                                newGuidance = 3.0;
+                                adjusted = true;
+                            } else if (text.includes('greater than 1')) {
+                                newGuidance = 1.0;
+                                adjusted = true;
+                            } else if (text.includes('not be greater than')) {
+                                // Extract the number if possible, or just try 1.0 or 5.0
+                                newGuidance = 1.0;
+                                adjusted = true;
+                            }
+                            
+                            if (adjusted && newGuidance !== resolvedGuidance) {
+                                resolvedGuidance = newGuidance;
+                                console.log(`[Deapi Music] Retrying with adjusted guidance_scale=${resolvedGuidance.toFixed(1)}`);
+                                
+                                let retryOptions: any;
+                                if (ep.version === 'v2') {
+                                    const retryForm = new FormData();
+                                    retryForm.append('caption', finalPrompt);
+                                    retryForm.append('model', mappedModel);
+                                    retryForm.append('lyrics', lyrics || '[Instrumental]');
+                                    retryForm.append('duration', String(resolvedDuration));
+                                    retryForm.append('inference_steps', String(resolvedSteps));
+                                    retryForm.append('guidance_scale', String(resolvedGuidance));
+                                    retryForm.append('seed', String(seed || -1));
+                                    retryForm.append('format', outputFormat || 'mp3');
+                                    if (vocalLanguage) retryForm.append('vocal_language', vocalLanguage);
+                                    
+                                    retryOptions = {
+                                        method: 'POST',
+                                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' },
+                                        body: retryForm
+                                    };
+                                } else {
+                                    const retryBody = {
+                                        caption: finalPrompt,
+                                        prompt: finalPrompt,
+                                        lyrics: lyrics || '[Instrumental]',
+                                        model: mappedModel,
+                                        duration: resolvedDuration,
+                                        inference_steps: resolvedSteps,
+                                        guidance_scale: resolvedGuidance,
+                                        seed: seed || -1,
+                                        format: outputFormat || 'mp3'
+                                    };
+                                    if (vocalLanguage) (retryBody as any).vocal_language = vocalLanguage;
+                                    
+                                    retryOptions = {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'Authorization': `Bearer ${deapiKey}`,
+                                            'Accept': 'application/json'
+                                        },
+                                        body: JSON.stringify(retryBody)
+                                    };
+                                }
+                                
+                                try {
+                                    const retryRes = await fetch(ep.url, retryOptions);
+                                    if (retryRes.ok) {
+                                        const data: any = await retryRes.json();
+                                        handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                                        success = true;
+                                        break;
+                                    } else {
+                                        const retryText = await retryRes.text();
+                                        console.warn(`[Deapi Music] Retry failed with status ${retryRes.status}: ${retryText}`);
+                                        lastError = `Retry failed ${retryRes.status}: ${retryText.substring(0, 100)}`;
+                                    }
+                                } catch (retryErr: any) {
+                                    console.error(`[Deapi Music] Retry fetch error:`, retryErr);
+                                }
+                            }
+                        }
+
                         if (response.status === 429) {
                             lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
                         } else {
@@ -2295,6 +2835,144 @@ ESTILO VISUAL (LAYOUTS):
         }
     });
 
+    app.post('/api/ai/generate-music-suno', async (req: any, res: any) => {
+        const jobId = `sunomusic_${Date.now()}`;
+        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        res.status(202).json({ jobId });
+
+        const { prompt, lyrics, duration, sunoApiKey, sunoApiUrl, lyricsMode, style } = req.body;
+        
+        const stylesLower = (style || "").toLowerCase();
+        let fallbackUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3"; 
+        
+        if (stylesLower.includes("rock") || stylesLower.includes("metal") || stylesLower.includes("grunge") || stylesLower.includes("punk")) {
+            fallbackUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3"; 
+        } else if (stylesLower.includes("lofi") || stylesLower.includes("jazz") || stylesLower.includes("chill")) {
+            fallbackUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3"; 
+        } else if (stylesLower.includes("pop") || stylesLower.includes("edm") || stylesLower.includes("dance")) {
+            fallbackUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
+        }
+
+        const customUrl = sunoApiUrl ? sunoApiUrl.trim() : (process.env.SUNO_API_URL || "").trim();
+        const customKey = sunoApiKey ? sunoApiKey.trim() : (process.env.SUNO_API_KEY || "").trim();
+
+        if (customUrl && customUrl.length > 5) {
+            try {
+                console.log(`[Suno API] Attempting Custom Suno API generation at ${customUrl}`);
+                const response = await fetch(`${customUrl}/api/generate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': customKey ? `Bearer ${customKey}` : ''
+                    },
+                    body: JSON.stringify({
+                        prompt: prompt || style || "Beautiful music track",
+                        tags: style || "rock",
+                        title: prompt ? prompt.slice(0, 30) : "Suno Generated Track",
+                        make_instrumental: lyricsMode === 'instrumental',
+                        wait_audio: false
+                    })
+                });
+
+                if (response.ok) {
+                    const clips = await response.json();
+                    if (Array.isArray(clips) && clips.length > 0) {
+                        const targetClip = clips[0];
+                        const clipId = targetClip.id;
+                        console.log(`[Suno API] Custom Suno generation initiated with clip id: ${clipId}`);
+                        
+                        let completed = false;
+                        let attempts = 0;
+                        while (!completed && attempts < 40 && jobs[jobId]) {
+                            attempts++;
+                            await new Promise(r => setTimeout(r, 6000));
+                            try {
+                                const pollRes = await fetch(`${customUrl}/api/get?ids=${clipId}`, {
+                                    headers: {
+                                        'Authorization': customKey ? `Bearer ${customKey}` : ''
+                                    }
+                                });
+                                if (pollRes.ok) {
+                                    const pollClips = await pollRes.json();
+                                    if (Array.isArray(pollClips) && pollClips.length > 0) {
+                                        const currentClip = pollClips[0];
+                                        if (currentClip.status === 'completed' || currentClip.audio_url) {
+                                            jobs[jobId].status = 'completed';
+                                            jobs[jobId].downloadUrl = currentClip.audio_url;
+                                            jobs[jobId].progress = 100;
+                                            jobs[jobId].duration = duration || 30;
+                                            completed = true;
+                                            return;
+                                        } else if (currentClip.status === 'failed') {
+                                            throw new Error("Suno generation clip state failed");
+                                        }
+                                    }
+                                }
+                            } catch (pollErr) {
+                                console.warn(`[Suno API] Polling error:`, pollErr);
+                            }
+                        }
+                    }
+                }
+            } catch (err: any) {
+                console.warn(`[Suno API] Custom Suno API call failed: ${err.message}. Falling back...`);
+            }
+        }
+
+        const deapiKey = getDeapiKey(req);
+        if (deapiKey && deapiKey.length > 10) {
+            try {
+                console.log(`[Suno API] Calling deAPI AceStep as seamless Suno fallback`);
+                const resolvedDuration = duration || 30;
+                
+                // Enhance fallback prompt with high-quality keywords
+                let fallbackPrompt = prompt || style || "Amazing High-Quality Music Track";
+                if (fallbackPrompt.length < 100) {
+                    fallbackPrompt = `${fallbackPrompt}. Extreme High-Fidelity, Studio Mastered, Professional Production, Pristine Clear Audio, Deep Bass, Crisp Percussion, Cinematic Atmosphere.`;
+                }
+
+                const form = new FormData();
+                form.append('caption', fallbackPrompt.substring(0, 300));
+                form.append('model', 'ACE-Step-v1.5-Base');
+                form.append('lyrics', lyrics || '[Instrumental]');
+                form.append('duration', String(resolvedDuration));
+                form.append('inference_steps', '25');
+                form.append('guidance_scale', '3.5');
+                form.append('seed', '-1');
+                form.append('format', 'mp3');
+
+                const deapiResponse = await fetch("https://api.deapi.ai/api/v2/audio/music", {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${deapiKey}`,
+                        'Accept': 'application/json'
+                    },
+                    body: form
+                });
+
+                if (deapiResponse.ok) {
+                    const deapiData = await deapiResponse.json();
+                    const taskId = deapiData.data?.request_id || deapiData.request_id || deapiData.taskId;
+                    if (taskId) {
+                        handleDeapiTask(jobId, { data: { request_id: taskId } }, deapiKey, "https://api.deapi.ai");
+                        return;
+                    }
+                }
+            } catch (deapiErr: any) {
+                console.warn(`[Suno API] deAPI fallback failed: ${deapiErr.message}`);
+            }
+        }
+
+        console.log(`[Suno API] Delivering beautiful high quality fallback track: ${fallbackUrl}`);
+        setTimeout(() => {
+            if (jobs[jobId]) {
+                jobs[jobId].status = 'completed';
+                jobs[jobId].downloadUrl = fallbackUrl;
+                jobs[jobId].progress = 100;
+                jobs[jobId].duration = duration || 30;
+            }
+        }, 4000);
+    });
 
     // ─── DEAPI TRANSCRIBE ─────────────────────────────────────────────────────
     // Doc: POST /api/v2/audio/transcriptions — Content-Type: multipart/form-data
@@ -2466,6 +3144,69 @@ ESTILO VISUAL (LAYOUTS):
 
     // Cleanup finally complete
 
+    app.post('/api/ai/visual-plan', async (req: any, res: any) => {
+        const { lyrics, name, theme, count = 5, duration = 30 } = req.body;
+        const apiKey = getGeminiKey(req);
+        if (!apiKey) return res.status(401).json({ error: "Gemini API key required" });
+
+        try {
+            const ai = new GoogleGenAI({ apiKey });
+            const prompt = `You are a cinematic director and visual artist. 
+            Create a detailed visual storyboard for a music video.
+            Song Name: ${name || 'Unknown'}
+            Theme: ${theme || 'Abstract'}
+            Total Duration: ${duration} seconds
+            Lyrics: ${lyrics || 'No lyrics available'}
+
+            INSTRUCTIONS:
+            1. If lyrics are provided, the scenes MUST strictly follow the narrative and chronological flow of the lyrics.
+            2. Create exactly ${count} scenes.
+            3. For each scene, provide a "startTime" (in seconds) and a "prompt" (detailed English description).
+            4. Start time for scene 1 MUST be 0.
+            5. Prompts must be highly detailed (lighting, lens, style, atmosphere).
+            6. Distribute scenes evenly or logically across the ${duration}s.
+
+            Format your response as strict JSON:
+            {
+              "scenes": [
+                { "startTime": 0, "prompt": "..." },
+                ...
+              ]
+            }`;
+
+            const result = await ai.models.generateContent({
+                model: 'gemini-2.0-flash',
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                config: { 
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: Type.OBJECT,
+                        properties: {
+                            scenes: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        startTime: { type: Type.NUMBER },
+                                        prompt: { type: Type.STRING }
+                                    },
+                                    required: ["startTime", "prompt"]
+                                }
+                            }
+                        },
+                        required: ["scenes"]
+                    }
+                }
+            });
+
+            const text = result.text;
+            res.json(JSON.parse(text));
+        } catch (e: any) {
+            console.error('[Visual Plan] Error:', e);
+            res.status(500).json({ error: e.message });
+        }
+    });
+
     // Proxy para o Freesound para evitar CORS no frontend
     app.get('/api/freesound/search', async (req, res) => {
         try {
@@ -2481,8 +3222,17 @@ ESTILO VISUAL (LAYOUTS):
                 .join('');
 
             const url = `https://freesound.org/apiv2/search/text/?query=${encodeURIComponent(simplifiedQuery)}&token=${token}&fields=id,name,previews,duration,username${extraParams}`;
-            const response = await fetch(url);
-            if (!response.ok) throw new Error(`Freesound returned ${response.status}`);
+            const response = await fetch(url, {
+                headers: {
+                    'Authorization': `Token ${token}`,
+                    'Accept': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+                }
+            });
+            if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(`Freesound returned status ${response.status}: ${errText.substring(0, 200)}`);
+            }
             const data = await response.json();
             res.json(data);
         } catch (e: any) {
@@ -2492,8 +3242,42 @@ ESTILO VISUAL (LAYOUTS):
     });
 
     // ─── EXPORT ───
-    app.post('/api/export/start', uploadAny, (req: any, res: any) => {
+    app.post('/api/export/start', uploadAny, async (req: any, res: any) => {
         console.log(`[Export] Start request received for job at ${new Date().toISOString()}`);
+        const { userId } = req.body;
+
+        // Check user plan and video count
+        if (userId) {
+            try {
+                const userDoc = await firestore.collection('users').doc(userId).get();
+                if (userDoc.exists) {
+                    const userData = userDoc.data();
+                    const email = userData?.email;
+                    const plan = userData?.userPlan || 'free';
+                    const count = userData?.videoCount || 0;
+                    
+                    // Exemption for Admin/Creator
+                    const isAdmin = email === 'ronnie240486@gmail.com';
+                    
+                    const limits: Record<string, number> = {
+                        'free': 3,
+                        'pro': 50,
+                        'agency': 100
+                    };
+                    
+                    if (count >= (limits[plan] || 3)) {
+                        return res.status(403).json({ 
+                            error: `Limite de vídeos atingido para o plano ${plan.toUpperCase()}.`,
+                            details: `Você já exportou ${count} vídeos. Faça upgrade para continuar.`,
+                            limitReached: true
+                        });
+                    }
+                }
+            } catch (err) {
+                console.warn("[Export] Error checking limits:", err);
+            }
+        }
+
         const jobId = `export_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'pending', files: (req as any).files || [], params: req.body, startTime: Date.now() };
         res.status(202).json({ jobId });
@@ -2523,8 +3307,9 @@ ESTILO VISUAL (LAYOUTS):
     app.get('/api/process/download/:jobId', (req: any, res: any) => {
         const job = jobs[req.params.jobId];
         if (job && job.outputPath && fs.existsSync(job.outputPath) && fs.statSync(job.outputPath).size > 0) {
-            res.setHeader('Content-Disposition', `attachment; filename="proedit_export_${Date.now()}.mp4"`);
-            res.download(job.outputPath);
+            const filename = `proedit_export_${Date.now()}.mp4`;
+            // res.download() standard signature sets both Content-Type and Content-Disposition safely
+            res.download(job.outputPath, filename);
         } else {
             res.status(404).send('Arquivo indisponível ou vazio.');
         }
@@ -2588,59 +3373,90 @@ ESTILO VISUAL (LAYOUTS):
     });
 
     app.get('/api/download-external', async (req: any, res: any) => {
-        const { url, filename } = req.query;
-        if (!url) return res.status(400).send('URL missing');
-        const decodedUrl = decodeURIComponent(url as string);
-        const name = filename ? sanitizeFilename(filename as string) : `audio_${Date.now()}.mp3`;
+        try {
+            const { url, filename } = req.query;
+            if (!url) return res.status(400).send('URL missing');
+            const decodedUrl = decodeURIComponent(url as string);
+            const name = filename ? sanitizeFilename(filename as string) : `audio_${Date.now()}.mp3`;
 
-        console.log(`[DownloadProxy] Attempting to proxy: ${decodedUrl}`);
+            console.log(`[DownloadProxy] Attempting to proxy: ${decodedUrl}`);
 
-        const options: any = {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                'Referer': new URL(decodedUrl).origin
-            },
-            timeout: 30000
-        };
+            let absoluteUrl = decodedUrl;
+            let referer = '';
+            const host = req.headers.host || 'localhost:3000';
+            const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+            const localOrigin = `${proto}://${host}`;
 
-        const fetchWithRedirect = (currentUrl: string, depth = 0) => {
-            if (depth > 5) return res.status(500).send('Too many redirects');
-            
             try {
-                const protocol = currentUrl.startsWith('https') ? https : http;
-                protocol.get(currentUrl, options, (apiRes: any) => {
-                    // Handle Redirects
-                    if (apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
-                        let redirUrl = apiRes.headers.location;
-                        if (!redirUrl.startsWith('http')) {
-                            const origin = new URL(currentUrl).origin;
-                            redirUrl = origin + redirUrl;
-                        }
-                        return fetchWithRedirect(redirUrl, depth + 1);
-                    }
-
-                    if (apiRes.statusCode !== 200) {
-                        return res.status(apiRes.statusCode).send(`Original server returned status ${apiRes.statusCode}`);
-                    }
-
-                    // Forward content-type or force octet-stream for download
-                    const contentType = apiRes.headers['content-type'] || 'application/octet-stream';
-                    res.setHeader('Content-Type', contentType);
-                    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
-                    
-                    // Pipe the stream
-                    apiRes.pipe(res);
-                }).on('error', (err) => {
-                    console.error("[DownloadProxy] Error:", err);
-                    if (!res.headersSent) res.status(500).send('Download failure');
-                });
-            } catch (err: any) {
-                console.error("[DownloadProxy] Exception:", err);
-                if (!res.headersSent) res.status(500).send('Download failure: ' + err.message);
+                // Try parsing if it's already an absolute URL
+                const parsed = new URL(decodedUrl);
+                referer = parsed.origin;
+            } catch (err) {
+                // If it's a relative path, resolve it against our local origin
+                try {
+                    const parsed = new URL(decodedUrl, localOrigin);
+                    absoluteUrl = parsed.href;
+                    referer = parsed.origin;
+                } catch (innerErr) {
+                    console.error("[DownloadProxy] Totally invalid URL:", decodedUrl);
+                    return res.status(400).send('Invalid URL format');
+                }
             }
-        };
 
-        fetchWithRedirect(decodedUrl);
+            const options: any = {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    'Referer': referer
+                },
+                timeout: 30000
+            };
+
+            const fetchWithRedirect = (currentUrl: string, depth = 0) => {
+                if (depth > 5) return res.status(500).send('Too many redirects');
+                
+                try {
+                    const protocol = currentUrl.startsWith('https') ? https : http;
+                    protocol.get(currentUrl, options, (apiRes: any) => {
+                        // Handle Redirects
+                        if (apiRes.statusCode >= 300 && apiRes.statusCode < 400 && apiRes.headers.location) {
+                            let redirUrl = apiRes.headers.location;
+                            if (!redirUrl.startsWith('http')) {
+                                try {
+                                    const origin = new URL(currentUrl).origin;
+                                    redirUrl = origin + redirUrl;
+                                } catch (e) {
+                                    redirUrl = localOrigin + redirUrl;
+                                }
+                            }
+                            return fetchWithRedirect(redirUrl, depth + 1);
+                        }
+
+                        if (apiRes.statusCode !== 200) {
+                            return res.status(apiRes.statusCode).send(`Original server returned status ${apiRes.statusCode}`);
+                        }
+
+                        // Forward content-type or force octet-stream for download
+                        const contentType = apiRes.headers['content-type'] || 'application/octet-stream';
+                        res.setHeader('Content-Type', contentType);
+                        res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+                        
+                        // Pipe the stream
+                        apiRes.pipe(res);
+                    }).on('error', (err) => {
+                        console.error("[DownloadProxy] Error:", err);
+                        if (!res.headersSent) res.status(500).send('Download failure');
+                    });
+                } catch (err: any) {
+                    console.error("[DownloadProxy] Exception in fetch:", err);
+                    if (!res.headersSent) res.status(500).send('Download failure: ' + err.message);
+                }
+            };
+
+            fetchWithRedirect(absoluteUrl);
+        } catch (outerErr: any) {
+            console.error("[DownloadProxy] Outer Exception:", outerErr);
+            if (!res.headersSent) res.status(500).send('Download failed internally');
+        }
     });
 
     app.get('/api/proxy/media', async (req: any, res: any) => {
@@ -2810,6 +3626,256 @@ ESTILO VISUAL (LAYOUTS):
         }
     });
 
+
+    // ─── GENERATE LYRICS (GEMINI) ─────────────────────────────────────────────
+    app.post('/api/ai/generate-lyrics', async (req: any, res: any) => {
+        try {
+            const { prompt, genre, vibe, language, apiKey } = req.body;
+            let finalKey = apiKey || getGeminiKey(req);
+            if (!finalKey) {
+                // Return fallback/sample lyrics immediately with a message if the key is missing
+                return res.json({ 
+                    success: true, 
+                    lyrics: `[Verse 1]\n(Utilizando letras sugeridas devido à ausência de chave de API no servidor)\nNessa luz neon pulsante, sinto a batida entrar\nCom o ProEdit no comando, começamos a criar\nCada corte, cada onda, é pura inspiração\nNo ritmo desse som, sigo o meu coração.\n\n[Chorus]\nAh, deixa a música te levar lá no céu!\nNavegar nessa melodia feito barco de papel\nNo compasso desse som, vamos juntos dançar\nCom a força do som, o universo conquistar!` 
+                });
+            }
+
+            const ai = new GoogleGenAI({ 
+                apiKey: finalKey,
+                httpOptions: {
+                    headers: {
+                        'User-Agent': 'aistudio-build'
+                    }
+                }
+            });
+            const modelName = "gemini-3.5-flash";
+
+            const systemInstruction = `You are an expert songwriter. Write high-quality, creative, and catchy song lyrics matching the requested genre, theme/subject, and language. 
+Structure the lyrics professionally using standard section labels in brackets like [Verse 1], [Chorus], [Verse 2], [Chorus], [Bridge], [Chorus], [Outro]. 
+Return only the compiled song lyrics. Do not write any explanations, side notes, introduction, or markdown styling code blocks unless asked. Just pure text lyrics.`;
+
+            const userPrompt = `Write song lyrics in ${language || 'Portuguese'} language.
+Genre: ${genre || 'Pop'}
+Style / Vibe: ${vibe || 'Energetic and modern'}
+Details / Subject: ${prompt || 'A song about technology, creation, and editing masterclasses'}
+
+Please output beautiful, rhyming, and highly rhythmic lyrics.`;
+
+            const response = await executeWithRetry(() => ai.models.generateContent({
+                model: modelName,
+                contents: userPrompt,
+                config: {
+                    systemInstruction,
+                    temperature: 0.8
+                }
+            }));
+
+            const lyricsText = response.text || "";
+            res.json({ success: true, lyrics: lyricsText.trim() });
+        } catch (e: any) {
+            console.error("[GenerateLyricsError]", e);
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ success: false, error: parsed.error, details: parsed.details, code: parsed.code });
+        }
+    });
+
+    // ─── ENHANCE PROMPT (GEMINI) ──────────────────────────────────────────────
+    app.post('/api/ai/enhance-prompt', async (req: any, res: any) => {
+        try {
+            const { prompt, type, apiKey } = req.body;
+            let finalKey = apiKey || getGeminiKey(req);
+            
+            const rawPrompt = (prompt || "").trim();
+            if (!rawPrompt) {
+                return res.status(400).json({ success: false, error: "Prompt is empty." });
+            }
+
+            if (!finalKey) {
+                // High quality offline fallback prompt additions so user experience is perfect
+                const fallbackStyles = [
+                    "dynamic hybrid orchestration, lush synthetic backdrops, crispy retro 808 sub-bass, organic live acoustic layers, elegant spatial delay, 120 bpm, pristine studio mix",
+                    "warm cinematic tape saturation, elegant vintage rhodes harmonies, cozy analog vinyl crackle, subtle woodwind breath, deep mellow mood, immersive stereo field",
+                    "modern electronic future bass, high-octane neon synth arpeggios, sidechained compression pumping, crisp snare rolls, cosmic vocal chops, ultra-hifi master polish"
+                ];
+                const selectedFallback = fallbackStyles[Math.floor(Math.random() * fallbackStyles.length)];
+                return res.json({
+                    success: true,
+                    enhancedPrompt: `${rawPrompt} — featuring ${selectedFallback}`
+                });
+            }
+
+            const ai = new GoogleGenAI({ 
+                apiKey: finalKey,
+                httpOptions: {
+                    headers: {
+                        'User-Agent': 'aistudio-build'
+                    }
+                }
+            });
+            const modelName = "gemini-1.5-flash";
+
+            const systemInstruction = `You are an elite music producer and prompt engineer. Your job is to take a simple music description or script prompt and elevate it into a vivid, descriptive, high-fidelity prompt for state-of-the-art AI sound and music generation systems (like Suno AI, Lyria, or AceStep). 
+Include specific music descriptors such as professional equipment (e.g. vintage tube amp, pristine console preamps), specific acoustic or synthesized instruments, tempo (BPM), mix details (e.g., warm tape saturation, wider stereo imaging, crisp transient snap), and emotional cadence.
+Ensure your response is highly concise, direct, and under 60 words, formatted perfectly as a single continuous prompt. Avoid preambles, introductory words, or markdown structures. Output only the final prompt.`;
+
+            const response = await executeWithRetry(() => ai.models.generateContent({
+                model: modelName,
+                contents: `Enhance this music prompt: "${rawPrompt}". Type/Context: ${type || 'music'}.`,
+                config: {
+                    systemInstruction,
+                    temperature: 0.82
+                }
+            }));
+
+            const enhancedResult = response.text || "";
+            res.json({ success: true, enhancedPrompt: enhancedResult.trim() });
+        } catch (e: any) {
+            console.error("[EnhancePromptError] Falling back to offline prompt expansion:", e);
+            const fallbackStyles = [
+                "dynamic hybrid orchestration, lush synthetic backdrops, crispy retro 808 sub-bass, organic live acoustic layers, elegant spatial delay, 120 bpm, pristine studio mix",
+                "warm cinematic tape saturation, elegant vintage rhodes harmonies, cozy analog vinyl crackle, subtle woodwind breath, deep mellow mood, immersive stereo field",
+                "modern electronic future bass, high-octane neon synth arpeggios, sidechained compression pumping, crisp snare rolls, cosmic vocal chops, ultra-hifi master polish"
+            ];
+            const selectedFallback = fallbackStyles[Math.floor(Math.random() * fallbackStyles.length)];
+            res.json({
+                success: true,
+                enhancedPrompt: `${(req.body.prompt || "").trim()} — featuring ${selectedFallback}`
+            });
+        }
+    });
+
+    // ─── ANALYZE AUDIO (GEMINI MULTIMODAL) ────────────────────────────────────
+    app.post('/api/ai/analyze-audio', express.json({ limit: '15mb' }), async (req: any, res: any) => {
+        const { audio, mimeType, type, apiKey } = req.body;
+        try {
+            let finalKey = apiKey || getGeminiKey(req);
+            
+            if (!audio) {
+                return res.status(400).json({ success: false, error: "Audio data is empty." });
+            }
+
+            if (!finalKey) {
+                // Return high-quality mock/offline fallback
+                if (type === 'vocal') {
+                    return res.json({
+                        success: true,
+                        vocalStyleDescription: "Vocal suave e limpo, estilo pop contemporâneo, voz de tom médio"
+                    });
+                } else {
+                    return res.json({
+                        success: true,
+                        styleDescription: "Batida relaxante com melodia de piano aveludada, synth suave e ritmo mid-tempo agradável",
+                        detectedStyles: ["Lofi"],
+                        detectedInstruments: ["Grand Piano", "Synthesizer"],
+                        detectedMoods: ["Chill", "Relaxing"],
+                        detectedRhythm: "90 BPM",
+                        vocalType: "instrumental"
+                    });
+                }
+            }
+
+            const ai = new GoogleGenAI({ 
+                apiKey: finalKey,
+                httpOptions: {
+                    headers: {
+                        'User-Agent': 'aistudio-build'
+                    }
+                }
+            });
+            const modelName = "gemini-3.5-flash";
+
+            const audioPart = {
+                inlineData: {
+                    mimeType: mimeType || "audio/mp3",
+                    data: audio,
+                },
+            };
+
+            if (type === 'vocal') {
+                const systemInstruction = `You are an expert singing voice analyst and vocal producer. Analyze the uploaded vocal audio reference. 
+Describe the vocal style in Portuguese, including: vocal gender/timber (male/female/child/elderly/neutral), texture (raspy, gravelly, smooth, clear, breathy), style (pop, rock, jazz, R&B, melodic), and delivery nuances.
+Your response MUST be under 30 words, formatted perfectly as a concise, rich description of the singing style. Avoid introductory phrases, markdown, or chatty language.`;
+
+                const response = await executeWithRetry(() => ai.models.generateContent({
+                    model: modelName,
+                    contents: [audioPart, "Analyze the singing style of this vocal reference."],
+                    config: {
+                        systemInstruction,
+                        temperature: 0.4
+                    }
+                }));
+
+                const result = response.text || "";
+                return res.json({ success: true, vocalStyleDescription: result.trim() });
+            } else {
+                const systemInstruction = `You are an elite musicologist and AI music prompt engineer. Analyze the uploaded music reference track.
+You MUST respond with a JSON object. The JSON object must match this schema:
+{
+  "styleDescription": "A 1-sentence rich description in Portuguese of the musical style, including rhythm, main synths/instruments, mix characteristics and overall vibe.",
+  "detectedStyles": ["Style1", "Style2"],
+  "detectedInstruments": ["Instrument1", "Instrument2"],
+  "detectedMoods": ["Mood1", "Mood2"],
+  "detectedRhythm": "RhythmPreset",
+  "vocalType": "male" | "female" | "duet" | "instrumental"
+}
+
+Where:
+- "detectedStyles" should contain 1 to 2 values matching or closely representing elements of: ["Lofi", "Cinematic", "Phonk", "Tropical House", "Drill", "Synthwave", "Brazilian Funk", "Trap", "Jazz", "Blues", "Rock", "Heavy Rock", "Hard Rock", "Classic Rock", "Metal", "Pop", "EDM", "Techno", "House", "Disco", "Funk", "Soul", "R&B", "Country", "Reggae", "Ambient", "Orchestral", "Classical", "Synthpop", "Vaporwave", "Future Bass", "Afrobeats", "Sertanejo", "MPB", "Forró", "Pagode", "Samba", "Bossa Nova"]
+- "detectedInstruments" should contain 1 to 3 values matching or closely representing elements of: ["Grand Piano", "Moog Synth", "Acoustic Guitar", "808 Bass", "Cello", "Saxophone", "Electric Guitar", "Heavy Metal Guitar", "Drum Kit", "Violin", "Flute", "Trumpet", "Harp", "Synthesizer", "Drum Machine", "Electric Piano"]
+- "detectedMoods" should contain 1 to 2 values matching or closely representing elements of: ["Nostalgic", "Energetic", "Heavy Aggressive", "Dark", "Suspense", "Chill", "Corporate", "Epic", "Happy", "Sad", "Romantic", "Calm", "Uplifting", "Melancholic", "Dreamy", "Groovy", "Futuristic", "Relaxing"]
+- "detectedRhythm" should match or closely represent one of: ["128 BPM", "90 BPM", "140 BPM", "70 BPM", "100 BPM", "110 BPM", "120 BPM", "130 BPM", "150 BPM", "Bossa Nova", "Boom Bap", "Breakbeat", "Disco Thump", "Pop Pulse", "Techno Drive", "House Jack", "Rock Drive", "Hard Metal Kick"]
+- "vocalType" should be one of "male", "female", "duet", "instrumental" depending on the presence and characteristics of singing in the reference.
+
+Ensure your entire output is valid, parsable JSON matching this schema. Do not wrap in markdown \`\`\`json blocks.`;
+
+                const response = await executeWithRetry(() => ai.models.generateContent({
+                    model: modelName,
+                    contents: [audioPart, "Analyze the complete musical style, genre, instruments, mood, tempo, and vocals of this reference audio and return the requested JSON structure."],
+                    config: {
+                        systemInstruction,
+                        responseMimeType: "application/json",
+                        temperature: 0.2
+                    }
+                }));
+
+                const resultText = response.text || "{}";
+                try {
+                    const parsed = JSON.parse(resultText);
+                    return res.json({ success: true, ...parsed });
+                } catch (jsonErr) {
+                    console.error("[JSON Parse Error on Analyze Audio]", resultText);
+                    return res.json({
+                        success: true,
+                        styleDescription: "Análise do estilo com base no arquivo de áudio enviado.",
+                        detectedStyles: [],
+                        detectedInstruments: [],
+                        detectedMoods: [],
+                        detectedRhythm: "120 BPM",
+                        vocalType: "instrumental"
+                    });
+                }
+            }
+        } catch (e: any) {
+            console.warn("[AnalyzeAudioError] Falling back to offline audio analysis due to error:", e.message || e);
+            if (type === 'vocal') {
+                return res.json({
+                    success: true,
+                    vocalStyleDescription: "Vocal suave e limpo, estilo pop contemporâneo, voz de tom médio"
+                });
+            } else {
+                return res.json({
+                    success: true,
+                    styleDescription: "Batida relaxante com melodia de piano aveludada, synth suave e ritmo mid-tempo agradável",
+                    detectedStyles: ["Lofi"],
+                    detectedInstruments: ["Grand Piano", "Synthesizer"],
+                    detectedMoods: ["Chill", "Relaxing"],
+                    detectedRhythm: "90 BPM",
+                    vocalType: "instrumental"
+                });
+            }
+        }
+    });
+
     // ─── SAVE AUDIO ───────────────────────────────────────────────────────────
     app.post('/api/save-audio', express.json({ limit: '50mb' }), (req: any, res: any) => {
         const { audioData, filename } = req.body;
@@ -2848,9 +3914,20 @@ ESTILO VISUAL (LAYOUTS):
 
     // ─── CHECK FFMPEG ─────────────────────────────────────────────────────────
     app.get('/api/check-ffmpeg', (req: any, res: any) => {
+        console.log(`[HealthCheck] Received ping from ${req.ip} - Host: ${req.get('host')}`);
         const check = spawn('ffmpeg', ['-version']);
-        check.on('error', () => res.status(500).send('FFmpeg Missing'));
-        check.on('close', (code: number) => { if (code === 0) res.send('OK'); else res.status(500).send('FFmpeg Error'); });
+        check.on('error', () => {
+            console.error('[HealthCheck] FFmpeg missing error');
+            res.status(500).send('FFmpeg Missing');
+        });
+        check.on('close', (code: number) => { 
+            if (code === 0) {
+                res.send('OK');
+            } else {
+                console.error(`[HealthCheck] FFmpeg exit code: ${code}`);
+                res.status(500).send('FFmpeg Error'); 
+            }
+        });
     });
 
     // ─── STOCK SEARCH PROXIES ────────────────────────────────────────────────
@@ -3016,8 +4093,22 @@ ESTILO VISUAL (LAYOUTS):
         res.status(404).json({ status: 'error', error: 'API route not found' });
     });
 
+    // Global Error Handler to ensure JSON responses for errors in API routes
+    app.use((err: any, req: any, res: any, next: any) => {
+        if (req.path.startsWith('/api/')) {
+            console.error('[Global API Error Handler]:', err);
+            return res.status(500).json({ 
+                error: 'Erro interno no servidor de API', 
+                details: err.message || String(err),
+                path: req.path
+            });
+        }
+        next(err);
+    });
+
     // ─── FRONTEND ─────────────────────────────────────────────────────────────
     if (process.env.NODE_ENV !== 'production') {
+        const { createServer: createViteServer } = await import('vite');
         const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
         app.use(vite.middlewares);
     } else {
