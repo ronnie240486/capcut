@@ -530,7 +530,7 @@ async function startServer() {
         try {
             const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
             const result = await executeWithRetry(() => ai.models.generateContent({
-                model: "gemini-2.0-flash",
+                model: "gemini-3-flash-preview",
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
                 config: {
                     imageConfig: { aspectRatio: aspectRatio as any }
@@ -568,7 +568,7 @@ async function startServer() {
             const prompt = `Transcreva este áudio. Retorne APENAS um JSON no formato: {"text": "texto completo", "timestamps": [{"start": 0.0, "end": 2.0, "text": "fala 1"}, ...]}`;
 
             const result = await executeWithRetry(() => ai.models.generateContent({
-                model: "gemini-1.5-flash",
+                model: "gemini-3-flash-preview",
                 contents: [{
                     role: "user",
                     parts: [
@@ -640,7 +640,7 @@ async function startServer() {
 
             console.log(`[Autopilot Plan] Calling Gemini 3 Flash Preview`);
             const scriptResponse = await ai.models.generateContent({
-                model: 'gemini-1.5-flash',
+                model: 'gemini-3-flash-preview',
                 contents: [{
                     role: 'user',
                     parts: [
@@ -773,7 +773,7 @@ async function startServer() {
 
             console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${targetVoice}`);
             const ttsResponse = await ai.models.generateContent({
-                model: "gemini-1.5-flash",
+                model: "gemini-3-flash-preview",
                 contents: [{
                     parts: [{ text: finalPrompt }]
                 }],
@@ -3121,7 +3121,7 @@ async function startServer() {
             }`;
 
             const result = await ai.models.generateContent({
-                model: 'gemini-2.0-flash',
+                model: 'gemini-3-flash-preview',
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],
                 config: { 
                     responseMimeType: "application/json",
@@ -3599,7 +3599,7 @@ async function startServer() {
                     }
                 }
             });
-            const modelName = "gemini-1.5-flash";
+            const modelName = "gemini-3-flash-preview";
 
             const systemInstruction = `You are an expert songwriter. Write high-quality, creative, and catchy song lyrics matching the requested genre, theme/subject, and language. 
 Structure the lyrics professionally using standard section labels in brackets like [Verse 1], [Chorus], [Verse 2], [Chorus], [Bridge], [Chorus], [Outro]. 
@@ -3663,7 +3663,7 @@ Please output beautiful, rhyming, and highly rhythmic lyrics.`;
                     }
                 }
             });
-            const modelName = "gemini-1.5-flash";
+            const modelName = "gemini-3-flash-preview";
 
             const systemInstruction = `You are an elite music producer and prompt engineer. Your job is to take a simple music description or script prompt and elevate it into a vivid, descriptive, high-fidelity prompt for state-of-the-art AI sound and music generation systems (like Suno AI, Lyria, or AceStep). 
 Include specific music descriptors such as professional equipment (e.g. vintage tube amp, pristine console preamps), specific acoustic or synthesized instruments, tempo (BPM), mix details (e.g., warm tape saturation, wider stereo imaging, crisp transient snap), and emotional cadence.
@@ -3733,7 +3733,7 @@ Ensure your response is highly concise, direct, and under 60 words, formatted pe
                     }
                 }
             });
-            const modelName = "gemini-1.5-flash";
+            const modelName = "gemini-3-flash-preview";
 
             const audioPart = {
                 inlineData: {
