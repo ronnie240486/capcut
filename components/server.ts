@@ -2561,6 +2561,19 @@ async function startServer() {
 
             let mappedModel = model || 'ACE-Step-v1.5-turbo';
             
+            // Map UI model IDs to Deapi Slugs
+            const musicModelMap: Record<string, string> = {
+                'AceStep_1_5_Base': 'ACE-Step-v1.5-Base',
+                'AceStep_Turbo_v1': 'ACE-Step-v1.5-turbo',
+                'AceStep_1_5_XL_Turbo_INT8': 'ACE-Step-v1.5-XL-Turbo-INT8',
+                'Suno_3_5': 'Suno-v3.5',
+                'Udio_v1': 'Udio-v1',
+                'suno_ai': 'Suno-v3.5'
+            };
+            if (musicModelMap[mappedModel]) {
+                mappedModel = musicModelMap[mappedModel];
+            }
+            
             // ... Logic for availableModels and modelLimits stays here (I'll keep the existing structure but add the mapping)
 
             // Track model limits so we stay within per-model caps (e.g. guidance_scale max varies)
@@ -2632,9 +2645,15 @@ async function startServer() {
             // Force vocal emphasis if lyrics are provided
             let finalPrompt = prompt || '';
             
+            // AceStep often needs specific pace instructions to avoid "rushing" or "accelerated" audio
+            if (mappedModel.toLowerCase().includes('ace')) {
+                // Lower BPM and steady pace prevents the model from rushing through content
+                finalPrompt = `[PACE: Steady, slow-paced] [BPM: 90] ${finalPrompt}`;
+            }
+
             // Language hint for models that might struggle
             if (vocalLanguage && vocalLanguage.toLowerCase().includes('português')) {
-                finalPrompt = `[LANGUAGE: Portuguese] ${finalPrompt}`;
+                finalPrompt = `[SINGING LANGUAGE: Portuguese] [DICÇÃO CLARA E NATURAL] ${finalPrompt}`;
             }
 
             // Enforce heavy styles if detected
@@ -2649,9 +2668,9 @@ async function startServer() {
                 finalPrompt = `[Vocal] ${finalPrompt}`;
             }
 
-            // Instrumental enforcement
+            // Instrumental enforcement - AceStep needs very strong negatives for instrumental to avoid artifacts
             if (lyrics === '[Instrumental]') {
-                finalPrompt = `[Instrumental] ${finalPrompt}`;
+                finalPrompt = `[PURE INSTRUMENTAL: Absolutely NO vocals, NO voices, NO singing, NO background talking. High-fidelity professional studio musical recording] ${finalPrompt}`;
             }
 
             // API Limit: 300 characters for caption
