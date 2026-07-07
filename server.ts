@@ -188,6 +188,8 @@ async function startServer() {
                         const planId = paymentData.additional_info?.items?.[0]?.id || 'pro';
                         await firestore.collection('users').doc(userId).set({
                             userPlan: planId,
+                            videoCount: 0,
+                            timelineCount: 0,
                             updatedAt: admin.firestore.FieldValue.serverTimestamp()
                         }, { merge: true });
                     }
@@ -320,8 +322,14 @@ async function startServer() {
 
     // ─── UTILS ────────────────────────────────────────────────────────────────
     const getGeminiKey = (req?: express.Request) => {
-        // 1. Header Priority (from Frontend - AI Studio selected keys)
-        const headerKey = (req?.headers['x-gemini-api-key'] || req?.headers['authorization']?.toString().replace('Bearer ', '') || "").toString().trim();
+        // 1. Header or Body/Query Priority (from Frontend - AI Studio selected keys)
+        const headerKey = (
+            req?.headers['x-gemini-api-key'] || 
+            req?.headers['authorization']?.toString().replace('Bearer ', '') || 
+            req?.body?.apiKey || 
+            req?.query?.apiKey || 
+            ""
+        ).toString().trim();
         
         const isPlaceholder = (v: string) => {
             const up = (v || "").toUpperCase();
@@ -530,7 +538,7 @@ async function startServer() {
         try {
             const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
             const result = await executeWithRetry(() => ai.models.generateContent({
-                model: "gemini-3-flash-preview",
+                model: "gemini-3.1-flash-lite-image",
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
                 config: {
                     imageConfig: { aspectRatio: aspectRatio as any }
@@ -568,7 +576,7 @@ async function startServer() {
             const prompt = `Transcreva este áudio. Retorne APENAS um JSON no formato: {"text": "texto completo", "timestamps": [{"start": 0.0, "end": 2.0, "text": "fala 1"}, ...]}`;
 
             const result = await executeWithRetry(() => ai.models.generateContent({
-                model: "gemini-3-flash-preview",
+                model: "gemini-3.5-flash",
                 contents: [{
                     role: "user",
                     parts: [
@@ -638,9 +646,9 @@ async function startServer() {
                 inlineData: { mimeType: 'image/jpeg', data: f }
             })) : [];
 
-            console.log(`[Autopilot Plan] Calling Gemini 3 Flash Preview`);
+            console.log(`[Autopilot Plan] Calling Gemini 3.5 Flash`);
             const scriptResponse = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
+                model: 'gemini-3.5-flash',
                 contents: [{
                     role: 'user',
                     parts: [
@@ -771,9 +779,9 @@ async function startServer() {
             const validVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
             const targetVoice = (voice && validVoices.includes(voice)) ? voice : 'Kore';
 
-            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${targetVoice}`);
+            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash TTS for TTS: ${targetVoice}`);
             const ttsResponse = await ai.models.generateContent({
-                model: "gemini-3-flash-preview",
+                model: "gemini-3.1-flash-tts-preview",
                 contents: [{
                     parts: [{ text: finalPrompt }]
                 }],
@@ -1272,18 +1280,32 @@ async function startServer() {
                     // Increment Video Count in Firestore
                     const userId = jobs[jobId].params?.userId;
                     if (userId) {
-                        try {
-                            firestore.collection('users').doc(userId).update({
-                                videoCount: admin.firestore.FieldValue.increment(1),
-                                updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                            }).then(() => {
-                                console.log(`[Job ${jobId}] Video count incremented for user ${userId}`);
-                            }).catch(err => {
-                                console.error(`[Job ${jobId}] Firestore update error:`, err);
-                            });
-                        } catch (err) {
-                            console.error(`[Job ${jobId}] Firestore count error:`, err);
-                        }
+                        const incrementData = {
+                            videoCount: admin.firestore.FieldValue.increment(1),
+                            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                        };
+
+                        const updateCount = async (db: any) => {
+                            await db.collection('users').doc(userId).set(incrementData, { merge: true });
+                        };
+
+                        // Try primary firestore first
+                        updateCount(firestore).then(() => {
+                            console.log(`[Job ${jobId}] Video count incremented for user ${userId}`);
+                        }).catch(err => {
+                            console.warn(`[Job ${jobId}] Primary Firestore increment failed (likely permission), trying (default) db...`, err.message);
+                            // Fallback to (default) database
+                            try {
+                                const defaultDb = getFirestore('(default)');
+                                updateCount(defaultDb).then(() => {
+                                    console.log(`[Job ${jobId}] Video count incremented in (default) db`);
+                                }).catch(fallbackErr => {
+                                    console.error(`[Job ${jobId}] All Firestore attempts failed:`, fallbackErr.message);
+                                });
+                            } catch (e) {
+                                console.error(`[Job ${jobId}] Could not access (default) db:`, e);
+                            }
+                        });
                     }
                 } else {
                     const errorMsg = wasKilled ? `Processo interrompido (provável falta de memória). Tente exportar com menos cenas ou efeitos.` : stderr.trim();
@@ -1932,7 +1954,7 @@ async function startServer() {
 
             const payload: any = {
                 prompt: prompt || '',
-                model: model || 'Flux1schnell',
+                model: model === 'Flux1schnell' ? 'flux-1-schnell' : (model || 'flux-1-schnell'),
                 width,
                 height,
                 guidance: 1,
@@ -2128,6 +2150,130 @@ async function startServer() {
         } catch (error: any) {
             console.error("[TTS Fallback Route Error]:", error);
             res.status(500).json({ error: error.message || "Erro desconhecido na geração de fallback." });
+        }
+    });
+
+    app.post('/api/ai/tts-deapi-fallback', async (req: any, res: any) => {
+        try {
+            const { text, voice, uiVoiceId, speed, lang } = req.body;
+            if (!text || typeof text !== 'string') {
+                return res.status(400).json({ error: "O texto é obrigatório." });
+            }
+
+            const deapiKey = getDeapiKey(req);
+            if (!deapiKey) {
+                return res.status(400).json({ error: "Chave API Deapi não configurada." });
+            }
+
+            const baseUrl = "https://api.deapi.ai";
+            const form = new FormData();
+            form.append('text', text);
+            form.append('model', 'Kokoro');
+            form.append('format', 'mp3');
+            form.append('lang', lang || 'pt-br');
+            form.append('speed', String(speed || '1.0'));
+            form.append('sample_rate', '24000');
+            form.append('mode', 'custom_voice');
+            form.append('voice', 'af_bella');
+
+            console.log(`[Deapi TTS Fallback] Requesting Deapi Kokoro Speech for: "${text.substring(0, 50)}..."`);
+
+            const response = await fetch(`${baseUrl}/api/v2/audio/speech`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${deapiKey}` },
+                body: form
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(`Deapi Speech API failed with status ${response.status}: ${errText}`);
+            }
+
+            const data: any = await response.json();
+            const result = data.data || data;
+            let downloadUrl = result.output_file_url || result.url || result.audio_url || result.download_url || (result.output && result.output[0]);
+
+            if (!downloadUrl) {
+                const taskId = result.request_id || result.id || result.task_id || result.job_id;
+                if (!taskId) {
+                    throw new Error('Deapi did not return task_id or direct URL');
+                }
+
+                let attempts = 0;
+                while (attempts < 30) {
+                    attempts++;
+                    await new Promise(r => setTimeout(r, 2000));
+                    const pollRes = await fetch(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                    });
+                    if (pollRes.ok) {
+                        const pollData: any = await pollRes.json();
+                        const pResult = pollData.data || pollData;
+                        if (pResult.status === 'completed' || pResult.status === 'success') {
+                            downloadUrl = pResult.output_file_url || pResult.url || pResult.audio_url || pResult.download_url || (pResult.output && pResult.output[0]);
+                            break;
+                        } else if (pResult.status === 'failed') {
+                            throw new Error(pResult.error || "Deapi polling failed");
+                        }
+                    }
+                }
+            }
+
+            if (!downloadUrl) {
+                throw new Error("Deapi polling timed out");
+            }
+
+            const tempDir = tmpdir();
+            const tempMp3 = path.join(tempDir, `deapi_tts_${Date.now()}.mp3`);
+            
+            await new Promise<void>((resolve, reject) => {
+                const fileStream = fs.createWriteStream(tempMp3);
+                https.get(downloadUrl, (resp) => {
+                    resp.pipe(fileStream);
+                    fileStream.on('finish', () => {
+                        fileStream.close();
+                        resolve();
+                    });
+                }).on('error', (err) => {
+                    fs.unlink(tempMp3, () => {});
+                    reject(err);
+                });
+            });
+
+            const outputFile = path.join(tempDir, `deapi_tts_out_${Date.now()}.raw`);
+            const ffmpegArgs = [
+                '-i', tempMp3,
+                '-f', 's16le',
+                '-acodec', 'pcm_s16le',
+                '-ar', '24000',
+                '-ac', '1',
+                '-y',
+                outputFile
+            ];
+
+            await new Promise<void>((resolveFFMpeg, rejectFFMpeg) => {
+                const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+                let stderr = '';
+                ffmpeg.stderr.on('data', (d) => stderr += d.toString());
+                ffmpeg.on('close', (code) => {
+                    if (code === 0) resolveFFMpeg();
+                    else rejectFFMpeg(new Error(`FFmpeg exited with ${code}. ${stderr}`));
+                });
+                ffmpeg.on('error', rejectFFMpeg);
+            });
+
+            const pcmBytes = fs.readFileSync(outputFile);
+            const base64Data = pcmBytes.toString('base64');
+
+            try { fs.unlinkSync(tempMp3); } catch (e) {}
+            try { fs.unlinkSync(outputFile); } catch (e) {}
+
+            console.log("[Deapi TTS Fallback] Successfully generated and transcoded to PCM raw base64!");
+            res.json({ audioBase64: base64Data });
+
+        } catch (e: any) {
+            console.error("[Deapi TTS Fallback Error]", e);
+            res.status(500).json({ error: e.message || String(e) });
         }
     });
 
@@ -2648,7 +2794,7 @@ async function startServer() {
             // AceStep often needs specific pace instructions to avoid "rushing" or "accelerated" audio
             if (mappedModel.toLowerCase().includes('ace')) {
                 // Lower BPM and steady pace prevents the model from rushing through content
-                finalPrompt = `[PACE: Steady, slow-paced] [BPM: 90] ${finalPrompt}`;
+                finalPrompt = `[PACE: Very Steady, calm, slow tempo] [BPM: 85] [VOCAL: Clear, emotional, articulate] ${finalPrompt}`;
             }
 
             // Language hint for models that might struggle
@@ -2901,8 +3047,8 @@ async function startServer() {
                 form.append('model', 'ACE-Step-v1.5-Base');
                 form.append('lyrics', lyrics || '[Instrumental]');
                 form.append('duration', String(resolvedDuration));
-                form.append('inference_steps', '8');
-                form.append('guidance_scale', '1.0');
+                form.append('inference_steps', '25');
+                form.append('guidance_scale', '3.5');
                 form.append('seed', '-1');
                 form.append('format', 'mp3');
 
@@ -3115,7 +3261,10 @@ async function startServer() {
         if (!apiKey) return res.status(401).json({ error: "Gemini API key required" });
 
         try {
-            const ai = new GoogleGenAI({ apiKey });
+            const ai = new GoogleGenAI({ 
+                apiKey,
+                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+            });
             const prompt = `You are a cinematic director and visual artist. 
             Create a detailed visual storyboard for a music video.
             Song Name: ${name || 'Unknown'}
@@ -3140,7 +3289,7 @@ async function startServer() {
             }`;
 
             const result = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
+                model: 'gemini-3.5-flash',
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],
                 config: { 
                     responseMimeType: "application/json",
@@ -3618,7 +3767,7 @@ async function startServer() {
                     }
                 }
             });
-            const modelName = "gemini-3-flash-preview";
+            const modelName = "gemini-3.5-flash";
 
             const systemInstruction = `You are an expert songwriter. Write high-quality, creative, and catchy song lyrics matching the requested genre, theme/subject, and language. 
 Structure the lyrics professionally using standard section labels in brackets like [Verse 1], [Chorus], [Verse 2], [Chorus], [Bridge], [Chorus], [Outro]. 
@@ -3682,7 +3831,7 @@ Please output beautiful, rhyming, and highly rhythmic lyrics.`;
                     }
                 }
             });
-            const modelName = "gemini-3-flash-preview";
+            const modelName = "gemini-3.5-flash";
 
             const systemInstruction = `You are an elite music producer and prompt engineer. Your job is to take a simple music description or script prompt and elevate it into a vivid, descriptive, high-fidelity prompt for state-of-the-art AI sound and music generation systems (like Suno AI, Lyria, or AceStep). 
 Include specific music descriptors such as professional equipment (e.g. vintage tube amp, pristine console preamps), specific acoustic or synthesized instruments, tempo (BPM), mix details (e.g., warm tape saturation, wider stereo imaging, crisp transient snap), and emotional cadence.
@@ -3752,7 +3901,7 @@ Ensure your response is highly concise, direct, and under 60 words, formatted pe
                     }
                 }
             });
-            const modelName = "gemini-3-flash-preview";
+            const modelName = "gemini-3.5-flash";
 
             const audioPart = {
                 inlineData: {
