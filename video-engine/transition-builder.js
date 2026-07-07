@@ -8,7 +8,8 @@ function escapeDrawText(text) {
     if (!text) return '';
     return text
         .replace(/\\/g, '\\\\') // Escape backslash for FFmpeg
-        .replace(/'/g, "\\'");   // Escape single quote for FFmpeg
+        .replace(/'/g, "'\\''")  // Escape single quote for FFmpeg (standard ' inside '...' escape)
+        .replace(/%/g, '%%');    // Escape percent for drawtext variables
 }
 
 // Helper to wrap text manually since drawtext wrapping can be finicky
