@@ -186,10 +186,26 @@ async function startServer() {
                     if (paymentData.status === 'approved') {
                         const userId = paymentData.external_reference;
                         const planId = paymentData.additional_info?.items?.[0]?.id || 'pro';
-                        await firestore.collection('users').doc(userId).set({
+                        const updateUserData = {
                             userPlan: planId,
+                            videoCount: 0,
+                            timelineCount: 0,
                             updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                        }, { merge: true });
+                        };
+
+                        try {
+                            await firestore.collection('users').doc(userId).set(updateUserData, { merge: true });
+                            console.log(`[MercadoPago] Plan updated for user ${userId} to ${planId}`);
+                        } catch (err) {
+                            console.warn(`[MercadoPago] Primary Firestore update failed, trying (default) db...`, err.message);
+                            try {
+                                const defaultDb = getFirestore('(default)');
+                                await defaultDb.collection('users').doc(userId).set(updateUserData, { merge: true });
+                                console.log(`[MercadoPago] Plan updated in (default) db`);
+                            } catch (fallbackErr) {
+                                console.error(`[MercadoPago] All Firestore attempts failed:`, fallbackErr.message);
+                            }
+                        }
                     }
                 }
             }
@@ -320,8 +336,14 @@ async function startServer() {
 
     // ─── UTILS ────────────────────────────────────────────────────────────────
     const getGeminiKey = (req?: express.Request) => {
-        // 1. Header Priority (from Frontend - AI Studio selected keys)
-        const headerKey = (req?.headers['x-gemini-api-key'] || req?.headers['authorization']?.toString().replace('Bearer ', '') || "").toString().trim();
+        // 1. Header or Body/Query Priority (from Frontend - AI Studio selected keys)
+        const headerKey = (
+            req?.headers['x-gemini-api-key'] || 
+            req?.headers['authorization']?.toString().replace('Bearer ', '') || 
+            req?.body?.apiKey || 
+            req?.query?.apiKey || 
+            ""
+        ).toString().trim();
         
         const isPlaceholder = (v: string) => {
             const up = (v || "").toUpperCase();
@@ -530,7 +552,7 @@ async function startServer() {
         try {
             const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
             const result = await executeWithRetry(() => ai.models.generateContent({
-                model: "gemini-2.5-flash-image",
+                model: "gemini-3.1-flash-lite-image",
                 contents: [{ role: "user", parts: [{ text: prompt }] }],
                 config: {
                     imageConfig: { aspectRatio: aspectRatio as any }
@@ -568,7 +590,7 @@ async function startServer() {
             const prompt = `Transcreva este áudio. Retorne APENAS um JSON no formato: {"text": "texto completo", "timestamps": [{"start": 0.0, "end": 2.0, "text": "fala 1"}, ...]}`;
 
             const result = await executeWithRetry(() => ai.models.generateContent({
-                model: "gemini-3-flash-preview",
+                model: "gemini-3.5-flash",
                 contents: [{
                     role: "user",
                     parts: [
@@ -638,9 +660,9 @@ async function startServer() {
                 inlineData: { mimeType: 'image/jpeg', data: f }
             })) : [];
 
-            console.log(`[Autopilot Plan] Calling Gemini 3 Flash Preview`);
+            console.log(`[Autopilot Plan] Calling Gemini 3.5 Flash`);
             const scriptResponse = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
+                model: 'gemini-3.5-flash',
                 contents: [{
                     role: 'user',
                     parts: [
@@ -771,7 +793,7 @@ async function startServer() {
             const validVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
             const targetVoice = (voice && validVoices.includes(voice)) ? voice : 'Kore';
 
-            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash for TTS: ${targetVoice}`);
+            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash TTS for TTS: ${targetVoice}`);
             const ttsResponse = await ai.models.generateContent({
                 model: "gemini-3.1-flash-tts-preview",
                 contents: [{
@@ -1272,18 +1294,32 @@ async function startServer() {
                     // Increment Video Count in Firestore
                     const userId = jobs[jobId].params?.userId;
                     if (userId) {
-                        try {
-                            firestore.collection('users').doc(userId).update({
-                                videoCount: admin.firestore.FieldValue.increment(1),
-                                updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                            }).then(() => {
-                                console.log(`[Job ${jobId}] Video count incremented for user ${userId}`);
-                            }).catch(err => {
-                                console.error(`[Job ${jobId}] Firestore update error:`, err);
-                            });
-                        } catch (err) {
-                            console.error(`[Job ${jobId}] Firestore count error:`, err);
-                        }
+                        const incrementData = {
+                            videoCount: admin.firestore.FieldValue.increment(1),
+                            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                        };
+
+                        const updateCount = async (db: any) => {
+                            await db.collection('users').doc(userId).set(incrementData, { merge: true });
+                        };
+
+                        // Try primary firestore first
+                        updateCount(firestore).then(() => {
+                            console.log(`[Job ${jobId}] Video count incremented for user ${userId}`);
+                        }).catch(err => {
+                            console.warn(`[Job ${jobId}] Primary Firestore increment failed (likely permission), trying (default) db...`, err.message);
+                            // Fallback to (default) database
+                            try {
+                                const defaultDb = getFirestore('(default)');
+                                updateCount(defaultDb).then(() => {
+                                    console.log(`[Job ${jobId}] Video count incremented in (default) db`);
+                                }).catch(fallbackErr => {
+                                    console.error(`[Job ${jobId}] All Firestore attempts failed:`, fallbackErr.message);
+                                });
+                            } catch (e) {
+                                console.error(`[Job ${jobId}] Could not access (default) db:`, e);
+                            }
+                        });
                     }
                 } else {
                     const errorMsg = wasKilled ? `Processo interrompido (provável falta de memória). Tente exportar com menos cenas ou efeitos.` : stderr.trim();
@@ -1932,7 +1968,7 @@ async function startServer() {
 
             const payload: any = {
                 prompt: prompt || '',
-                model: model || 'Flux1schnell',
+                model: model === 'Flux1schnell' ? 'flux-1-schnell' : (model || 'flux-1-schnell'),
                 width,
                 height,
                 guidance: 1,
@@ -2128,6 +2164,130 @@ async function startServer() {
         } catch (error: any) {
             console.error("[TTS Fallback Route Error]:", error);
             res.status(500).json({ error: error.message || "Erro desconhecido na geração de fallback." });
+        }
+    });
+
+    app.post('/api/ai/tts-deapi-fallback', async (req: any, res: any) => {
+        try {
+            const { text, voice, uiVoiceId, speed, lang } = req.body;
+            if (!text || typeof text !== 'string') {
+                return res.status(400).json({ error: "O texto é obrigatório." });
+            }
+
+            const deapiKey = getDeapiKey(req);
+            if (!deapiKey) {
+                return res.status(400).json({ error: "Chave API Deapi não configurada." });
+            }
+
+            const baseUrl = "https://api.deapi.ai";
+            const form = new FormData();
+            form.append('text', text);
+            form.append('model', 'Kokoro');
+            form.append('format', 'mp3');
+            form.append('lang', lang || 'pt-br');
+            form.append('speed', String(speed || '1.0'));
+            form.append('sample_rate', '24000');
+            form.append('mode', 'custom_voice');
+            form.append('voice', 'af_bella');
+
+            console.log(`[Deapi TTS Fallback] Requesting Deapi Kokoro Speech for: "${text.substring(0, 50)}..."`);
+
+            const response = await fetch(`${baseUrl}/api/v2/audio/speech`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${deapiKey}` },
+                body: form
+            });
+
+            if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(`Deapi Speech API failed with status ${response.status}: ${errText}`);
+            }
+
+            const data: any = await response.json();
+            const result = data.data || data;
+            let downloadUrl = result.output_file_url || result.url || result.audio_url || result.download_url || (result.output && result.output[0]);
+
+            if (!downloadUrl) {
+                const taskId = result.request_id || result.id || result.task_id || result.job_id;
+                if (!taskId) {
+                    throw new Error('Deapi did not return task_id or direct URL');
+                }
+
+                let attempts = 0;
+                while (attempts < 30) {
+                    attempts++;
+                    await new Promise(r => setTimeout(r, 2000));
+                    const pollRes = await fetch(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                    });
+                    if (pollRes.ok) {
+                        const pollData: any = await pollRes.json();
+                        const pResult = pollData.data || pollData;
+                        if (pResult.status === 'completed' || pResult.status === 'success') {
+                            downloadUrl = pResult.output_file_url || pResult.url || pResult.audio_url || pResult.download_url || (pResult.output && pResult.output[0]);
+                            break;
+                        } else if (pResult.status === 'failed') {
+                            throw new Error(pResult.error || "Deapi polling failed");
+                        }
+                    }
+                }
+            }
+
+            if (!downloadUrl) {
+                throw new Error("Deapi polling timed out");
+            }
+
+            const tempDir = tmpdir();
+            const tempMp3 = path.join(tempDir, `deapi_tts_${Date.now()}.mp3`);
+            
+            await new Promise<void>((resolve, reject) => {
+                const fileStream = fs.createWriteStream(tempMp3);
+                https.get(downloadUrl, (resp) => {
+                    resp.pipe(fileStream);
+                    fileStream.on('finish', () => {
+                        fileStream.close();
+                        resolve();
+                    });
+                }).on('error', (err) => {
+                    fs.unlink(tempMp3, () => {});
+                    reject(err);
+                });
+            });
+
+            const outputFile = path.join(tempDir, `deapi_tts_out_${Date.now()}.raw`);
+            const ffmpegArgs = [
+                '-i', tempMp3,
+                '-f', 's16le',
+                '-acodec', 'pcm_s16le',
+                '-ar', '24000',
+                '-ac', '1',
+                '-y',
+                outputFile
+            ];
+
+            await new Promise<void>((resolveFFMpeg, rejectFFMpeg) => {
+                const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+                let stderr = '';
+                ffmpeg.stderr.on('data', (d) => stderr += d.toString());
+                ffmpeg.on('close', (code) => {
+                    if (code === 0) resolveFFMpeg();
+                    else rejectFFMpeg(new Error(`FFmpeg exited with ${code}. ${stderr}`));
+                });
+                ffmpeg.on('error', rejectFFMpeg);
+            });
+
+            const pcmBytes = fs.readFileSync(outputFile);
+            const base64Data = pcmBytes.toString('base64');
+
+            try { fs.unlinkSync(tempMp3); } catch (e) {}
+            try { fs.unlinkSync(outputFile); } catch (e) {}
+
+            console.log("[Deapi TTS Fallback] Successfully generated and transcoded to PCM raw base64!");
+            res.json({ audioBase64: base64Data });
+
+        } catch (e: any) {
+            console.error("[Deapi TTS Fallback Error]", e);
+            res.status(500).json({ error: e.message || String(e) });
         }
     });
 
@@ -2561,6 +2721,19 @@ async function startServer() {
 
             let mappedModel = model || 'ACE-Step-v1.5-turbo';
             
+            // Map UI model IDs to Deapi Slugs
+            const musicModelMap: Record<string, string> = {
+                'AceStep_1_5_Base': 'ACE-Step-v1.5-Base',
+                'AceStep_Turbo_v1': 'ACE-Step-v1.5-turbo',
+                'AceStep_1_5_XL_Turbo_INT8': 'ACE-Step-v1.5-XL-Turbo-INT8',
+                'Suno_3_5': 'Suno-v3.5',
+                'Udio_v1': 'Udio-v1',
+                'suno_ai': 'Suno-v3.5'
+            };
+            if (musicModelMap[mappedModel]) {
+                mappedModel = musicModelMap[mappedModel];
+            }
+            
             // ... Logic for availableModels and modelLimits stays here (I'll keep the existing structure but add the mapping)
 
             // Track model limits so we stay within per-model caps (e.g. guidance_scale max varies)
@@ -2606,38 +2779,44 @@ async function startServer() {
             }
 
             // Clamp guidance_scale to model limits
-            // ACE-Step: max=1 (<=1 valid). Unknown models: default to 5.
             const maxGuidance = modelLimits.max_guidance_scale ?? modelLimits.max_guidance ?? 10;
             const minGuidance = modelLimits.min_guidance_scale ?? modelLimits.min_guidance ?? 1;
+            const maxSteps = modelLimits.max_inference_steps ?? modelLimits.max_steps ?? (mappedModel.toLowerCase().includes('turbo') ? 8 : 50);
             
-            // Sensible defaults if model limits are unknown or specifically for Turbo models
-            // Turbo models MUST stay at 1.0 guidance. Base models shine at 3.5 - 5.0.
+            // Sensible defaults
             const isTurbo = mappedModel.toLowerCase().includes('turbo') || mappedModel.toLowerCase().includes('fast');
-            const defaultTarget = isTurbo ? 1.0 : 3.5;
-            const guidanceScale = Math.min(Math.max(defaultTarget, minGuidance), maxGuidance);
+            const defaultTargetGuidance = isTurbo ? 1.0 : 3.5;
+            const guidanceScale = Math.min(Math.max(defaultTargetGuidance, minGuidance), maxGuidance);
 
             const resolvedDuration = duration || 30;
-            let resolvedSteps = steps ? Number(steps) : 8;
+            let resolvedSteps = steps ? Number(steps) : (isTurbo ? 8 : 25);
             let resolvedGuidance = userGuidance ? Number(userGuidance) : guidanceScale;
 
             // Apply limits
             resolvedGuidance = Math.min(Math.max(resolvedGuidance, minGuidance), maxGuidance);
+            resolvedSteps = Math.min(resolvedSteps, maxSteps);
 
-            // Turbo models have extremely strict limits (8 steps, 1.0 guidance)
-            // that results in 422 if not exactly followed.
+            // Turbo models often require exactly 8 steps and 1.0 guidance
             if (isTurbo) {
-                resolvedSteps = Math.max(resolvedSteps, 8);
-                // For Turbo models, guidance should be exactly 1.0 usually
+                if (maxSteps <= 8) resolvedSteps = 8;
                 if (maxGuidance <= 1.0 || resolvedGuidance < 1.0) resolvedGuidance = 1.0;
-            } else if (mappedModel.toLowerCase().includes('ace')) {
-                // AceStep Base usually works best with 25-50 steps for high quality
-                if (!steps) resolvedSteps = 25;
             }
 
             // Force vocal emphasis if lyrics are provided
             let finalPrompt = prompt || '';
             
-            // Enforce heavy styles if detected in prompt to guide the model more effectively
+            // AceStep often needs specific pace instructions to avoid "rushing" or "accelerated" audio
+            if (mappedModel.toLowerCase().includes('ace')) {
+                // Lower BPM and steady pace prevents the model from rushing through content
+                finalPrompt = `[PACE: Very Steady, calm, slow tempo] [BPM: 85] [VOCAL: Clear, emotional, articulate] ${finalPrompt}`;
+            }
+
+            // Language hint for models that might struggle
+            if (vocalLanguage && vocalLanguage.toLowerCase().includes('português')) {
+                finalPrompt = `[SINGING LANGUAGE: Portuguese] [DICÇÃO CLARA E NATURAL] ${finalPrompt}`;
+            }
+
+            // Enforce heavy styles if detected
             const lowPrompt = finalPrompt.toLowerCase();
             if (lowPrompt.includes('hard rock')) {
                 finalPrompt = `[HARD ROCK: Aggressive Distorted Guitars, Heavy Driving Drums] ${finalPrompt}`;
@@ -2647,6 +2826,11 @@ async function startServer() {
 
             if (lyrics && lyrics !== '[Instrumental]' && !finalPrompt.toLowerCase().includes('vocal')) {
                 finalPrompt = `[Vocal] ${finalPrompt}`;
+            }
+
+            // Instrumental enforcement - AceStep needs very strong negatives for instrumental to avoid artifacts
+            if (lyrics === '[Instrumental]') {
+                finalPrompt = `[PURE INSTRUMENTAL: Absolutely NO vocals, NO voices, NO singing, NO background talking. High-fidelity professional studio musical recording] ${finalPrompt}`;
             }
 
             // API Limit: 300 characters for caption
@@ -2729,86 +2913,27 @@ async function startServer() {
                         // Clone response to read text and still have a chance to handle JSON if needed
                         const text = await response.text();
                         
-                        // Handle guidance_scale specifically with a retry
-                        if (response.status === 422 && text.toLowerCase().includes('guidance_scale')) {
-                            console.log(`[Deapi Music] Guidance scale error detected: ${text}`);
+                        // Handle guidance_scale and inference_steps specifically with a retry
+                        if (response.status === 422) {
+                            const lowText = text.toLowerCase();
                             let adjusted = false;
-                            let newGuidance = resolvedGuidance;
 
-                            if (text.includes('at least 3')) {
-                                newGuidance = 3.0;
-                                adjusted = true;
-                            } else if (text.includes('greater than 1')) {
-                                newGuidance = 1.0;
-                                adjusted = true;
-                            } else if (text.includes('not be greater than')) {
-                                // Extract the number if possible, or just try 1.0 or 5.0
-                                newGuidance = 1.0;
-                                adjusted = true;
+                            if (lowText.includes('guidance_scale')) {
+                                console.log(`[Deapi Music] Guidance scale error detected: ${text}`);
+                                if (text.includes('at least 3')) { resolvedGuidance = 3.0; adjusted = true; }
+                                else if (text.includes('greater than 1')) { resolvedGuidance = 1.0; adjusted = true; }
+                                else if (text.includes('not be greater than')) { resolvedGuidance = 1.0; adjusted = true; }
                             }
-                            
-                            if (adjusted && newGuidance !== resolvedGuidance) {
-                                resolvedGuidance = newGuidance;
-                                console.log(`[Deapi Music] Retrying with adjusted guidance_scale=${resolvedGuidance.toFixed(1)}`);
-                                
-                                let retryOptions: any;
-                                if (ep.version === 'v2') {
-                                    const retryForm = new FormData();
-                                    retryForm.append('caption', finalPrompt);
-                                    retryForm.append('model', mappedModel);
-                                    retryForm.append('lyrics', lyrics || '[Instrumental]');
-                                    retryForm.append('duration', String(resolvedDuration));
-                                    retryForm.append('inference_steps', String(resolvedSteps));
-                                    retryForm.append('guidance_scale', String(resolvedGuidance));
-                                    retryForm.append('seed', String(seed || -1));
-                                    retryForm.append('format', outputFormat || 'mp3');
-                                    if (vocalLanguage) retryForm.append('vocal_language', vocalLanguage);
-                                    
-                                    retryOptions = {
-                                        method: 'POST',
-                                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' },
-                                        body: retryForm
-                                    };
-                                } else {
-                                    const retryBody = {
-                                        caption: finalPrompt,
-                                        prompt: finalPrompt,
-                                        lyrics: lyrics || '[Instrumental]',
-                                        model: mappedModel,
-                                        duration: resolvedDuration,
-                                        inference_steps: resolvedSteps,
-                                        guidance_scale: resolvedGuidance,
-                                        seed: seed || -1,
-                                        format: outputFormat || 'mp3'
-                                    };
-                                    if (vocalLanguage) (retryBody as any).vocal_language = vocalLanguage;
-                                    
-                                    retryOptions = {
-                                        method: 'POST',
-                                        headers: {
-                                            'Content-Type': 'application/json',
-                                            'Authorization': `Bearer ${deapiKey}`,
-                                            'Accept': 'application/json'
-                                        },
-                                        body: JSON.stringify(retryBody)
-                                    };
-                                }
-                                
-                                try {
-                                    const retryRes = await fetch(ep.url, retryOptions);
-                                    if (retryRes.ok) {
-                                        const data: any = await retryRes.json();
-                                        handleDeapiTask(jobId, data, deapiKey, baseUrl);
-                                        success = true;
-                                        break;
-                                    } else {
-                                        const retryText = await retryRes.text();
-                                        console.warn(`[Deapi Music] Retry failed with status ${retryRes.status}: ${retryText}`);
-                                        lastError = `Retry failed ${retryRes.status}: ${retryText.substring(0, 100)}`;
-                                    }
-                                } catch (retryErr: any) {
-                                    console.error(`[Deapi Music] Retry fetch error:`, retryErr);
-                                }
+
+                            if (lowText.includes('inference_steps') || lowText.includes('steps')) {
+                                console.log(`[Deapi Music] Steps error detected: ${text}`);
+                                if (text.includes('not be greater than 8') || text.includes('must be 8')) { resolvedSteps = 8; adjusted = true; }
+                                else if (text.includes('at least')) { resolvedSteps = 25; adjusted = true; }
+                            }
+
+                            if (adjusted) {
+                                console.log(`[Deapi Music] Retrying with adjusted parameters: guidance=${resolvedGuidance.toFixed(1)}, steps=${resolvedSteps}`);
+                                continue; // Retry current endpoint with new params in the next loop iteration
                             }
                         }
 
@@ -3150,7 +3275,10 @@ async function startServer() {
         if (!apiKey) return res.status(401).json({ error: "Gemini API key required" });
 
         try {
-            const ai = new GoogleGenAI({ apiKey });
+            const ai = new GoogleGenAI({ 
+                apiKey,
+                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+            });
             const prompt = `You are a cinematic director and visual artist. 
             Create a detailed visual storyboard for a music video.
             Song Name: ${name || 'Unknown'}
@@ -3175,7 +3303,7 @@ async function startServer() {
             }`;
 
             const result = await ai.models.generateContent({
-                model: 'gemini-2.0-flash',
+                model: 'gemini-3.5-flash',
                 contents: [{ role: 'user', parts: [{ text: prompt }] }],
                 config: { 
                     responseMimeType: "application/json",
@@ -3203,7 +3331,12 @@ async function startServer() {
             res.json(JSON.parse(text));
         } catch (e: any) {
             console.error('[Visual Plan] Error:', e);
-            res.status(500).json({ error: e.message });
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ 
+                error: parsed.error, 
+                details: parsed.details,
+                code: parsed.code
+            });
         }
     });
 
@@ -3248,8 +3381,8 @@ async function startServer() {
 
         // Check user plan and video count
         if (userId) {
-            try {
-                const userDoc = await firestore.collection('users').doc(userId).get();
+            const checkLimits = async (db: any) => {
+                const userDoc = await db.collection('users').doc(userId).get();
                 if (userDoc.exists) {
                     const userData = userDoc.data();
                     const email = userData?.email;
@@ -3265,16 +3398,25 @@ async function startServer() {
                         'agency': 100
                     };
                     
-                    if (count >= (limits[plan] || 3)) {
-                        return res.status(403).json({ 
+                    if (count >= (limits[plan] || 3) && !isAdmin) {
+                        return { 
                             error: `Limite de vídeos atingido para o plano ${plan.toUpperCase()}.`,
                             details: `Você já exportou ${count} vídeos. Faça upgrade para continuar.`,
                             limitReached: true
-                        });
+                        };
                     }
                 }
+                return null;
+            };
+
+            try {
+                const limitError = await checkLimits(firestore).catch(e => {
+                    console.error("[Export] Firestore check error:", e.message);
+                    return null; // Ignore technical errors
+                });
+                if (limitError) return res.status(403).json(limitError);
             } catch (err) {
-                console.warn("[Export] Error checking limits:", err);
+                console.warn("[Export] Limit check failed, ignoring and continuing...", err.message);
             }
         }
 
@@ -3712,7 +3854,7 @@ Please output beautiful, rhyming, and highly rhythmic lyrics.`;
                     }
                 }
             });
-            const modelName = "gemini-1.5-flash";
+            const modelName = "gemini-3.5-flash";
 
             const systemInstruction = `You are an elite music producer and prompt engineer. Your job is to take a simple music description or script prompt and elevate it into a vivid, descriptive, high-fidelity prompt for state-of-the-art AI sound and music generation systems (like Suno AI, Lyria, or AceStep). 
 Include specific music descriptors such as professional equipment (e.g. vintage tube amp, pristine console preamps), specific acoustic or synthesized instruments, tempo (BPM), mix details (e.g., warm tape saturation, wider stereo imaging, crisp transient snap), and emotional cadence.
