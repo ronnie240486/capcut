@@ -186,12 +186,26 @@ async function startServer() {
                     if (paymentData.status === 'approved') {
                         const userId = paymentData.external_reference;
                         const planId = paymentData.additional_info?.items?.[0]?.id || 'pro';
-                        await firestore.collection('users').doc(userId).set({
+                        const updateUserData = {
                             userPlan: planId,
                             videoCount: 0,
                             timelineCount: 0,
                             updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                        }, { merge: true });
+                        };
+
+                        try {
+                            await firestore.collection('users').doc(userId).set(updateUserData, { merge: true });
+                            console.log(`[MercadoPago] Plan updated for user ${userId} to ${planId}`);
+                        } catch (err) {
+                            console.warn(`[MercadoPago] Primary Firestore update failed, trying (default) db...`, err.message);
+                            try {
+                                const defaultDb = getFirestore('(default)');
+                                await defaultDb.collection('users').doc(userId).set(updateUserData, { merge: true });
+                                console.log(`[MercadoPago] Plan updated in (default) db`);
+                            } catch (fallbackErr) {
+                                console.error(`[MercadoPago] All Firestore attempts failed:`, fallbackErr.message);
+                            }
+                        }
                     }
                 }
             }
@@ -3367,8 +3381,8 @@ async function startServer() {
 
         // Check user plan and video count
         if (userId) {
-            try {
-                const userDoc = await firestore.collection('users').doc(userId).get();
+            const checkLimits = async (db: any) => {
+                const userDoc = await db.collection('users').doc(userId).get();
                 if (userDoc.exists) {
                     const userData = userDoc.data();
                     const email = userData?.email;
@@ -3384,16 +3398,29 @@ async function startServer() {
                         'agency': 100
                     };
                     
-                    if (count >= (limits[plan] || 3)) {
-                        return res.status(403).json({ 
+                    if (count >= (limits[plan] || 3) && !isAdmin) {
+                        return { 
                             error: `Limite de vídeos atingido para o plano ${plan.toUpperCase()}.`,
                             details: `Você já exportou ${count} vídeos. Faça upgrade para continuar.`,
                             limitReached: true
-                        });
+                        };
                     }
                 }
+                return null;
+            };
+
+            try {
+                const limitError = await checkLimits(firestore);
+                if (limitError) return res.status(403).json(limitError);
             } catch (err) {
-                console.warn("[Export] Error checking limits:", err);
+                console.warn("[Export] Primary Firestore limit check failed, trying (default) db...", err.message);
+                try {
+                    const defaultDb = getFirestore('(default)');
+                    const limitError = await checkLimits(defaultDb);
+                    if (limitError) return res.status(403).json(limitError);
+                } catch (fallbackErr) {
+                    console.error("[Export] All limit check attempts failed:", fallbackErr.message);
+                }
             }
         }
 
