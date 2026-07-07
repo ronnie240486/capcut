@@ -8,7 +8,9 @@ function escapeDrawText(text) {
     if (!text) return '';
     return text
         .replace(/\\/g, '\\\\') // Escape backslash for FFmpeg
-        .replace(/'/g, "'\\''")  // Escape single quote for FFmpeg (standard ' inside '...' escape)
+        .replace(/'/g, "'\\''")  // Escape single quote for FFmpeg
+        .replace(/:/g, '\\:')    // Escape colon for FFmpeg (filter option separator)
+        .replace(/,/g, '\\,')    // Escape comma for FFmpeg (filter separator)
         .replace(/%/g, '%%');    // Escape percent for drawtext variables
 }
 
