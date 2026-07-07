@@ -3410,17 +3410,13 @@ async function startServer() {
             };
 
             try {
-                const limitError = await checkLimits(firestore);
+                const limitError = await checkLimits(firestore).catch(e => {
+                    console.error("[Export] Firestore check error:", e.message);
+                    return null; // Ignore technical errors
+                });
                 if (limitError) return res.status(403).json(limitError);
             } catch (err) {
-                console.warn("[Export] Primary Firestore limit check failed, trying (default) db...", err.message);
-                try {
-                    const defaultDb = getFirestore('(default)');
-                    const limitError = await checkLimits(defaultDb);
-                    if (limitError) return res.status(403).json(limitError);
-                } catch (fallbackErr) {
-                    console.error("[Export] All limit check attempts failed:", fallbackErr.message);
-                }
+                console.warn("[Export] Limit check failed, ignoring and continuing...", err.message);
             }
         }
 
