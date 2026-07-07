@@ -7,14 +7,8 @@ import presetGenerator from './preset-generator.js';
 function escapeDrawText(text) {
     if (!text) return '';
     return text
-        .replace(/\\/g, '\\\\')
-        .replace(/:/g, '\\:')
-        .replace(/'/g, "'\\\\''")
-        .replace(/%/g, '%%')
-        .replace(/\(/g, '\\(')
-        .replace(/\)/g, '\\)')
-        .replace(/\[/g, '\\[')
-        .replace(/\]/g, '\\]');
+        .replace(/\\/g, '\\\\') // Escape backslash for FFmpeg
+        .replace(/'/g, "\\'");   // Escape single quote for FFmpeg
 }
 
 // Helper to wrap text manually since drawtext wrapping can be finicky
@@ -36,91 +30,72 @@ function wrapText(text, maxCharsPerLine) {
     return lines.join('\n');
 }
 
+// Helper to convert rgba/rgb colors to FFmpeg-safe format
+function convertRgbaToFfColor(col) {
+    if (!col) return 'black';
+    // Match rgba(r, g, b, a)
+    const rgbaMatch = col.match(/rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)/i);
+    if (rgbaMatch) {
+        const r = parseInt(rgbaMatch[1]).toString(16).padStart(2, '0');
+        const g = parseInt(rgbaMatch[2]).toString(16).padStart(2, '0');
+        const b = parseInt(rgbaMatch[3]).toString(16).padStart(2, '0');
+        const a = rgbaMatch[4];
+        return `0x${r}${g}${b}@${a}`;
+    }
+    // Match rgb(r, g, b)
+    const rgbMatch = col.match(/rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/i);
+    if (rgbMatch) {
+        const r = parseInt(rgbMatch[1]).toString(16).padStart(2, '0');
+        const g = parseInt(rgbMatch[2]).toString(16).padStart(2, '0');
+        const b = parseInt(rgbMatch[3]).toString(16).padStart(2, '0');
+        return `0x${r}${g}${b}`;
+    }
+    // Match #RRGGBBAA and convert to #RRGGBB@0.AA
+    if (col.startsWith('#') && col.length === 9) {
+        const hex = col.substring(1, 7);
+        const alphaHex = col.substring(7, 9);
+        const alpha = (parseInt(alphaHex, 16) / 255).toFixed(2);
+        return `#${hex}@${alpha}`;
+    }
+    return col;
+}
+
 export default {
     buildTimeline: (clips, fileMap, mediaLibrary, exportConfig = {}, explicitTotalDuration = 30) => {
-        // Automatically determine type (image, video, etc) if not specified per clip
-        const detectImageByFilename = (name) => {
-            if (!name) return false;
-            const ext = name.split('.').pop().toLowerCase();
-            return ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tiff', 'jfif', 'svg'].includes(ext);
-        };
-
-        if (clips && Array.isArray(clips)) {
-            clips.forEach(clip => {
-                if (!clip.type && clip.fileName) {
-                    const matchedMedia = mediaLibrary && mediaLibrary[clip.fileName];
-                    if (matchedMedia && matchedMedia.type) {
-                        clip.type = matchedMedia.type;
-                    } else if (detectImageByFilename(clip.fileName)) {
-                        clip.type = 'image';
-                    } else {
-                        const trackStr = String(clip.track || '').toLowerCase();
-                        if (['audio', 'narration', 'music', 'sfx'].includes(trackStr)) {
-                            clip.type = 'audio';
-                        } else if (['text', 'subtitle'].includes(trackStr)) {
-                            clip.type = 'text';
-                        } else {
-                            clip.type = 'video';
-                        }
-                    }
-                }
-            });
-        }
-
         let inputs = [];
         let filterChain = '';
         
         let inputIndexCounter = 0;
-        const safeAudioFormat = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
 
         // --- CONFIGURAÇÃO DE RESOLUÇÃO E FPS ---
         const resMap = {
-            '360p': { w: 640, h: 360 },
-            '480p': { w: 854, h: 480 },
             '720p': { w: 1280, h: 720 },
             '1080p': { w: 1920, h: 1080 },
-            '2k': { w: 2560, h: 1440 }, 
-            '4k': { w: 3840, h: 2160 }  
+            '4k': { w: 3840, h: 2160 }
         };
         
-        let targetRes = resMap[exportConfig.resolution] || resMap['720p'];
-
-        let targetFps = parseInt(exportConfig.fps) || 30;
-        if (targetFps > 60) {
-            targetFps = 60; 
-        }
+        const targetRes = resMap[exportConfig.resolution] || resMap['720p'];
+        const targetFps = parseInt(exportConfig.fps) || 30;
         
-        const isUltraHD = exportConfig.ultraHD === true || exportConfig.ultraHD === 'true';
-        const isUHD = exportConfig.resolution === '4k' || isUltraHD;
-        const scalingAlgorithm = 'bicubic'; // 'bicubic' is very safe and fast
-        const sharpenFilter = isUHD ? ',unsharp=3:3:0.5:3:3:0.0' : ''; 
-        
-        const isOpticalFlow = exportConfig.opticalFlow === true || exportConfig.opticalFlow === 'true';
-        const fpsFilter = isOpticalFlow 
-            ? `minterpolate=fps=${targetFps}:mi_mode=mci:mc_mode=obmc` 
-            : `fps=${targetFps}`;
+        // Filtro de Escala Seguro e Uniformização
+        // 1. Scale to fit inside target box
+        // 2. Ensure even dimensions for YUV420P
+        // 3. Pad to target resolution
+        // 4. Force setsar=1 to avoid aspect ratio mismatches in concat/xfade
+        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,fps=${targetFps},format=yuv420p`;
 
-        const SCALE_FILTER = `scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease:flags=${scalingAlgorithm},pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1${sharpenFilter},${fpsFilter},format=yuv420p`;
-
-        const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + (parseFloat(c.duration) || 5)), 0);
+        // CALCULAR DURAÇÃO TOTAL DO PROJETO
+        const maxClipEnd = clips.reduce((max, c) => Math.max(max, c.start + c.duration), 0);
         const projectDuration = Math.max(explicitTotalDuration, maxClipEnd, 1);
 
+        // SEPARAR TRILHAS
         const mainTrackClips = clips.filter(c => c.track === 'video').sort((a, b) => a.start - b.start);
-        const overlayClips = clips.filter(c => {
-            const track = String(c.track || '').toLowerCase();
-            return ['text', 'subtitle', 'overlay', 'sticker', 'camada'].some(t => track.includes(t));
-        }).sort((a, b) => {
-            const getOrder = (t) => {
-                const tr = String(t || '').toLowerCase().replace(/\s+/g, '');
-                if (tr === 'camada' || tr === 'camadas') return 1;
-                if (tr.startsWith('camada')) {
-                    const num = parseInt(tr.replace('camada', ''));
-                    return isNaN(num) ? 1 : num;
-                }
-                const trackOrder = { text: 10, subtitle: 11, overlay: 12, sticker: 13 };
-                return trackOrder[tr] || 15;
-            };
-            const trackDiff = getOrder(a.track) - getOrder(b.track);
+        
+        const trackOrder = { camada: 1, camada2: 2, camada3: 3, text: 4, subtitle: 5 };
+        const overlayClips = clips.filter(c => 
+            ['text', 'subtitle', 'camada', 'camada2', 'camada3'].includes(c.track)
+        ).sort((a, b) => {
+            const trackDiff = (trackOrder[a.track] || 0) - (trackOrder[b.track] || 0);
             if (trackDiff !== 0) return trackDiff;
             return a.start - b.start;
         });
@@ -131,29 +106,29 @@ export default {
         );
 
         // --- 0. GERAR BACKGROUND BASE (VIDEO & AUDIO) ---
+        
+        // Video Base (Black or Image)
         let baseVideoStream = '[bg_base]';
         const bgFile = fileMap['background']; 
         if (bgFile) {
-             inputs.push('-loop', '1', '-t', projectDuration.toString(), '-s', `${targetRes.w}x${targetRes.h}`, '-i', bgFile);
+             inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', bgFile);
              const bgIdx = inputIndexCounter++;
-             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
+             filterChain += `[${bgIdx}:v]scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=increase,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',crop=${targetRes.w}:${targetRes.h},setsar=1,fps=${targetFps},format=yuv420p[bg_base];`;
         } else {
-             // Avoid -f lavfi -i sources which can be misinterpreted by FFmpeg job argument normalization
-             filterChain += `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${projectDuration},setsar=1[bg_base_source];`;
-             baseVideoStream = `[bg_base_source]`;
+             inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', `color=c=black:s=${targetRes.w}x${targetRes.h}:r=${targetFps}`);
+             baseVideoStream = `[${inputIndexCounter++}:v]`;
         }
 
+        // Audio Base (Full Duration Silence) - Critical for AMIX stability
         let baseAudioStream = '[base_audio_silence]';
-        // Avoid -f lavfi -i sources for audio silence too
-        filterChain += `anullsrc=channel_layout=stereo:sample_rate=44100:d=${projectDuration},aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[base_audio_silence];`;
+        inputs.push('-f', 'lavfi', '-t', projectDuration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+        const silenceIdx = inputIndexCounter++;
+        filterChain += `[${silenceIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[base_audio_silence];`;
 
         // --- 1. PROCESSAR TRILHA PRINCIPAL (VIDEO) ---
         let mainTrackVideoStream = null;
         let mainTrackAudioStream = null;
         
-        let accumulatedDurationForAudio = 0;
-        let finalAudioSegments = [baseAudioStream];
-
         if (mainTrackClips.length > 0) {
              let mainTrackLabels = [];
              let mainTrackAudioSegments = [];
@@ -165,7 +140,6 @@ export default {
                 const duration = Math.max(0.1, parseFloat(clip.duration) || 5);
 
                 if (clip.type === 'image') {
-                    // Remove redundant -s to keep high-res for better zoom quality
                     inputs.push('-loop', '1', '-t', (duration + 1).toString(), '-i', filePath); 
                 } else {
                     inputs.push('-i', filePath);
@@ -181,11 +155,12 @@ export default {
                     currentV = `[${nextLabel}]`;
                 };
 
+                // Standardize Resolution EARLY
                 addFilter(SCALE_FILTER);
 
                 if (clip.type !== 'image') {
                     const start = clip.mediaStartOffset || 0;
-                    addFilter(`trim=start=${start}:duration=${duration},setpts=PTS-STARTPTS`);
+                    addFilter(`trim=start=${start}:duration=${start + duration},setpts=PTS-STARTPTS`);
                 } else {
                     addFilter(`setpts=PTS-STARTPTS`);
                 }
@@ -196,13 +171,8 @@ export default {
                 }
 
                 if (clip.effect) {
-                    let fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                    if (!fx && clip.effect.includes('=')) fx = clip.effect;
+                    const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                     if (fx) addFilter(fx);
-                }
-                
-                if (clip.properties && clip.properties.audioDeepSync) {
-                    addFilter("eq=contrast='1+0.2*abs(sin(2*PI*t*2))':brightness='0.05*abs(sin(2*PI*t*2))'");
                 }
                 
                 if (clip.properties && clip.properties.adjustments) {
@@ -218,187 +188,168 @@ export default {
                 }
 
                 let moveApplied = false;
-                if (clip.properties && clip.properties.movement && clip.properties.movement.type !== 'none') {
-                    const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, false, targetRes, targetFps);
+                if (clip.properties && clip.properties.movement) {
+                    const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
                     if (moveFilter) {
                         addFilter(moveFilter);
                         moveApplied = true;
                     }
                 } 
                 
-                // Only apply default movement if it's an image and actually DOES something (not static 1.0 zoom)
                 if (!moveApplied && clip.type === 'image') {
-                    const staticMove = presetGenerator.getMovementFilter('', duration, true, {}, false, targetRes, targetFps);
-                    // Check if the filter is more than just a identity scale
-                    if (staticMove && !staticMove.includes("z='1.0'") && !staticMove.includes("z='1'")) {
-                        addFilter(staticMove);
-                    }
+                    const staticMove = presetGenerator.getMovementFilter(null, duration, true, {}, targetRes, targetFps);
+                    addFilter(staticMove);
                 }
+
+                // Ensure properties match for XFADE (Critical: setsar=1, yuv420p)
+                // We re-apply safe scale logic with -1:-1 padding to handle odd dimensions correctly
+                // Adding FIFO buffer here to prevent "Resource temporarily unavailable"
+                addFilter(`scale=${targetRes.w}:${targetRes.h}:force_original_aspect_ratio=decrease,scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',pad=${targetRes.w}:${targetRes.h}:-1:-1:color=black,setsar=1,format=yuv420p,fifo`);
 
                 mainTrackLabels.push({
                     label: currentV,
                     duration: duration,
-                    transition: clip.transition,
-                    id: clip.id,
-                    idx: idx
+                    transition: clip.transition
                 });
-            });
 
-            if (mainTrackLabels.length > 0) {
+                // Audio do Video
+                const mediaInfo = mediaLibrary[clip.fileName];
+                if (clip.type === 'video' && mediaInfo?.hasAudio) {
+                    const audioLabel = `a_main_${i}`;
+                    const start = clip.mediaStartOffset || 0;
+                    const vol = clip.properties.volume !== undefined ? clip.properties.volume : 1;
+                    const audioFormatFilter = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp,aresample=async=1';
+                    
+                    filterChain += `[${idx}:a]${audioFormatFilter},atrim=start=${start}:duration=${start + duration},asetpts=PTS-STARTPTS,volume=${vol}[${audioLabel}];`;
+                    mainTrackAudioSegments.push(`[${audioLabel}]`);
+                } else {
+                    // Padding Audio (Silence for this clip duration)
+                    const audioLabel = `a_pad_${i}`;
+                    const padIdx = inputIndexCounter++;
+                    inputs.push('-f', 'lavfi', '-t', duration.toString(), '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100');
+                    filterChain += `[${padIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp[${audioLabel}];`;
+                    mainTrackAudioSegments.push(`[${audioLabel}]`);
+                }
+             });
+
+             // Compor Trilha Principal (Video & Audio Concat/Xfade)
+             if (mainTrackLabels.length > 0) {
                 let currentMixV = mainTrackLabels[0].label;
-                let currentVideoTime = mainTrackLabels[0].duration;
-
-                // Sync main track audio (if any)
-                mainTrackClips.forEach((clip, i) => {
-                    const mediaInfo = mediaLibrary[clip.fileName];
-                    const filePath = fileMap[clip.fileName];
-                    if (clip.type === 'video' && mediaInfo?.hasAudio && filePath) {
-                        const audioLabel = `a_main_${i}`;
-                        const start = clip.mediaStartOffset || 0;
-                        const vol = clip.properties?.volume !== undefined ? clip.properties.volume : 1;
-                        
-                        // Find the video input index for this clip from our processed mainTrackLabels
-                        const clipInfo = mainTrackLabels.find(l => l.id === clip.id);
-                        if (!clipInfo) return;
-
-                        filterChain += `[${clipInfo.idx}:a]${safeAudioFormat},atrim=start=${start}:duration=${clip.duration},asetpts=PTS-STARTPTS,volume=${vol},adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}[${audioLabel}];`;
-                        finalAudioSegments.push(`[${audioLabel}]`);
-                    }
-                });
+                let currentMixA = mainTrackAudioSegments[0];
+                let accumulatedDuration = mainTrackLabels[0].duration;
 
                 for (let i = 1; i < mainTrackLabels.length; i++) {
                     const nextClip = mainTrackLabels[i];
-                    let trans = nextClip.transition || { id: 'fade', duration: 0.5 };
-                    if (typeof trans === 'string') trans = { id: trans, duration: 0.5 };
-                    
+                    // IMPORTANT: Ensure transition exists, otherwise use a minimal value to prevent breakage
+                    const trans = nextClip.transition || { id: 'fade', duration: 0.5 };
                     const hasExplicitTrans = !!nextClip.transition;
                     let transDur = hasExplicitTrans ? trans.duration : 0.0; 
                     
-                    // Memory Safety: If there are too many main track clips (e.g. > 40), 
-                    // force reduce transition duration or use overlay fallback for non-critical scenes
-                    if (mainTrackLabels.length > 40) {
-                        transDur = Math.min(transDur, 0.3);
+                    // Offset logic: Start transition 'duration' seconds before the end of the previous clip
+                    // accumulatedDuration is the end time of the previous mix
+                    const offset = accumulatedDuration - transDur;
+                    
+                    // Fallback to simple concat if offset is negative (clip too short)
+                    if (offset < 0) {
+                        transDur = 0; 
                     }
 
-                    const offset = currentVideoTime - transDur;
-                    const actualOffset = Math.max(0, offset);
-
+                    // Get FFmpeg Xfade name, default to 'fade' if not found
                     let transId = presetGenerator.getTransitionXfade(trans.id);
                     if (!transId) transId = 'fade';
 
                     const nextLabelV = `mix_v_${i}`;
+                    const nextLabelA = `mix_a_${i}`;
                     
                     if (transDur > 0 && hasExplicitTrans) {
-                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${actualOffset}[${nextLabelV}];`;
-                        currentVideoTime = actualOffset + nextClip.duration;
+                        filterChain += `${currentMixV}${nextClip.label}xfade=transition=${transId}:duration=${transDur}:offset=${offset},fifo[${nextLabelV}];`;
+                        filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${transDur}:c1=tri:c2=tri[${nextLabelA}];`;
+                        accumulatedDuration = offset + nextClip.duration;
                     } else {
-                        const overlayLabelV = `ovm_v_${i}`;
-                        filterChain += `${currentMixV}${nextClip.label}overlay=enable='gt(t,${currentVideoTime})':eof_action=pass[${overlayLabelV}];`;
-                        currentVideoTime += nextClip.duration;
-                        currentMixV = `[${overlayLabelV}]`;
-                        // Note: Audio sync is already handled by the pre-loop above using absolute start times
-                        continue; 
+                        // Simple Concatenation via Xfade (safe fallback to prevent flashes)
+                        const safeDur = 0.04;
+                        const safeOffset = Math.max(0, accumulatedDuration - safeDur);
+                         filterChain += `${currentMixV}${nextClip.label}xfade=transition=fade:duration=${safeDur}:offset=${safeOffset},fifo[${nextLabelV}];`;
+                         filterChain += `${currentMixA}${mainTrackAudioSegments[i]}acrossfade=d=${safeDur}:c1=tri:c2=tri[${nextLabelA}];`;
+                         accumulatedDuration = safeOffset + nextClip.duration;
                     }
                     
                     currentMixV = `[${nextLabelV}]`;
+                    currentMixA = `[${nextLabelA}]`;
                 }
                 mainTrackVideoStream = currentMixV;
-            }
+                mainTrackAudioStream = currentMixA;
+             }
         }
 
-    let finalComp = baseVideoStream;
-    
-    if (mainTrackVideoStream) {
-        const compLabel = `comp_base`;
-        filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass[${compLabel}];`;
-        finalComp = `[${compLabel}]`;
-    }
+        // --- 2. JUNTAR BACKGROUND COM MAIN TRACK ---
+        let finalComp = baseVideoStream;
+        
+        if (mainTrackVideoStream) {
+            const compLabel = `comp_base`;
+            // Base stream is already setsar=1, mainTrack is setsar=1
+            // Adding FIFO to main stream before overlay
+            filterChain += `${baseVideoStream}${mainTrackVideoStream}overlay=x=0:y=0:eof_action=pass,fifo[${compLabel}];`;
+            finalComp = `[${compLabel}]`;
+        }
 
-    overlayClips.forEach((clip, i) => {
+        // --- 3. APLICAR OVERLAYS ---
+        overlayClips.forEach((clip, i) => {
             let overlayInputLabel = '';
             
             if (clip.type === 'text') {
-                 const bgLabel = `txtbg_${i}`;
-                 filterChain += `color=c=black@0.0:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${clip.duration}[${bgLabel}];`;
+                  const bgLabel = `txtbg_${i}`;
+                  filterChain += `color=c=black@0.0:s=${targetRes.w}x${targetRes.h}:r=${targetFps}:d=${clip.duration}[${bgLabel}];`;
 
-                 let txt = (clip.properties.text || '');
-                 const maxChars = targetRes.w > 1280 ? 50 : 30; 
-                 txt = wrapText(txt, maxChars);
-                 const escapedTxt = escapeDrawText(txt);
-                 
-                 let color = clip.properties.textDesign?.color || 'white';
-                 if (color === 'transparent') color = 'white@0.0';
+                  let txt = (clip.properties.text || '');
+                  const maxChars = targetRes.w > 1280 ? 50 : 30; 
+                  txt = wrapText(txt, maxChars);
+                  const escapedTxt = escapeDrawText(txt);
+                  
+                  const escapeColor = (col) => {
+                      if (!col) return 'black';
+                      const ffCol = convertRgbaToFfColor(col);
+                      return ffCol.replace(/,/g, '\\,').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+                  };
 
-                 const baseFontSize = 80;
-                 const scaleFactor = targetRes.w / 1280;
-                 const fontsize = Math.round(baseFontSize * scaleFactor * (clip.properties.transform?.scale || 1));
-                 
-                 let x = '(w-text_w)/2';
-                 let y = '(h-text_h)/2';
-                 
-                 if (clip.track === 'subtitle') {
-                     y = `(h-text_h)-${Math.round(80 * scaleFactor)}`;
-                 }
-                 
-                 if (clip.properties.transform) {
-                     const t = clip.properties.transform;
-                     if (t.x) x += `+(${t.x}*${scaleFactor})`;
-                     if (t.y) y += `+(${t.y}*${scaleFactor})`;
-                 }
-                 
-                 let styles = '';
-                 let alpha = '1.0';
-                 let animType = 'none';
+                  let color = clip.properties.textDesign?.color || 'white';
+                  if (color === 'transparent') color = 'white@0.0';
+                  else color = escapeColor(color);
 
-                 if (clip.properties.textDesign?.animation) {
-                     const anim = clip.properties.textDesign.animation;
-                     const animDur = 0.5;
-                     
-                     if (anim.in === 'fade-in' || anim.id === 'fade-in') {
-                         alpha = `min(t/${animDur},1)`;
-                     }
-                     if (anim.out === 'fade-out') {
-                         alpha = `if(lt(t,${clip.duration - animDur}),${alpha},min((d-t)/${animDur},1))`;
-                     }
-                     if (anim.loop === 'pulse') {
-                         alpha = `(${alpha})*(0.8+0.2*sin(2*PI*t))`;
-                     }
-                 }
+                  const baseFontSize = 80;
+                  const scaleFactor = targetRes.w / 1280;
+                  const fontsize = Math.round(baseFontSize * scaleFactor * (clip.properties.transform?.scale || 1));
+                  
+                  let x = '(w-text_w)/2';
+                  let y = '(h-text_h)/2';
+                  
+                  if (clip.properties.transform) {
+                      const t = clip.properties.transform;
+                      if (t.x) x += `+(${t.x}*${scaleFactor})`;
+                      if (t.y) y += `+(${t.y}*${scaleFactor})`;
+                  }
+                  
+                  let styles = '';
+                  if (clip.properties.textDesign?.stroke) {
+                      const s = clip.properties.textDesign.stroke;
+                      if (s.width > 0) styles += `:borderw=${s.width * scaleFactor}:bordercolor=${escapeColor(s.color || 'black')}`;
+                  }
+                  if (clip.properties.textDesign?.shadow) {
+                      const sh = clip.properties.textDesign.shadow;
+                      if (sh.x || sh.y) styles += `:shadowx=${(sh.x || 2) * scaleFactor}:shadowy=${(sh.y || 2) * scaleFactor}:shadowcolor=${escapeColor(sh.color || 'black@0.5')}`;
+                  }
+                  
+                  const fontFile = fs.existsSync("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf")
+                      ? "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+                      : (fs.existsSync("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf")
+                          ? "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"
+                          : "");
+                  const fontArg = fontFile ? `:fontfile='${fontFile}'` : '';
 
-                 const escapeColor = (col) => {
-                     if (!col) return 'black';
-                     // FFmpeg's drawtext filter parsing is sensitive to commas in rgba() when part of a filter_complex
-                     // We escape commas and parentheses for safety.
-                     return col.replace(/,/g, '\\,').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-                 };
-
-                 if (clip.properties.textDesign?.stroke) {
-                     const s = clip.properties.textDesign.stroke;
-                     if (s.width > 0) styles += `:borderw=${s.width * scaleFactor}:bordercolor=${escapeColor(s.color || 'black')}`;
-                 }
-                 if (clip.properties.textDesign?.shadow) {
-                     const sh = clip.properties.textDesign.shadow;
-                     if (sh.x || sh.y) styles += `:shadowx=${(sh.x || 2) * scaleFactor}:shadowy=${(sh.y || 2) * scaleFactor}:shadowcolor=${escapeColor(sh.color || 'black@0.5')}`;
-                 }
-                 
-                 const fontFile = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"; 
-                 const fontArg = `:fontfile='${fontFile}'`;
-
-                 const txtLabel = `txt_base_${i}`;
-                 const finalTxt = escapedTxt || ' ';
-                 filterChain += `[${bgLabel}]drawtext=text='${finalTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}:alpha='${alpha}'${styles}[${txtLabel}];`;
-                 overlayInputLabel = `[${txtLabel}]`;
-
-                 // PROGRESS BAR LOGIC
-                 if (clip.properties.textDesign?.isProgressBar) {
-                     const pbLabel = `txt_pb_${i}`;
-                     const pbColor = clip.properties.textDesign?.color || 'white';
-                     const pbH = Math.round(15 * scaleFactor);
-                     const pbY = targetRes.h - pbH - Math.round(40 * scaleFactor);
-                     const progressExpr = `(t+${clip.start})/${projectDuration}`;
-                     filterChain += `${overlayInputLabel}drawbox=x=0:y=${pbY}:w=iw*${progressExpr}:h=${pbH}:color=${pbColor}:t=fill[${pbLabel}];`;
-                     overlayInputLabel = `[${pbLabel}]`;
-                 }
+                  const txtLabel = `txt_${i}`;
+                  const finalTxt = escapedTxt || ' ';
+                  filterChain += `[${bgLabel}]drawtext=text='${finalTxt}'${fontArg}:fontcolor=${color}:fontsize=${fontsize}:x=${x}:y=${y}${styles}[${txtLabel}];`;
+                  overlayInputLabel = `[${txtLabel}]`;
 
             } else {
                  const filePath = fileMap[clip.fileName];
@@ -411,7 +362,6 @@ export default {
                  }
                  
                  const idx = inputIndexCounter++;
-                 clip.inputIdx = idx;
                  const rawLabel = `[${idx}:v]`;
                  const processedLabel = `ov_proc_${i}`;
                  
@@ -419,39 +369,36 @@ export default {
                  
                  if (clip.type === 'video') {
                      const start = clip.mediaStartOffset || 0;
-                     filters.push(`trim=start=${start}:duration=${clip.duration},setpts=PTS-STARTPTS`);
+                     filters.push(`trim=start=${start}:duration=${start + clip.duration},setpts=PTS-STARTPTS`);
                  } else {
                      filters.push(`trim=duration=${clip.duration},setpts=PTS-STARTPTS`);
                  }
                  
                  if (clip.effect) {
-                     let fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
-                     if (!fx && clip.effect.includes('=')) fx = clip.effect;
+                     const fx = presetGenerator.getFFmpegFilterFromEffect(clip.effect);
                      if (fx) filters.push(fx);
                  }
 
-                 if (clip.properties?.transform?.rotation) {
-                     filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
-                 }
-                 
-                 const scaleVal = clip.properties?.transform?.scale || 0.5;
-                 const targetW = Math.max(2, Math.floor(targetRes.w * scaleVal / 2) * 2);
-                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p`);
-
-                 if (clip.properties?.movement && clip.properties.movement.type !== 'none') {
-                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, clip.duration, clip.type === 'image', clip.properties.movement.config, true, targetRes, targetFps);
+                 if (clip.properties.movement) {
+                     const moveFilter = presetGenerator.getMovementFilter(clip.properties.movement.type, clip.duration, clip.type === 'image', clip.properties.movement.config, targetRes, targetFps);
                      if (moveFilter) filters.push(moveFilter);
                  }
                  
-                 if (clip.properties?.opacity !== undefined && clip.properties.opacity < 1) {
-                     filters.push(`format=yuva420p,colorchannelmixer=aa=${clip.properties.opacity}`);
+                 if (clip.properties.transform?.rotation) {
+                     filters.push(`rotate=${clip.properties.transform.rotation}*PI/180:c=none:ow=rotw(iw):oh=roth(ih)`);
                  }
+                 
+                 const scaleVal = clip.properties.transform?.scale || 0.5;
+                 const targetW = Math.max(2, Math.floor(targetRes.w * scaleVal / 2) * 2);
+                 // Robust scaling for overlays with alpha preservation and SAR normalization
+                 filters.push(`scale=${targetW}:'max(2,trunc(ih*(${targetW}/iw)/2)*2)',setsar=1,format=yuva420p,fifo`);
 
                  filterChain += `${rawLabel}${filters.join(',')}[${processedLabel}];`;
                  overlayInputLabel = `[${processedLabel}]`;
             }
 
             const nextCompLabel = `comp_${i}`;
+            // Use fixed precision to avoid scientific notation in FFmpeg expressions
             const startTime = parseFloat(clip.start.toFixed(4));
             const endTime = parseFloat((startTime + clip.duration).toFixed(4));
             
@@ -466,11 +413,23 @@ export default {
 
             const shiftedLabel = `shift_${i}`;
             filterChain += `${overlayInputLabel}setpts=PTS+${startTime}/TB[${shiftedLabel}];`;
-            // Removed redundant fifo buffer per overlay to save memory on Cloud Run
-            filterChain += `${finalComp}[${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
+            // Add FIFO to main track before overlaying to ensure sync
+            filterChain += `${finalComp}fifo[main_fifo_${i}];`;
+            filterChain += `[main_fifo_${i}][${shiftedLabel}]overlay=x=${overlayX}:y=${overlayY}:enable='between(t,${startTime},${endTime})':eof_action=pass[${nextCompLabel}];`;
             finalComp = `[${nextCompLabel}]`;
         });
+
+        // --- 4. MIXAGEM DE ÁUDIO (ROBUSTA) ---
+        // Start with the full duration silence
+        let audioMixInputs = [baseAudioStream];
+        const safeAudioFormat = 'aformat=sample_rates=44100:channel_layouts=stereo:sample_fmts=fltp';
         
+        // Add Main Track Audio if exists
+        if (mainTrackAudioStream) {
+            audioMixInputs.push(mainTrackAudioStream);
+        }
+
+        // Add Extra Audio Clips
         audioClips.forEach((clip, i) => {
             const filePath = fileMap[clip.fileName];
             if (!filePath) return;
@@ -484,91 +443,37 @@ export default {
             const delayMs = Math.round(clip.start * 1000); 
             const dur = Math.max(0.1, clip.duration);
             
-            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${dur},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
-            finalAudioSegments.push(`[${lbl}]`);
+            filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + dur},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
+            audioMixInputs.push(`[${lbl}]`);
         });
 
+        // Add Layer Audio Clips
         overlayClips.forEach((clip, i) => {
-            if (clip.type === 'video' && clip.inputIdx !== undefined) {
+            if (clip.type === 'video') {
+                const filePath = fileMap[clip.fileName];
                 const mediaInfo = mediaLibrary[clip.fileName];
-                if (!mediaInfo?.hasAudio) return;
+                if (!filePath || !mediaInfo?.hasAudio) return;
                 
+                inputs.push('-i', filePath);
+                const idx = inputIndexCounter++;
                 const lbl = `layer_audio_${i}`;
+                
                 const startTrim = clip.mediaStartOffset || 0;
                 const volume = clip.properties.volume !== undefined ? clip.properties.volume : 1;
                 const delayMs = Math.round(clip.start * 1000);
                 const dur = Math.max(0.1, clip.duration);
                 
-                filterChain += `[${clip.inputIdx}:a]atrim=start=${startTrim}:duration=${dur},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
-                finalAudioSegments.push(`[${lbl}]`);
+                filterChain += `[${idx}:a]atrim=start=${startTrim}:duration=${startTrim + dur},asetpts=PTS-STARTPTS,${safeAudioFormat},volume=${volume},adelay=${delayMs}|${delayMs}[${lbl}];`;
+                audioMixInputs.push(`[${lbl}]`);
             }
         });
 
-        // --- GERAR AUDIO FINAL (OTIMIZADO) ---
         let finalAudio = '[final_audio_out]';
-        const amixInputs = finalAudioSegments.length;
-        
-        if (amixInputs > 1) {
-            // For very high number of segments, we split into stages to avoid memory issues with amix
-            if (amixInputs > 50) {
-                let currentBatch = [];
-                let mixedLabels = [];
-                for(let i=0; i < amixInputs; i++) {
-                    currentBatch.push(finalAudioSegments[i]);
-                    if (currentBatch.length === 30 || i === amixInputs - 1) {
-                        const batchLabel = `mixed_batch_${mixedLabels.length}`;
-                        filterChain += `${currentBatch.join('')}amix=inputs=${currentBatch.length}:duration=longest:dropout_transition=0:normalize=0[${batchLabel}];`;
-                        mixedLabels.push(`[${batchLabel}]`);
-                        currentBatch = [];
-                    }
-                }
-                filterChain += `${mixedLabels.join('')}amix=inputs=${mixedLabels.length}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
-            } else {
-                filterChain += `${finalAudioSegments.join('')}amix=inputs=${amixInputs}:duration=longest:dropout_transition=0:normalize=0[final_audio_out];`;
-            }
-        } else if (amixInputs === 1) {
-            filterChain += `${finalAudioSegments[0]}anull[final_audio_out];`;
+        if (audioMixInputs.length > 1) {
+            // Use amix with duration=first because the first input is our full-length silence track
+            filterChain += `${audioMixInputs.join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[final_audio_out];`;
         } else {
-            filterChain += `${baseAudioStream}anull[final_audio_out];`;
-        }
-
-        // --- WATERMARK (IMAGE OR TEXT) ---
-        let customWmImgPath = null;
-        if (exportConfig?.customWatermarkImage) {
-            customWmImgPath = fileMap[exportConfig.customWatermarkImage];
-        }
-
-        // FREE PLAN FALLBACK: If no custom watermark, and whiteLabel is false, use default ProEdit logo
-        if (!customWmImgPath && !exportConfig?.whiteLabel) {
-            const defaultLogoPath = path.join(process.cwd(), 'images', 'logo.png');
-            if (fs.existsSync(defaultLogoPath)) {
-                customWmImgPath = defaultLogoPath;
-            }
-        }
-
-        if (customWmImgPath) {
-            const wmIdx = inputIndexCounter++;
-            // Loop the watermark image for the entire project duration to avoid premature stream end
-            inputs.push('-loop', '1', '-t', projectDuration.toString(), '-i', customWmImgPath);
-            const wmLabel = `watermark_out`;
-            const wmW = Math.round(targetRes.w * 0.12); // 12% of video width
-            
-            filterChain += `;[${wmIdx}:v]scale=${wmW}:-1,format=yuva420p,colorchannelmixer=aa=0.5[wm_scaled];${finalComp}[wm_scaled]overlay=main_w-overlay_w-40:main_h-overlay_h-40:eof_action=pass[${wmLabel}]`;
-            finalComp = `[${wmLabel}]`;
-        } else {
-            let wmTxt = '';
-            if (exportConfig?.customWatermarkText) {
-                wmTxt = exportConfig.customWatermarkText;
-            } else if (!exportConfig?.whiteLabel) {
-                wmTxt = 'PROEDIT - IA VIDEO EDITOR';
-            }
-
-            if (wmTxt) {
-                const wmLabel = `watermark_out`;
-                const escapedWmTxt = wmTxt.replace(/'/g, "'\\''");
-                filterChain += `;${finalComp}drawtext=text='${escapedWmTxt}':fontcolor=white@0.3:fontsize=24:x=w-tw-40:y=h-th-40:shadowcolor=black@0.2:shadowx=1:shadowy=1[${wmLabel}]`;
-                finalComp = `[${wmLabel}]`;
-            }
+            filterChain += `${audioMixInputs[0]}acopy[final_audio_out];`;
         }
 
         if (filterChain.endsWith(';')) {
