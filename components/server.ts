@@ -639,9 +639,72 @@ async function startServer() {
         });
     });
 
-    // ─── AUTOPILOT ROUTES ──────────────────────────────────────────────────────
-    // Diagnostic - already at line 35
-    
+    // Robust JSON repair for truncated AI responses
+    function repairJson(str: string): string {
+        str = str.trim();
+        if (!str) return "{}";
+        
+        // Try to find the start of the JSON
+        const start = str.indexOf('{');
+        const startArr = str.indexOf('[');
+        let actualStart = -1;
+        if (start !== -1 && (startArr === -1 || start < startArr)) actualStart = start;
+        else if (startArr !== -1) actualStart = startArr;
+        
+        if (actualStart !== -1) str = str.substring(actualStart);
+
+        // Basic balanced braces repair
+        let stack: string[] = [];
+        let inString = false;
+        let escaped = false;
+        let lastValidCharIndex = -1;
+
+        for (let i = 0; i < str.length; i++) {
+            const char = str[i];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (char === '\\') {
+                escaped = true;
+                continue;
+            }
+            if (char === '"') {
+                inString = !inString;
+                continue;
+            }
+            if (!inString) {
+                if (char === '{' || char === '[') {
+                    stack.push(char);
+                } else if (char === '}') {
+                    if (stack[stack.length - 1] === '{') stack.pop();
+                } else if (char === ']') {
+                    if (stack[stack.length - 1] === '[') stack.pop();
+                }
+                
+                // Track last position before a possible truncation (comma or end of value)
+                if (char === '}' || char === ']' || char === '"' || (char >= '0' && char <= '9') || char === 'e' || char === 'l' || char === 'u') {
+                    lastValidCharIndex = i;
+                }
+            }
+        }
+
+        if (stack.length > 0) {
+            console.warn(`[repairJson] Truncated JSON detected. Stack: ${stack.join('')}`);
+            // If we are in the middle of a string, close it
+            if (inString) str += '"';
+            
+            // Close all open braces/brackets
+            while (stack.length > 0) {
+                const open = stack.pop();
+                if (open === '{') str += '}';
+                else if (open === '[') str += ']';
+            }
+        }
+
+        return str;
+    }
+
     app.post('/api/autopilot/generate-plan', async (req: any, res: any) => {
         console.log("[Autopilot] generate-plan request received");
         try {
@@ -672,6 +735,7 @@ async function startServer() {
                 }],
                 config: { 
                     responseMimeType: "application/json",
+                    maxOutputTokens: 8192, // Ensure we have enough space for long scripts
                     responseSchema: {
                         type: Type.OBJECT,
                         properties: {
@@ -702,29 +766,33 @@ async function startServer() {
             const text = scriptResponse.text;
             if (!text) throw new Error("A IA retornou uma resposta vazia.");
             
-            const jsonStr = text.replace(/```json\n?|```/g, '').trim();
+            let jsonStr = text.replace(/```json\n?|```/g, '').trim();
             
             try {
+                // Try normal parse first
                 res.json(JSON.parse(jsonStr));
             } catch (err) {
-                console.error("[Autopilot Plan] JSON Parse Error. Raw Text:", text);
-                res.status(500).json({ 
-                    error: "A resposta da IA não está em um formato válido.", 
-                    details: err instanceof Error ? err.message : String(err),
-                    raw: text.slice(0, 500) 
-                });
+                console.warn("[Autopilot Plan] Primary JSON Parse Failed, attempting repair...");
+                try {
+                    const repaired = repairJson(jsonStr);
+                    res.json(JSON.parse(repaired));
+                } catch (repairErr) {
+                    console.error("[Autopilot Plan] Repair failed as well. Raw Text:", text);
+                    res.status(500).json({ 
+                        error: "A resposta da IA não está em um formato válido e não pôde ser reparada.", 
+                        details: err instanceof Error ? err.message : String(err),
+                        raw: text.slice(0, 1000) 
+                    });
+                }
             }
         } catch (e: any) {
             console.error('[Autopilot Plan] Failed:', e);
-            // If e contains a JSON error from Google, try to parse it to make it more readable
-            let errorMsg = e.message;
-            try {
-                if (errorMsg.startsWith('{')) {
-                    const parsed = JSON.parse(errorMsg);
-                    if (parsed.error?.message) errorMsg = parsed.error.message;
-                }
-            } catch(ex) {}
-            res.status(500).json({ error: errorMsg });
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ 
+                error: parsed.error, 
+                details: parsed.details,
+                code: parsed.code
+            });
         }
     });
 
@@ -2047,6 +2115,121 @@ async function startServer() {
         }
     });
     
+    app.post('/api/ai/tts', async (req: any, res: any) => {
+        console.log("[Gemini TTS Server] Request received");
+        const { text, voice, nuance, emotion, style, systemInstruction } = req.body;
+        
+        try {
+            const apiKey = getGeminiKey(req);
+            if (!apiKey) {
+                return res.status(401).json({ 
+                    error: "Nenhuma chave Gemini válida encontrada.",
+                    details: "Configure sua chave API nas configurações do AI Studio."
+                });
+            }
+
+            const ai = new GoogleGenAI({ 
+                apiKey,
+                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+            });
+
+            // Mappings (Sync with frontend constants/service if possible)
+            const NUANCES: Record<string, string> = {
+                'breath': 'Include deep natural breaths between sentences.',
+                'cough': 'Add occasional light throat clears.',
+                'throat': 'Clear your throat slightly before starting.',
+                'chuckle': 'Include subtle chuckles when appropriate.',
+                'sigh': 'Add audible weary sighs.',
+                'hesitate': 'Add natural "um" or slight pauses as if thinking.',
+                'smack': 'Add subtle lip smacking.',
+                'mutter': 'Slightly mutter at the ends of sentences.',
+                'panting': 'Speak as if out of breath.',
+                'stutter': 'Add very light occasional stuttering.',
+                'whisper': 'Speak in a very low, quiet whisper.',
+                'shout': 'Speak loudly, with high energy and intensity.',
+                'cry': 'Speak with a trembling, tearful voice.',
+                'laugh': 'Speak with constant joyful laughter embedded.',
+                'scared': 'Speak with a fearful, trembling tone.',
+                'angry': 'Speak with a sharp, aggressive, angry tone.',
+                'serious': 'Speak with a very deep, professional, serious tone.',
+                'friendly': 'Speak with a warm, welcoming, friendly tone.',
+                'robotic': 'Speak with a monotone, rhythmic robotic cadence.',
+                'childish': 'Speak with a high-pitched, playful childish voice.'
+            };
+
+            const EMOTIONS: Record<string, string> = {
+                'neutral': 'Natural and balanced tone.',
+                'happy': 'Cheerful, upbeat, and joyful tone.',
+                'sad': 'Melancholic, low-energy, and sorrowful tone.',
+                'angry': 'Aggressive, sharp, and forceful tone.',
+                'surprised': 'Shocked, high-pitch, and wide-eyed tone.',
+                'fearful': 'Trembling, fast-paced, and scared tone.',
+                'disgusted': 'Repelled, sharp, and negative tone.',
+                'calm': 'Peaceful, steady, and relaxing tone.',
+                'excited': 'Enthusiastic, high-energy, and ebullient tone.',
+                'scared': 'Trembling, fast-paced, and terrified tone.',
+                'whisper': 'Spoken in a very low, quiet whisper.',
+                'shout': 'Spoken loudly, with high energy and intensity.',
+                'deep': 'Spoken with a very deep, resonant voice.',
+                'high_pitch': 'Spoken with a high-pitched, childish or nervous voice.',
+                'anxious': 'Spoken with a trembling, fast-paced, anxious breath.',
+                'sarcastic': 'Spoken with a dry, ironic, sarcastic inflection.',
+                'romantic': 'Spoken with a soft, warm, romantic and affectionate tone.',
+                'bored': 'Dull, flat, monotonous, and disinterested tone.',
+                'suspicious': 'Questioning, untrusting, sharp and cautious tone.',
+                'brave': 'Strong, firm, inspiring, and confident tone.',
+                'guilty': 'Soft, hesitating, low, and shaky tone.',
+                'proud': 'Bold, slightly loud, confident and bright tone.',
+                'lonely': 'Hollow, soft, and distant tone.'
+            };
+
+            const selectedNuance = nuance && NUANCES[nuance] ? NUANCES[nuance] : "";
+            const selectedEmotion = emotion && EMOTIONS[emotion] ? ` Emotional Tone: ${EMOTIONS[emotion]}` : "";
+            
+            const styleInstruction = `INSTRUCTIONS: Speak in a ${voice} voice. ${selectedEmotion} ${selectedNuance} ${style || ''}`.trim();
+            const textToUse = (text || "").trim();
+
+            const contents = systemInstruction 
+                ? [{ parts: [{ text: `${systemInstruction}\n${styleInstruction}\n\nTEXT TO SPEAK:\n${textToUse}` }] }]
+                : [{ parts: [{ text: `${styleInstruction}\n\nTEXT TO SPEAK:\n${textToUse}` }] }];
+
+            const validVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
+            const targetVoice = (voice && validVoices.includes(voice)) ? voice : 'Kore';
+
+            console.log(`[Gemini TTS Server] Calling Gemini 3.1 Flash TTS with voice: ${targetVoice}`);
+
+            const ttsResponse = await executeWithRetry(() => ai.models.generateContent({
+                model: "gemini-3.1-flash-tts-preview",
+                contents,
+                config: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: targetVoice },
+                        },
+                    },
+                },
+            }));
+
+            const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+            const audioBase64 = audioPart?.inlineData?.data;
+
+            if (!audioBase64) {
+                throw new Error("A IA gerou uma resposta vazia (sem áudio).");
+            }
+
+            res.json({ audioBase64 });
+        } catch (e: any) {
+            console.error("[Gemini TTS Server] Failure:", e);
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ 
+                error: parsed.error, 
+                details: parsed.details,
+                code: parsed.code
+            });
+        }
+    });
+
     app.post('/api/ai/tts-fallback', async (req: any, res: any) => {
         try {
             const { text, voice, uiVoiceId } = req.body;
