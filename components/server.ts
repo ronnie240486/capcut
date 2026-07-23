@@ -1554,115 +1554,51 @@ async function startServer() {
         const deapiKey = apiKey || getDeapiKey(req);
         if (!deapiKey) return res.status(401).json({ error: "DEAPI_API_KEY não configurada." });
 
-        const batchJobId = `aud2vid_batch_${Date.now()}`;
-        jobs[batchJobId] = { 
-            id: batchJobId, 
-            status: 'processing', 
-            progress: 0, 
-            startTime: Date.now(),
-            isBatch: true,
-            subJobs: [],
-            results: []
-        };
-        
-        res.status(202).json({ jobId: batchJobId });
+        const jobId = `aud2vid_${Date.now()}`;
+        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        res.status(202).json({ jobId });
 
         (async () => {
             try {
                 if (!audioUrl) throw new Error("URL do áudio é obrigatória.");
 
-                const tempDir = path.join(tmpdir(), `aud2vid_${batchJobId}`);
-                if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-
-                const mainAudioPath = path.join(tempDir, 'main_audio.mp3');
-                
-                // Download audio
+                // Fetch audio from URL and convert to Buffer/Blob for Deapi
                 const audioRes = await fetch(audioUrl);
                 if (!audioRes.ok) throw new Error(`Falha ao carregar áudio (${audioRes.status})`);
                 const audioBuffer = await audioRes.arrayBuffer();
-                fs.writeFileSync(mainAudioPath, Buffer.from(audioBuffer));
 
-                // Get duration
-                const durationOutput = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${mainAudioPath}"`).toString().trim();
-                const totalDuration = parseFloat(durationOutput);
+                const formData = new FormData();
+                formData.append('audio', new Blob([audioBuffer]), 'audio.mp3');
+                formData.append('prompt', (prompt || 'Music video').toString());
+                formData.append('frames', (frames || '209').toString());
+                formData.append('width', (width || '768').toString());
+                formData.append('height', (height || '768').toString());
+                formData.append('fps', (fps || '24').toString());
+                formData.append('model', (model || 'Ltx2_3_22B_Dist_INT8').toString());
                 
-                const segmentDuration = (frames && fps) ? (frames / fps) : 8;
-                const numSegments = Math.ceil(totalDuration / segmentDuration);
-                
-                console.log(`[Batch ${batchJobId}] Splitting ${totalDuration}s into ${numSegments} segments of ${segmentDuration}s`);
+                // Seed is required by the API
+                const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
+                formData.append('seed', finalSeed.toString());
 
-                for (let i = 0; i < numSegments; i++) {
-                    // Add a delay between submissions to avoid Deapi rate limits
-                    if (i > 0) {
-                        await new Promise(resolve => setTimeout(resolve, 8000));
-                    }
+                const deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${deapiKey}`,
+                        'accept': 'application/json'
+                    },
+                    body: formData
+                });
 
-                    const startTime = i * segmentDuration;
-                    const segmentPath = path.join(tempDir, `segment_${i}.mp3`);
-                    const jobId = `${batchJobId}_part_${i}`;
-                    
-                    // Slice audio
-                    try {
-                        execSync(`ffmpeg -i "${mainAudioPath}" -ss ${startTime} -t ${segmentDuration} -c copy "${segmentPath}" -y`);
-                    } catch (err) {
-                        console.warn(`[Batch ${batchJobId}] FFmpeg copy failed, trying re-encode for part ${i}`);
-                        execSync(`ffmpeg -i "${mainAudioPath}" -ss ${startTime} -t ${segmentDuration} -c:a libmp3lame -q:a 2 "${segmentPath}" -y`);
-                    }
+                const data = await deapiRes.json();
+                if (!deapiRes.ok) throw new Error(data.message || "Erro no Deapi");
 
-                    const segmentBuffer = fs.readFileSync(segmentPath);
-                    const formData = new FormData();
-                    formData.append('audio', new Blob([segmentBuffer]), `segment_${i}.mp3`);
-                    formData.append('prompt', (prompt || 'Music video').toString());
-                    formData.append('frames', (frames || '209').toString());
-                    formData.append('width', (width || '768').toString());
-                    formData.append('height', (height || '768').toString());
-                    formData.append('fps', (fps || '24').toString());
-                    formData.append('model', (model || 'Ltx2_3_22B_Dist_INT8').toString());
-                    
-                    const finalSeed = seed !== undefined ? Number(seed) + i : Math.floor(Math.random() * 1000000000);
-                    formData.append('seed', finalSeed.toString());
-
-                    jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
-                    jobs[batchJobId].subJobs.push(jobId);
-
-                    let deapiRes;
-                    let attempts = 0;
-                    const maxAttempts = 3;
-
-                    while (attempts < maxAttempts) {
-                        deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
-                            method: 'POST',
-                            headers: {
-                                'Authorization': `Bearer ${deapiKey}`,
-                                'accept': 'application/json'
-                            },
-                            body: formData
-                        });
-
-                        if (deapiRes.status === 429) {
-                            attempts++;
-                            console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in 15s... (Attempt ${attempts}/${maxAttempts})`);
-                            await new Promise(resolve => setTimeout(resolve, 15000));
-                            continue;
-                        }
-                        break;
-                    }
-
-                    if (!deapiRes) throw new Error("Falha na conexão com Deapi");
-                    const data = await deapiRes.json();
-                    if (!deapiRes.ok) {
-                        console.error(`[Batch ${batchJobId} Part ${i}] Deapi Error:`, data);
-                        jobs[jobId].status = 'failed';
-                        jobs[jobId].error = data.message || "Erro no Deapi";
-                    } else {
-                        handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai");
-                    }
-                }
+                // Use the same task handler as other Deapi endpoints
+                handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai");
             } catch (error: any) {
-                console.error(`[Batch ${batchJobId}] Background Error:`, error);
-                if (jobs[batchJobId]) {
-                    jobs[batchJobId].status = 'failed';
-                    jobs[batchJobId].error = error.message;
+                console.error(`[Job ${jobId}] Background Error:`, error);
+                if (jobs[jobId]) {
+                    jobs[jobId].status = 'failed';
+                    jobs[jobId].error = error.message;
                 }
             }
         })();
@@ -3737,34 +3673,11 @@ async function startServer() {
 
     // ─── STATUS / DOWNLOAD ────────────────────────────────────────────────────
     app.get('/api/process/status/:jobId', (req: any, res: any) => {
-        const jobId = req.params.jobId;
-        const job = jobs[jobId];
+        const job = jobs[req.params.jobId];
         if (!job) return res.status(404).json({ status: 'not_found' });
         
-        if (job.isBatch && job.subJobs) {
-            const subJobsStatus = job.subJobs.map((id: string) => jobs[id]).filter(Boolean);
-            const total = subJobsStatus.length;
-            const completed = subJobsStatus.filter(s => s.status === 'completed').length;
-            const failed = subJobsStatus.filter(s => s.status === 'failed').length;
-            const inProgress = subJobsStatus.filter(s => s.status === 'processing').length;
-            
-            job.progress = Math.round(((completed + failed) / total) * 100);
-            
-            if (completed + failed === total) {
-                if (failed === total) {
-                    job.status = 'failed';
-                    job.error = "Todas as partes da geração falharam.";
-                } else {
-                    job.status = 'completed';
-                    job.results = subJobsStatus
-                        .filter(s => s.status === 'completed' && s.downloadUrl)
-                        .map(s => s.downloadUrl);
-                }
-            } else {
-                job.message = `Processando: ${completed}/${total} clipes concluídos...`;
-            }
-        }
-
+        // Optimize: Don't echo back massive input params or file lists in status checks
+        // Also strip long error messages that might truncate JSON
         const { params, files, error, ...statusOnly } = job;
         const cleanedError = error ? (error.length > 1000 ? error.substring(0, 1000) + '...' : error) : undefined;
         
