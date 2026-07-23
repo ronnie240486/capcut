@@ -859,30 +859,30 @@ async function startServer() {
             const ai = new GoogleGenAI({ apiKey });
 
             const validVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
-            const targetVoice = (voice && validVoices.includes(voice)) ? voice : 'Kore';
+            const targetVoice = validVoices.find(v => v.toLowerCase() === (voice || "").toString().toLowerCase()) || 'Kore';
 
-            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash TTS for TTS: ${targetVoice}`);
+            console.log(`[Autopilot TTS] Calling Gemini 3.1 Flash TTS for TTS: ${targetVoice} (Requested: ${voice})`);
             const ttsResponse = await ai.models.generateContent({
                 model: "gemini-3.1-flash-tts-preview",
                 contents: [{
                     parts: [{ text: finalPrompt }]
                 }],
                 config: {
-                    responseModalities: ["AUDIO"],
+                    responseModalities: [Modality.AUDIO],
                     speechConfig: {
                         voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: targetVoice },
+                            prebuiltVoiceConfig: { voiceName: targetVoice as any },
                         },
                     },
                 },
             });
 
             const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-            const audioBase64 = audioPart?.inlineData?.data;
+            const audio = audioPart?.inlineData?.data;
 
-            if (!audioBase64) throw new Error("A IA gerou uma narração vazia.");
+            if (!audio) throw new Error("A IA gerou uma narração vazia.");
 
-            res.json({ audioBase64 });
+            res.json({ audio });
         } catch (e: any) {
             console.warn('[Autopilot TTS] Primary failed, trying fallback:', e);
             try {
@@ -1549,6 +1549,50 @@ async function startServer() {
     });
 
     // ─── AI VIDEO GENERATION ──────────────────────────────────────────────────
+    app.post('/api/ai/audio-to-video', async (req: any, res: any) => {
+        const { audioUrl, prompt, frames, width, height, fps, model, seed, apiKey } = req.body;
+        const deapiKey = apiKey || getDeapiKey(req);
+        if (!deapiKey) return res.status(401).json({ error: "DEAPI_API_KEY não configurada." });
+
+        const jobId = `aud2vid_${Date.now()}`;
+
+        try {
+            // Fetch audio from URL and convert to Buffer/Blob for Deapi
+            const audioRes = await fetch(audioUrl);
+            const audioBuffer = await audioRes.arrayBuffer();
+
+            const formData = new FormData();
+            formData.append('audio', new Blob([audioBuffer]), 'audio.mp3');
+            formData.append('prompt', prompt || 'Music video');
+            formData.append('frames', frames || '209');
+            formData.append('width', width || '768');
+            formData.append('height', height || '768');
+            formData.append('fps', fps || '24');
+            formData.append('model', model || 'Ltx2_3_22B_Dist_INT8');
+            if (seed) formData.append('seed', seed);
+
+            const deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${deapiKey}`,
+                    'accept': 'application/json'
+                },
+                body: formData
+            });
+
+            const data = await deapiRes.json();
+            if (!deapiRes.ok) throw new Error(data.message || "Erro no Deapi");
+
+            // Use the same task handler as other Deapi endpoints
+            handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai");
+            res.json({ jobId });
+
+        } catch (error: any) {
+            console.error("[AudioToVideo] Error:", error);
+            res.status(500).json({ error: error.message });
+        }
+    });
+
     app.post('/api/ai/generate-video', async (req: any, res: any) => {
         const jobId = `aivideo_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
@@ -2194,31 +2238,31 @@ async function startServer() {
                 : [{ parts: [{ text: `${styleInstruction}\n\nTEXT TO SPEAK:\n${textToUse}` }] }];
 
             const validVoices = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
-            const targetVoice = (voice && validVoices.includes(voice)) ? voice : 'Kore';
+            const targetVoice = validVoices.find(v => v.toLowerCase() === (voice || "").toString().toLowerCase()) || 'Kore';
 
-            console.log(`[Gemini TTS Server] Calling Gemini 3.1 Flash TTS with voice: ${targetVoice}`);
+            console.log(`[Gemini TTS Server] Calling Gemini 3.1 Flash TTS with voice: ${targetVoice} (Requested: ${voice})`);
 
             const ttsResponse = await executeWithRetry(() => ai.models.generateContent({
                 model: "gemini-3.1-flash-tts-preview",
                 contents,
                 config: {
-                    responseModalities: ["AUDIO"],
+                    responseModalities: [Modality.AUDIO],
                     speechConfig: {
                         voiceConfig: {
-                            prebuiltVoiceConfig: { voiceName: targetVoice },
+                            prebuiltVoiceConfig: { voiceName: targetVoice as any },
                         },
                     },
                 },
             }));
 
             const audioPart = ttsResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-            const audioBase64 = audioPart?.inlineData?.data;
+            const audio = audioPart?.inlineData?.data;
 
-            if (!audioBase64) {
+            if (!audio) {
                 throw new Error("A IA gerou uma resposta vazia (sem áudio).");
             }
 
-            res.json({ audioBase64 });
+            res.json({ audio });
         } catch (e: any) {
             console.error("[Gemini TTS Server] Failure:", e);
             const parsed = parseGeminiError(e);
@@ -4241,16 +4285,23 @@ Ensure your entire output is valid, parsable JSON matching this schema. Do not w
     app.get('/api/check-ffmpeg', (req: any, res: any) => {
         console.log(`[HealthCheck] Received ping from ${req.ip} - Host: ${req.get('host')}`);
         const check = spawn('ffmpeg', ['-version']);
-        check.on('error', () => {
-            console.error('[HealthCheck] FFmpeg missing error');
-            res.status(500).send('FFmpeg Missing');
+        let responseSent = false;
+        check.on('error', (err) => {
+            console.error('[HealthCheck] FFmpeg missing error:', err);
+            if (!responseSent) {
+                responseSent = true;
+                res.status(500).send('FFmpeg Missing');
+            }
         });
         check.on('close', (code: number) => { 
-            if (code === 0) {
-                res.send('OK');
-            } else {
-                console.error(`[HealthCheck] FFmpeg exit code: ${code}`);
-                res.status(500).send('FFmpeg Error'); 
+            if (!responseSent) {
+                responseSent = true;
+                if (code === 0) {
+                    res.send('OK');
+                } else {
+                    console.error(`[HealthCheck] FFmpeg exit code: ${code}`);
+                    res.status(500).send('FFmpeg Error'); 
+                }
             }
         });
     });
