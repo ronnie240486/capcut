@@ -1663,7 +1663,7 @@ async function startServer() {
                             const segmentBuffer = fs.readFileSync(segmentPath);
                             let deapiRes;
                             let attempts = 0;
-                            const maxAttempts = 6;
+                            const maxAttempts = 10;
 
                             while (attempts < maxAttempts) {
                                 // Re-create FormData inside loop to ensure stream/blob is fresh for each attempt
@@ -1690,12 +1690,12 @@ async function startServer() {
 
                                 if (deapiRes.status === 429) {
                                     attempts++;
-                                    if (attempts >= 3) {
+                                    if (attempts >= 2) {
                                         jobs[jobId].status = 'retrying';
                                     }
-                                    const jitter = Math.floor(Math.random() * 3000);
-                                    const waitTime = (attempts < 3 ? 5000 : 15000) + (attempts * 5000) + jitter;
-                                    console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in ${waitTime/1000}s... (Attempt ${attempts}/${maxAttempts})`);
+                                    // Exponential backoff for 429
+                                    const waitTime = Math.min(120000, (Math.pow(1.5, attempts) * 15000) + Math.floor(Math.random() * 10000));
+                                    console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in ${Math.round(waitTime/1000)}s... (Attempt ${attempts}/${maxAttempts})`);
                                     await new Promise(resolve => setTimeout(resolve, waitTime));
                                     jobs[jobId].status = 'processing';
                                     continue;
@@ -1713,7 +1713,7 @@ async function startServer() {
                             
                             // Normal delay between successful submissions
                             if (i < finalNumSegments - 1) {
-                                await new Promise(resolve => setTimeout(resolve, 8000));
+                                await new Promise(resolve => setTimeout(resolve, 15000));
                             }
                         }
                     } catch (err: any) {
@@ -3094,8 +3094,8 @@ async function startServer() {
                 }
                 
                 if (pollRes.status === 429) {
-                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 30s...`);
-                    await new Promise(r => setTimeout(r, 30000));
+                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 45s...`);
+                    await new Promise(r => setTimeout(r, 45000));
                     continue;
                 }
 
