@@ -1563,13 +1563,16 @@ async function startServer() {
 
             const formData = new FormData();
             formData.append('audio', new Blob([audioBuffer]), 'audio.mp3');
-            formData.append('prompt', prompt || 'Music video');
-            formData.append('frames', frames || '209');
-            formData.append('width', width || '768');
-            formData.append('height', height || '768');
-            formData.append('fps', fps || '24');
-            formData.append('model', model || 'Ltx2_3_22B_Dist_INT8');
-            if (seed) formData.append('seed', seed);
+            formData.append('prompt', (prompt || 'Music video').toString());
+            formData.append('frames', (frames || '209').toString());
+            formData.append('width', (width || '768').toString());
+            formData.append('height', (height || '768').toString());
+            formData.append('fps', (fps || '24').toString());
+            formData.append('model', (model || 'Ltx2_3_22B_Dist_INT8').toString());
+            
+            // Seed is required by the API
+            const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
+            formData.append('seed', finalSeed.toString());
 
             const deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
                 method: 'POST',
