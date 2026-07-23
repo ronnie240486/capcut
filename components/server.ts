@@ -1619,6 +1619,7 @@ async function startServer() {
 
                     try {
                         const enhancedPrompt = `${prompt || 'Music video clip, high quality, cinematic, synchronized to the rhythm, artistic style'}. [Part ${i+1}/${numSegments}]`;
+                        const finalModel = model?.startsWith('deapi-') ? model.replace('deapi-', '') : (model || 'Ltx2_3_22B_Dist_INT8');
 
                         if (isVeo) {
                             // Veo flow - Non-blocking to allow next segments to start
@@ -1648,74 +1649,83 @@ async function startServer() {
                             })();
                             
                             // Small delay between starting Veo tasks
-                            if (i < numSegments - 1) {
+                            if (i < finalNumSegments - 1) {
                                 await new Promise(resolve => setTimeout(resolve, 8000));
                             }
                         } else {
-                            // Deapi flow
-                            try {
-                                execSync(`ffmpeg -i "${mainAudioPath}" -ss ${startTime} -t ${segmentDuration} -c:a libmp3lame -q:a 2 "${segmentPath}" -y`);
-                            } catch (err) {
-                                console.error(`FFmpeg failed for segment ${i}`, err);
-                                throw new Error("Falha ao processar segmento de áudio.");
-                            }
-
-                            const segmentBuffer = fs.readFileSync(segmentPath);
-                            let deapiRes;
-                            let attempts = 0;
-                            const maxAttempts = 10;
-
-                            while (attempts < maxAttempts) {
-                                // Re-create FormData inside loop to ensure stream/blob is fresh for each attempt
-                                const formData = new FormData();
-                                formData.append('audio', new Blob([segmentBuffer]), `segment_${i}.mp3`);
-                                formData.append('prompt', enhancedPrompt);
-                                formData.append('frames', (frames || '209').toString());
-                                formData.append('width', (width || '768').toString());
-                                formData.append('height', (height || '768').toString());
-                                formData.append('fps', (fps || '24').toString());
-                                formData.append('model', (model || 'Ltx2_3_22B_Dist_INT8').toString());
-                                
-                                const finalSeed = seed !== undefined ? Number(seed) + i : Math.floor(Math.random() * 1000000000);
-                                formData.append('seed', finalSeed.toString());
-
-                                deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
-                                    method: 'POST',
-                                    headers: {
-                                        'Authorization': `Bearer ${activeKey}`,
-                                        'accept': 'application/json'
-                                    },
-                                    body: formData
-                                });
-
-                                if (deapiRes.status === 429) {
-                                    attempts++;
-                                    if (attempts >= 2) {
-                                        jobs[jobId].status = 'retrying';
+                            // Deapi flow - Wrap in async IIFE to allow non-blocking but controlled spacing
+                            (async () => {
+                                try {
+                                    try {
+                                        execSync(`ffmpeg -i "${mainAudioPath}" -ss ${startTime} -t ${segmentDuration} -c:a libmp3lame -q:a 2 "${segmentPath}" -y`);
+                                    } catch (err) {
+                                        console.error(`FFmpeg failed for segment ${i}`, err);
+                                        throw new Error("Falha ao processar segmento de áudio.");
                                     }
-                                    // Exponential backoff for 429
-                                    const waitTime = Math.min(120000, (Math.pow(1.5, attempts) * 15000) + Math.floor(Math.random() * 10000));
-                                    console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in ${Math.round(waitTime/1000)}s... (Attempt ${attempts}/${maxAttempts})`);
-                                    await new Promise(resolve => setTimeout(resolve, waitTime));
-                                    jobs[jobId].status = 'processing';
-                                    continue;
+
+                                    const segmentBuffer = fs.readFileSync(segmentPath);
+                                    let deapiRes;
+                                    let attempts = 0;
+                                    const maxAttempts = 12;
+
+                                    while (attempts < maxAttempts) {
+                                        // Re-create FormData inside loop to ensure stream/blob is fresh for each attempt
+                                        const formData = new FormData();
+                                        formData.append('audio', new Blob([segmentBuffer]), `segment_${i}.mp3`);
+                                        formData.append('prompt', enhancedPrompt);
+                                        formData.append('frames', (frames || '209').toString());
+                                        formData.append('width', (width || '768').toString());
+                                        formData.append('height', (height || '768').toString());
+                                        formData.append('fps', (fps || '24').toString());
+                                        formData.append('model', finalModel.toString());
+                                        
+                                        const finalSeed = seed !== undefined ? Number(seed) + i : Math.floor(Math.random() * 1000000000);
+                                        formData.append('seed', finalSeed.toString());
+
+                                        deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
+                                            method: 'POST',
+                                            headers: {
+                                                'Authorization': `Bearer ${activeKey}`,
+                                                'accept': 'application/json'
+                                            },
+                                            body: formData
+                                        });
+
+                                        if (deapiRes.status === 429) {
+                                            attempts++;
+                                            if (attempts >= 2) {
+                                                jobs[jobId].status = 'retrying';
+                                            }
+                                            // More aggressive backoff for 429 in batch
+                                            const waitTime = Math.min(180000, (Math.pow(1.6, attempts) * 20000) + Math.floor(Math.random() * 15000));
+                                            console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in ${Math.round(waitTime/1000)}s... (Attempt ${attempts}/${maxAttempts})`);
+                                            await new Promise(resolve => setTimeout(resolve, waitTime));
+                                            jobs[jobId].status = 'processing';
+                                            continue;
+                                        }
+                                        break;
+                                    }
+
+                                    if (!deapiRes || !deapiRes.ok) {
+                                        const errData = await deapiRes?.json().catch(() => ({}));
+                                        throw new Error(errData?.message || `Erro no Deapi (${deapiRes?.status})`);
+                                    }
+
+                                    const data = await deapiRes.json();
+                                    handleDeapiTask(jobId, data, activeKey, "https://api.deapi.ai");
+                                } catch (err: any) {
+                                    console.error(`[Batch ${batchJobId} Part ${i}] Error:`, err.message);
+                                    jobs[jobId].status = 'failed';
+                                    jobs[jobId].error = err.message;
                                 }
-                                break;
-                            }
+                            })();
 
-                            if (!deapiRes || !deapiRes.ok) {
-                                const errData = await deapiRes?.json().catch(() => ({}));
-                                throw new Error(errData?.message || `Erro no Deapi (${deapiRes?.status})`);
-                            }
-
-                            const data = await deapiRes.json();
-                            handleDeapiTask(jobId, data, activeKey, "https://api.deapi.ai");
-                            
-                            // Normal delay between successful submissions
+                            // Controlled delay between submitting segments
                             if (i < finalNumSegments - 1) {
-                                await new Promise(resolve => setTimeout(resolve, 15000));
+                                await new Promise(resolve => setTimeout(resolve, 20000));
                             }
                         }
+
                     } catch (err: any) {
                         console.error(`[Batch ${batchJobId} Part ${i}] Error:`, err.message);
                         jobs[jobId].status = 'failed';
