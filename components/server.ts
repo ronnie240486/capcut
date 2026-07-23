@@ -1612,12 +1612,13 @@ async function startServer() {
                     jobs[batchJobId].subJobs.push(jobId);
 
                     try {
+                        const enhancedPrompt = `${prompt || 'Music video clip, high quality, cinematic, synchronized to the rhythm, artistic style'}. [Part ${i+1}/${numSegments}]`;
+
                         if (isVeo) {
-                            // Veo doesn't support audio sync directly in this flow, so we just generate video
-                            // We use the existing generateVeoVideo logic (abstracted or replicated)
+                            // Veo flow
                             console.log(`[Batch ${batchJobId} Part ${i}] Generating Veo video...`);
                             const veoRes = await generateVeoVideo(
-                                prompt || 'Music video clip', 
+                                enhancedPrompt, 
                                 model, 
                                 (width / height > 1) ? '16:9' : '9:16', 
                                 '720p', 
@@ -1633,7 +1634,6 @@ async function startServer() {
                             }
                         } else {
                             // Deapi flow
-                            // Slice audio for Deapi
                             try {
                                 execSync(`ffmpeg -i "${mainAudioPath}" -ss ${startTime} -t ${segmentDuration} -c:a libmp3lame -q:a 2 "${segmentPath}" -y`);
                             } catch (err) {
@@ -1644,7 +1644,7 @@ async function startServer() {
                             const segmentBuffer = fs.readFileSync(segmentPath);
                             const formData = new FormData();
                             formData.append('audio', new Blob([segmentBuffer]), `segment_${i}.mp3`);
-                            formData.append('prompt', (prompt || 'Music video').toString());
+                            formData.append('prompt', enhancedPrompt);
                             formData.append('frames', (frames || '209').toString());
                             formData.append('width', (width || '768').toString());
                             formData.append('height', (height || '768').toString());
@@ -1671,7 +1671,6 @@ async function startServer() {
                                 if (deapiRes.status === 429) {
                                     attempts++;
                                     jobs[jobId].status = 'retrying';
-                                    // Exponential backoff with jitter: base 30s + (attempts * 15s) + random 0-10s
                                     const jitter = Math.floor(Math.random() * 10000);
                                     const waitTime = 30000 + (attempts * 15000) + jitter;
                                     console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in ${waitTime/1000}s... (Attempt ${attempts}/${maxAttempts})`);
@@ -1690,7 +1689,7 @@ async function startServer() {
                             const data = await deapiRes.json();
                             handleDeapiTask(jobId, data, activeKey, "https://api.deapi.ai");
                             
-                            // Increased delay to avoid hitting rate limits too fast (Deapi can be sensitive)
+                            // Increased delay between successful submissions
                             if (i < numSegments - 1) {
                                 await new Promise(resolve => setTimeout(resolve, 30000));
                             }
@@ -2968,54 +2967,72 @@ async function startServer() {
 
     // Helper to handle Deapi task/job response
     async function generateVeoVideo(prompt: string, model: string, aspectRatio: string, resolution: string, apiKey: string) {
-        const ai = new GoogleGenAI({ apiKey });
-        const payload: any = {
-            prompt: prompt,
-            config: {
-                aspectRatio: aspectRatio,
-                resolution: resolution
+        try {
+            const ai = new GoogleGenAI({ apiKey });
+            // @ts-ignore - Interactions API is required for Veo
+            const interactions = ai.getInteractions ? ai.getInteractions() : (ai as any).interactions;
+            
+            if (!interactions) {
+                console.warn("Interactions API not found, falling back to standard models (might fail)");
             }
-        };
-        
-        const defaultModels = [
-            'models/veo-generate-preview-001',
-            'models/veo-lite-preview-001',
-            'veo-3.1-generate-preview', 
-            'veo-3.1-lite-generate-preview'
-        ];
-        
-        const modelsToTry = model ? [model, ...defaultModels.filter(m => m !== model)] : defaultModels;
-        let operation: any;
-        
-        for (const currentModel of modelsToTry) {
-            try {
-                // @ts-ignore
-                operation = await ai.models.generateVideos({
-                    model: currentModel,
-                    prompt: payload.prompt,
-                    config: payload.config
-                });
-                break;
-            } catch (e: any) {
-                console.warn(`Veo model ${currentModel} failed:`, e.message);
+
+            const payload: any = {
+                prompt: prompt,
+                config: {
+                    aspect_ratio: aspectRatio.replace(':', '_'), // Veo often expects 16_9 or similar, but skill says 16:9
+                    resolution: resolution
+                }
+            };
+            
+            const defaultModels = [
+                'models/veo-generate-preview-001',
+                'models/veo-lite-preview-001',
+                'veo-3.1-generate-preview', 
+                'veo-3.1-lite-generate-preview'
+            ];
+            
+            const modelsToTry = model ? [model, ...defaultModels.filter(m => m !== model)] : defaultModels;
+            let operation: any;
+            
+            for (const currentModel of modelsToTry) {
+                try {
+                    console.log(`[Veo] Requesting video generation with model: ${currentModel}`);
+                    // @ts-ignore
+                    const target = interactions || ai.models;
+                    operation = await target.generateVideos({
+                        model: currentModel,
+                        prompt: payload.prompt,
+                        config: payload.config
+                    });
+                    if (operation) break;
+                } catch (e: any) {
+                    console.warn(`Veo model ${currentModel} failed:`, e.message);
+                }
             }
-        }
-        
-        if (!operation) throw new Error("Falha ao iniciar geração Veo em todos os modelos tentados.");
-        
-        // Poll for completion
-        // @ts-ignore
-        let status = await ai.models.getVideoStatus({ name: operation.name });
-        while (status.state === 'PROCESSING') {
-            await new Promise(r => setTimeout(r, 5000));
+            
+            if (!operation) throw new Error("Falha ao iniciar geração Veo em todos os modelos tentados.");
+            
+            // Poll for completion
             // @ts-ignore
-            status = await ai.models.getVideoStatus({ name: operation.name });
-        }
-        
-        if (status.state === 'SUCCEEDED' && status.video) {
-            return { url: status.video.uri };
-        } else {
-            throw new Error(`Geração Veo falhou com estado: ${status.state}`);
+            const targetStatus = interactions || ai.models;
+            let status = await targetStatus.getVideoStatus({ name: operation.name });
+            let polls = 0;
+            while (status.state === 'PROCESSING' && polls < 100) {
+                await new Promise(r => setTimeout(r, 10000));
+                polls++;
+                // @ts-ignore
+                status = await targetStatus.getVideoStatus({ name: operation.name });
+                console.log(`[Veo] Job ${operation.name} status: ${status.state}`);
+            }
+            
+            if (status.state === 'SUCCEEDED' && status.video) {
+                return { url: status.video.uri };
+            } else {
+                throw new Error(`Geração Veo falhou ou expirou (Estado: ${status.state})`);
+            }
+        } catch (err: any) {
+            console.error("[Veo Error]", err);
+            throw err;
         }
     }
 
