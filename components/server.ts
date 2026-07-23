@@ -1670,11 +1670,13 @@ async function startServer() {
 
                                 if (deapiRes.status === 429) {
                                     attempts++;
+                                    jobs[jobId].status = 'retrying';
                                     // Exponential backoff with jitter: base 30s + (attempts * 15s) + random 0-10s
                                     const jitter = Math.floor(Math.random() * 10000);
                                     const waitTime = 30000 + (attempts * 15000) + jitter;
                                     console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in ${waitTime/1000}s... (Attempt ${attempts}/${maxAttempts})`);
                                     await new Promise(resolve => setTimeout(resolve, waitTime));
+                                    jobs[jobId].status = 'processing';
                                     continue;
                                 }
                                 break;
@@ -3839,10 +3841,11 @@ async function startServer() {
             const total = subJobsStatus.length;
             const completed = subJobsStatus.filter(s => s.status === 'completed').length;
             const failed = subJobsStatus.filter(s => s.status === 'failed').length;
-            const inProgress = subJobsStatus.filter(s => s.status === 'processing').length;
             
             job.progress = Math.round(((completed + failed) / total) * 100);
             
+            const retryingJob = subJobsStatus.find(s => s.status === 'retrying');
+
             if (completed + failed === total) {
                 if (failed === total) {
                     job.status = 'failed';
@@ -3854,7 +3857,11 @@ async function startServer() {
                         .map(s => s.downloadUrl);
                 }
             } else {
-                job.message = `Processando: ${completed}/${total} clipes concluídos...`;
+                if (retryingJob) {
+                    job.message = `Aguardando limite de taxa (Part ${subJobsStatus.indexOf(retryingJob) + 1}/${total})...`;
+                } else {
+                    job.message = `Processando: ${completed}/${total} clipes concluídos...`;
+                }
             }
         }
 
