@@ -1551,8 +1551,13 @@ async function startServer() {
     // ─── AI VIDEO GENERATION ──────────────────────────────────────────────────
     app.post('/api/ai/audio-to-video', async (req: any, res: any) => {
         const { audioUrl, prompt, frames, width, height, fps, model, seed, apiKey } = req.body;
-        const deapiKey = apiKey || getDeapiKey(req);
-        if (!deapiKey) return res.status(401).json({ error: "DEAPI_API_KEY não configurada." });
+        
+        const isVeo = model?.includes('veo') || model?.includes('gemini');
+        const activeKey = apiKey || (isVeo ? getGeminiKey(req) : getDeapiKey(req));
+        
+        if (!activeKey) {
+            return res.status(401).json({ error: isVeo ? "GEMINI_API_KEY não configurada." : "DEAPI_API_KEY não configurada." });
+        }
 
         const batchJobId = `aud2vid_batch_${Date.now()}`;
         jobs[batchJobId] = { 
@@ -1565,6 +1570,7 @@ async function startServer() {
             results: []
         };
         
+        console.log(`[Batch ${batchJobId}] Iniciando processo para modelo: ${model}`);
         res.status(202).json({ jobId: batchJobId });
 
         (async () => {
@@ -1582,84 +1588,116 @@ async function startServer() {
                 const audioBuffer = await audioRes.arrayBuffer();
                 fs.writeFileSync(mainAudioPath, Buffer.from(audioBuffer));
 
-                // Get duration
-                const durationOutput = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${mainAudioPath}"`).toString().trim();
-                const totalDuration = parseFloat(durationOutput);
+                // Get duration using ffprobe
+                let totalDuration = 0;
+                try {
+                    const durationOutput = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${mainAudioPath}"`).toString().trim();
+                    totalDuration = parseFloat(durationOutput);
+                } catch (err) {
+                    console.error("FFprobe failed, using fallback duration check", err);
+                    totalDuration = 10; // Fallback
+                }
                 
                 const segmentDuration = (Number(frames) && Number(fps)) ? (Number(frames) / Number(fps)) : 8;
                 const numSegments = Math.max(1, Math.ceil(totalDuration / segmentDuration));
                 
-                console.log(`[Batch ${batchJobId}] Splitting ${totalDuration}s into ${numSegments} segments of ${segmentDuration}s (Frames: ${frames}, FPS: ${fps})`);
+                console.log(`[Batch ${batchJobId}] Total: ${totalDuration}s | Segmentos: ${numSegments} | Duração: ${segmentDuration}s`);
 
                 for (let i = 0; i < numSegments; i++) {
-                    // Add a delay between submissions to avoid Deapi rate limits
-                    if (i > 0) {
-                        await new Promise(resolve => setTimeout(resolve, 8000));
-                    }
-
                     const startTime = i * segmentDuration;
                     const segmentPath = path.join(tempDir, `segment_${i}.mp3`);
                     const jobId = `${batchJobId}_part_${i}`;
                     
-                    // Slice audio
-                    try {
-                        execSync(`ffmpeg -i "${mainAudioPath}" -ss ${startTime} -t ${segmentDuration} -c copy "${segmentPath}" -y`);
-                    } catch (err) {
-                        console.warn(`[Batch ${batchJobId}] FFmpeg copy failed, trying re-encode for part ${i}`);
-                        execSync(`ffmpeg -i "${mainAudioPath}" -ss ${startTime} -t ${segmentDuration} -c:a libmp3lame -q:a 2 "${segmentPath}" -y`);
-                    }
-
-                    const segmentBuffer = fs.readFileSync(segmentPath);
-                    const formData = new FormData();
-                    formData.append('audio', new Blob([segmentBuffer]), `segment_${i}.mp3`);
-                    formData.append('prompt', (prompt || 'Music video').toString());
-                    formData.append('frames', (frames || '209').toString());
-                    formData.append('width', (width || '768').toString());
-                    formData.append('height', (height || '768').toString());
-                    formData.append('fps', (fps || '24').toString());
-                    formData.append('model', (model || 'Ltx2_3_22B_Dist_INT8').toString());
-                    
-                    const finalSeed = seed !== undefined ? Number(seed) + i : Math.floor(Math.random() * 1000000000);
-                    formData.append('seed', finalSeed.toString());
-
                     jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
                     jobs[batchJobId].subJobs.push(jobId);
 
-                    let deapiRes;
-                    let attempts = 0;
-                    const maxAttempts = 3;
+                    try {
+                        if (isVeo) {
+                            // Veo doesn't support audio sync directly in this flow, so we just generate video
+                            // We use the existing generateVeoVideo logic (abstracted or replicated)
+                            console.log(`[Batch ${batchJobId} Part ${i}] Generating Veo video...`);
+                            const veoRes = await generateVeoVideo(
+                                prompt || 'Music video clip', 
+                                model, 
+                                (width / height > 1) ? '16:9' : '9:16', 
+                                '720p', 
+                                activeKey
+                            );
+                            
+                            if (veoRes && veoRes.url) {
+                                jobs[jobId].status = 'completed';
+                                jobs[jobId].downloadUrl = veoRes.url;
+                                jobs[jobId].progress = 100;
+                            } else {
+                                throw new Error("Veo falhou em retornar URL");
+                            }
+                        } else {
+                            // Deapi flow
+                            // Slice audio for Deapi
+                            try {
+                                execSync(`ffmpeg -i "${mainAudioPath}" -ss ${startTime} -t ${segmentDuration} -c:a libmp3lame -q:a 2 "${segmentPath}" -y`);
+                            } catch (err) {
+                                console.error(`FFmpeg failed for segment ${i}`, err);
+                                throw new Error("Falha ao processar segmento de áudio.");
+                            }
 
-                    while (attempts < maxAttempts) {
-                        deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
-                            method: 'POST',
-                            headers: {
-                                'Authorization': `Bearer ${deapiKey}`,
-                                'accept': 'application/json'
-                            },
-                            body: formData
-                        });
+                            const segmentBuffer = fs.readFileSync(segmentPath);
+                            const formData = new FormData();
+                            formData.append('audio', new Blob([segmentBuffer]), `segment_${i}.mp3`);
+                            formData.append('prompt', (prompt || 'Music video').toString());
+                            formData.append('frames', (frames || '209').toString());
+                            formData.append('width', (width || '768').toString());
+                            formData.append('height', (height || '768').toString());
+                            formData.append('fps', (fps || '24').toString());
+                            formData.append('model', (model || 'Ltx2_3_22B_Dist_INT8').toString());
+                            
+                            const finalSeed = seed !== undefined ? Number(seed) + i : Math.floor(Math.random() * 1000000000);
+                            formData.append('seed', finalSeed.toString());
 
-                        if (deapiRes.status === 429) {
-                            attempts++;
-                            console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in 15s... (Attempt ${attempts}/${maxAttempts})`);
-                            await new Promise(resolve => setTimeout(resolve, 15000));
-                            continue;
+                            let deapiRes;
+                            let attempts = 0;
+                            const maxAttempts = 3;
+
+                            while (attempts < maxAttempts) {
+                                deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
+                                    method: 'POST',
+                                    headers: {
+                                        'Authorization': `Bearer ${activeKey}`,
+                                        'accept': 'application/json'
+                                    },
+                                    body: formData
+                                });
+
+                                if (deapiRes.status === 429) {
+                                    attempts++;
+                                    console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in 12s...`);
+                                    await new Promise(resolve => setTimeout(resolve, 12000));
+                                    continue;
+                                }
+                                break;
+                            }
+
+                            if (!deapiRes || !deapiRes.ok) {
+                                const errData = await deapiRes?.json().catch(() => ({}));
+                                throw new Error(errData?.message || `Erro no Deapi (${deapiRes?.status})`);
+                            }
+
+                            const data = await deapiRes.json();
+                            handleDeapiTask(jobId, data, activeKey, "https://api.deapi.ai");
+                            
+                            // Delay to avoid hitting rate limits too fast
+                            if (i < numSegments - 1) {
+                                await new Promise(resolve => setTimeout(resolve, 5000));
+                            }
                         }
-                        break;
-                    }
-
-                    if (!deapiRes) throw new Error("Falha na conexão com Deapi");
-                    const data = await deapiRes.json();
-                    if (!deapiRes.ok) {
-                        console.error(`[Batch ${batchJobId} Part ${i}] Deapi Error:`, data);
+                    } catch (err: any) {
+                        console.error(`[Batch ${batchJobId} Part ${i}] Error:`, err.message);
                         jobs[jobId].status = 'failed';
-                        jobs[jobId].error = data.message || "Erro no Deapi";
-                    } else {
-                        handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai");
+                        jobs[jobId].error = err.message;
                     }
                 }
             } catch (error: any) {
-                console.error(`[Batch ${batchJobId}] Background Error:`, error);
+                console.error(`[Batch ${batchJobId}] Master Error:`, error);
                 if (jobs[batchJobId]) {
                     jobs[batchJobId].status = 'failed';
                     jobs[batchJobId].error = error.message;
@@ -2924,6 +2962,58 @@ async function startServer() {
     });
 
     // Helper to handle Deapi task/job response
+    async function generateVeoVideo(prompt: string, model: string, aspectRatio: string, resolution: string, apiKey: string) {
+        const ai = new GoogleGenAI({ apiKey });
+        const payload: any = {
+            prompt: prompt,
+            config: {
+                aspectRatio: aspectRatio,
+                resolution: resolution
+            }
+        };
+        
+        const defaultModels = [
+            'models/veo-generate-preview-001',
+            'models/veo-lite-preview-001',
+            'veo-3.1-generate-preview', 
+            'veo-3.1-lite-generate-preview'
+        ];
+        
+        const modelsToTry = model ? [model, ...defaultModels.filter(m => m !== model)] : defaultModels;
+        let operation: any;
+        
+        for (const currentModel of modelsToTry) {
+            try {
+                // @ts-ignore
+                operation = await ai.models.generateVideos({
+                    model: currentModel,
+                    prompt: payload.prompt,
+                    config: payload.config
+                });
+                break;
+            } catch (e: any) {
+                console.warn(`Veo model ${currentModel} failed:`, e.message);
+            }
+        }
+        
+        if (!operation) throw new Error("Falha ao iniciar geração Veo em todos os modelos tentados.");
+        
+        // Poll for completion
+        // @ts-ignore
+        let status = await ai.models.getVideoStatus({ name: operation.name });
+        while (status.state === 'PROCESSING') {
+            await new Promise(r => setTimeout(r, 5000));
+            // @ts-ignore
+            status = await ai.models.getVideoStatus({ name: operation.name });
+        }
+        
+        if (status.state === 'SUCCEEDED' && status.video) {
+            return { url: status.video.uri };
+        } else {
+            throw new Error(`Geração Veo falhou com estado: ${status.state}`);
+        }
+    }
+
     const handleDeapiTask = async (jobId: string, data: any, deapiKey: string, baseUrl: string) => {
         const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id;
         
