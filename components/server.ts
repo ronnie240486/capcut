@@ -1598,12 +1598,18 @@ async function startServer() {
                     totalDuration = 10; // Fallback
                 }
                 
-                const segmentDuration = (Number(frames) && Number(fps)) ? (Number(frames) / Number(fps)) : 8;
+                const segmentDuration = (Number(frames) && Number(fps)) ? (Number(frames) / Number(fps)) : 12;
                 const numSegments = Math.max(1, Math.ceil(totalDuration / segmentDuration));
                 
                 console.log(`[Batch ${batchJobId}] Total: ${totalDuration}s | Segmentos: ${numSegments} | Duração: ${segmentDuration}s`);
 
-                for (let i = 0; i < numSegments; i++) {
+                // Limit max segments to avoid extreme rate limiting
+                const finalNumSegments = Math.min(numSegments, 12);
+                if (finalNumSegments < numSegments) {
+                    console.warn(`[Batch ${batchJobId}] Truncando de ${numSegments} para ${finalNumSegments} segmentos.`);
+                }
+
+                for (let i = 0; i < finalNumSegments; i++) {
                     const startTime = i * segmentDuration;
                     const segmentPath = path.join(tempDir, `segment_${i}.mp3`);
                     const jobId = `${batchJobId}_part_${i}`;
@@ -1655,23 +1661,24 @@ async function startServer() {
                             }
 
                             const segmentBuffer = fs.readFileSync(segmentPath);
-                            const formData = new FormData();
-                            formData.append('audio', new Blob([segmentBuffer]), `segment_${i}.mp3`);
-                            formData.append('prompt', enhancedPrompt);
-                            formData.append('frames', (frames || '209').toString());
-                            formData.append('width', (width || '768').toString());
-                            formData.append('height', (height || '768').toString());
-                            formData.append('fps', (fps || '24').toString());
-                            formData.append('model', (model || 'Ltx2_3_22B_Dist_INT8').toString());
-                            
-                            const finalSeed = seed !== undefined ? Number(seed) + i : Math.floor(Math.random() * 1000000000);
-                            formData.append('seed', finalSeed.toString());
-
                             let deapiRes;
                             let attempts = 0;
-                            const maxAttempts = 5;
+                            const maxAttempts = 6;
 
                             while (attempts < maxAttempts) {
+                                // Re-create FormData inside loop to ensure stream/blob is fresh for each attempt
+                                const formData = new FormData();
+                                formData.append('audio', new Blob([segmentBuffer]), `segment_${i}.mp3`);
+                                formData.append('prompt', enhancedPrompt);
+                                formData.append('frames', (frames || '209').toString());
+                                formData.append('width', (width || '768').toString());
+                                formData.append('height', (height || '768').toString());
+                                formData.append('fps', (fps || '24').toString());
+                                formData.append('model', (model || 'Ltx2_3_22B_Dist_INT8').toString());
+                                
+                                const finalSeed = seed !== undefined ? Number(seed) + i : Math.floor(Math.random() * 1000000000);
+                                formData.append('seed', finalSeed.toString());
+
                                 deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
                                     method: 'POST',
                                     headers: {
@@ -1683,9 +1690,11 @@ async function startServer() {
 
                                 if (deapiRes.status === 429) {
                                     attempts++;
-                                    jobs[jobId].status = 'retrying';
-                                    const jitter = Math.floor(Math.random() * 5000);
-                                    const waitTime = 15000 + (attempts * 10000) + jitter;
+                                    if (attempts >= 3) {
+                                        jobs[jobId].status = 'retrying';
+                                    }
+                                    const jitter = Math.floor(Math.random() * 3000);
+                                    const waitTime = (attempts < 3 ? 5000 : 15000) + (attempts * 5000) + jitter;
                                     console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in ${waitTime/1000}s... (Attempt ${attempts}/${maxAttempts})`);
                                     await new Promise(resolve => setTimeout(resolve, waitTime));
                                     jobs[jobId].status = 'processing';
@@ -1702,9 +1711,9 @@ async function startServer() {
                             const data = await deapiRes.json();
                             handleDeapiTask(jobId, data, activeKey, "https://api.deapi.ai");
                             
-                            // Increased delay between successful submissions
-                            if (i < numSegments - 1) {
-                                await new Promise(resolve => setTimeout(resolve, 15000));
+                            // Normal delay between successful submissions
+                            if (i < finalNumSegments - 1) {
+                                await new Promise(resolve => setTimeout(resolve, 8000));
                             }
                         }
                     } catch (err: any) {
@@ -3085,8 +3094,8 @@ async function startServer() {
                 }
                 
                 if (pollRes.status === 429) {
-                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 60s...`);
-                    await new Promise(r => setTimeout(r, 60000));
+                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 30s...`);
+                    await new Promise(r => setTimeout(r, 30000));
                     continue;
                 }
 
@@ -3889,7 +3898,7 @@ async function startServer() {
             } else {
                 if (retryingJob) {
                     const partIndex = subJobsStatus.indexOf(retryingJob) + 1;
-                    job.message = `Aguardando limite de taxa (Parte ${partIndex}/${total})...`;
+                    job.message = `Sincronizando com servidor Cine IA (Parte ${partIndex}/${total})...`;
                 } else if (completed > 0) {
                     job.message = `Gerando clipe: ${completed + 1}/${total} (${completed} concluídos)...`;
                 } else {
