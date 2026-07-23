@@ -1592,6 +1592,11 @@ async function startServer() {
                 console.log(`[Batch ${batchJobId}] Splitting ${totalDuration}s into ${numSegments} segments of ${segmentDuration}s`);
 
                 for (let i = 0; i < numSegments; i++) {
+                    // Add a delay between submissions to avoid Deapi rate limits
+                    if (i > 0) {
+                        await new Promise(resolve => setTimeout(resolve, 8000));
+                    }
+
                     const startTime = i * segmentDuration;
                     const segmentPath = path.join(tempDir, `segment_${i}.mp3`);
                     const jobId = `${batchJobId}_part_${i}`;
@@ -1620,15 +1625,30 @@ async function startServer() {
                     jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
                     jobs[batchJobId].subJobs.push(jobId);
 
-                    const deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${deapiKey}`,
-                            'accept': 'application/json'
-                        },
-                        body: formData
-                    });
+                    let deapiRes;
+                    let attempts = 0;
+                    const maxAttempts = 3;
 
+                    while (attempts < maxAttempts) {
+                        deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${deapiKey}`,
+                                'accept': 'application/json'
+                            },
+                            body: formData
+                        });
+
+                        if (deapiRes.status === 429) {
+                            attempts++;
+                            console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in 15s... (Attempt ${attempts}/${maxAttempts})`);
+                            await new Promise(resolve => setTimeout(resolve, 15000));
+                            continue;
+                        }
+                        break;
+                    }
+
+                    if (!deapiRes) throw new Error("Falha na conexão com Deapi");
                     const data = await deapiRes.json();
                     if (!deapiRes.ok) {
                         console.error(`[Batch ${batchJobId} Part ${i}] Deapi Error:`, data);
