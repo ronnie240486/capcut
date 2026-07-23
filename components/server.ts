@@ -1656,7 +1656,7 @@ async function startServer() {
 
                             let deapiRes;
                             let attempts = 0;
-                            const maxAttempts = 3;
+                            const maxAttempts = 5;
 
                             while (attempts < maxAttempts) {
                                 deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
@@ -1670,9 +1670,9 @@ async function startServer() {
 
                                 if (deapiRes.status === 429) {
                                     attempts++;
-                                    // Add jitter: base 15s + random 0-10s
+                                    // Exponential backoff with jitter: base 30s + (attempts * 15s) + random 0-10s
                                     const jitter = Math.floor(Math.random() * 10000);
-                                    const waitTime = 15000 + jitter;
+                                    const waitTime = 30000 + (attempts * 15000) + jitter;
                                     console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in ${waitTime/1000}s... (Attempt ${attempts}/${maxAttempts})`);
                                     await new Promise(resolve => setTimeout(resolve, waitTime));
                                     continue;
@@ -1690,7 +1690,7 @@ async function startServer() {
                             
                             // Increased delay to avoid hitting rate limits too fast (Deapi can be sensitive)
                             if (i < numSegments - 1) {
-                                await new Promise(resolve => setTimeout(resolve, 15000));
+                                await new Promise(resolve => setTimeout(resolve, 30000));
                             }
                         }
                     } catch (err: any) {
