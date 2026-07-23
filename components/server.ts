@@ -4,6 +4,9 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { spawn, exec, execSync } from 'child_process';
+import { promisify } from 'util';
+
+const execPromise = promisify(exec);
 import { fileURLToPath } from 'url';
 import https from 'https';
 import http from 'http';
@@ -1620,13 +1623,14 @@ async function startServer() {
                     try {
                         const enhancedPrompt = `${prompt || 'Music video clip, high quality, cinematic, synchronized to the rhythm, artistic style'}. [Part ${i+1}/${numSegments}]`;
                         
-                        // Model mapping for consistency
+                        // Model mapping for consistency - use strings known to work well
                         const deapiModel = model?.startsWith('deapi-') ? model.replace('deapi-', '') : (model || 'Ltx2_3_22B_Dist_INT8');
                         const modelMap: Record<string, string> = {
                             "ltx-2.3-22b": "ltx-video-v2.3",
                             "ltx-video-13b": "ltx-video-v1.3",
                             "ltx-2-19b-fp8": "ltx-video-v2.0",
-                            "ltx-video": "ltx-video-v1.3"
+                            "ltx-video": "ltx-video-v1.3",
+                            "Ltx2_3_22B_Dist_INT8": "ltx-video-v2.3"
                         };
                         const finalModel = modelMap[deapiModel] || deapiModel;
 
@@ -1662,37 +1666,53 @@ async function startServer() {
                                 await new Promise(resolve => setTimeout(resolve, 8000));
                             }
                         } else {
-                            // Deapi flow - Sequential submission, parallel polling
+                            // Deapi flow - Sequential submission
                             try {
                                 try {
-                                    execSync(`ffmpeg -i "${mainAudioPath}" -ss ${startTime} -t ${segmentDuration} -c:a libmp3lame -q:a 2 "${segmentPath}" -y`);
+                                    await execPromise(`ffmpeg -i "${mainAudioPath}" -ss ${startTime} -t ${segmentDuration} -c:a libmp3lame -q:a 2 "${segmentPath}" -y`);
                                 } catch (err) {
                                     console.error(`FFmpeg failed for segment ${i}`, err);
-                                    throw new Error("Falha ao processar segmento de áudio.");
+                                    throw new Error("Falha ao processar áudio.");
                                 }
 
                                 const segmentBuffer = fs.readFileSync(segmentPath);
                                 let deapiRes;
                                 let attempts = 0;
-                                const maxAttempts = 10; 
+                                const maxAttempts = 12; 
 
                                 while (attempts < maxAttempts) {
                                     const formData = new FormData();
-                                    formData.append('audio', new Blob([segmentBuffer]), `segment_${i}.mp3`);
+                                    const audioBlob = new Blob([segmentBuffer]);
+                                    
+                                    // Try common field names for audio
+                                    formData.append('audio', audioBlob, `segment_${i}.mp3`);
+                                    formData.append('audio_file', audioBlob, `segment_${i}.mp3`);
+                                    formData.append('file', audioBlob, `segment_${i}.mp3`);
+                                    
                                     formData.append('prompt', enhancedPrompt);
-                                    formData.append('frames', (frames || '209').toString());
+                                    formData.append('frames', (frames || '161').toString());
                                     formData.append('width', (width || '768').toString());
-                                    formData.append('height', (height || '768').toString());
+                                    formData.append('height', (height || '512').toString());
                                     formData.append('fps', (fps || '24').toString());
-                                    formData.append('model', finalModel.toString());
+                                    formData.append('model', finalModel);
                                     
                                     const finalSeed = seed !== undefined ? Number(seed) + i : Math.floor(Math.random() * 1000000000);
                                     formData.append('seed', finalSeed.toString());
 
-                                    deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
+                                    // Trying both common endpoint variants and adding x-api-key
+                                    const endpoints = [
+                                        'https://api.deapi.ai/api/v1/client/audio2video',
+                                        'https://api.deapi.ai/api/v1/client/aud2video'
+                                    ];
+                                    
+                                    const currentEndpoint = endpoints[attempts % endpoints.length];
+                                    console.log(`[Batch ${batchJobId} Part ${i}] Submetendo para ${currentEndpoint} (Tentativa ${attempts + 1})`);
+
+                                    deapiRes = await fetch(currentEndpoint, {
                                         method: 'POST',
                                         headers: {
                                             'Authorization': `Bearer ${activeKey}`,
+                                            'x-api-key': activeKey,
                                             'accept': 'application/json'
                                         },
                                         body: formData
@@ -1703,14 +1723,22 @@ async function startServer() {
                                         jobs[jobId].status = 'retrying';
                                         jobs[jobId].retryCount = attempts;
                                         
-                                        // Much more aggressive backoff for 429 (Rate Limit)
-                                        // Start at 45s, scale up to 3 minutes
-                                        const waitTime = Math.min(180000, (attempts * 45000) + Math.floor(Math.random() * 20000));
-                                        console.warn(`[Batch ${batchJobId} Part ${i}] Servidor saturado (429). Aguardando ${Math.round(waitTime/1000)}s... (Tentativa ${attempts}/${maxAttempts})`);
+                                        const waitTime = Math.min(180000, (attempts * 45000) + Math.floor(Math.random() * 15000));
+                                        console.warn(`[Batch ${batchJobId} Part ${i}] Limite (429). Aguardando ${Math.round(waitTime/1000)}s... (${attempts}/${maxAttempts})`);
                                         await new Promise(resolve => setTimeout(resolve, waitTime));
                                         
                                         jobs[jobId].status = 'processing';
                                         continue;
+                                    }
+                                    
+                                    if (!deapiRes.ok) {
+                                        const errText = await deapiRes.text();
+                                        console.warn(`[Batch ${batchJobId} Part ${i}] Deapi error (${deapiRes.status}): ${errText}`);
+                                        // If it's a 404 on the endpoint, try the other one immediately
+                                        if (deapiRes.status === 404 && attempts < maxAttempts - 1) {
+                                            attempts++;
+                                            continue;
+                                        }
                                     }
                                     break;
                                 }
@@ -1723,10 +1751,9 @@ async function startServer() {
                                 const data = await deapiRes.json();
                                 handleDeapiTask(jobId, data, activeKey, "https://api.deapi.ai");
                                 
-                                // Sequential submission: Wait significant time between parts to avoid burst limits
+                                // Sequential submission: Wait a bit to avoid burst limits
                                 if (i < finalNumSegments - 1) {
-                                    const interSegmentWait = 45000 + Math.floor(Math.random() * 10000);
-                                    console.log(`[Batch ${batchJobId}] Parte ${i} enviada. Aguardando ${Math.round(interSegmentWait/1000)}s para a próxima parte...`);
+                                    const interSegmentWait = 25000 + Math.floor(Math.random() * 5000);
                                     await new Promise(resolve => setTimeout(resolve, interSegmentWait));
                                 }
                             } catch (err: any) {
@@ -3095,8 +3122,8 @@ async function startServer() {
         
         console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
         
-        // Espera inicial aumentada para evitar burst de polling
-        await new Promise(r => setTimeout(r, 45000));
+        // Espera inicial moderada
+        await new Promise(r => setTimeout(r, 20000));
 
         while (!completed && attempts < 100 && jobs[jobId]) {
             attempts++;
@@ -3139,8 +3166,8 @@ async function startServer() {
                 }
             } catch (e) { console.warn(`[Job ${jobId}] Polling error:`, e); }
             if (!completed) {
-                // Very slow polling for batch segments to avoid 429 on status checks
-                const pollInterval = Math.min(240000, 90000 + (attempts * 20000));
+                // Adaptive polling - start faster then slow down
+                const pollInterval = Math.min(180000, 30000 + (attempts * 10000));
                 await new Promise(r => setTimeout(r, pollInterval));
             }
         }
