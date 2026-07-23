@@ -1674,7 +1674,7 @@ async function startServer() {
                                 const segmentBuffer = fs.readFileSync(segmentPath);
                                 let deapiRes;
                                 let attempts = 0;
-                                const maxAttempts = 8; // Reduced from 12 for better UX
+                                const maxAttempts = 10; 
 
                                 while (attempts < maxAttempts) {
                                     const formData = new FormData();
@@ -1702,10 +1702,13 @@ async function startServer() {
                                         attempts++;
                                         jobs[jobId].status = 'retrying';
                                         jobs[jobId].retryCount = attempts;
-                                        // Wait between 25s and 60s
-                                        const waitTime = Math.min(60000, (attempts * 15000) + Math.floor(Math.random() * 10000));
-                                        console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in ${Math.round(waitTime/1000)}s... (Attempt ${attempts}/${maxAttempts})`);
+                                        
+                                        // Much more aggressive backoff for 429 (Rate Limit)
+                                        // Start at 45s, scale up to 3 minutes
+                                        const waitTime = Math.min(180000, (attempts * 45000) + Math.floor(Math.random() * 20000));
+                                        console.warn(`[Batch ${batchJobId} Part ${i}] Servidor saturado (429). Aguardando ${Math.round(waitTime/1000)}s... (Tentativa ${attempts}/${maxAttempts})`);
                                         await new Promise(resolve => setTimeout(resolve, waitTime));
+                                        
                                         jobs[jobId].status = 'processing';
                                         continue;
                                     }
@@ -1718,12 +1721,13 @@ async function startServer() {
                                 }
 
                                 const data = await deapiRes.json();
-                                // handleDeapiTask is async but we don't await it here so next segment can submit
                                 handleDeapiTask(jobId, data, activeKey, "https://api.deapi.ai");
                                 
-                                // Success! Wait a bit before next part
+                                // Sequential submission: Wait significant time between parts to avoid burst limits
                                 if (i < finalNumSegments - 1) {
-                                    await new Promise(resolve => setTimeout(resolve, 25000));
+                                    const interSegmentWait = 45000 + Math.floor(Math.random() * 10000);
+                                    console.log(`[Batch ${batchJobId}] Parte ${i} enviada. Aguardando ${Math.round(interSegmentWait/1000)}s para a próxima parte...`);
+                                    await new Promise(resolve => setTimeout(resolve, interSegmentWait));
                                 }
                             } catch (err: any) {
                                 console.error(`[Batch ${batchJobId} Part ${i}] Error:`, err.message);
@@ -3091,8 +3095,8 @@ async function startServer() {
         
         console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
         
-        // Espera inicial reduzida para acelerar feedback
-        await new Promise(r => setTimeout(r, 10000));
+        // Espera inicial aumentada para evitar burst de polling
+        await new Promise(r => setTimeout(r, 45000));
 
         while (!completed && attempts < 100 && jobs[jobId]) {
             attempts++;
@@ -3110,8 +3114,8 @@ async function startServer() {
                 }
                 
                 if (pollRes.status === 429) {
-                    console.warn(`[Job ${jobId}] Rate limit atingido no polling (429). Aguardando 60s...`);
-                    await new Promise(r => setTimeout(r, 60000));
+                    console.warn(`[Job ${jobId}] Rate limit atingido no polling (429). Aguardando 150s...`);
+                    await new Promise(r => setTimeout(r, 150000));
                     continue;
                 }
 
@@ -3135,8 +3139,8 @@ async function startServer() {
                 }
             } catch (e) { console.warn(`[Job ${jobId}] Polling error:`, e); }
             if (!completed) {
-                // Adaptive polling interval based on attempts
-                const pollInterval = Math.min(60000, 30000 + (attempts * 5000));
+                // Very slow polling for batch segments to avoid 429 on status checks
+                const pollInterval = Math.min(240000, 90000 + (attempts * 20000));
                 await new Promise(r => setTimeout(r, pollInterval));
             }
         }
@@ -3919,7 +3923,7 @@ async function startServer() {
                 if (retryingJob) {
                     const partIndex = subJobsStatus.indexOf(retryingJob) + 1;
                     const rc = retryingJob.retryCount || 1;
-                    job.message = `Sincronizando com servidor Cine IA (Parte ${partIndex}/${total}) - Tentativa ${rc}...`;
+                    job.message = `Aguardando liberação do servidor (Parte ${partIndex}/${total}) - Tentativa ${rc}...`;
                 } else if (completed > 0) {
                     job.message = `Gerando clipe: ${completed + 1}/${total} (${completed} concluídos)...`;
                 } else {
