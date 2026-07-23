@@ -1553,7 +1553,10 @@ async function startServer() {
 
     // ─── AI VIDEO GENERATION ──────────────────────────────────────────────────
     app.post('/api/ai/audio-to-video', async (req: any, res: any) => {
-        const { audioUrl, prompt, frames, width, height, fps, model, seed, apiKey } = req.body;
+        const { 
+            audioUrl, prompt, frames, width, height, fps, model, seed, apiKey,
+            negativePrompt, style, quality, steps, cfg, lora_path, lora_strength 
+        } = req.body;
         
         const isVeo = model?.includes('veo') || model?.includes('gemini');
         const activeKey = apiKey || (isVeo ? getGeminiKey(req) : getDeapiKey(req));
@@ -1623,14 +1626,14 @@ async function startServer() {
                     try {
                         const enhancedPrompt = `${prompt || 'Music video clip, high quality, cinematic, synchronized to the rhythm, artistic style'}. [Part ${i+1}/${numSegments}]`;
                         
-                        // Model mapping for consistency - use strings known to work well
+                        // Model mapping for consistency - follow working curl example strings
                         const deapiModel = model?.startsWith('deapi-') ? model.replace('deapi-', '') : (model || 'Ltx2_3_22B_Dist_INT8');
                         const modelMap: Record<string, string> = {
-                            "ltx-2.3-22b": "ltx-video-v2.3",
-                            "ltx-video-13b": "ltx-video-v1.3",
-                            "ltx-2-19b-fp8": "ltx-video-v2.0",
-                            "ltx-video": "ltx-video-v1.3",
-                            "Ltx2_3_22B_Dist_INT8": "ltx-video-v2.3"
+                            "ltx-2.3-22b": "Ltx2_3_22B_Dist_INT8",
+                            "ltx-video-13b": "Ltx1_3_13B_Dist_INT8",
+                            "ltx-2-19b-fp8": "Ltx2_0_19B_FP8",
+                            "ltx-video": "Ltx1_3_13B_Dist_INT8",
+                            "Ltx2_3_22B_Dist_INT8": "Ltx2_3_22B_Dist_INT8"
                         };
                         const finalModel = modelMap[deapiModel] || deapiModel;
 
@@ -1684,29 +1687,34 @@ async function startServer() {
                                     const formData = new FormData();
                                     const audioBlob = new Blob([segmentBuffer]);
                                     
-                                    // Try common field names for audio
+                                    // Use 'audio' field as shown in successful curl
                                     formData.append('audio', audioBlob, `segment_${i}.mp3`);
-                                    formData.append('audio_file', audioBlob, `segment_${i}.mp3`);
-                                    formData.append('file', audioBlob, `segment_${i}.mp3`);
                                     
                                     formData.append('prompt', enhancedPrompt);
-                                    formData.append('frames', (frames || '161').toString());
+                                    formData.append('frames', (frames || '120').toString());
                                     formData.append('width', (width || '768').toString());
-                                    formData.append('height', (height || '512').toString());
+                                    formData.append('height', (height || '768').toString());
                                     formData.append('fps', (fps || '24').toString());
                                     formData.append('model', finalModel);
                                     
                                     const finalSeed = seed !== undefined ? Number(seed) + i : Math.floor(Math.random() * 1000000000);
                                     formData.append('seed', finalSeed.toString());
+                                    if (negativePrompt) formData.append('negative_prompt', negativePrompt);
+                                    if (style) formData.append('style', style);
+                                    if (quality) formData.append('quality', quality);
+                                    if (steps) formData.append('steps', steps.toString());
+                                    if (cfg) formData.append('cfg', cfg.toString());
+                                    if (lora_path) formData.append('lora_path', lora_path);
+                                    if (lora_strength) formData.append('lora_strength', lora_strength.toString());
 
-                                    // Trying both common endpoint variants and adding x-api-key
+                                    // Primary working endpoint from curl: aud2video
                                     const endpoints = [
-                                        'https://api.deapi.ai/api/v1/client/audio2video',
-                                        'https://api.deapi.ai/api/v1/client/aud2video'
+                                        'https://api.deapi.ai/api/v1/client/aud2video',
+                                        'https://api.deapi.ai/api/v1/client/audio2video'
                                     ];
                                     
                                     const currentEndpoint = endpoints[attempts % endpoints.length];
-                                    console.log(`[Batch ${batchJobId} Part ${i}] Submetendo para ${currentEndpoint} (Tentativa ${attempts + 1})`);
+                                    console.log(`[Batch ${batchJobId} Part ${i}] Enviando para Cine IA: ${currentEndpoint} (Tentativa ${attempts + 1})`);
 
                                     deapiRes = await fetch(currentEndpoint, {
                                         method: 'POST',
@@ -1723,8 +1731,9 @@ async function startServer() {
                                         jobs[jobId].status = 'retrying';
                                         jobs[jobId].retryCount = attempts;
                                         
-                                        const waitTime = Math.min(180000, (attempts * 45000) + Math.floor(Math.random() * 15000));
-                                        console.warn(`[Batch ${batchJobId} Part ${i}] Limite (429). Aguardando ${Math.round(waitTime/1000)}s... (${attempts}/${maxAttempts})`);
+                                        // Wait between 35s and 90s - more realistic for server recovery
+                                        const waitTime = Math.min(180000, 35000 + (attempts * 25000) + Math.floor(Math.random() * 15000));
+                                        console.warn(`[Batch ${batchJobId} Part ${i}] Servidor ocupado (429). Aguardando ${Math.round(waitTime/1000)}s...`);
                                         await new Promise(resolve => setTimeout(resolve, waitTime));
                                         
                                         jobs[jobId].status = 'processing';
@@ -1733,10 +1742,13 @@ async function startServer() {
                                     
                                     if (!deapiRes.ok) {
                                         const errText = await deapiRes.text();
-                                        console.warn(`[Batch ${batchJobId} Part ${i}] Deapi error (${deapiRes.status}): ${errText}`);
-                                        // If it's a 404 on the endpoint, try the other one immediately
-                                        if (deapiRes.status === 404 && attempts < maxAttempts - 1) {
+                                        console.warn(`[Batch ${batchJobId} Part ${i}] Deapi error (${deapiRes.status}): ${errText.substring(0, 100)}`);
+                                        
+                                        // If specific model error or 404, try to adapt
+                                        if ((deapiRes.status === 404 || deapiRes.status === 400) && attempts < maxAttempts - 1) {
                                             attempts++;
+                                            // Delay a bit before trying the next endpoint variant
+                                            await new Promise(r => setTimeout(r, 5000));
                                             continue;
                                         }
                                     }
