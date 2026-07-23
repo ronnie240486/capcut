@@ -1670,8 +1670,11 @@ async function startServer() {
 
                                 if (deapiRes.status === 429) {
                                     attempts++;
-                                    console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in 12s...`);
-                                    await new Promise(resolve => setTimeout(resolve, 12000));
+                                    // Add jitter: base 15s + random 0-10s
+                                    const jitter = Math.floor(Math.random() * 10000);
+                                    const waitTime = 15000 + jitter;
+                                    console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in ${waitTime/1000}s... (Attempt ${attempts}/${maxAttempts})`);
+                                    await new Promise(resolve => setTimeout(resolve, waitTime));
                                     continue;
                                 }
                                 break;
@@ -1685,9 +1688,9 @@ async function startServer() {
                             const data = await deapiRes.json();
                             handleDeapiTask(jobId, data, activeKey, "https://api.deapi.ai");
                             
-                            // Delay to avoid hitting rate limits too fast
+                            // Increased delay to avoid hitting rate limits too fast (Deapi can be sensitive)
                             if (i < numSegments - 1) {
-                                await new Promise(resolve => setTimeout(resolve, 5000));
+                                await new Promise(resolve => setTimeout(resolve, 15000));
                             }
                         }
                     } catch (err: any) {
