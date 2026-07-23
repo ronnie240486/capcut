@@ -1586,10 +1586,10 @@ async function startServer() {
                 const durationOutput = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${mainAudioPath}"`).toString().trim();
                 const totalDuration = parseFloat(durationOutput);
                 
-                const segmentDuration = (frames && fps) ? (frames / fps) : 8;
-                const numSegments = Math.ceil(totalDuration / segmentDuration);
+                const segmentDuration = (Number(frames) && Number(fps)) ? (Number(frames) / Number(fps)) : 8;
+                const numSegments = Math.max(1, Math.ceil(totalDuration / segmentDuration));
                 
-                console.log(`[Batch ${batchJobId}] Splitting ${totalDuration}s into ${numSegments} segments of ${segmentDuration}s`);
+                console.log(`[Batch ${batchJobId}] Splitting ${totalDuration}s into ${numSegments} segments of ${segmentDuration}s (Frames: ${frames}, FPS: ${fps})`);
 
                 for (let i = 0; i < numSegments; i++) {
                     // Add a delay between submissions to avoid Deapi rate limits
