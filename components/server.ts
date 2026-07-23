@@ -1615,22 +1615,35 @@ async function startServer() {
                         const enhancedPrompt = `${prompt || 'Music video clip, high quality, cinematic, synchronized to the rhythm, artistic style'}. [Part ${i+1}/${numSegments}]`;
 
                         if (isVeo) {
-                            // Veo flow
-                            console.log(`[Batch ${batchJobId} Part ${i}] Generating Veo video...`);
-                            const veoRes = await generateVeoVideo(
-                                enhancedPrompt, 
-                                model, 
-                                (width / height > 1) ? '16:9' : '9:16', 
-                                '720p', 
-                                activeKey
-                            );
+                            // Veo flow - Non-blocking to allow next segments to start
+                            console.log(`[Batch ${batchJobId} Part ${i}] Starting Veo generation...`);
+                            (async () => {
+                                try {
+                                    const veoRes = await generateVeoVideo(
+                                        enhancedPrompt, 
+                                        model, 
+                                        (width / height > 1) ? '16:9' : '9:16', 
+                                        '720p', 
+                                        activeKey
+                                    );
+                                    
+                                    if (veoRes && veoRes.url) {
+                                        jobs[jobId].status = 'completed';
+                                        jobs[jobId].downloadUrl = veoRes.url;
+                                        jobs[jobId].progress = 100;
+                                    } else {
+                                        throw new Error("Veo falhou em retornar URL");
+                                    }
+                                } catch (err: any) {
+                                    console.error(`[Job ${jobId}] Veo Error:`, err.message);
+                                    jobs[jobId].status = 'failed';
+                                    jobs[jobId].error = err.message;
+                                }
+                            })();
                             
-                            if (veoRes && veoRes.url) {
-                                jobs[jobId].status = 'completed';
-                                jobs[jobId].downloadUrl = veoRes.url;
-                                jobs[jobId].progress = 100;
-                            } else {
-                                throw new Error("Veo falhou em retornar URL");
+                            // Small delay between starting Veo tasks
+                            if (i < numSegments - 1) {
+                                await new Promise(resolve => setTimeout(resolve, 8000));
                             }
                         } else {
                             // Deapi flow
@@ -1671,8 +1684,8 @@ async function startServer() {
                                 if (deapiRes.status === 429) {
                                     attempts++;
                                     jobs[jobId].status = 'retrying';
-                                    const jitter = Math.floor(Math.random() * 10000);
-                                    const waitTime = 30000 + (attempts * 15000) + jitter;
+                                    const jitter = Math.floor(Math.random() * 5000);
+                                    const waitTime = 15000 + (attempts * 10000) + jitter;
                                     console.warn(`[Batch ${batchJobId} Part ${i}] Rate limited (429). Retrying in ${waitTime/1000}s... (Attempt ${attempts}/${maxAttempts})`);
                                     await new Promise(resolve => setTimeout(resolve, waitTime));
                                     jobs[jobId].status = 'processing';
@@ -1691,7 +1704,7 @@ async function startServer() {
                             
                             // Increased delay between successful submissions
                             if (i < numSegments - 1) {
-                                await new Promise(resolve => setTimeout(resolve, 30000));
+                                await new Promise(resolve => setTimeout(resolve, 15000));
                             }
                         }
                     } catch (err: any) {
@@ -3053,8 +3066,8 @@ async function startServer() {
         
         console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
         
-        // Espera inicial de 30s para evitar 429
-        await new Promise(r => setTimeout(r, 30000));
+        // Espera inicial reduzida para acelerar feedback
+        await new Promise(r => setTimeout(r, 10000));
 
         while (!completed && attempts < 100 && jobs[jobId]) {
             attempts++;
@@ -3875,9 +3888,12 @@ async function startServer() {
                 }
             } else {
                 if (retryingJob) {
-                    job.message = `Aguardando limite de taxa (Part ${subJobsStatus.indexOf(retryingJob) + 1}/${total})...`;
+                    const partIndex = subJobsStatus.indexOf(retryingJob) + 1;
+                    job.message = `Aguardando limite de taxa (Parte ${partIndex}/${total})...`;
+                } else if (completed > 0) {
+                    job.message = `Gerando clipe: ${completed + 1}/${total} (${completed} concluídos)...`;
                 } else {
-                    job.message = `Processando: ${completed}/${total} clipes concluídos...`;
+                    job.message = `Iniciando geração de ${total} clipes...`;
                 }
             }
         }
