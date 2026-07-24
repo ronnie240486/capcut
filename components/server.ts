@@ -228,8 +228,8 @@ async function startServer() {
         }
     }
 
-    // Helper for fetch with exponential backoff for 429
-    async function fetchWithRetry(url: string, options: any, maxRetries = 7) {
+    // Helper for fetch with exponential backoff for 429 and common errors
+    async function fetchWithRetry(url: string, options: any, maxRetries = 10) {
         let lastStatus = 0;
         
         for (let i = 0; i <= maxRetries; i++) {
@@ -237,9 +237,10 @@ async function startServer() {
                 const response = await fetch(url, options);
                 lastStatus = response.status;
                 
-                if (response.status === 429 && i < maxRetries) {
-                    const wait = Math.min(120000, Math.pow(2, i) * 5000 + (Math.random() * 2000)); 
-                    console.warn(`[Retry] Status 429 on ${url}. Waiting ${Math.round(wait)}ms before retry ${i + 1}/${maxRetries}`);
+                // If it's a rate limit or server error, we might want to retry
+                if ((response.status === 429 || response.status >= 500) && i < maxRetries) {
+                    const wait = Math.min(180000, Math.pow(2, i) * 5000 + (Math.random() * 5000)); 
+                    console.warn(`[Retry] Status ${response.status} on ${url}. Waiting ${Math.round(wait/1000)}s before retry ${i + 1}/${maxRetries}`);
                     await new Promise(r => setTimeout(r, wait));
                     continue;
                 }
@@ -247,7 +248,8 @@ async function startServer() {
                 return response;
             } catch (e: any) {
                 if (i === maxRetries) throw e;
-                const wait = Math.min(30000, Math.pow(2, i) * 2000);
+                const wait = Math.min(60000, Math.pow(2, i) * 2000);
+                console.warn(`[Retry] Network error on ${url}: ${e.message}. Waiting ${Math.round(wait/1000)}s before retry ${i + 1}/${maxRetries}`);
                 await new Promise(r => setTimeout(r, wait));
             }
         }
@@ -1252,10 +1254,10 @@ async function startServer() {
                     }, 3);
                 }
                 
-                if (pollRes.status === 429) {
-                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 45s...`);
-                    if (jobs[jobId]) jobs[jobId].message = "API Ocupada (429). Aguardando fôlego...";
-                    await new Promise(r => setTimeout(r, 45000));
+                if (pollRes.status === 429 || (pollRes.status === 400 && (await pollRes.clone().text()).includes("Too Many Attempts"))) {
+                    console.warn(`[Job ${jobId}] Rate limit atingido. Aguardando 60s...`);
+                    if (jobs[jobId]) jobs[jobId].message = "API Ocupada. Aguardando fôlego...";
+                    await new Promise(r => setTimeout(r, 60000));
                     continue;
                 }
 
@@ -1768,20 +1770,36 @@ async function startServer() {
                 const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
                 formData.append('seed', finalSeed.toString());
 
-                console.log(`[Job ${jobId}] Calling Deapi Aud2Video: ${finalModel}, size=${finalWidth}x${finalHeight}, frames=${finalFrames}`);
+                let deapiRes;
+                let data;
+                let maxInitiationRetries = 3;
+                
+                for (let initAttempt = 0; initAttempt < maxInitiationRetries; initAttempt++) {
+                    console.log(`[Job ${jobId}] Calling Deapi Aud2Video (Attempt ${initAttempt + 1}/${maxInitiationRetries}): ${finalModel}`);
+                    
+                    deapiRes = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${deapiKey}`,
+                            'accept': 'application/json'
+                        },
+                        body: formData
+                    });
 
-                const deapiRes = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${deapiKey}`,
-                        'accept': 'application/json'
-                    },
-                    body: formData
-                });
-
-                const data = await deapiRes.json();
-                if (!deapiRes.ok) {
-                    if (deapiRes.status === 429 || (data.message && data.message.includes("Too Many Attempts"))) {
+                    data = await deapiRes.json();
+                    
+                    if (deapiRes.ok) break;
+                    
+                    const isRateLimit = deapiRes.status === 429 || (data.message && data.message.includes("Too Many Attempts"));
+                    if (isRateLimit && initAttempt < maxInitiationRetries - 1) {
+                        const waitTime = 60000 + (Math.random() * 10000);
+                        console.warn(`[Job ${jobId}] Deapi Rate Limit hit. Waiting ${Math.round(waitTime/1000)}s...`);
+                        if (jobs[jobId]) jobs[jobId].message = `API em alta demanda (Tentativa ${initAttempt + 1}/3). Aguardando...`;
+                        await new Promise(r => setTimeout(r, waitTime));
+                        continue;
+                    }
+                    
+                    if (isRateLimit) {
                         throw new Error("A API externa está com alta demanda (Rate Limit). Por favor, aguarde de 2 a 5 minutos e tente novamente.");
                     }
                     throw new Error(data.message || "Erro no Deapi");
@@ -1875,91 +1893,105 @@ async function startServer() {
                 while (fetchAttempts < MAX_SUBMIT_ATTEMPTS) {
                     fetchAttempts++;
                     
-                    // Ajuste de limites conforme imagem do painel e erros anteriores
-                    const payload: any = {
-                        prompt: prompt || 'cinematic video generation',
-                        model: mappedModel,
-                        width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
-                        height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
-                        frames: Math.min(frames || 120, 120), 
-                        fps: Math.max(fps || 30, 30),
-                        steps: 1,   
-                        seed: parseInt(randomSeed),
-                        include_audio: mappedModel.includes('ltx-video-v2.0') || mappedModel.includes('ltx-2-19b') || !!format,
-                        audio_format: format || 'mp3',
-                        audio_sample_rate: sample_rate || 24000,
-                        audio_speed: speed || 1.0
-                    };
+                    try {
+                        // Ajuste de limites conforme imagem do painel e erros anteriores
+                        const payload: any = {
+                            prompt: prompt || 'cinematic video generation',
+                            model: mappedModel,
+                            width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
+                            height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
+                            frames: Math.min(frames || 120, 120), 
+                            fps: Math.max(fps || 30, 30),
+                            steps: 1,   
+                            seed: parseInt(randomSeed),
+                            include_audio: mappedModel.includes('ltx-video-v2.0') || mappedModel.includes('ltx-2-19b') || !!format,
+                            audio_format: format || 'mp3',
+                            audio_sample_rate: sample_rate || 24000,
+                            audio_speed: speed || 1.0
+                        };
 
-                    if (isImageToVideo) {
-                        // Deapi v2 Animation payload (JSON) - Updated for LTX Video requirements
-                        payload.image = image; 
-                        payload.image_url = image; 
-                        payload.input_image = image;
-                        payload.first_frame_image = image; // Novo campo obrigatório reportado no erro 422
-                    }
-
-                    if (isImageToVideo) {
-                        // Envio via FormData para suportar arquivo real (exigência da API Deapi v2)
-                        const formData = new FormData();
-                        formData.append('prompt', payload.prompt);
-                        formData.append('model', mappedModel); 
-                        formData.append('width', payload.width.toString());
-                        formData.append('height', payload.height.toString());
-                        formData.append('frames', payload.frames.toString());
-                        formData.append('fps', payload.fps.toString());
-                        formData.append('steps', payload.steps.toString());
-                        formData.append('seed', payload.seed.toString());
-                        formData.append('include_audio', payload.include_audio ? 'true' : 'false');
-                        if (payload.audio_format) formData.append('audio_format', payload.audio_format);
-                        if (payload.audio_sample_rate) formData.append('audio_sample_rate', payload.audio_sample_rate.toString());
-                        if (payload.audio_speed) formData.append('audio_speed', payload.audio_speed.toString());
-
-                        // Converter base64 para Blob para enviar como arquivo
-                        const base64Data = image.split(',')[1] || image;
-                        const byteCharacters = Buffer.from(base64Data, 'base64');
-                        const blob = new Blob([byteCharacters], { type: 'image/png' });
-                        
-                        // Para animação (img2video), a documentação v2 e o erro 422 anterior
-                        // confirmaram que "input_image" e "first_frame_image" são os campos chave.
-                        // Enviamos a imagem selecionada pelo usuário nesses campos.
-                        formData.append('input_image', blob, 'input.png');
-                        formData.append('first_frame_image', blob, 'first_frame.png');
-                        formData.append('image', blob, 'image.png');
-
-                        response = await fetchWithRetry(endpoint, {
-                            method: 'POST',
-                            headers: {
-                                'Accept': 'application/json',
-                                'Authorization': `Bearer ${deapiKey}`,
-                                'x-api-key': deapiKey
-                            },
-                            body: formData
-                        });
-                    } else {
-                        response = await fetchWithRetry(endpoint, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json',
-                                'Authorization': `Bearer ${deapiKey}`,
-                                'x-api-key': deapiKey
-                            },
-                            body: JSON.stringify(payload)
-                        });
-                    }
-
-                    if (!response.ok) {
-                        const text = await response.text();
-                        if (response.status === 429) {
-                            lastFetchError = "A API externa está com alta demanda (Rate Limit: Too Many Attempts). Por favor, aguarde de 2 a 5 minutos e tente novamente.";
-                        } else {
-                            lastFetchError = `Deapi API error (${response.status}): ${text.substring(0, 200)}`;
+                        if (isImageToVideo) {
+                            payload.image = image; 
+                            payload.image_url = image; 
+                            payload.input_image = image;
+                            payload.first_frame_image = image;
                         }
-                        throw new Error(lastFetchError);
-                    }
 
-                    break; // Success
+                        if (isImageToVideo) {
+                            const formData = new FormData();
+                            formData.append('prompt', payload.prompt);
+                            formData.append('model', mappedModel); 
+                            formData.append('width', payload.width.toString());
+                            formData.append('height', payload.height.toString());
+                            formData.append('frames', payload.frames.toString());
+                            formData.append('fps', payload.fps.toString());
+                            formData.append('steps', payload.steps.toString());
+                            formData.append('seed', payload.seed.toString());
+                            formData.append('include_audio', payload.include_audio ? 'true' : 'false');
+                            if (payload.audio_format) formData.append('audio_format', payload.audio_format);
+                            if (payload.audio_sample_rate) formData.append('audio_sample_rate', payload.audio_sample_rate.toString());
+                            if (payload.audio_speed) formData.append('audio_speed', payload.audio_speed.toString());
+
+                            const base64Data = image.split(',')[1] || image;
+                            const byteCharacters = Buffer.from(base64Data, 'base64');
+                            const blob = new Blob([byteCharacters], { type: 'image/png' });
+                            
+                            formData.append('input_image', blob, 'input.png');
+                            formData.append('first_frame_image', blob, 'first_frame.png');
+                            formData.append('image', blob, 'image.png');
+
+                            response = await fetchWithRetry(endpoint, {
+                                method: 'POST',
+                                headers: {
+                                    'Accept': 'application/json',
+                                    'Authorization': `Bearer ${deapiKey}`,
+                                    'x-api-key': deapiKey
+                                },
+                                body: formData
+                            });
+                        } else {
+                            response = await fetchWithRetry(endpoint, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Accept': 'application/json',
+                                    'Authorization': `Bearer ${deapiKey}`,
+                                    'x-api-key': deapiKey
+                                },
+                                body: JSON.stringify(payload)
+                            });
+                        }
+
+                        if (!response.ok) {
+                            const text = await response.text();
+                            let errData: any = {};
+                            try { errData = JSON.parse(text); } catch(e) {}
+                            
+                            const isRateLimit = response.status === 429 || (errData.message && errData.message.includes("Too Many Attempts"));
+                            
+                            if (isRateLimit && fetchAttempts < MAX_SUBMIT_ATTEMPTS) {
+                                const waitTime = 45000 + (Math.random() * 15000);
+                                console.warn(`[Job ${jobId}] Deapi Rate Limit hit (Attempt ${fetchAttempts}). Waiting ${Math.round(waitTime/1000)}s...`);
+                                if (jobs[jobId]) jobs[jobId].message = `API em alta demanda (Tentativa ${fetchAttempts}/5). Aguardando...`;
+                                await new Promise(r => setTimeout(r, waitTime));
+                                continue;
+                            }
+                            
+                            if (response.status === 429) {
+                                lastFetchError = "A API externa está com alta demanda (Rate Limit). Por favor, aguarde de 2 a 5 minutos e tente novamente.";
+                            } else {
+                                lastFetchError = `Deapi API error (${response.status}): ${text.substring(0, 200)}`;
+                            }
+                            throw new Error(lastFetchError);
+                        }
+
+                        break; // Success
+                    } catch (loopErr: any) {
+                        lastFetchError = loopErr.message;
+                        if (fetchAttempts >= MAX_SUBMIT_ATTEMPTS) throw loopErr;
+                        // Continue to next attempt for other errors that might be transient
+                        await new Promise(r => setTimeout(r, 10000));
+                    }
                 }
 
                 if (!response || !response.ok) {
