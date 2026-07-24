@@ -1615,7 +1615,6 @@ async function startServer() {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${deapiKey}`,
-                        'Autorização': `Portador ${deapiKey}`, // User spec explicitly showed this translation
                         'accept': 'application/json'
                     },
                     body: formData
