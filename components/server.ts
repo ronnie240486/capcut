@@ -228,7 +228,7 @@ async function startServer() {
     }
 
     // Helper for fetch with exponential backoff for 429
-    async function fetchWithRetry(url: string, options: any, maxRetries = 7) {
+    async function fetchWithRetry(url: string, options: any, maxRetries = 7, onRetry?: (waitMs: number, attempt: number) => void) {
         let lastStatus = 0;
         
         for (let i = 0; i <= maxRetries; i++) {
@@ -256,6 +256,9 @@ async function startServer() {
                     // Start with 10s wait and increase exponentially
                     const wait = Math.min(150000, Math.pow(2, i) * 10000 + (Math.random() * 5000)); 
                     console.warn(`[Retry] Rate limit detected on ${url} (Status: ${lastStatus}). Waiting ${Math.round(wait)}ms before retry ${i + 1}/${maxRetries}`);
+                    
+                    if (onRetry) onRetry(wait, i + 1);
+                    
                     await new Promise(r => setTimeout(r, wait));
                     continue;
                 }
@@ -1897,6 +1900,11 @@ async function startServer() {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${deapiKey}` },
                         body: formData
+                    }, 7, (wait, attempt) => {
+                        if (jobs[jobId]) {
+                            jobs[jobId].message = `Servidor de vídeo ocupado. Aguardando ${Math.round(wait/1000)}s para tentar novamente (Tentativa ${attempt})...`;
+                            jobs[jobId].progress = 5;
+                        }
                     });
                     const data = await deapiRes.json();
                     console.log(`[Job ${jobId}] Deapi response status: ${deapiRes.status}`);
@@ -1936,6 +1944,10 @@ async function startServer() {
                             method: 'POST',
                             headers: { 'Authorization': `Bearer ${deapiKey}` },
                             body: formData
+                        }, 7, (wait, attempt) => {
+                            if (jobs[jobId]) {
+                                jobs[jobId].message = `Servidor ocupado. Processando segmento ${i+1}/${numSegments}. Aguardando ${Math.round(wait/1000)}s...`;
+                            }
                         });
                         
                         const data = await res.json();
