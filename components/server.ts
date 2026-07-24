@@ -994,9 +994,9 @@ async function startServer() {
     });
 
     // ─── FFPROBE HELPER ────────────────────────────────────────────────────────
-    const getStreamInfo = (filePath: string): Promise<{ hasAudio: boolean; hasVideo: boolean }> => {
+    const getStreamInfo = (filePath: string): Promise<{ hasAudio: boolean; hasVideo: boolean; duration?: number }> => {
         return new Promise((resolve) => {
-            const ffprobe = spawn('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', filePath]);
+            const ffprobe = spawn('ffprobe', ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', filePath]);
             let output = '';
             ffprobe.stdout.on('data', (d: Buffer) => output += d);
             ffprobe.on('close', () => {
@@ -1004,7 +1004,8 @@ async function startServer() {
                     const json = JSON.parse(output);
                     resolve({
                         hasAudio: json.streams?.some((s: any) => s.codec_type === 'audio') ?? false,
-                        hasVideo: json.streams?.some((s: any) => s.codec_type === 'video') ?? false
+                        hasVideo: json.streams?.some((s: any) => s.codec_type === 'video') ?? false,
+                        duration: json.format?.duration ? parseFloat(json.format.duration) : undefined
                     });
                 } catch { resolve({ hasAudio: false, hasVideo: false }); }
             });
@@ -1198,6 +1199,36 @@ async function startServer() {
     const JOBS_FILE = path.join(process.cwd(), 'jobs_persistence.json');
 
     // Helper to handle Deapi task/job response
+    // Helper to translate prompt if it's not in English
+    async function translatePromptIfNeeded(prompt: string, deapiKey: string) {
+        if (!prompt || /^[a-zA-Z0-9\s.,!?"'()\-]+$/.test(prompt)) return prompt;
+        try {
+            const apiKey = process.env.GEMINI_API_KEY;
+            if (!apiKey) return prompt;
+            
+            const ai = new GoogleGenAI({ 
+                apiKey,
+                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } 
+            });
+            
+            console.log(`[Translate] Requesting translation for: "${prompt}"`);
+            const result = await ai.models.generateContent({
+                model: "gemini-3.6-flash",
+                contents: [{ role: "user", parts: [{ text: `Translate this AI video generation prompt to English. Be descriptive but concise. ONLY output the translated English text: "${prompt}"` }] }]
+            });
+            
+            const translation = result.text?.trim().replace(/^"|"$/g, '');
+            if (translation && translation.length > 2) {
+                console.log(`[Translate] Success: "${prompt}" -> "${translation}"`);
+                return translation;
+            }
+            return prompt;
+        } catch (e: any) {
+            console.warn("[Translate] Failed:", e.message);
+            return prompt;
+        }
+    }
+
     async function handleDeapiTask(jobId: string, data: any, deapiKey: string, baseUrl: string, shouldDownload = false) {
         const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id || data.data?.job_id;
         
@@ -1331,6 +1362,28 @@ async function startServer() {
         }
         if (!completed && jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'A geração demorou demais ou o servidor externo parou de responder.'; }
     }
+
+    const cutAudio = (input: string, output: string, ss: number, t: number): Promise<void> => {
+        return new Promise((resolve, reject) => {
+            const ff = spawn('ffmpeg', ['-y', '-i', input, '-ss', ss.toString(), '-t', t.toString(), '-c', 'copy', output]);
+            ff.on('close', (code) => code === 0 ? resolve() : reject(new Error(`FFmpeg cut failed with code ${code}`)));
+            ff.on('error', reject);
+        });
+    };
+
+    const concatVideos = (videoPaths: string[], outputPath: string): Promise<void> => {
+        return new Promise((resolve, reject) => {
+            const listPath = path.join(uploadDir, `list_${Date.now()}.txt`);
+            const content = videoPaths.map(p => `file '${path.resolve(p)}'`).join('\n');
+            fs.writeFileSync(listPath, content);
+            const ff = spawn('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', outputPath]);
+            ff.on('close', (code) => {
+                try { if (fs.existsSync(listPath)) fs.unlinkSync(listPath); } catch(e) {}
+                code === 0 ? resolve() : reject(new Error(`FFmpeg concat failed with code ${code}`));
+            });
+            ff.on('error', reject);
+        });
+    };
 
     // Load jobs from disk on startup
     try {
@@ -1702,75 +1755,180 @@ async function startServer() {
         if (!deapiKey) return res.status(401).json({ error: "DEAPI_API_KEY não configurada." });
 
         const finalAudioUrl = audioUrl || áudio;
-        const finalFrames = frames || quadros || 120;
-        const finalWidth = width || largura || 768;
-        const finalHeight = height || altura || 768;
+        const finalFrames = Number(frames || quadros || 120);
+        const finalWidth = Number(width || largura || 768);
+        const finalHeight = Number(height || altura || 768);
         const finalModel = model || modelo || 'Ltx2_3_22B_Dist_INT8';
+        const finalFps = Number(fps || 24);
 
         const jobId = `aud2vid_${Date.now()}`;
-        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        jobs[jobId] = { id: jobId, status: 'processing', progress: 2, startTime: Date.now(), message: 'Iniciando Processamento Inteligente...' };
         res.status(202).json({ jobId });
 
         (async () => {
+            let tempAudioPath = '';
             try {
                 if (!finalAudioUrl) throw new Error("URL ou dados do áudio são obrigatórios.");
 
-                let audioBuffer: Buffer;
-                let audioMime = 'audio/mpeg';
+                // 1. Traduzir o prompt para inglês se necessário para melhores resultados
+                const translatedPrompt = await translatePromptIfNeeded(prompt || 'Music video', deapiKey);
 
+                // 2. Carregar áudio e verificar duração
+                let audioBuffer: Buffer;
                 if (finalAudioUrl.startsWith('data:')) {
                     const [header, base64Data] = finalAudioUrl.split(',');
                     audioBuffer = Buffer.from(base64Data, 'base64');
-                    audioMime = header.split(':')[1].split(';')[0] || 'audio/mpeg';
                 } else {
-                    // Fetch audio from URL
                     const audioRes = await fetch(finalAudioUrl);
                     if (!audioRes.ok) throw new Error(`Falha ao carregar áudio (${audioRes.status})`);
-                    const arrayBuffer = await audioRes.arrayBuffer();
-                    audioBuffer = Buffer.from(arrayBuffer);
+                    audioBuffer = Buffer.from(await audioRes.arrayBuffer());
                 }
 
-                const formData = new FormData();
-                // Using Blob with type for multipart/form-data compatibility
-                formData.append('audio', new Blob([audioBuffer], { type: audioMime }), 'audio.mp3');
-                formData.append('prompt', (prompt || 'Music video').toString());
-                formData.append('frames', finalFrames.toString());
-                formData.append('width', finalWidth.toString()); 
-                formData.append('height', finalHeight.toString());
-                formData.append('fps', (fps || '24').toString());
-                formData.append('model', finalModel.toString());
-                
-                // Seed is recommended for reproducibility
-                const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
-                formData.append('seed', finalSeed.toString());
+                tempAudioPath = path.join(uploadDir, `src_${jobId}.mp3`);
+                fs.writeFileSync(tempAudioPath, audioBuffer);
+                const si = await getStreamInfo(tempAudioPath);
+                const totalDuration = si.duration || 5;
+                const segmentDuration = finalFrames / finalFps;
 
-                console.log(`[Job ${jobId}] Calling Deapi Aud2Video: ${finalModel}, size=${finalWidth}x${finalHeight}, frames=${finalFrames}`);
+                console.log(`[Job ${jobId}] Audio duration: ${totalDuration}s, Segment duration: ${segmentDuration}s`);
 
-                const deapiRes = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${deapiKey}`,
-                        'accept': 'application/json'
-                    },
-                    body: formData
-                });
+                // Se o áudio for significativamente maior que a duração do segmento pedida, dividir.
+                if (totalDuration <= segmentDuration * 1.1) {
+                    // Lógica de segmento único
+                    const formData = new FormData();
+                    formData.append('audio', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'audio.mp3');
+                    formData.append('prompt', translatedPrompt);
+                    formData.append('frames', finalFrames.toString());
+                    formData.append('width', finalWidth.toString()); 
+                    formData.append('height', finalHeight.toString());
+                    formData.append('fps', finalFps.toString());
+                    formData.append('model', finalModel.toString());
+                    const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
+                    formData.append('seed', finalSeed.toString());
 
-                const data = await deapiRes.json();
-                if (!deapiRes.ok) {
-                    if (deapiRes.status === 429 || (data.message && data.message.includes("Too Many Attempts"))) {
-                        throw new Error("A API externa está com alta demanda (Rate Limit). Por favor, aguarde de 2 a 5 minutos e tente novamente.");
+                    const deapiRes = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${deapiKey}` },
+                        body: formData
+                    });
+                    const data = await deapiRes.json();
+                    if (!deapiRes.ok) throw new Error(data.message || "Erro na API Deapi");
+                    
+                    await handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai", true);
+                } else {
+                    // Lógica multi-segmento
+                    const numSegments = Math.ceil(totalDuration / segmentDuration);
+                    const taskIds: string[] = [];
+                    const videoPaths: string[] = [];
+
+                    for (let i = 0; i < numSegments; i++) {
+                        const start = i * segmentDuration;
+                        const duration = Math.min(segmentDuration, totalDuration - start);
+                        if (duration < 0.5) continue; // Pular restos muito pequenos
+
+                        const segPath = path.join(uploadDir, `seg_${jobId}_${i}.mp3`);
+                        await cutAudio(tempAudioPath, segPath, start, duration);
+                        
+                        const formData = new FormData();
+                        formData.append('audio', new Blob([fs.readFileSync(segPath)], { type: 'audio/mpeg' }), 'audio.mp3');
+                        formData.append('prompt', translatedPrompt);
+                        formData.append('frames', Math.round(duration * finalFps).toString());
+                        formData.append('width', finalWidth.toString()); 
+                        formData.append('height', finalHeight.toString());
+                        formData.append('fps', finalFps.toString());
+                        formData.append('model', finalModel.toString());
+                        const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
+                        formData.append('seed', finalSeed.toString());
+
+                        // Use fetchWithRetry for segments as well and add a small delay
+                        const res = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${deapiKey}` },
+                            body: formData
+                        });
+                        
+                        const data = await res.json();
+                        if (!res.ok) {
+                            console.error(`[Job ${jobId}] Segment ${i+1} initiation failed:`, data);
+                            throw new Error(data.message || `Falha ao iniciar segmento ${i+1}`);
+                        }
+
+                        const tid = data.data?.request_id || data.request_id || data.id || data.task_id;
+                        if (!tid) {
+                            console.error(`[Job ${jobId}] Segment ${i+1} missing taskId in response:`, data);
+                            throw new Error(`Falha ao obter ID da tarefa para o segmento ${i+1}`);
+                        }
+                        
+                        taskIds.push(tid);
+                        try { if (fs.existsSync(segPath)) fs.unlinkSync(segPath); } catch(e) {}
+                        
+                        if (jobs[jobId]) {
+                            jobs[jobId].message = `Lançando Morpheus nos segmentos: ${i+1}/${numSegments}...`;
+                            jobs[jobId].progress = 10 + (i/numSegments) * 10;
+                        }
+
+                        // Delay between requests to avoid rate limits
+                        if (i < numSegments - 1) await new Promise(r => setTimeout(r, 2500));
                     }
-                    throw new Error(data.message || "Erro no Deapi");
+
+                    // Poll all tasks
+                    const completedTasks = new Set();
+                    let attempts = 0;
+                    while (completedTasks.size < taskIds.length && attempts < 200 && jobs[jobId]) {
+                        attempts++;
+                        await new Promise(r => setTimeout(r, 20000));
+                        for (let i = 0; i < taskIds.length; i++) {
+                            if (completedTasks.has(taskIds[i])) continue;
+                            try {
+                                const poll = await fetch(`https://api.deapi.ai/api/v1/client/task_status?request_id=${taskIds[i]}`, {
+                                    headers: { 'Authorization': `Bearer ${deapiKey}` }
+                                });
+                                const r = await poll.json();
+                                const task = r.data || r;
+                                const st = (task.status || "").toLowerCase();
+                                if (['completed', 'succeeded', 'success', 'done', 'finished', 'ready'].includes(st)) {
+                                    const vUrl = task.result_url || task.video_url || task.url || task.download_url || task.data?.url;
+                                    if (vUrl) {
+                                        const vRes = await fetch(vUrl);
+                                        const vPath = path.join(uploadDir, `v_${jobId}_${i}.mp4`);
+                                        fs.writeFileSync(vPath, Buffer.from(await vRes.arrayBuffer()));
+                                        videoPaths[i] = vPath;
+                                        completedTasks.add(taskIds[i]);
+                                    }
+                                } else if (st === 'failed' || st === 'error') {
+                                    throw new Error(task.error || task.message || `Segmento ${i+1} falhou.`);
+                                }
+                            } catch(e: any) { console.warn(`Poll segment ${i} fail:`, e.message); }
+                        }
+                        if (jobs[jobId]) {
+                            jobs[jobId].message = `Morpheus esculpindo: ${completedTasks.size}/${taskIds.length} partes prontas...`;
+                            jobs[jobId].progress = 20 + (completedTasks.size / taskIds.length) * 75;
+                        }
+                    }
+
+                    if (completedTasks.size === taskIds.length) {
+                        const finalVideoPath = path.join(uploadDir, `final_${jobId}.mp4`);
+                        const validPaths = [];
+                        for(let i=0; i<taskIds.length; i++) if(videoPaths[i]) validPaths.push(videoPaths[i]);
+
+                        await concatVideos(validPaths, finalVideoPath);
+                        validPaths.forEach(p => { try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch(e) {} });
+                        
+                        if (jobs[jobId]) {
+                            jobs[jobId].status = 'completed';
+                            jobs[jobId].downloadUrl = `/api/proxy/video/${path.basename(finalVideoPath)}`;
+                            jobs[jobId].progress = 100;
+                        }
+                    } else {
+                        throw new Error("A geração dos segmentos demorou demais ou houve falha persistente.");
+                    }
                 }
 
-                // Use the same task handler as other Deapi endpoints
-                handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai", true);
             } catch (error: any) {
-                console.error(`[Job ${jobId}] Background Error:`, error);
-                if (jobs[jobId]) {
-                    jobs[jobId].status = 'failed';
-                    jobs[jobId].error = error.message;
-                }
+                console.error(`[Job ${jobId}] Error:`, error);
+                if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = error.message; }
+            } finally {
+                try { if (tempAudioPath && fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath); } catch(e) {}
             }
         })();
     });
