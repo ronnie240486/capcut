@@ -50,6 +50,7 @@ import filterBuilder from './video-engine/filter-logic.js';
 import voiceAutomation from './video-engine/voice-automation.js';
 
 const app = express();
+app.set('trust proxy', true);
 const PORT = 3000;
 
 // Global Error Handlers to prevent "Lost Process"
@@ -1695,7 +1696,9 @@ async function startServer() {
             fps, 
             model, modelo, 
             seed, 
-            apiKey 
+            apiKey,
+            startTime,
+            segmentDuration
         } = req.body;
 
         const deapiKey = apiKey || getDeapiKey(req);
@@ -1729,6 +1732,27 @@ async function startServer() {
                     const arrayBuffer = await audioRes.arrayBuffer();
                     audioBuffer = Buffer.from(arrayBuffer);
                 }
+
+                // --- TRIMMING LOGIC ---
+                if (startTime !== undefined && segmentDuration !== undefined) {
+                    console.log(`[Job ${jobId}] Trimming audio: start=${startTime}s, dur=${segmentDuration}s`);
+                    const inputPath = path.join(tmpdir(), `input_${jobId}.mp3`);
+                    const outputPath = path.join(tmpdir(), `output_${jobId}.mp3`);
+                    fs.writeFileSync(inputPath, audioBuffer);
+                    
+                    try {
+                        // Use ffmpeg to trim the audio
+                        execSync(`ffmpeg -y -i "${inputPath}" -ss ${startTime} -t ${segmentDuration} -acodec copy "${outputPath}"`);
+                        audioBuffer = fs.readFileSync(outputPath);
+                    } catch (trimErr: any) {
+                        console.error(`[Job ${jobId}] Trim error:`, trimErr.message);
+                        // Fallback to original buffer if trim fails (better than nothing)
+                    } finally {
+                        try { if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath); } catch(e) {}
+                        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch(e) {}
+                    }
+                }
+                // ----------------------
 
                 const formData = new FormData();
                 // Using Blob with type for multipart/form-data compatibility
