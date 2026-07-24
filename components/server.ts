@@ -1764,6 +1764,7 @@ async function startServer() {
 
     // ─── AI VIDEO GENERATION ──────────────────────────────────────────────────
     app.post('/api/ai/audio-to-video', async (req: any, res: any) => {
+        console.log("[API] Received audio-to-video request");
         // Support for both English and Portuguese keys from frontend
         const { 
             audioUrl, áudio, 
@@ -1778,14 +1779,24 @@ async function startServer() {
         } = req.body;
 
         const deapiKey = apiKey || getDeapiKey(req);
-        if (!deapiKey) return res.status(401).json({ error: "DEAPI_API_KEY não configurada." });
+        if (!deapiKey) {
+            console.error("[API] audio-to-video: DEAPI_API_KEY missing");
+            return res.status(401).json({ error: "DEAPI_API_KEY não configurada." });
+        }
 
         const finalAudioUrl = audioUrl || áudio;
+        if (!finalAudioUrl) {
+            console.error("[API] audio-to-video: audioUrl missing");
+            return res.status(400).json({ error: "URL ou dados do áudio são obrigatórios." });
+        }
+
         const finalFrames = Math.min(120, Math.max(24, Number(frames || quadros || 120)));
         const finalWidth = Math.max(256, Number(width || largura || 768));
         const finalHeight = Math.max(256, Number(height || altura || 768));
-        const deapiModel = model || modelo || 'Ltx2_3_22B_Dist_INT8';
+        const deapiModel = String(model || modelo || 'Ltx2_3_22B_Dist_INT8');
         const finalFps = Math.max(1, Number(fps || 24));
+
+        console.log(`[API] Processing aud2vid: model=${deapiModel}, frames=${finalFrames}, res=${finalWidth}x${finalHeight}`);
 
         // Mapeamento de modelos para Deapi V1/V2
         const modelMap: Record<string, string> = {
@@ -1801,13 +1812,14 @@ async function startServer() {
 
         const jobId = `aud2vid_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'processing', progress: 2, startTime: Date.now(), message: 'Iniciando Processamento Inteligente...' };
+        
+        console.log(`[API] Returning job ID: ${jobId}`);
         res.status(202).json({ jobId });
 
         (async () => {
             let tempAudioPath = '';
             try {
                 if (jobs[jobId]) jobs[jobId].message = "Iniciando motor de IA...";
-                if (!finalAudioUrl) throw new Error("URL ou dados do áudio são obrigatórios.");
                 console.log(`[Job ${jobId}] Starting Audio2Video task...`);
 
                 // 1. Traduzir o prompt para inglês se necessário para melhores resultados
@@ -1828,7 +1840,9 @@ async function startServer() {
                 jobs[jobId].message = "Harmonizando áudio com a rede neural...";
                 let audioBuffer: Buffer;
                 if (finalAudioUrl.startsWith('data:')) {
-                    const [header, base64Data] = finalAudioUrl.split(',');
+                    const commaIndex = finalAudioUrl.indexOf(',');
+                    if (commaIndex === -1) throw new Error("Formato de DataURL de áudio inválido.");
+                    const base64Data = finalAudioUrl.substring(commaIndex + 1);
                     audioBuffer = Buffer.from(base64Data, 'base64');
                 } else {
                     const audioRes = await fetch(finalAudioUrl);
