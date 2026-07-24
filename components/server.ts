@@ -1197,6 +1197,141 @@ async function startServer() {
     const jobs: Record<string, any> = {};
     const JOBS_FILE = path.join(process.cwd(), 'jobs_persistence.json');
 
+    // Helper to handle Deapi task/job response
+    async function handleDeapiTask(jobId: string, data: any, deapiKey: string, baseUrl: string, shouldDownload = false) {
+        const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id || data.data?.job_id;
+        
+        if (!taskId) {
+            const directUrl = data.url || data.audio_url || data.data?.url || data.result_url || data.data?.result_url || data.video_url;
+            if (directUrl) {
+                if (shouldDownload) {
+                    try {
+                        const filename = `ai_gen_${jobId}_${Date.now()}.mp4`;
+                        const outputPath = path.join(uploadDir, filename);
+                        const res = await fetch(directUrl);
+                        if (res.ok) {
+                            fs.writeFileSync(outputPath, Buffer.from(await res.arrayBuffer()));
+                            jobs[jobId].status = 'completed';
+                            jobs[jobId].progress = 100;
+                            jobs[jobId].outputPath = outputPath;
+                            jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                            return;
+                        }
+                    } catch (e) {}
+                }
+                jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = directUrl; jobs[jobId].progress = 100;
+                return;
+            }
+            console.error(`[Job ${jobId}] Deapi response missing taskId:`, JSON.stringify(data));
+            throw new Error('Deapi não retornou ID da tarefa nem URL direta.');
+        }
+
+        let completed = false;
+        let attempts = 0;
+        let pollFailures = 0;
+        
+        console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
+        if (jobs[jobId]) jobs[jobId].message = "Conectado à Deapi. Aguardando processamento...";
+        
+        // Initial wait
+        await new Promise(r => setTimeout(r, 10000));
+        if (jobs[jobId]) jobs[jobId].progress = 10;
+
+        while (!completed && attempts < 150 && jobs[jobId]) {
+            attempts++;
+            
+            try {
+                let pollRes = await fetchWithRetry(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
+                    headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                }, 3);
+                
+                if (!pollRes.ok) {
+                    pollRes = await fetchWithRetry(`${baseUrl}/api/v2/jobs/${taskId}`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                    }, 3);
+                }
+                
+                if (pollRes.status === 429) {
+                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 45s...`);
+                    if (jobs[jobId]) jobs[jobId].message = "API Ocupada (429). Aguardando fôlego...";
+                    await new Promise(r => setTimeout(r, 45000));
+                    continue;
+                }
+
+                if (pollRes.ok) {
+                    pollFailures = 0;
+                    const taskData: any = await pollRes.json();
+                    const result = taskData.data || taskData;
+                    const status = (result.status || "").toLowerCase();
+                    
+                    if (jobs[jobId]) {
+                        const checkCount = `(Checagem ${attempts})`;
+                        const statusMsg = result.message || status || "processando";
+                        jobs[jobId].message = `Esculpindo vídeo... ${statusMsg} ${checkCount}`;
+                        jobs[jobId].progress = Math.min(98, 10 + attempts * 1);
+                        
+                        const extProgress = result.progress || result.percentage;
+                        if (extProgress) jobs[jobId].progress = Math.min(99, Number(extProgress));
+                    }
+                    
+                    if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done' || status === 'ready' || status === 'finished') {
+                        const resultUrl = result.result_url || result.audio_url || result.video_url || result.url || result.download_url || result.data?.result_url || result.data?.url;
+                        const duration = result.duration || result.audio_duration || (result.data && result.data.duration);
+                        
+                        if (resultUrl) {
+                            if (shouldDownload) {
+                                try {
+                                    console.log(`[Job ${jobId}] Baixando ativo Deapi: ${resultUrl}`);
+                                    const dlRes = await fetch(resultUrl);
+                                    if (dlRes.ok) {
+                                        const buffer = Buffer.from(await dlRes.arrayBuffer());
+                                        const contentType = dlRes.headers.get('content-type') || '';
+                                        let fileExt = '.mp4';
+                                        if (contentType.includes('audio')) fileExt = '.mp3';
+                                        else if (contentType.includes('image')) fileExt = '.png';
+                                        else if (resultUrl.toLowerCase().includes('.mp3')) fileExt = '.mp3';
+                                        else if (resultUrl.toLowerCase().includes('.png')) fileExt = '.png';
+                                        
+                                        const filename = `ai_gen_${jobId}${fileExt}`;
+                                        const outputPath = path.join(uploadDir, filename);
+                                        fs.writeFileSync(outputPath, buffer);
+                                        
+                                        jobs[jobId].status = 'completed';
+                                        jobs[jobId].progress = 100;
+                                        jobs[jobId].outputPath = outputPath;
+                                        jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                                        if (duration) jobs[jobId].duration = Number(duration);
+                                        completed = true;
+                                        return;
+                                    }
+                                } catch (dlErr) {
+                                    console.warn(`[Job ${jobId}] Falha no download local, usando URL direta`, dlErr);
+                                }
+                            }
+                            
+                            jobs[jobId].status = 'completed'; 
+                            jobs[jobId].downloadUrl = resultUrl; 
+                            if (duration) jobs[jobId].duration = Number(duration);
+                            jobs[jobId].progress = 100;
+                            completed = true;
+                        }
+                    } else if (status === 'failed' || status === 'error') {
+                        throw new Error(result.error || result.message || 'A geração AI falhou no servidor externo.');
+                    }
+                } else {
+                    pollFailures++;
+                    if (pollFailures > 15) throw new Error("Muitas falhas na verificação de status (HTTP Error).");
+                }
+            } catch (e: any) { 
+                console.warn(`[Job ${jobId}] Polling error:`, e); 
+                pollFailures++;
+                if (pollFailures > 15) throw new Error(e.message || "Erro persistente na verificação de status.");
+            }
+            if (!completed) await new Promise(r => setTimeout(r, 15000));
+        }
+        if (!completed && jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'A geração demorou demais ou o servidor externo parou de responder.'; }
+    }
+
     // Load jobs from disk on startup
     try {
         if (fs.existsSync(JOBS_FILE)) {
@@ -1600,10 +1735,10 @@ async function startServer() {
                 formData.append('audio', new Blob([audioBuffer], { type: audioMime }), 'audio.mp3');
                 formData.append('prompt', (prompt || 'Music video').toString());
                 formData.append('frames', finalFrames.toString());
-                formData.append('largura', finalWidth.toString()); 
-                formData.append('altura', finalHeight.toString());
+                formData.append('width', finalWidth.toString()); 
+                formData.append('height', finalHeight.toString());
                 formData.append('fps', (fps || '24').toString());
-                formData.append('modelo', finalModel.toString());
+                formData.append('model', finalModel.toString());
                 
                 // Seed is recommended for reproducibility
                 const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
@@ -1629,7 +1764,7 @@ async function startServer() {
                 }
 
                 // Use the same task handler as other Deapi endpoints
-                handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai");
+                handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai", true);
             } catch (error: any) {
                 console.error(`[Job ${jobId}] Background Error:`, error);
                 if (jobs[jobId]) {
@@ -1844,6 +1979,10 @@ async function startServer() {
 
                 while (!completed && attempts < maxAttempts && jobs[jobId]) {
                     attempts++;
+                    if (jobs[jobId]) {
+                        jobs[jobId].message = `Esculpindo vídeo com Morpheus... (Etapa ${attempts})`;
+                        jobs[jobId].progress = Math.min(98, 10 + (attempts * 0.5));
+                    }
                     const pollWait = 20000 + (Math.random() * 5000); 
                     await new Promise(r => setTimeout(r, pollWait));
                     
@@ -2035,16 +2174,18 @@ async function startServer() {
             let attempts = 0;
             const maxAttempts = 60;
 
-            while (!completed && attempts < maxAttempts) {
+            while (!completed && attempts < maxAttempts && jobs[jobId]) {
                 attempts++;
-                await new Promise(r => setTimeout(r, 5000));
+                if (jobs[jobId]) {
+                    jobs[jobId].message = `Esculpindo vídeo com Morpheus... (Fase ${attempts})`;
+                    jobs[jobId].progress = Math.min(95, 10 + (attempts * 1.5));
+                }
+                await new Promise(r => setTimeout(r, 8000));
                 
                 // Polling using the SDK
                 const pollRes = await ai.operations.getVideosOperation({ 
                     operation: operation 
                 });
-                
-                if (jobs[jobId]) jobs[jobId].progress = Math.min(95, 10 + (attempts * 1.5));
 
                 if (pollRes.done) {
                     completed = true;
@@ -2140,7 +2281,7 @@ async function startServer() {
 
             if (response.ok) {
                 const data: any = await response.json();
-                handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                handleDeapiTask(jobId, data, deapiKey, baseUrl, true);
             } else {
                 const text = await response.text();
                 throw new Error(`Status ${response.status}: ${text.substring(0, 200)}`);
@@ -2851,7 +2992,7 @@ async function startServer() {
                             jobs[jobId].downloadUrl = directUrl;
                             jobs[jobId].progress = 100;
                         } else {
-                            handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                            handleDeapiTask(jobId, data, deapiKey, baseUrl, true);
                         }
                         
                         success = true;
@@ -2881,78 +3022,6 @@ async function startServer() {
         }
     });
 
-    // Helper to handle Deapi task/job response
-    const handleDeapiTask = async (jobId: string, data: any, deapiKey: string, baseUrl: string) => {
-        const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id;
-        
-        if (!taskId) {
-            const directUrl = data.url || data.audio_url || data.data?.url || data.result_url || data.data?.result_url;
-            if (directUrl) {
-                jobs[jobId].status = 'completed'; jobs[jobId].downloadUrl = directUrl; jobs[jobId].progress = 100;
-                return;
-            }
-            throw new Error('Deapi não retornou request_id nem URL direta.');
-        }
-
-        let completed = false;
-        let attempts = 0;
-        
-        console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
-        if (jobs[jobId]) jobs[jobId].message = "Tarefa iniciada na Deapi. Aguardando processamento...";
-        
-        // Espera inicial menor
-        await new Promise(r => setTimeout(r, 15000));
-        if (jobs[jobId]) jobs[jobId].progress = 15;
-
-        while (!completed && attempts < 100 && jobs[jobId]) {
-            attempts++;
-            if (jobs[jobId]) {
-                jobs[jobId].message = `Processando... (Checagem ${attempts})`;
-                jobs[jobId].progress = Math.min(95, 15 + attempts * 2);
-            }
-            console.log(`[Job ${jobId}] Tentativa de polling #${attempts} para taskId: ${taskId}`);
-            try {
-                // Tentar primeiro o endpoint de status v1 que é mais comum para txt2audio
-                let pollRes = await fetchWithRetry(`${baseUrl}/api/v1/client/task_status?request_id=${taskId}`, {
-                    headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
-                });
-                
-                if (!pollRes.ok) {
-                    pollRes = await fetchWithRetry(`${baseUrl}/api/v2/jobs/${taskId}`, {
-                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
-                    });
-                }
-                
-                if (pollRes.status === 429) {
-                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 45s para esfriar...`);
-                    if (jobs[jobId]) jobs[jobId].message = "API Ocupada (429). Aguardando liberação...";
-                    await new Promise(r => setTimeout(r, 45000));
-                    continue;
-                }
-
-                if (pollRes.ok) {
-                    const taskData: any = await pollRes.json();
-                    const result = taskData.data || taskData;
-                    const status = (result.status || "").toLowerCase();
-                    if (status === 'completed' || status === 'succeeded' || status === 'success' || status === 'done') {
-                        const resultUrl = result.result_url || result.audio_url || result.url || result.download_url || result.data?.result_url;
-                        const duration = result.duration || result.audio_duration || (result.data && result.data.duration);
-                        if (resultUrl) {
-                            jobs[jobId].status = 'completed'; 
-                            jobs[jobId].downloadUrl = resultUrl; 
-                            if (duration) jobs[jobId].duration = Number(duration);
-                            jobs[jobId].progress = 100;
-                            completed = true;
-                        }
-                    } else if (status === 'failed' || status === 'error') {
-                        throw new Error(result.error || result.message || 'Deapi processing failed');
-                    }
-                }
-            } catch (e) { console.warn(`[Job ${jobId}] Polling error:`, e); }
-            if (!completed) await new Promise(r => setTimeout(r, 15000));
-        }
-        if (!completed && jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Timeout na deAPI.'; }
-    };
 
     // ─── DEAPI MUSIC GENERATION ────────────────────────────────────────────────
     // Doc: POST /api/v2/audio/music — Content-Type: multipart/form-data
@@ -3173,7 +3242,7 @@ async function startServer() {
 
                     if (response.ok) {
                         const data: any = await response.json();
-                        handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                        handleDeapiTask(jobId, data, deapiKey, baseUrl, true);
                         success = true;
                         break;
                     } else {
@@ -3275,8 +3344,12 @@ async function startServer() {
                         
                         let completed = false;
                         let attempts = 0;
-                        while (!completed && attempts < 40 && jobs[jobId]) {
+                        while (!completed && attempts < 60 && jobs[jobId]) {
                             attempts++;
+                            if (jobs[jobId]) {
+                                jobs[jobId].message = `Sinfonia AI: Compondo trilha... (Etapa ${attempts})`;
+                                jobs[jobId].progress = Math.min(95, 10 + attempts * 1.5);
+                            }
                             await new Promise(r => setTimeout(r, 6000));
                             try {
                                 const pollRes = await fetch(`${customUrl}/api/get?ids=${clipId}`, {
@@ -3485,7 +3558,7 @@ async function startServer() {
 
                     if (response.ok) {
                         const data: any = await response.json();
-                        handleDeapiTask(jobId, data, deapiKey, baseUrl);
+                        handleDeapiTask(jobId, data, deapiKey, baseUrl, true);
                         success = true;
                         break;
                     } else {
