@@ -228,7 +228,7 @@ async function startServer() {
     }
 
     // Helper for fetch with exponential backoff for 429
-    async function fetchWithRetry(url: string, options: any, maxRetries = 15) {
+    async function fetchWithRetry(url: string, options: any, maxRetries = 7) {
         let lastStatus = 0;
         
         for (let i = 0; i <= maxRetries; i++) {
@@ -237,7 +237,7 @@ async function startServer() {
                 lastStatus = response.status;
                 
                 if (response.status === 429 && i < maxRetries) {
-                    const wait = Math.min(180000, Math.pow(2, i) * 6000 + (Math.random() * 4000)); // 6s, 12s, 24s... cap at 180s
+                    const wait = Math.min(120000, Math.pow(2, i) * 5000 + (Math.random() * 2000)); 
                     console.warn(`[Retry] Status 429 on ${url}. Waiting ${Math.round(wait)}ms before retry ${i + 1}/${maxRetries}`);
                     await new Promise(r => setTimeout(r, wait));
                     continue;
@@ -246,7 +246,7 @@ async function startServer() {
                 return response;
             } catch (e: any) {
                 if (i === maxRetries) throw e;
-                const wait = Math.min(60000, Math.pow(2, i) * 3000);
+                const wait = Math.min(30000, Math.pow(2, i) * 2000);
                 await new Promise(r => setTimeout(r, wait));
             }
         }
@@ -2898,12 +2898,18 @@ async function startServer() {
         let attempts = 0;
         
         console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
+        if (jobs[jobId]) jobs[jobId].message = "Tarefa iniciada na Deapi. Aguardando processamento...";
         
-        // Espera inicial de 45s para evitar 429 em processamentos pesados
-        await new Promise(r => setTimeout(r, 45000));
+        // Espera inicial menor
+        await new Promise(r => setTimeout(r, 15000));
+        if (jobs[jobId]) jobs[jobId].progress = 15;
 
         while (!completed && attempts < 100 && jobs[jobId]) {
             attempts++;
+            if (jobs[jobId]) {
+                jobs[jobId].message = `Processando... (Checagem ${attempts})`;
+                jobs[jobId].progress = Math.min(95, 15 + attempts * 2);
+            }
             console.log(`[Job ${jobId}] Tentativa de polling #${attempts} para taskId: ${taskId}`);
             try {
                 // Tentar primeiro o endpoint de status v1 que é mais comum para txt2audio
@@ -2918,9 +2924,9 @@ async function startServer() {
                 }
                 
                 if (pollRes.status === 429) {
-                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 90s para esfriar...`);
-                    if (jobs[jobId]) jobs[jobId].message = "A API está ocupada, aguardando liberação...";
-                    await new Promise(r => setTimeout(r, 90000));
+                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 45s para esfriar...`);
+                    if (jobs[jobId]) jobs[jobId].message = "API Ocupada (429). Aguardando liberação...";
+                    await new Promise(r => setTimeout(r, 45000));
                     continue;
                 }
 
@@ -2943,7 +2949,7 @@ async function startServer() {
                     }
                 }
             } catch (e) { console.warn(`[Job ${jobId}] Polling error:`, e); }
-            if (!completed) await new Promise(r => setTimeout(r, 30000));
+            if (!completed) await new Promise(r => setTimeout(r, 15000));
         }
         if (!completed && jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Timeout na deAPI.'; }
     };
