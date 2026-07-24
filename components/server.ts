@@ -1789,15 +1789,15 @@ async function startServer() {
 
         // Mapeamento de modelos para Deapi V1/V2
         const modelMap: Record<string, string> = {
-            "ltx-2.3-22b": "ltx-video-v2.3",
+            "ltx-2.3-22b": "ltx-video-v1.3", // V1 default for high quality
             "ltx-video-13b": "ltx-video-v1.3",
-            "ltx-2-19b-fp8": "ltx-video-v2.0",
+            "ltx-2-19b-fp8": "ltx-video-v1.3", // V1 usually supports v1.3
             "ltx-video": "ltx-video-v1.3",
-            "ltx-video-v2": "ltx-video-v2.0",
-            "morpheus": "Ltx2_3_22B_Dist_INT8",
-            "ltx2_3_22b_dist_int8": "Ltx2_3_22B_Dist_INT8"
+            "ltx-video-v2": "ltx-video-v1.3",
+            "morpheus": "ltx-video-v1.3",
+            "ltx2_3_22b_dist_int8": "ltx-video-v1.3"
         };
-        const finalModel = modelMap[deapiModel.toLowerCase()] || deapiModel;
+        const finalModel = modelMap[deapiModel.toLowerCase()] || 'ltx-video-v1.3';
 
         const jobId = `aud2vid_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'processing', progress: 2, startTime: Date.now(), message: 'Iniciando Processamento Inteligente...' };
@@ -1860,21 +1860,23 @@ async function startServer() {
                     if (audioBuffer.length < 5 * 1024 * 1024) {
                         formData.append('audio', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'audio.mp3');
                     } else if (finalAudioUrl && finalAudioUrl.startsWith('http')) {
+                        // Tenta 'audio' como URL primeiro, fallback 'audio_url'
+                        formData.append('audio', finalAudioUrl);
                         formData.append('audio_url', finalAudioUrl);
                     } else {
                         formData.append('audio', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'audio.mp3');
                     }
 
-                    formData.append('prompt', translatedPrompt);
-                    formData.append('frames', finalFrames.toString());
+                    formData.append('prompt', translatedPrompt || 'cinematic music video style');
+                    formData.append('frames', Math.min(120, finalFrames).toString());
                     formData.append('width', finalWidth.toString()); 
                     formData.append('height', finalHeight.toString());
                     formData.append('fps', finalFps.toString());
-                    formData.append('model', finalModel);
+                    formData.append('model', 'ltx-video');
                     const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
                     formData.append('seed', finalSeed.toString());
 
-                    console.log(`[Job ${jobId}] Sending request to Deapi: https://api.deapi.ai/api/v1/client/aud2video (Model: ${finalModel})`);
+                    console.log(`[Job ${jobId}] Sending request to Deapi: https://api.deapi.ai/api/v1/client/aud2video (Model: ltx-video)`);
                     jobs[jobId].message = "Iniciando upload e geração (isso pode levar alguns minutos)...";
                     
                     const deapiRes = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
@@ -1903,15 +1905,18 @@ async function startServer() {
                         
                         const formData = new FormData();
                         formData.append('audio', new Blob([fs.readFileSync(segPath)], { type: 'audio/mpeg' }), 'audio.mp3');
-                        formData.append('prompt', translatedPrompt);
-                        formData.append('frames', Math.round(duration * finalFps).toString());
+                        formData.append('prompt', translatedPrompt || 'cinematic music video style');
+                        const segmentFrames = Math.min(120, Math.round(duration * finalFps));
+                        formData.append('frames', segmentFrames.toString());
                         formData.append('width', finalWidth.toString()); 
                         formData.append('height', finalHeight.toString());
                         formData.append('fps', finalFps.toString());
-                        formData.append('model', finalModel.toString());
+                        formData.append('model', 'ltx-video'); // Use stable alias for V1
                         const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
                         formData.append('seed', finalSeed.toString());
 
+                        console.log(`[Job ${jobId}] Segment ${i+1} payload:`, { model: finalModel, frames: Math.round(duration * finalFps), fps: finalFps });
+                        
                         // Use fetchWithRetry for segments as well and add a small delay
                         const res = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
                             method: 'POST',
@@ -1920,6 +1925,7 @@ async function startServer() {
                         });
                         
                         const data = await res.json();
+                        console.log(`[Job ${jobId}] Segment ${i+1} response:`, data);
                         if (!res.ok) {
                             console.error(`[Job ${jobId}] Segment ${i+1} initiation failed:`, data);
                             throw new Error(data.message || `Falha ao iniciar segmento ${i+1}`);
@@ -1932,6 +1938,8 @@ async function startServer() {
                         }
                         
                         taskIds.push(tid);
+                        // Delay de 2s para evitar "Too Many Attempts" da Deapi
+                        await new Promise(r => setTimeout(r, 2000));
                         try { if (fs.existsSync(segPath)) fs.unlinkSync(segPath); } catch(e) {}
                         
                         if (jobs[jobId]) {
