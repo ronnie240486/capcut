@@ -1205,17 +1205,24 @@ async function startServer() {
         try {
             const apiKey = process.env.GEMINI_API_KEY;
             if (!apiKey) return prompt;
+            
             const ai = new GoogleGenAI({ 
                 apiKey,
                 httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } 
             });
+            
+            console.log(`[Translate] Requesting translation for: "${prompt}"`);
             const result = await ai.models.generateContent({
                 model: "gemini-3.6-flash",
-                contents: `Translate this AI video generation prompt to English. Be descriptive. ONLY output the translation: "${prompt}"`
+                contents: [{ role: "user", parts: [{ text: `Translate this AI video generation prompt to English. Be descriptive but concise. ONLY output the translated English text: "${prompt}"` }] }]
             });
+            
             const translation = result.text?.trim().replace(/^"|"$/g, '');
-            console.log(`[Translate] "${prompt}" -> "${translation}"`);
-            return translation || prompt;
+            if (translation && translation.length > 2) {
+                console.log(`[Translate] Success: "${prompt}" -> "${translation}"`);
+                return translation;
+            }
+            return prompt;
         } catch (e: any) {
             console.warn("[Translate] Failed:", e.message);
             return prompt;
@@ -1833,14 +1840,24 @@ async function startServer() {
                         const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
                         formData.append('seed', finalSeed.toString());
 
-                        const res = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
+                        // Use fetchWithRetry for segments as well and add a small delay
+                        const res = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
                             method: 'POST',
                             headers: { 'Authorization': `Bearer ${deapiKey}` },
                             body: formData
                         });
+                        
                         const data = await res.json();
-                        const tid = data.data?.request_id || data.request_id || data.id;
-                        if (!tid) throw new Error(`Falha ao iniciar segmento ${i+1}`);
+                        if (!res.ok) {
+                            console.error(`[Job ${jobId}] Segment ${i+1} initiation failed:`, data);
+                            throw new Error(data.message || `Falha ao iniciar segmento ${i+1}`);
+                        }
+
+                        const tid = data.data?.request_id || data.request_id || data.id || data.task_id;
+                        if (!tid) {
+                            console.error(`[Job ${jobId}] Segment ${i+1} missing taskId in response:`, data);
+                            throw new Error(`Falha ao obter ID da tarefa para o segmento ${i+1}`);
+                        }
                         
                         taskIds.push(tid);
                         try { if (fs.existsSync(segPath)) fs.unlinkSync(segPath); } catch(e) {}
@@ -1849,6 +1866,9 @@ async function startServer() {
                             jobs[jobId].message = `Lançando Morpheus nos segmentos: ${i+1}/${numSegments}...`;
                             jobs[jobId].progress = 10 + (i/numSegments) * 10;
                         }
+
+                        // Delay between requests to avoid rate limits
+                        if (i < numSegments - 1) await new Promise(r => setTimeout(r, 2500));
                     }
 
                     // Poll all tasks
