@@ -228,7 +228,7 @@ async function startServer() {
     }
 
     // Helper for fetch with exponential backoff for 429
-    async function fetchWithRetry(url: string, options: any, maxRetries = 5) {
+    async function fetchWithRetry(url: string, options: any, maxRetries = 7) {
         let lastStatus = 0;
         
         for (let i = 0; i <= maxRetries; i++) {
@@ -237,8 +237,8 @@ async function startServer() {
                 lastStatus = response.status;
                 
                 if (response.status === 429 && i < maxRetries) {
-                    const wait = Math.pow(2, i) * 3000; // 3s, 6s, 12s, 24s, 48s
-                    console.warn(`[Retry] Status 429 on ${url}. Waiting ${wait}ms before retry ${i + 1}/${maxRetries}`);
+                    const wait = Math.pow(2, i) * 5000 + (Math.random() * 2000); // 5s, 10s, 20s, 40s... + jitter
+                    console.warn(`[Retry] Status 429 on ${url}. Waiting ${Math.round(wait)}ms before retry ${i + 1}/${maxRetries}`);
                     await new Promise(r => setTimeout(r, wait));
                     continue;
                 }
@@ -246,7 +246,7 @@ async function startServer() {
                 return response;
             } catch (e: any) {
                 if (i === maxRetries) throw e;
-                const wait = Math.pow(2, i) * 1500;
+                const wait = Math.pow(2, i) * 2000;
                 await new Promise(r => setTimeout(r, wait));
             }
         }
@@ -1550,50 +1550,89 @@ async function startServer() {
 
     // ─── AI VIDEO GENERATION ──────────────────────────────────────────────────
     app.post('/api/ai/audio-to-video', async (req: any, res: any) => {
-        const { audioUrl, prompt, frames, width, height, fps, model, seed, apiKey } = req.body;
+        // Support for both English and Portuguese keys from frontend
+        const { 
+            audioUrl, áudio, 
+            prompt, 
+            frames, quadros, 
+            width, largura, 
+            height, altura, 
+            fps, 
+            model, modelo, 
+            seed, 
+            apiKey 
+        } = req.body;
+
         const deapiKey = apiKey || getDeapiKey(req);
         if (!deapiKey) return res.status(401).json({ error: "DEAPI_API_KEY não configurada." });
 
+        const finalAudioUrl = audioUrl || áudio;
+        const finalFrames = frames || quadros || 120;
+        const finalWidth = width || largura || 768;
+        const finalHeight = height || altura || 768;
+        const finalModel = model || modelo || 'Ltx2_3_22B_Dist_INT8';
+
         const jobId = `aud2vid_${Date.now()}`;
+        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        res.status(202).json({ jobId });
 
-        try {
-            // Fetch audio from URL and convert to Buffer/Blob for Deapi
-            const audioRes = await fetch(audioUrl);
-            const audioBuffer = await audioRes.arrayBuffer();
+        (async () => {
+            try {
+                if (!finalAudioUrl) throw new Error("URL ou dados do áudio são obrigatórios.");
 
-            const formData = new FormData();
-            formData.append('audio', new Blob([audioBuffer]), 'audio.mp3');
-            formData.append('prompt', (prompt || 'Music video').toString());
-            formData.append('frames', (frames || '209').toString());
-            formData.append('width', (width || '768').toString());
-            formData.append('height', (height || '768').toString());
-            formData.append('fps', (fps || '24').toString());
-            formData.append('model', (model || 'Ltx2_3_22B_Dist_INT8').toString());
-            
-            // Seed is required by the API
-            const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
-            formData.append('seed', finalSeed.toString());
+                let audioBuffer: Buffer;
+                let audioMime = 'audio/mpeg';
 
-            const deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${deapiKey}`,
-                    'accept': 'application/json'
-                },
-                body: formData
-            });
+                if (finalAudioUrl.startsWith('data:')) {
+                    const [header, base64Data] = finalAudioUrl.split(',');
+                    audioBuffer = Buffer.from(base64Data, 'base64');
+                    audioMime = header.split(':')[1].split(';')[0] || 'audio/mpeg';
+                } else {
+                    // Fetch audio from URL
+                    const audioRes = await fetch(finalAudioUrl);
+                    if (!audioRes.ok) throw new Error(`Falha ao carregar áudio (${audioRes.status})`);
+                    const arrayBuffer = await audioRes.arrayBuffer();
+                    audioBuffer = Buffer.from(arrayBuffer);
+                }
 
-            const data = await deapiRes.json();
-            if (!deapiRes.ok) throw new Error(data.message || "Erro no Deapi");
+                const formData = new FormData();
+                // Using Blob with type for multipart/form-data compatibility
+                formData.append('audio', new Blob([audioBuffer], { type: audioMime }), 'audio.mp3');
+                formData.append('prompt', (prompt || 'Music video').toString());
+                formData.append('frames', finalFrames.toString());
+                formData.append('largura', finalWidth.toString()); 
+                formData.append('altura', finalHeight.toString());
+                formData.append('fps', (fps || '24').toString());
+                formData.append('modelo', finalModel.toString());
+                
+                // Seed is recommended for reproducibility
+                const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
+                formData.append('seed', finalSeed.toString());
 
-            // Use the same task handler as other Deapi endpoints
-            handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai");
-            res.json({ jobId });
+                console.log(`[Job ${jobId}] Calling Deapi Aud2Video: ${finalModel}, size=${finalWidth}x${finalHeight}, frames=${finalFrames}`);
 
-        } catch (error: any) {
-            console.error("[AudioToVideo] Error:", error);
-            res.status(500).json({ error: error.message });
-        }
+                const deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${deapiKey}`,
+                        'accept': 'application/json'
+                    },
+                    body: formData
+                });
+
+                const data = await deapiRes.json();
+                if (!deapiRes.ok) throw new Error(data.message || "Erro no Deapi");
+
+                // Use the same task handler as other Deapi endpoints
+                handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai");
+            } catch (error: any) {
+                console.error(`[Job ${jobId}] Background Error:`, error);
+                if (jobs[jobId]) {
+                    jobs[jobId].status = 'failed';
+                    jobs[jobId].error = error.message;
+                }
+            }
+        })();
     });
 
     app.post('/api/ai/generate-video', async (req: any, res: any) => {
@@ -2829,7 +2868,7 @@ async function startServer() {
                     } else {
                         const text = await response.text();
                         if (response.status === 429) {
-                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                            lastError = "A API externa está com alta demanda (Rate Limit: Too Many Attempts). Por favor, aguarde de 2 a 5 minutos e tente novamente.";
                         } else {
                             lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
                         }
@@ -2869,8 +2908,8 @@ async function startServer() {
         
         console.log(`[Job ${jobId}] Iniciando monitoramento da tarefa Deapi: ${taskId}`);
         
-        // Espera inicial de 30s para evitar 429
-        await new Promise(r => setTimeout(r, 30000));
+        // Espera inicial de 45s para evitar 429 em processamentos pesados
+        await new Promise(r => setTimeout(r, 45000));
 
         while (!completed && attempts < 100 && jobs[jobId]) {
             attempts++;
@@ -2888,8 +2927,9 @@ async function startServer() {
                 }
                 
                 if (pollRes.status === 429) {
-                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 60s...`);
-                    await new Promise(r => setTimeout(r, 60000));
+                    console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 90s para esfriar...`);
+                    if (jobs[jobId]) jobs[jobId].message = "A API está ocupada, aguardando liberação...";
+                    await new Promise(r => setTimeout(r, 90000));
                     continue;
                 }
 
@@ -2912,7 +2952,7 @@ async function startServer() {
                     }
                 }
             } catch (e) { console.warn(`[Job ${jobId}] Polling error:`, e); }
-            if (!completed) await new Promise(r => setTimeout(r, 20000));
+            if (!completed) await new Promise(r => setTimeout(r, 30000));
         }
         if (!completed && jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'Timeout na deAPI.'; }
     };
@@ -3168,7 +3208,7 @@ async function startServer() {
                         }
 
                         if (response.status === 429) {
-                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                            lastError = "A API externa está com alta demanda (Rate Limit: Too Many Attempts). Por favor, aguarde de 2 a 5 minutos e tente novamente.";
                         } else {
                             lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
                         }
@@ -3452,7 +3492,7 @@ async function startServer() {
                     } else {
                         const text = await response.text();
                         if (response.status === 429) {
-                            lastError = "Limite de taxa atingido (Too Many Attempts). Por favor, aguarde alguns minutos antes de tentar novamente.";
+                            lastError = "A API externa está com alta demanda (Rate Limit: Too Many Attempts). Por favor, aguarde de 2 a 5 minutos e tente novamente.";
                         } else {
                             lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
                         }
