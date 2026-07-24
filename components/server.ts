@@ -236,9 +236,26 @@ async function startServer() {
                 const response = await fetch(url, options);
                 lastStatus = response.status;
                 
-                if (response.status === 429 && i < maxRetries) {
-                    const wait = Math.min(120000, Math.pow(2, i) * 5000 + (Math.random() * 2000)); 
-                    console.warn(`[Retry] Status 429 on ${url}. Waiting ${Math.round(wait)}ms before retry ${i + 1}/${maxRetries}`);
+                let isRateLimit = response.status === 429;
+                
+                // Detect rate limits in non-429 responses (some APIs use 400, 403 or even 200 with error message)
+                if (!isRateLimit && !response.ok) {
+                    try {
+                        const cloned = response.clone();
+                        const body = await cloned.json();
+                        const msg = (body?.message || body?.error || JSON.stringify(body)).toLowerCase();
+                        if (msg.includes('too many attempts') || msg.includes('rate limit') || msg.includes('too many requests')) {
+                            isRateLimit = true;
+                        }
+                    } catch (e) {
+                        // ignore json parse error
+                    }
+                }
+
+                if (isRateLimit && i < maxRetries) {
+                    // Start with 10s wait and increase exponentially
+                    const wait = Math.min(150000, Math.pow(2, i) * 10000 + (Math.random() * 5000)); 
+                    console.warn(`[Retry] Rate limit detected on ${url} (Status: ${lastStatus}). Waiting ${Math.round(wait)}ms before retry ${i + 1}/${maxRetries}`);
                     await new Promise(r => setTimeout(r, wait));
                     continue;
                 }
@@ -1767,7 +1784,7 @@ async function startServer() {
         const finalFrames = Math.min(120, Math.max(24, Number(frames || quadros || 120)));
         const finalWidth = Math.max(256, Number(width || largura || 768));
         const finalHeight = Math.max(256, Number(height || altura || 768));
-        const deapiModel = model || modelo || 'ltx-video';
+        const deapiModel = model || modelo || 'Ltx2_3_22B_Dist_INT8';
         const finalFps = Math.max(1, Number(fps || 24));
 
         // Mapeamento de modelos para Deapi V1/V2
@@ -1777,7 +1794,8 @@ async function startServer() {
             "ltx-2-19b-fp8": "ltx-video-v2.0",
             "ltx-video": "ltx-video-v1.3",
             "ltx-video-v2": "ltx-video-v2.0",
-            "morpheus": "ltx-video-v1.3"
+            "morpheus": "Ltx2_3_22B_Dist_INT8",
+            "ltx2_3_22b_dist_int8": "Ltx2_3_22B_Dist_INT8"
         };
         const finalModel = modelMap[deapiModel.toLowerCase()] || deapiModel;
 
@@ -1921,20 +1939,23 @@ async function startServer() {
                             jobs[jobId].progress = 10 + (i/numSegments) * 10;
                         }
 
-                        // Delay between requests to avoid rate limits
-                        if (i < numSegments - 1) await new Promise(r => setTimeout(r, 2500));
+                        // Delay between requests to avoid rate limits - increasing to 8s
+                        if (i < numSegments - 1) await new Promise(r => setTimeout(r, 8000));
                     }
 
                     // Poll all tasks
                     const completedTasks = new Set();
                     let attempts = 0;
-                    while (completedTasks.size < taskIds.length && attempts < 200 && jobs[jobId]) {
+                    while (completedTasks.size < taskIds.length && attempts < 150 && jobs[jobId]) {
                         attempts++;
-                        await new Promise(r => setTimeout(r, 20000));
+                        // Increased polling interval to 30s to be safer
+                        await new Promise(r => setTimeout(r, 30000));
                         for (let i = 0; i < taskIds.length; i++) {
                             if (completedTasks.has(taskIds[i])) continue;
                             try {
-                                const poll = await fetch(`https://api.deapi.ai/api/v1/client/task_status?request_id=${taskIds[i]}`, {
+                                jobs[jobId].message = `Morpheus esculpindo: ${completedTasks.size}/${taskIds.length} partes prontas...`;
+                                
+                                const poll = await fetchWithRetry(`https://api.deapi.ai/api/v1/client/task_status?request_id=${taskIds[i]}`, {
                                     headers: { 'Authorization': `Bearer ${deapiKey}` }
                                 });
                                 const r = await poll.json();
