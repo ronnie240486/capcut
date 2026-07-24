@@ -228,7 +228,7 @@ async function startServer() {
     }
 
     // Helper for fetch with exponential backoff for 429
-    async function fetchWithRetry(url: string, options: any, maxRetries = 7) {
+    async function fetchWithRetry(url: string, options: any, maxRetries = 15) {
         let lastStatus = 0;
         
         for (let i = 0; i <= maxRetries; i++) {
@@ -237,7 +237,7 @@ async function startServer() {
                 lastStatus = response.status;
                 
                 if (response.status === 429 && i < maxRetries) {
-                    const wait = Math.pow(2, i) * 5000 + (Math.random() * 2000); // 5s, 10s, 20s, 40s... + jitter
+                    const wait = Math.min(180000, Math.pow(2, i) * 6000 + (Math.random() * 4000)); // 6s, 12s, 24s... cap at 180s
                     console.warn(`[Retry] Status 429 on ${url}. Waiting ${Math.round(wait)}ms before retry ${i + 1}/${maxRetries}`);
                     await new Promise(r => setTimeout(r, wait));
                     continue;
@@ -246,11 +246,11 @@ async function startServer() {
                 return response;
             } catch (e: any) {
                 if (i === maxRetries) throw e;
-                const wait = Math.pow(2, i) * 2000;
+                const wait = Math.min(60000, Math.pow(2, i) * 3000);
                 await new Promise(r => setTimeout(r, wait));
             }
         }
-        throw new Error(`Failed after ${maxRetries} retries. Last status: ${lastStatus}`);
+        return await fetch(url, options); 
     }
 
     // Proxy para Freesound para evitar CORS
@@ -1611,7 +1611,7 @@ async function startServer() {
 
                 console.log(`[Job ${jobId}] Calling Deapi Aud2Video: ${finalModel}, size=${finalWidth}x${finalHeight}, frames=${finalFrames}`);
 
-                const deapiRes = await fetch('https://api.deapi.ai/api/v1/client/aud2video', {
+                const deapiRes = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${deapiKey}`,
@@ -1621,7 +1621,12 @@ async function startServer() {
                 });
 
                 const data = await deapiRes.json();
-                if (!deapiRes.ok) throw new Error(data.message || "Erro no Deapi");
+                if (!deapiRes.ok) {
+                    if (deapiRes.status === 429 || (data.message && data.message.includes("Too Many Attempts"))) {
+                        throw new Error("A API externa está com alta demanda (Rate Limit). Por favor, aguarde de 2 a 5 minutos e tente novamente.");
+                    }
+                    throw new Error(data.message || "Erro no Deapi");
+                }
 
                 // Use the same task handler as other Deapi endpoints
                 handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai");
@@ -1676,9 +1681,9 @@ async function startServer() {
                 // Fallback dinâmico caso o mapeamento estático falhe
                 try {
                     console.log(`[Job ${jobId}] Verificando modelos disponíveis na Deapi...`);
-                    const modelsRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=img2video,txt2video`, {
+                    const modelsRes = await fetchWithRetry(`${baseUrl}/api/v2/models?filter[inference_types]=img2video,txt2video`, {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
-                    });
+                    }, 3);
                     if (modelsRes.ok) {
                         const modelsData = await modelsRes.json();
                         const availableModels = modelsData.data || [];
@@ -1763,7 +1768,7 @@ async function startServer() {
                         formData.append('first_frame_image', blob, 'first_frame.png');
                         formData.append('image', blob, 'image.png');
 
-                        response = await fetch(endpoint, {
+                        response = await fetchWithRetry(endpoint, {
                             method: 'POST',
                             headers: {
                                 'Accept': 'application/json',
@@ -1773,7 +1778,7 @@ async function startServer() {
                             body: formData
                         });
                     } else {
-                        response = await fetch(endpoint, {
+                        response = await fetchWithRetry(endpoint, {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
@@ -1785,22 +1790,14 @@ async function startServer() {
                         });
                     }
 
-                    if (response.status === 429) {
-                        // Backoff linear: 30s fixos entre tentativas (não exponencial)
-                        const waitTime = 30000;
-                        const seconds = waitTime / 1000;
-                        console.warn(`[Job ${jobId}] Deapi 429 (Rate Limit). Tentativa ${fetchAttempts}/${MAX_SUBMIT_ATTEMPTS}. Aguardando ${seconds}s...`);
-                        if (jobs[jobId]) {
-                            jobs[jobId].message = `API Temporariamente Ocupada (429). Tentat. ${fetchAttempts}/${MAX_SUBMIT_ATTEMPTS} - Retentando em ${seconds}s...`;
-                        }
-                        await new Promise(r => setTimeout(r, waitTime));
-                        continue;
-                    }
-
                     if (!response.ok) {
-                        const errText = await response.text();
-                        lastFetchError = `Deapi API error (${response.status}): ${errText.substring(0, 500)}`;
-                        break; // Stop retrying on non-429 errors
+                        const text = await response.text();
+                        if (response.status === 429) {
+                            lastFetchError = "A API externa está com alta demanda (Rate Limit: Too Many Attempts). Por favor, aguarde de 2 a 5 minutos e tente novamente.";
+                        } else {
+                            lastFetchError = `Deapi API error (${response.status}): ${text.substring(0, 200)}`;
+                        }
+                        throw new Error(lastFetchError);
                     }
 
                     break; // Success
@@ -1853,20 +1850,14 @@ async function startServer() {
                     if (!jobs[jobId]) break; // Job was cancelled or removed
 
                     try {
-                        const pollRes = await fetch(`${baseUrl}/api/v2/jobs/${taskId}`, {
+                        const pollRes = await fetchWithRetry(`${baseUrl}/api/v2/jobs/${taskId}`, {
                             headers: { 
                                 'Authorization': `Bearer ${deapiKey}`,
                                 'x-api-key': deapiKey
                             }
-                        });
+                        }, 10);
                         
                         if (!pollRes.ok) {
-                            if (pollRes.status === 429) {
-                                console.warn(`[Job ${jobId}] Deapi Poll 429. Aguardando ciclo mais longo (50s)...`);
-                                if (jobs[jobId]) jobs[jobId].message = "Verificando status... (API Ocupada, aguardando)";
-                                await new Promise(r => setTimeout(r, 50000));
-                                continue;
-                            }
                             pollFailures++;
                             console.error(`[Job ${jobId}] Poll HTTP Error ${pollRes.status} (Failure ${pollFailures}/5)`);
                             if (pollFailures > 5) break; 
@@ -3336,7 +3327,7 @@ async function startServer() {
                 form.append('seed', '-1');
                 form.append('format', 'mp3');
 
-                const deapiResponse = await fetch("https://api.deapi.ai/api/v2/audio/music", {
+                const deapiResponse = await fetchWithRetry("https://api.deapi.ai/api/v2/audio/music", {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${deapiKey}`,
@@ -3352,6 +3343,8 @@ async function startServer() {
                         handleDeapiTask(jobId, { data: { request_id: taskId } }, deapiKey, "https://api.deapi.ai");
                         return;
                     }
+                } else if (deapiResponse.status === 429) {
+                    console.warn(`[Suno API] deAPI fallback hit rate limit (429)`);
                 }
             } catch (deapiErr: any) {
                 console.warn(`[Suno API] deAPI fallback failed: ${deapiErr.message}`);
