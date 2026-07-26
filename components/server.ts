@@ -2082,7 +2082,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, negative_prompt, negativePrompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, frames, fps, format, sample_rate, speed } = req.body;
+        const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, frames, fps, format, sample_rate, speed } = req.body;
         
         if (model && model.startsWith('deapi-')) {
             const deapiModel = model.replace('deapi-', '');
@@ -2102,7 +2102,6 @@ async function startServer() {
                 const baseUrl = "https://api.deapi.ai";
                 
                 const isImageToVideo = !!image;
-                const activeNegPrompt = negative_prompt || negativePrompt || "slow motion, single continuous shot, static camera, smooth panning, long continuous take, morphing, slow zoom, static background, single camera angle, same scene throughout, unbroken video, static photo animation";
                 
                 // Mapeamento exato baseado no painel Deapi (Imagem do usuário)
                 const modelMap: Record<string, string> = {
@@ -2160,11 +2159,10 @@ async function startServer() {
                     // Ajuste de limites conforme imagem do painel e erros anteriores
                     const payload: any = {
                         prompt: prompt || 'cinematic video generation',
-                        negative_prompt: activeNegPrompt,
                         model: mappedModel,
                         width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
                         height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
-                        frames: Math.min(frames || 120, 240), 
+                        frames: Math.min(frames || 120, 120), 
                         fps: Math.max(fps || 30, 30),
                         steps: 1,   
                         seed: parseInt(randomSeed),
@@ -2186,7 +2184,6 @@ async function startServer() {
                         // Envio via FormData para suportar arquivo real (exigência da API Deapi v2)
                         const formData = new FormData();
                         formData.append('prompt', payload.prompt);
-                        if (activeNegPrompt) formData.append('negative_prompt', activeNegPrompt);
                         formData.append('model', mappedModel); 
                         formData.append('width', payload.width.toString());
                         formData.append('height', payload.height.toString());
