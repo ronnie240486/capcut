@@ -2166,7 +2166,7 @@ async function startServer() {
                         height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
                         frames: Math.min(frames || 120, 120), 
                         fps: Math.max(fps || 30, 30),
-                        steps: 1,   
+                        steps: mappedModel.includes('ltx-video-v2.3') ? 25 : (mappedModel.includes('dist') ? 8 : 20),   
                         seed: parseInt(randomSeed),
                         include_audio: mappedModel.includes('ltx-video-v2.0') || mappedModel.includes('ltx-2-19b') || !!format,
                         audio_format: format || 'mp3',
