@@ -1803,13 +1803,15 @@ async function startServer() {
 
         // Mapeamento de modelos para Deapi V1/V2
         const modelMap: Record<string, string> = {
-            "ltx-2.3-22b": "ltx-video-v1.3", // V1 default for high quality
+            "ltx-2.3-22b": "ltx-video-v1.3", // V1 default for high quality aud2vid
+            "deapi-ltx-2.3-22b": "ltx-video-v1.3",
+            "ltx2_3_22b_dist_int8": "ltx-video-v1.3",
             "ltx-video-13b": "ltx-video-v1.3",
-            "ltx-2-19b-fp8": "ltx-video-v1.3", // V1 usually supports v1.3
+            "ltx-2-19b-fp8": "ltx-video-v1.3",
+            "deapi-ltx-2-19b-fp8": "ltx-video-v1.3",
             "ltx-video": "ltx-video-v1.3",
             "ltx-video-v2": "ltx-video-v1.3",
-            "morpheus": "ltx-video-v1.3",
-            "ltx2_3_22b_dist_int8": "ltx-video-v1.3"
+            "morpheus": "ltx-video-v1.3"
         };
         const finalModel = modelMap[deapiModel.toLowerCase()] || 'ltx-video-v1.3';
 
@@ -1873,11 +1875,9 @@ async function startServer() {
                 if (totalDuration <= segmentDuration * 1.1) {
                     // Lógica de segmento único
                     const formData = new FormData();
-                    // O Deapi V1 aud2video espera 'audio' como arquivo ou URL
                     if (audioBuffer.length < 5 * 1024 * 1024) {
                         formData.append('audio', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'audio.mp3');
                     } else if (finalAudioUrl && finalAudioUrl.startsWith('http')) {
-                        // Tenta 'audio' como URL primeiro, fallback 'audio_url'
                         formData.append('audio', finalAudioUrl);
                         formData.append('audio_url', finalAudioUrl);
                     } else {
@@ -1889,20 +1889,24 @@ async function startServer() {
                     formData.append('width', finalWidth.toString()); 
                     formData.append('height', finalHeight.toString());
                     formData.append('fps', finalFps.toString());
-                    formData.append('model', 'ltx-video');
+                    formData.append('model', finalModel);
                     const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
                     formData.append('seed', finalSeed.toString());
 
-                    console.log(`[Job ${jobId}] Sending request to Deapi: https://api.deapi.ai/api/v1/client/aud2video (Model: ltx-video)`);
-                    jobs[jobId].message = "Iniciando upload e geração (isso pode levar alguns minutos)...";
+                    console.log(`[Job ${jobId}] Sending request to Deapi: https://api.deapi.ai/api/v1/client/aud2video (Model: ${finalModel})`);
+                    jobs[jobId].message = "Iniciando upload e geração na DeAPI...";
                     
                     const deapiRes = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
                         method: 'POST',
-                        headers: { 'Authorization': `Bearer ${deapiKey}` },
+                        headers: { 
+                            'Authorization': `Bearer ${deapiKey}`,
+                            'x-api-key': deapiKey,
+                            'Accept': 'application/json'
+                        },
                         body: formData
-                    }, 7, (wait, attempt) => {
+                    }, 5, (wait, attempt) => {
                         if (jobs[jobId]) {
-                            jobs[jobId].message = `Servidor de vídeo ocupado. Aguardando ${Math.round(wait/1000)}s para tentar novamente (Tentativa ${attempt})...`;
+                            jobs[jobId].message = `Aguardando liberação da fila da DeAPI (${Math.round(wait/1000)}s - Tentativa ${attempt}/5)...`;
                             jobs[jobId].progress = 5;
                         }
                     });
@@ -1912,9 +1916,8 @@ async function startServer() {
                     
                     await handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai", true);
                 } else {
-                    // Lógica multi-segmento
+                    // Lógica multi-segmento sequencial (Evita 429 Too Many Attempts)
                     const numSegments = Math.ceil(totalDuration / segmentDuration);
-                    const taskIds: string[] = [];
                     const videoPaths: string[] = [];
 
                     for (let i = 0; i < numSegments; i++) {
@@ -1924,29 +1927,37 @@ async function startServer() {
 
                         const segPath = path.join(uploadDir, `seg_${jobId}_${i}.mp3`);
                         await cutAudio(tempAudioPath, segPath, start, duration);
+                        const segAudioBuf = fs.readFileSync(segPath);
                         
                         const formData = new FormData();
-                        formData.append('audio', new Blob([fs.readFileSync(segPath)], { type: 'audio/mpeg' }), 'audio.mp3');
+                        formData.append('audio', new Blob([segAudioBuf], { type: 'audio/mpeg' }), 'audio.mp3');
                         formData.append('prompt', translatedPrompt || 'cinematic music video style');
                         const segmentFrames = Math.min(120, Math.round(duration * finalFps));
                         formData.append('frames', segmentFrames.toString());
                         formData.append('width', finalWidth.toString()); 
                         formData.append('height', finalHeight.toString());
                         formData.append('fps', finalFps.toString());
-                        formData.append('model', 'ltx-video'); // Use stable alias for V1
+                        formData.append('model', finalModel);
                         const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
                         formData.append('seed', finalSeed.toString());
 
-                        console.log(`[Job ${jobId}] Segment ${i+1} payload:`, { model: finalModel, frames: Math.round(duration * finalFps), fps: finalFps });
+                        console.log(`[Job ${jobId}] Submitting segment ${i+1}/${numSegments}...`);
+                        if (jobs[jobId]) {
+                            jobs[jobId].message = `Enviando parte ${i+1}/${numSegments} do áudio para a DeAPI...`;
+                            jobs[jobId].progress = Math.round(10 + (i / numSegments) * 80);
+                        }
                         
-                        // Use fetchWithRetry for segments as well and add a small delay
                         const res = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
                             method: 'POST',
-                            headers: { 'Authorization': `Bearer ${deapiKey}` },
+                            headers: { 
+                                'Authorization': `Bearer ${deapiKey}`,
+                                'x-api-key': deapiKey,
+                                'Accept': 'application/json'
+                            },
                             body: formData
-                        }, 7, (wait, attempt) => {
+                        }, 5, (wait, attempt) => {
                             if (jobs[jobId]) {
-                                jobs[jobId].message = `Servidor ocupado. Processando segmento ${i+1}/${numSegments}. Aguardando ${Math.round(wait/1000)}s...`;
+                                jobs[jobId].message = `Aguardando fila para parte ${i+1}/${numSegments} (${Math.round(wait/1000)}s - Tentativa ${attempt}/5)...`;
                             }
                         });
                         
@@ -1954,74 +1965,98 @@ async function startServer() {
                         console.log(`[Job ${jobId}] Segment ${i+1} response:`, data);
                         if (!res.ok) {
                             console.error(`[Job ${jobId}] Segment ${i+1} initiation failed:`, data);
-                            throw new Error(data.message || `Falha ao iniciar segmento ${i+1}`);
+                            throw new Error(data.message || `Falha ao iniciar parte ${i+1}`);
                         }
 
                         const tid = data.data?.request_id || data.request_id || data.id || data.task_id;
                         if (!tid) {
                             console.error(`[Job ${jobId}] Segment ${i+1} missing taskId in response:`, data);
-                            throw new Error(`Falha ao obter ID da tarefa para o segmento ${i+1}`);
+                            throw new Error(`Falha ao obter ID da tarefa para parte ${i+1}`);
                         }
                         
-                        taskIds.push(tid);
-                        // Delay de 2s para evitar "Too Many Attempts" da Deapi
-                        await new Promise(r => setTimeout(r, 2000));
-                        try { if (fs.existsSync(segPath)) fs.unlinkSync(segPath); } catch(e) {}
-                        
-                        if (jobs[jobId]) {
-                            jobs[jobId].message = `Lançando Morpheus nos segmentos: ${i+1}/${numSegments}...`;
-                            jobs[jobId].progress = 10 + (i/numSegments) * 10;
-                        }
+                        // Polling sequencial do segmento i até concluir antes de enviar o próximo
+                        let segCompleted = false;
+                        let segAttempts = 0;
+                        let segPollFailures = 0;
 
-                        // Delay between requests to avoid rate limits - increasing to 8s
-                        if (i < numSegments - 1) await new Promise(r => setTimeout(r, 8000));
-                    }
+                        while (!segCompleted && segAttempts < 120 && jobs[jobId]) {
+                            segAttempts++;
+                            await new Promise(r => setTimeout(r, 10000));
 
-                    // Poll all tasks
-                    const completedTasks = new Set();
-                    let attempts = 0;
-                    while (completedTasks.size < taskIds.length && attempts < 150 && jobs[jobId]) {
-                        attempts++;
-                        // Increased polling interval to 30s to be safer
-                        await new Promise(r => setTimeout(r, 30000));
-                        for (let i = 0; i < taskIds.length; i++) {
-                            if (completedTasks.has(taskIds[i])) continue;
                             try {
-                                jobs[jobId].message = `Morpheus esculpindo: ${completedTasks.size}/${taskIds.length} partes prontas...`;
-                                
-                                const poll = await fetchWithRetry(`https://api.deapi.ai/api/v1/client/task_status?request_id=${taskIds[i]}`, {
-                                    headers: { 'Authorization': `Bearer ${deapiKey}` }
-                                });
-                                const r = await poll.json();
-                                const task = r.data || r;
-                                const st = (task.status || "").toLowerCase();
-                                if (['completed', 'succeeded', 'success', 'done', 'finished', 'ready'].includes(st)) {
-                                    const vUrl = task.result_url || task.video_url || task.url || task.download_url || task.data?.url;
-                                    if (vUrl) {
-                                        const vRes = await fetch(vUrl);
-                                        const vPath = path.join(uploadDir, `v_${jobId}_${i}.mp4`);
-                                        fs.writeFileSync(vPath, Buffer.from(await vRes.arrayBuffer()));
-                                        videoPaths[i] = vPath;
-                                        completedTasks.add(taskIds[i]);
-                                    }
-                                } else if (st === 'failed' || st === 'error') {
-                                    throw new Error(task.error || task.message || `Segmento ${i+1} falhou.`);
+                                let poll = await fetchWithRetry(`https://api.deapi.ai/api/v1/client/task_status?request_id=${tid}`, {
+                                    headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                                }, 3);
+
+                                if (!poll.ok) {
+                                    poll = await fetchWithRetry(`https://api.deapi.ai/api/v2/jobs/${tid}`, {
+                                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                                    }, 3);
                                 }
-                            } catch(e: any) { console.warn(`Poll segment ${i} fail:`, e.message); }
+
+                                if (poll.ok) {
+                                    segPollFailures = 0;
+                                    const r = await poll.json();
+                                    const task = r.data || r;
+                                    const st = (task.status || "").toLowerCase();
+                                    
+                                    const rawProg = task.progress || task.percentage || (segAttempts * 2);
+                                    if (jobs[jobId]) {
+                                        jobs[jobId].message = `Morpheus esculpindo parte ${i+1}/${numSegments}...`;
+                                        const segBase = (i / numSegments) * 80;
+                                        const segAdd = (1 / numSegments) * Math.min(rawProg, 80);
+                                        jobs[jobId].progress = Math.min(95, Math.round(10 + segBase + segAdd));
+                                    }
+
+                                    if (['completed', 'succeeded', 'success', 'done', 'finished', 'ready'].includes(st)) {
+                                        const vUrl = task.result_url || task.video_url || task.url || task.download_url || task.data?.url;
+                                        if (vUrl) {
+                                            const vRes = await fetch(vUrl);
+                                            if (!vRes.ok) throw new Error(`Falha ao baixar vídeo da parte ${i+1}`);
+                                            const vPath = path.join(uploadDir, `v_${jobId}_${i}.mp4`);
+                                            fs.writeFileSync(vPath, Buffer.from(await vRes.arrayBuffer()));
+                                            videoPaths.push(vPath);
+                                            segCompleted = true;
+                                        } else {
+                                            throw new Error(`Parte ${i+1} concluída sem URL de vídeo.`);
+                                        }
+                                    } else if (st === 'failed' || st === 'error') {
+                                        throw new Error(task.error || task.message || `Geração da parte ${i+1} falhou.`);
+                                    }
+                                } else {
+                                    segPollFailures++;
+                                    if (segPollFailures > 10) throw new Error(`Erro ao consultar status da parte ${i+1}`);
+                                }
+                            } catch (e: any) {
+                                console.warn(`[Job ${jobId}] Poll segment ${i+1} fail:`, e.message);
+                                segPollFailures++;
+                                if (segPollFailures > 10) throw new Error(e.message || `Erro de conexão na parte ${i+1}`);
+                            }
                         }
-                        if (jobs[jobId]) {
-                            jobs[jobId].message = `Morpheus esculpindo: ${completedTasks.size}/${taskIds.length} partes prontas...`;
-                            jobs[jobId].progress = 20 + (completedTasks.size / taskIds.length) * 75;
+
+                        if (!segCompleted) {
+                            throw new Error(`Tempo limite excedido na parte ${i+1}`);
+                        }
+
+                        try { if (fs.existsSync(segPath)) fs.unlinkSync(segPath); } catch(e) {}
+
+                        // Breve intervalo para liberar totalmente a conta na DeAPI antes do próximo segmento
+                        if (i < numSegments - 1) {
+                            if (jobs[jobId]) jobs[jobId].message = `Parte ${i+1}/${numSegments} concluída! Preparando próxima...`;
+                            await new Promise(r => setTimeout(r, 2000));
                         }
                     }
 
-                    if (completedTasks.size === taskIds.length) {
+                    if (videoPaths.length > 0) {
+                        if (jobs[jobId]) jobs[jobId].message = "Unindo partes do videoclipe final...";
                         const finalVideoPath = path.join(uploadDir, `final_${jobId}.mp4`);
-                        const validPaths = [];
-                        for(let i=0; i<taskIds.length; i++) if(videoPaths[i]) validPaths.push(videoPaths[i]);
 
-                        await concatVideos(validPaths, finalVideoPath);
-                        validPaths.forEach(p => { try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch(e) {} });
+                        if (videoPaths.length === 1) {
+                            fs.copyFileSync(videoPaths[0], finalVideoPath);
+                        } else {
+                            await concatVideos(videoPaths, finalVideoPath);
+                        }
+                        videoPaths.forEach(p => { try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch(e) {} });
                         
                         if (jobs[jobId]) {
                             jobs[jobId].status = 'completed';
@@ -2029,7 +2064,7 @@ async function startServer() {
                             jobs[jobId].progress = 100;
                         }
                     } else {
-                        throw new Error("A geração dos segmentos demorou demais ou houve falha persistente.");
+                        throw new Error("Nenhuma parte do videoclipe pôde ser gerada.");
                     }
                 }
 
@@ -2047,7 +2082,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, frames, fps, format, sample_rate, speed } = req.body;
+        const { prompt, negative_prompt, negativePrompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, frames, fps, format, sample_rate, speed } = req.body;
         
         if (model && model.startsWith('deapi-')) {
             const deapiModel = model.replace('deapi-', '');
@@ -2067,12 +2102,16 @@ async function startServer() {
                 const baseUrl = "https://api.deapi.ai";
                 
                 const isImageToVideo = !!image;
+                const activeNegPrompt = negative_prompt || negativePrompt || "slow motion, single continuous shot, static camera, smooth panning, long continuous take, morphing, slow zoom, static background, single camera angle, same scene throughout, unbroken video, static photo animation";
                 
                 // Mapeamento exato baseado no painel Deapi (Imagem do usuário)
                 const modelMap: Record<string, string> = {
                     "ltx-2.3-22b": "ltx-video-v2.3",
+                    "deapi-ltx-2.3-22b": "ltx-video-v2.3",
+                    "ltx2_3_22b_dist_int8": "ltx-video-v2.3",
                     "ltx-video-13b": "ltx-video-v1.3",
                     "ltx-2-19b-fp8": "ltx-video-v2.0",
+                    "deapi-ltx-2-19b-fp8": "ltx-video-v2.0",
                     "ltx-video": "ltx-video-v1.3",
                     "animate-diff": "animate-diff-v3",
                     "svd": "svd-xt-1.1"
@@ -2121,6 +2160,7 @@ async function startServer() {
                     // Ajuste de limites conforme imagem do painel e erros anteriores
                     const payload: any = {
                         prompt: prompt || 'cinematic video generation',
+                        negative_prompt: activeNegPrompt,
                         model: mappedModel,
                         width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
                         height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
@@ -2146,6 +2186,7 @@ async function startServer() {
                         // Envio via FormData para suportar arquivo real (exigência da API Deapi v2)
                         const formData = new FormData();
                         formData.append('prompt', payload.prompt);
+                        if (activeNegPrompt) formData.append('negative_prompt', activeNegPrompt);
                         formData.append('model', mappedModel); 
                         formData.append('width', payload.width.toString());
                         formData.append('height', payload.height.toString());
@@ -2195,7 +2236,7 @@ async function startServer() {
                     if (!response.ok) {
                         const text = await response.text();
                         if (response.status === 429) {
-                            lastFetchError = "A API externa está com alta demanda (Rate Limit: Too Many Attempts). Por favor, aguarde de 2 a 5 minutos e tente novamente.";
+                            lastFetchError = "A API externa (Deapi) atingiu o limite de frequência (Rate Limit). Como você tem saldo, isso significa que muitas solicitações foram feitas em pouco tempo. Por favor, aguarde alguns minutos para o limite resetar e tente novamente.";
                         } else {
                             lastFetchError = `Deapi API error (${response.status}): ${text.substring(0, 200)}`;
                         }
@@ -3267,7 +3308,7 @@ async function startServer() {
                     } else {
                         const text = await response.text();
                         if (response.status === 429) {
-                            lastError = "A API externa está com alta demanda (Rate Limit: Too Many Attempts). Por favor, aguarde de 2 a 5 minutos e tente novamente.";
+                            lastError = "A API externa (Deapi) atingiu o limite de frequência (Rate Limit). Como você tem saldo, isso significa que muitas solicitações foram feitas em pouco tempo. Por favor, aguarde alguns minutos e tente novamente.";
                         } else {
                             lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
                         }
