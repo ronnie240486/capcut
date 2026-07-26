@@ -2164,7 +2164,7 @@ async function startServer() {
                         model: mappedModel,
                         width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
                         height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
-                        frames: Math.min(frames || 120, 120), 
+                        frames: Math.min(frames || 120, 240), 
                         fps: Math.max(fps || 30, 30),
                         steps: 1,   
                         seed: parseInt(randomSeed),
