@@ -2089,7 +2089,8 @@ async function startServer() {
                         
                         if (jobs[jobId]) {
                             jobs[jobId].status = 'completed';
-                            jobs[jobId].downloadUrl = `/api/proxy/video/${path.basename(finalVideoPath)}`;
+                            jobs[jobId].outputPath = finalVideoPath;
+                            jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
                             jobs[jobId].progress = 100;
                         }
                     } else {
@@ -2113,8 +2114,16 @@ async function startServer() {
 
         const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, frames, fps, format, sample_rate, speed } = req.body;
         
-        if (model && model.startsWith('deapi-')) {
-            const deapiModel = model.replace('deapi-', '');
+        const isDeapiModel = model && (
+            model.startsWith('deapi-') || 
+            model.toLowerCase().includes('ltx') || 
+            model === 'animate-diff' || 
+            model === 'svd' ||
+            model === 'morpheus'
+        );
+        
+        if (isDeapiModel) {
+            const deapiModel = model.startsWith('deapi-') ? model.replace('deapi-', '') : model;
             const deapiKey = apiKey || getDeapiKey(req);
 
             if (!deapiKey) {
