@@ -600,6 +600,35 @@ async function startServer() {
         }
     });
 
+    app.post('/api/ai/gemini/generate-content', async (req: any, res: any) => {
+        const { contents, model = "gemini-3-flash-preview", config } = req.body;
+        const apiKey = getGeminiKey(req);
+        if (!apiKey) {
+            return res.status(401).json({ 
+                error: "Nenhuma chave Gemini válida encontrada.",
+                details: "Configure sua chave API nas configurações do AI Studio."
+            });
+        }
+
+        try {
+            const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+            const result = await executeWithRetry(() => ai.models.generateContent({
+                model,
+                contents,
+                config
+            }));
+            res.json({ text: result.text });
+        } catch (e: any) {
+            console.error("[Gemini Content Server] Error:", e);
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ 
+                error: parsed.error, 
+                details: parsed.details,
+                code: parsed.code
+            });
+        }
+    });
+
     app.post('/api/ai/gemini/transcribe', async (req: any, res: any) => {
         const { audioBase64, mimeType } = req.body;
         const apiKey = getGeminiKey(req);
@@ -1233,7 +1262,7 @@ async function startServer() {
             
             console.log(`[Translate] Requesting translation for: "${prompt}"`);
             const result = await ai.models.generateContent({
-                model: "gemini-1.5-flash",
+                model: "gemini-3-flash-preview",
                 contents: [{ role: "user", parts: [{ text: `Translate this AI video generation prompt to English. Be descriptive but concise. ONLY output the translated English text: "${prompt}"` }] }]
             });
             
@@ -1803,17 +1832,17 @@ async function startServer() {
 
         // Mapeamento de modelos para Deapi V1/V2
         const modelMap: Record<string, string> = {
-            "ltx-2.3-22b": "ltx-video-v1.3", // V1 default for high quality aud2vid
-            "deapi-ltx-2.3-22b": "ltx-video-v1.3",
-            "ltx2_3_22b_dist_int8": "ltx-video-v1.3",
+            "ltx-2.3-22b": "ltx-video-v2.3", 
+            "deapi-ltx-2.3-22b": "ltx-video-v2.3",
+            "ltx2_3_22b_dist_int8": "ltx-video-v2.3",
             "ltx-video-13b": "ltx-video-v1.3",
-            "ltx-2-19b-fp8": "ltx-video-v1.3",
-            "deapi-ltx-2-19b-fp8": "ltx-video-v1.3",
+            "ltx-2-19b-fp8": "ltx-video-v2.0",
+            "deapi-ltx-2-19b-fp8": "ltx-video-v2.0",
             "ltx-video": "ltx-video-v1.3",
-            "ltx-video-v2": "ltx-video-v1.3",
+            "ltx-video-v2": "ltx-video-v2.3",
             "morpheus": "ltx-video-v1.3"
         };
-        const finalModel = modelMap[deapiModel.toLowerCase()] || 'ltx-video-v1.3';
+        const finalModel = modelMap[deapiModel.toLowerCase()] || 'ltx-video-v2.3';
 
         const jobId = `aud2vid_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'processing', progress: 2, startTime: Date.now(), message: 'Iniciando Processamento Inteligente...' };
@@ -2116,7 +2145,7 @@ async function startServer() {
                     "svd": "svd-xt-1.1"
                 };
                 
-                let mappedModel = modelMap[deapiModel] || deapiModel;
+                let mappedModel = modelMap[deapiModel.toLowerCase()] || deapiModel;
                 
                 // Fallback dinâmico caso o mapeamento estático falhe
                 try {
