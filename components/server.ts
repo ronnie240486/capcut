@@ -1832,17 +1832,17 @@ async function startServer() {
 
         // Mapeamento de modelos para Deapi V1/V2
         const modelMap: Record<string, string> = {
-            "ltx-2.3-22b": "ltx-video-v2.3", 
-            "deapi-ltx-2.3-22b": "ltx-video-v2.3",
-            "ltx2_3_22b_dist_int8": "ltx-video-v2.3",
-            "ltx-video-13b": "ltx-video-v1.3",
-            "ltx-2-19b-fp8": "ltx-video-v2.0",
-            "deapi-ltx-2-19b-fp8": "ltx-video-v2.0",
-            "ltx-video": "ltx-video-v1.3",
-            "ltx-video-v2": "ltx-video-v2.3",
-            "morpheus": "ltx-video-v1.3"
+            "ltx-2.3-22b": "Ltx2_3_22B_Dist_INT8", 
+            "deapi-ltx-2.3-22b": "Ltx2_3_22B_Dist_INT8",
+            "ltx2_3_22b_dist_int8": "Ltx2_3_22B_Dist_INT8",
+            "ltx-video-13b": "Ltx2_3_22B_Dist_INT8",
+            "ltx-2-19b-fp8": "Ltx2_3_22B_Dist_INT8",
+            "deapi-ltx-2-19b-fp8": "Ltx2_3_22B_Dist_INT8",
+            "ltx-video": "Ltx2_3_22B_Dist_INT8",
+            "ltx-video-v2": "Ltx2_3_22B_Dist_INT8",
+            "morpheus": "Ltx2_3_22B_Dist_INT8"
         };
-        const finalModel = modelMap[deapiModel.toLowerCase()] || 'ltx-video-v2.3';
+        const finalModel = modelMap[deapiModel.toLowerCase()] || 'Ltx2_3_22B_Dist_INT8';
 
         const jobId = `aud2vid_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'processing', progress: 2, startTime: Date.now(), message: 'Iniciando Processamento Inteligente...' };
@@ -2134,13 +2134,13 @@ async function startServer() {
                 
                 // Mapeamento exato baseado no painel Deapi (Imagem do usuário)
                 const modelMap: Record<string, string> = {
-                    "ltx-2.3-22b": "ltx-video-v2.3",
-                    "deapi-ltx-2.3-22b": "ltx-video-v2.3",
-                    "ltx2_3_22b_dist_int8": "ltx-video-v2.3",
-                    "ltx-video-13b": "ltx-video-v1.3",
-                    "ltx-2-19b-fp8": "ltx-video-v2.0",
-                    "deapi-ltx-2-19b-fp8": "ltx-video-v2.0",
-                    "ltx-video": "ltx-video-v1.3",
+                    "ltx-2.3-22b": "Ltx2_3_22B_Dist_INT8",
+                    "deapi-ltx-2.3-22b": "Ltx2_3_22B_Dist_INT8",
+                    "ltx2_3_22b_dist_int8": "Ltx2_3_22B_Dist_INT8",
+                    "ltx-video-13b": "Ltx2_3_22B_Dist_INT8",
+                    "ltx-2-19b-fp8": "Ltx2_3_22B_Dist_INT8",
+                    "deapi-ltx-2-19b-fp8": "Ltx2_3_22B_Dist_INT8",
+                    "ltx-video": "Ltx2_3_22B_Dist_INT8",
                     "animate-diff": "animate-diff-v3",
                     "svd": "svd-xt-1.1"
                 };
