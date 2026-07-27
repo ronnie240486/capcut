@@ -395,13 +395,13 @@ async function startServer() {
     const getDeapiKey = (req?: express.Request) => {
         if (!req) return (process.env.DEAPI_API_KEY || process.env.DE_API_KEY || "").trim();
 
-        const isGeminiKey = (k: string) => !k || k.startsWith("AIza") || k.length > 120;
+        const isGeminiKey = (k: string) => !k || k.startsWith("AIza") || k.length > 150;
 
-        const bodyDeapiKey = (req.body?.deapiKey || "").toString().trim();
-        const bodyApiKey = (req.body?.apiKey || "").toString().trim();
-        const headerDeapiKey = (req.headers?.['x-deapi-api-key'] || "").toString().trim();
-        const headerApiKey = (req.headers?.['x-api-key'] || "").toString().trim();
-        let authHeader = (req.headers?.['authorization'] || "").toString().trim();
+        const bodyDeapiKey = (req.body?.deapiKey || req.body?.deapiApiKey || req.body?.deapi_api_key || req.body?.deapi_key || req.body?.deapi || req.body?.deapiKeyVal || "").toString().trim().replace(/^["']|["']$/g, '');
+        const bodyApiKey = (req.body?.apiKey || "").toString().trim().replace(/^["']|["']$/g, '');
+        const headerDeapiKey = (req.headers?.['x-deapi-api-key'] || "").toString().trim().replace(/^["']|["']$/g, '');
+        const headerApiKey = (req.headers?.['x-api-key'] || "").toString().trim().replace(/^["']|["']$/g, '');
+        let authHeader = (req.headers?.['authorization'] || "").toString().trim().replace(/^["']|["']$/g, '');
 
         const candidates = [
             bodyDeapiKey,
@@ -1273,9 +1273,9 @@ async function startServer() {
     const JOBS_FILE = path.join(process.cwd(), 'jobs_persistence.json');
 
     // Helper to handle Deapi task/job response
-    // Helper to translate prompt if it's not in English
+    // Helper to translate and optimize prompt for video/audio models
     async function translatePromptIfNeeded(prompt: string, deapiKey: string) {
-        if (!prompt || /^[a-zA-Z0-9\s.,!?"'()\-]+$/.test(prompt)) return prompt;
+        if (!prompt || !prompt.trim()) return prompt;
         try {
             const apiKey = process.env.GEMINI_API_KEY;
             if (!apiKey) return prompt;
@@ -1285,20 +1285,36 @@ async function startServer() {
                 httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } 
             });
             
-            console.log(`[Translate] Requesting translation for: "${prompt}"`);
+            console.log(`[Translate/Optimize] Processing prompt: "${prompt}"`);
             const result = await ai.models.generateContent({
-                model: "gemini-3-flash-preview",
-                contents: [{ role: "user", parts: [{ text: `Translate this AI video generation prompt to English. Be descriptive but concise. ONLY output the translated English text: "${prompt}"` }] }]
+                model: "gemini-3.5-flash",
+                contents: [{ 
+                    role: "user", 
+                    parts: [{ 
+                        text: `You are an elite AI video and audio prompt optimizer.
+Convert the following user prompt (which may be in Portuguese or brief) into a highly detailed, descriptive, visual English prompt that STRICTLY OBEYS every element, action, subject, and scene setting requested by the user.
+
+Example input: "no palco de musica tocando rock"
+Example output: "A high-energy rock musician performing live on a concert music stage, playing electric guitar with intensity, dramatic spotlights, stage smoke, crowd cheering, live rock performance, cinematic camera angle, 8k resolution"
+
+Example input: "homem caminhando na praia ao por do sol"
+Example output: "A man walking along a serene sandy ocean beach during a golden sunset, warm orange light reflecting on gentle ocean waves, dramatic sky, cinematic camera tracking shot"
+
+User prompt to optimize and translate: "${prompt}"
+
+CRITICAL RULE: NEVER ignore any setting, subject, or action requested. Output ONLY the optimized English prompt without markdown, quotes, or preambles.` 
+                    }] 
+                }]
             });
             
             const translation = (result as any).text?.trim().replace(/^"|"$/g, '') || (result as any).response?.text?.().trim().replace(/^"|"$/g, '');
             if (translation && translation.length > 2) {
-                console.log(`[Translate] Success: "${prompt}" -> "${translation}"`);
+                console.log(`[Translate/Optimize] Success: "${prompt}" -> "${translation}"`);
                 return translation;
             }
             return prompt;
         } catch (e: any) {
-            console.warn("[Translate] Failed:", e.message);
+            console.warn("[Translate/Optimize] Failed:", e.message);
             return prompt;
         }
     }
@@ -1438,6 +1454,13 @@ async function startServer() {
                 }
             } catch (e: any) { 
                 console.warn(`[Job ${jobId}] Polling error:`, e); 
+                if (e.message?.includes("401") || e.message?.includes("Autenticação") || e.message?.includes("Unauthenticated")) {
+                    if (jobs[jobId]) {
+                        jobs[jobId].status = 'failed';
+                        jobs[jobId].error = e.message;
+                    }
+                    return;
+                }
                 pollFailures++;
                 if (pollFailures > 15) throw new Error(e.message || "Erro persistente na verificação de status.");
             }
@@ -2162,7 +2185,7 @@ async function startServer() {
 
             if (!deapiKey) {
                 jobs[jobId].status = 'failed';
-                jobs[jobId].error = 'Chave API Deapi não configurada no servidor.';
+                jobs[jobId].error = 'Chave API Deapi não configurada. Por favor, adicione sua chave de API nas Configurações (ícone de engrenagem) em Deapi.ai ou selecione o provedor Gemini (Veo).';
                 return;
             }
 
@@ -2223,6 +2246,18 @@ async function startServer() {
                 let lastFetchError = "";
                 const randomSeed = Math.floor(Math.random() * 2147483647).toString();
 
+                // Optimize/translate prompt to English to guarantee full model obedience to scene details
+                let optimizedPrompt = prompt || 'cinematic video generation';
+                try {
+                    const opt = await Promise.race([
+                        translatePromptIfNeeded(optimizedPrompt, deapiKey),
+                        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 8000))
+                    ]);
+                    if (opt) optimizedPrompt = opt;
+                } catch (pe) {
+                    console.warn(`[Job ${jobId}] Prompt optimization timed out, using raw prompt`);
+                }
+
                 // Limite de 5 tentativas com backoff linear de 30s para não saturar a fila
                 const MAX_SUBMIT_ATTEMPTS = 5;
                 while (fetchAttempts < MAX_SUBMIT_ATTEMPTS) {
@@ -2233,7 +2268,7 @@ async function startServer() {
                     let calcH = aspectRatio === '9:16' ? 896 : (aspectRatio === '16:9' ? 512 : 768);
                     
                     const payload: any = {
-                        prompt: prompt || 'cinematic video generation',
+                        prompt: optimizedPrompt,
                         model: mappedModel,
                         width: Math.max(512, calcW),
                         height: Math.max(512, calcH),
@@ -2627,7 +2662,7 @@ async function startServer() {
         const deapiKey = getDeapiKey(req);
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            jobs[jobId].error = 'Chave API Deapi não configurada. Por favor, adicione sua chave de API nas Configurações (ícone de engrenagem) em Deapi.ai.';
             return;
         }
 
@@ -3098,7 +3133,7 @@ async function startServer() {
 
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            jobs[jobId].error = 'Chave API Deapi não configurada. Por favor, adicione sua chave de API nas Configurações (ícone de engrenagem) em Deapi.ai.';
             return;
         }
 
@@ -3435,7 +3470,7 @@ async function startServer() {
 
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            jobs[jobId].error = 'Chave API Deapi não configurada. Por favor, adicione sua chave de API nas Configurações (ícone de engrenagem) em Deapi.ai.';
             return;
         }
 
@@ -3850,7 +3885,7 @@ async function startServer() {
 
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            jobs[jobId].error = 'Chave API Deapi não configurada. Por favor, adicione sua chave de API nas Configurações (ícone de engrenagem) em Deapi.ai.';
             return;
         }
 
@@ -4590,13 +4625,21 @@ Please output beautiful, rhyming, and highly rhythmic lyrics.`;
             });
             const modelName = "gemini-3.5-flash";
 
-            const systemInstruction = `You are an elite music producer and prompt engineer. Your job is to take a simple music description or script prompt and elevate it into a vivid, descriptive, high-fidelity prompt for state-of-the-art AI sound and music generation systems (like Suno AI, Lyria, or AceStep). 
+            const isVideo = type === 'video' || type === 'visual' || type === 'image' || type === 'txt2vid' || type === 'img2vid';
+            const systemInstruction = isVideo
+                ? `You are an elite Hollywood director and AI video prompt engineer. Your job is to take a video description or prompt (in Portuguese or English) and elevate it into a vivid, highly descriptive, cinematic English prompt for AI video generation models (like LTX-2.3, Veo, Kling, Sora).
+CRITICAL RULES:
+1. Translate all non-English terms accurately to English.
+2. STRICTLY PRESERVE AND ENFORCE every subject, setting, and action requested (e.g. if user asks for 'rock musician on stage', explicitly describe the musician, stage, guitar, lighting, action, and energy).
+3. Include visual details: camera movement, lighting, colors, energy, subject motion, framing.
+4. Output ONLY the final continuous prompt text under 60 words without preambles or markdown.`
+                : `You are an elite music producer and prompt engineer. Your job is to take a simple music description or script prompt and elevate it into a vivid, descriptive, high-fidelity prompt for state-of-the-art AI sound and music generation systems (like Suno AI, Lyria, or AceStep). 
 Include specific music descriptors such as professional equipment (e.g. vintage tube amp, pristine console preamps), specific acoustic or synthesized instruments, tempo (BPM), mix details (e.g., warm tape saturation, wider stereo imaging, crisp transient snap), and emotional cadence.
 Ensure your response is highly concise, direct, and under 60 words, formatted perfectly as a single continuous prompt. Avoid preambles, introductory words, or markdown structures. Output only the final prompt.`;
 
             const response = await executeWithRetry(() => ai.models.generateContent({
                 model: modelName,
-                contents: `Enhance this music prompt: "${rawPrompt}". Type/Context: ${type || 'music'}.`,
+                contents: isVideo ? `Enhance and strictly enforce this video prompt: "${rawPrompt}".` : `Enhance this music prompt: "${rawPrompt}". Type/Context: ${type || 'music'}.`,
                 config: {
                     systemInstruction,
                     temperature: 0.82
