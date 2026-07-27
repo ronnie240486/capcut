@@ -393,19 +393,37 @@ async function startServer() {
     };
 
     const getDeapiKey = (req?: express.Request) => {
-        const bodyKey = (req?.body?.apiKey || req?.body?.deapiKey || "").toString().trim();
-        const headerDeapiKey = (req?.headers['x-deapi-api-key'] || "").toString().trim();
-        const headerApiKey = (req?.headers['x-api-key'] || "").toString().trim();
-        let authHeader = (req?.headers['authorization'] || "").toString().trim();
-        if (authHeader.toLowerCase().startsWith("bearer ")) {
-            authHeader = authHeader.substring(7).trim();
+        if (!req) return (process.env.DEAPI_API_KEY || process.env.DE_API_KEY || "").trim();
+
+        const isGeminiKey = (k: string) => !k || k.startsWith("AIza") || k.length > 120;
+
+        const bodyDeapiKey = (req.body?.deapiKey || "").toString().trim();
+        const bodyApiKey = (req.body?.apiKey || "").toString().trim();
+        const headerDeapiKey = (req.headers?.['x-deapi-api-key'] || "").toString().trim();
+        const headerApiKey = (req.headers?.['x-api-key'] || "").toString().trim();
+        let authHeader = (req.headers?.['authorization'] || "").toString().trim();
+
+        const candidates = [
+            bodyDeapiKey,
+            headerDeapiKey,
+            bodyApiKey,
+            headerApiKey,
+            authHeader,
+            process.env.DEAPI_API_KEY || "",
+            process.env.DE_API_KEY || ""
+        ];
+
+        for (let key of candidates) {
+            key = (key || "").trim();
+            if (key.toLowerCase().startsWith("bearer ")) {
+                key = key.substring(7).trim();
+            }
+            if (key && !isGeminiKey(key)) {
+                return key;
+            }
         }
-        
-        let key = bodyKey || headerDeapiKey || headerApiKey || (authHeader && !authHeader.startsWith("AIza") ? authHeader : "") || (process.env.DEAPI_API_KEY || process.env.DE_API_KEY || "").trim();
-        if (key.toLowerCase().startsWith("bearer ")) {
-            return key.substring(7).trim();
-        }
-        return key;
+
+        return "";
     };
 
     const parseGeminiError = (e: any) => {
@@ -1826,7 +1844,7 @@ async function startServer() {
             apiKey 
         } = req.body;
 
-        const deapiKey = apiKey || getDeapiKey(req);
+        const deapiKey = getDeapiKey(req);
         if (!deapiKey) {
             console.error("[API] audio-to-video: DEAPI_API_KEY missing");
             return res.status(401).json({ error: "DEAPI_API_KEY não configurada." });
@@ -2140,7 +2158,7 @@ async function startServer() {
         
         if (isDeapiModel) {
             const deapiModel = model.startsWith('deapi-') ? model.replace('deapi-', '') : model;
-            const deapiKey = apiKey || getDeapiKey(req);
+            const deapiKey = getDeapiKey(req);
 
             if (!deapiKey) {
                 jobs[jobId].status = 'failed';
@@ -2606,7 +2624,7 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const deapiKey = apiKey || getDeapiKey(req);
+        const deapiKey = getDeapiKey(req);
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
             jobs[jobId].error = 'Chave API Deapi não configurada.';
@@ -3072,7 +3090,7 @@ async function startServer() {
         res.status(202).json({ jobId });
 
         const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription, refText, ref_text, retries } = req.body;
-        const deapiKey = apiKey || getDeapiKey(req);
+        const deapiKey = getDeapiKey(req);
         const resolvedType = type || 'speech';
         const resolvedLang = text || targetLanguage || 'pt-br';
         const selectedVoice = voice || '';
@@ -3413,7 +3431,7 @@ async function startServer() {
             steps, seed, guidanceScale: userGuidance, 
             outputFormat, referenceAudio, retries
         } = req.body;
-        const deapiKey = apiKey || getDeapiKey(req);
+        const deapiKey = getDeapiKey(req);
 
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
@@ -3828,7 +3846,7 @@ async function startServer() {
         res.status(202).json({ jobId });
 
         const { url, file, audioUrl, audioFile, apiKey, retries } = req.body;
-        const deapiKey = apiKey || getDeapiKey(req);
+        const deapiKey = getDeapiKey(req);
 
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
