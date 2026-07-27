@@ -393,8 +393,15 @@ async function startServer() {
     };
 
     const getDeapiKey = (req?: express.Request) => {
-        const headerKey = (req?.headers['x-deapi-api-key'] || "").toString().trim();
-        let key = headerKey || (process.env.DEAPI_API_KEY || "").trim();
+        const bodyKey = (req?.body?.apiKey || req?.body?.deapiKey || "").toString().trim();
+        const headerDeapiKey = (req?.headers['x-deapi-api-key'] || "").toString().trim();
+        const headerApiKey = (req?.headers['x-api-key'] || "").toString().trim();
+        let authHeader = (req?.headers['authorization'] || "").toString().trim();
+        if (authHeader.toLowerCase().startsWith("bearer ")) {
+            authHeader = authHeader.substring(7).trim();
+        }
+        
+        let key = bodyKey || headerDeapiKey || headerApiKey || (authHeader && !authHeader.startsWith("AIza") ? authHeader : "") || (process.env.DEAPI_API_KEY || process.env.DE_API_KEY || "").trim();
         if (key.toLowerCase().startsWith("bearer ")) {
             return key.substring(7).trim();
         }
@@ -1331,6 +1338,10 @@ async function startServer() {
                     }, 3);
                 }
                 
+                if (pollRes.status === 401) {
+                    throw new Error("Erro de Autenticação na DeAPI (401): Chave API ausente, inválida ou expirada. Verifique suas configurações.");
+                }
+
                 if (pollRes.status === 429) {
                     console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 45s...`);
                     if (jobs[jobId]) jobs[jobId].message = "API Ocupada (429). Aguardando fôlego...";
@@ -1362,7 +1373,12 @@ async function startServer() {
                             if (shouldDownload) {
                                 try {
                                     console.log(`[Job ${jobId}] Baixando ativo Deapi: ${resultUrl}`);
-                                    const dlRes = await fetch(resultUrl);
+                                    let dlRes = await fetch(resultUrl);
+                                    if (!dlRes.ok && deapiKey) {
+                                        dlRes = await fetch(resultUrl, {
+                                            headers: { 'Authorization': `Bearer ${deapiKey}` }
+                                        });
+                                    }
                                     if (dlRes.ok) {
                                         const buffer = Buffer.from(await dlRes.arrayBuffer());
                                         const contentType = dlRes.headers.get('content-type') || '';
@@ -1823,10 +1839,10 @@ async function startServer() {
         }
 
         const finalFrames = Math.min(120, Math.max(24, Number(frames || quadros || 120)));
-        const finalWidth = Math.max(256, Number(width || largura || 768));
-        const finalHeight = Math.max(256, Number(height || altura || 768));
+        const finalWidth = Math.max(512, Number(width || largura || 768));
+        const finalHeight = Math.max(512, Number(height || altura || 768));
         const deapiModel = String(model || modelo || 'Ltx2_3_22B_Dist_INT8');
-        const finalFps = Math.max(1, Number(fps || 24));
+        const finalFps = Math.min(24, Math.max(1, Number(fps || 24)));
 
         console.log(`[API] Processing aud2vid: model=${deapiModel}, frames=${finalFrames}, res=${finalWidth}x${finalHeight}`);
 
@@ -2194,14 +2210,17 @@ async function startServer() {
                 while (fetchAttempts < MAX_SUBMIT_ATTEMPTS) {
                     fetchAttempts++;
                     
-                    // Ajuste de limites conforme imagem do painel e erros anteriores
+                    // Ajuste de limites conforme exigências do Deapi (Height/Width >= 512, FPS <= 24)
+                    let calcW = aspectRatio === '9:16' ? 512 : (aspectRatio === '16:9' ? 896 : 768);
+                    let calcH = aspectRatio === '9:16' ? 896 : (aspectRatio === '16:9' ? 512 : 768);
+                    
                     const payload: any = {
                         prompt: prompt || 'cinematic video generation',
                         model: mappedModel,
-                        width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
-                        height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
+                        width: Math.max(512, calcW),
+                        height: Math.max(512, calcH),
                         frames: Math.min(frames || 120, 120), 
-                        fps: Math.max(fps || 30, 30),
+                        fps: Math.min(24, Math.max(1, Number(fps || 24))),
                         steps: 1,   
                         seed: parseInt(randomSeed),
                         include_audio: mappedModel.includes('ltx-video-v2.0') || mappedModel.includes('ltx-2-19b') || !!format,
@@ -2270,7 +2289,11 @@ async function startServer() {
 
                     if (!response.ok) {
                         const text = await response.text();
-                        if (response.status === 429) {
+                        if (response.status === 401) {
+                            lastFetchError = "Erro de Autenticação na DeAPI (401): Chave API do DeAPI ausente, inválida ou expirada. Verifique suas configurações de API.";
+                        } else if (response.status === 402) {
+                            lastFetchError = "Saldo insuficiente na sua conta DeAPI. Por favor, recarreague seus créditos no painel DeAPI.";
+                        } else if (response.status === 429) {
                             lastFetchError = "A API externa (Deapi) atingiu o limite de frequência (Rate Limit). Como você tem saldo, isso significa que muitas solicitações foram feitas em pouco tempo. Por favor, aguarde alguns minutos para o limite resetar e tente novamente.";
                         } else {
                             lastFetchError = `Deapi API error (${response.status}): ${text.substring(0, 200)}`;
@@ -2340,6 +2363,9 @@ async function startServer() {
                         }, 10);
                         
                         if (!pollRes.ok) {
+                            if (pollRes.status === 401) {
+                                throw new Error("Erro de Autenticação na DeAPI (401): Chave API ausente, inválida ou expirada. Verifique suas configurações.");
+                            }
                             pollFailures++;
                             console.error(`[Job ${jobId}] Poll HTTP Error ${pollRes.status} (Failure ${pollFailures}/5)`);
                             if (pollFailures > 5) break; 
@@ -2360,7 +2386,12 @@ async function startServer() {
                                 // para que o frontend possa buscar sem problemas de CORS/autenticação
                                 try {
                                     console.log(`[Job ${jobId}] Baixando vídeo Deapi de: ${videoUrl}`);
-                                    const dlRes = await fetch(videoUrl);
+                                    let dlRes = await fetch(videoUrl);
+                                    if (!dlRes.ok && deapiKey) {
+                                        dlRes = await fetch(videoUrl, {
+                                            headers: { 'Authorization': `Bearer ${deapiKey}` }
+                                        });
+                                    }
                                     if (dlRes.ok) {
                                         const buffer = Buffer.from(await dlRes.arrayBuffer());
                                         const contentType = dlRes.headers.get('content-type') || '';
