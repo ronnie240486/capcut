@@ -1272,6 +1272,23 @@ async function startServer() {
     const jobs: Record<string, any> = {};
     const JOBS_FILE = path.join(process.cwd(), 'jobs_persistence.json');
 
+    // Helper to format Deapi & API errors into user-friendly Portuguese messages
+    function formatDeapiErrorMessage(rawMsg: any, statusCode?: number): string {
+        const msgStr = typeof rawMsg === 'object' ? (rawMsg.message || rawMsg.error || JSON.stringify(rawMsg)) : String(rawMsg || '');
+        const msgLower = msgStr.toLowerCase();
+
+        if (statusCode === 401 || msgLower.includes('unauthenticated') || msgLower.includes('unauthorized') || msgLower.includes('invalid key')) {
+            return "Chave API Deapi não autenticada ou inválida. Por favor, acesse as Configurações (ícone de engrenagem) e atualize sua chave de API do Deapi.ai.";
+        }
+        if (statusCode === 429 || msgLower.includes('too many attempts') || msgLower.includes('rate limit') || msgLower.includes('too many requests')) {
+            return "A API do Deapi atingiu o limite de requisições simultâneas (Too Many Attempts). Por favor, aguarde de 30 a 60 segundos antes de tentar gerar novamente.";
+        }
+        if (statusCode === 402 || msgLower.includes('insufficient funds') || msgLower.includes('credits') || msgLower.includes('payment required')) {
+            return "Saldo de créditos insuficiente na sua conta Deapi.ai. Adicione mais créditos em Deapi.ai para continuar gerando vídeos.";
+        }
+        return msgStr || `Erro na API Deapi${statusCode ? ` (${statusCode})` : ''}`;
+    }
+
     // Helper to handle Deapi task/job response
     // Helper to translate and optimize prompt for video/audio models
     async function translatePromptIfNeeded(prompt: string, deapiKey: string) {
@@ -1314,7 +1331,11 @@ CRITICAL RULE: NEVER ignore any setting, subject, or action requested. Output ON
             }
             return prompt;
         } catch (e: any) {
-            console.warn("[Translate/Optimize] Failed:", e.message);
+            if (e.message?.includes('429') || e.message?.includes('RESOURCE_EXHAUSTED') || e.status === 429) {
+                console.warn("[Translate/Optimize] Gemini API quota limit reached. Using original prompt.");
+            } else {
+                console.warn("[Translate/Optimize] Bypassed prompt translation:", e.message || e);
+            }
             return prompt;
         }
     }
@@ -1998,7 +2019,7 @@ CRITICAL RULE: NEVER ignore any setting, subject, or action requested. Output ON
                     });
                     const data = await deapiRes.json();
                     console.log(`[Job ${jobId}] Deapi response status: ${deapiRes.status}`);
-                    if (!deapiRes.ok) throw new Error(data.message || `Erro na API Deapi (${deapiRes.status})`);
+                    if (!deapiRes.ok) throw new Error(formatDeapiErrorMessage(data.message || data, deapiRes.status));
                     
                     await handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai", true);
                 } else {
@@ -2051,7 +2072,7 @@ CRITICAL RULE: NEVER ignore any setting, subject, or action requested. Output ON
                         console.log(`[Job ${jobId}] Segment ${i+1} response:`, data);
                         if (!res.ok) {
                             console.error(`[Job ${jobId}] Segment ${i+1} initiation failed:`, data);
-                            throw new Error(data.message || `Falha ao iniciar parte ${i+1}`);
+                            throw new Error(formatDeapiErrorMessage(data.message || data, res.status));
                         }
 
                         const tid = data.data?.request_id || data.request_id || data.id || data.task_id;
@@ -2157,7 +2178,7 @@ CRITICAL RULE: NEVER ignore any setting, subject, or action requested. Output ON
 
             } catch (error: any) {
                 console.error(`[Job ${jobId}] Error:`, error);
-                if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = error.message; }
+                if (jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = formatDeapiErrorMessage(error.message || error); }
             } finally {
                 try { if (tempAudioPath && fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath); } catch(e) {}
             }
@@ -2502,7 +2523,7 @@ CRITICAL RULE: NEVER ignore any setting, subject, or action requested. Output ON
                 console.error(`[Job ${jobId}] Deapi Error:`, err);
                 if (jobs[jobId]) {
                     jobs[jobId].status = 'failed';
-                    jobs[jobId].error = err.message || String(err);
+                    jobs[jobId].error = formatDeapiErrorMessage(err.message || String(err));
                 }
             }
             return;
@@ -4048,20 +4069,19 @@ CRITICAL RULE: NEVER ignore any setting, subject, or action requested. Output ON
                 apiKey,
                 httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
             });
-            const prompt = `You are a cinematic director and visual artist. 
-            Create a detailed visual storyboard for a music video.
+            const prompt = `You are a top Hollywood music video director and VFX supervisor (specialized in TikTok/Reels viral high-energy 9:16 music videos). 
+            Create a detailed visual storyboard for a music video based on the provided song/audio details.
             Song Name: ${name || 'Unknown'}
-            Theme: ${theme || 'Abstract'}
+            Theme: ${theme || 'High-Energy Music Video Show & Action'}
             Total Duration: ${duration} seconds
             Lyrics: ${lyrics || 'No lyrics available'}
 
-            INSTRUCTIONS:
-            1. If lyrics are provided, the scenes MUST strictly follow the narrative and chronological flow of the lyrics.
-            2. Create exactly ${count} scenes.
-            3. For each scene, provide a "startTime" (in seconds) and a "prompt" (detailed English description).
-            4. Start time for scene 1 MUST be 0.
-            5. Prompts must be highly detailed (lighting, lens, style, atmosphere).
-            6. Distribute scenes evenly or logically across the ${duration}s.
+            DIRECTOR INSTRUCTIONS FOR MAXIMUM VISUAL IMPACT:
+            1. Every scene must feel like an ultra-professional music video shot (e.g., live concert stage with futuristic glowing moon arches, pyrotechnics, orbiting 360° camera, low-angle tracking shots of sports cars, skatepark action jumps, paparazzi flashes, floating celestial stages).
+            2. Incorporate explicit camera directives into every prompt: [360° orbiting camera shot], [low-angle drone tracking shot], [whip zoom close-up], [cinematic lens flare], [stage lasers and smoke].
+            3. Ensure high visual contrast, vibrant lighting, and dynamic subject motion.
+            4. Create exactly ${count} scenes distributed chronologically.
+            5. Prompts MUST be in descriptive, vivid English for AI video models.
 
             Format your response as strict JSON:
             {
