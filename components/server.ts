@@ -1331,7 +1331,7 @@ ${charLock && charLock.trim()
 3. STRICT RULE: Output ONLY the final detailed English prompt. No quotes, no markdown, no explanation.`;
 
             const result = await ai.models.generateContent({
-                model: "gemini-3.5-flash",
+                model: "gemini-2.5-flash",
                 contents: [{ 
                     role: "user", 
                     parts: [{ 
@@ -1372,7 +1372,7 @@ ${charLock && charLock.trim()
         const cleanCharLock = charLock && charLock.trim() ? charLock.trim() : '';
         const defaultAnchor = cleanCharLock
             ? `[LOCKED CHARACTER ANCHOR: ${cleanCharLock}. Exact facial features, hairstyle, body build, skin tone, clothing items, and visual identity preserved strictly identical across all scenes.]`
-            : `[LOCKED CHARACTER ANCHOR: Main protagonist based on '${basePrompt || 'music performance'}'. A 28-year-old male artist with short styled dark hair, light beard stubble, wearing a black leather motorcycle jacket over a fitted white t-shirt and dark jeans. Face, build, and outfit 100% visually identical.]`;
+            : `[FAITHFUL SUBJECT ANCHOR: High quality photorealistic scene based on '${basePrompt || 'original video performance'}'. Exact singers/performers, facial features, group composition, clothing, setting, stage lighting, and emotional performance preserved.]`;
 
         // Camera movements for sequential segments
         const cameraMoves = [
@@ -1418,7 +1418,7 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
 
             const result = await Promise.race([
                 ai.models.generateContent({
-                    model: "gemini-3.5-flash",
+                    model: "gemini-2.5-flash",
                     contents: [{ role: "user", parts: [{ text: prompt }] }],
                     config: {
                         responseMimeType: "application/json"
@@ -2494,27 +2494,36 @@ async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<
                 }
 
                 // Build shot boundaries array [ { start, end, duration } ]
-                const shotBoundaries: { start: number; end: number; dur: number }[] = [];
+                const rawBoundaries: { start: number; end: number; dur: number }[] = [];
                 if (sceneCutTimestamps.length > 1) {
                     for (let i = 0; i < sceneCutTimestamps.length; i++) {
                         const start = sceneCutTimestamps[i];
                         const end = (i < sceneCutTimestamps.length - 1) ? sceneCutTimestamps[i + 1] : duration;
                         const dur = Math.max(1, end - start);
-                        shotBoundaries.push({ start, end, dur });
+                        rawBoundaries.push({ start, end, dur });
                     }
                 } else {
-                    // Fallback to ~4s shot intervals across total duration
-                    const defaultShotDur = 4;
-                    const numShots = Math.max(1, Math.ceil(duration / defaultShotDur));
-                    for (let i = 0; i < numShots; i++) {
-                        const start = i * defaultShotDur;
-                        const end = Math.min(duration, (i + 1) * defaultShotDur);
-                        const dur = Math.max(1, end - start);
-                        shotBoundaries.push({ start, end, dur });
+                    rawBoundaries.push({ start: 0, end: duration, dur: duration });
+                }
+
+                // Subdivide any boundary longer than 4.5s into ~4.0s sub-shots so DeAPI frame caps do NOT shorten the video
+                const MAX_SHOT_DUR = 4.0;
+                const shotBoundaries: { start: number; end: number; dur: number }[] = [];
+                for (const b of rawBoundaries) {
+                    if (b.dur <= MAX_SHOT_DUR + 0.5) {
+                        shotBoundaries.push(b);
+                    } else {
+                        const subCount = Math.ceil(b.dur / MAX_SHOT_DUR);
+                        const subDur = b.dur / subCount;
+                        for (let s = 0; s < subCount; s++) {
+                            const start = b.start + (s * subDur);
+                            const end = (s === subCount - 1) ? b.end : (b.start + ((s + 1) * subDur));
+                            shotBoundaries.push({ start, end, dur: Math.max(1, end - start) });
+                        }
                     }
                 }
 
-                console.log(`[Job ${jobId}] Total Duration: ${duration}s, Detected Shots: ${shotBoundaries.length}`);
+                console.log(`[Job ${jobId}] Total Duration: ${duration.toFixed(1)}s, Calculated Sub-Shots: ${shotBoundaries.length}`);
 
                 // 3. Extract EXACT Frame Image for EVERY Shot/Scene from original video
                 const inlineImageParts: any[] = [];
@@ -2598,7 +2607,7 @@ Responda EXCLUSIVAMENTE em JSON válido:
 
                         const parts: any[] = [...inlineImageParts, { text: aiPromptText }];
                         const gemRes = await ai.models.generateContent({
-                            model: "gemini-3.5-flash",
+                            model: "gemini-2.5-flash",
                             contents: [{ role: 'user', parts }],
                             config: { responseMimeType: "application/json" }
                         });
@@ -2607,9 +2616,10 @@ Responda EXCLUSIVAMENTE em JSON válido:
                         if (parsed.dubbingScript) translationScript = parsed.dubbingScript;
                         if (Array.isArray(parsed.scenes) && parsed.scenes.length > 0) {
                             generatedScenesFromAI = parsed.scenes;
+                            console.log(`[Job ${jobId}] Gemini Vision successfully extracted ${generatedScenesFromAI.length} scene prompts from video frames!`);
                         }
                     } catch (gErr: any) {
-                        console.warn(`[Job ${jobId}] Gemini script generation warning:`, gErr.message);
+                        console.error(`[Job ${jobId}] Gemini Vision error:`, gErr.message || gErr);
                     }
                 }
 
@@ -2806,6 +2816,69 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 });
             }
         })();
+    });
+
+    app.post('/api/generate-scene-image', async (req: any, res: any) => {
+        try {
+            const { prompt, aspectRatio } = req.body;
+            if (!prompt) return res.status(400).json({ error: 'Prompt é obrigatório' });
+
+            const geminiKey = process.env.GEMINI_API_KEY;
+            const deapiKey = getDeapiKey(req);
+
+            // Strategy 1: Try Gemini Imagen 3
+            if (geminiKey) {
+                try {
+                    const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+                    const response = await (ai.models as any).generateImages({
+                        model: 'imagen-3.0-generate-002',
+                        prompt: prompt,
+                        config: {
+                            numberOfImages: 1,
+                            outputMimeType: 'image/jpeg',
+                            aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16',
+                        },
+                    });
+                    const base64Bytes = response?.generatedImages?.[0]?.image?.imageBytes;
+                    if (base64Bytes) {
+                        return res.json({ imageUrl: `data:image/jpeg;base64,${base64Bytes}` });
+                    }
+                } catch (imgErr: any) {
+                    console.warn('[GenerateSceneImage] Gemini Imagen error:', imgErr.message || imgErr);
+                }
+            }
+
+            // Strategy 2: Try DeAPI Flux / text2img
+            if (deapiKey) {
+                try {
+                    const deRes = await fetch("https://api.deapi.ai/api/v1/client/flux/text2img", {
+                        method: "POST",
+                        headers: {
+                            "Authorization": `Bearer ${deapiKey}`,
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            prompt: prompt,
+                            aspect_ratio: aspectRatio === '16:9' ? '16:9' : '9:16'
+                        })
+                    });
+                    if (deRes.ok) {
+                        const deData = await deRes.json();
+                        const directUrl = deData.url || deData.data?.url || deData.result_url;
+                        if (directUrl) {
+                            return res.json({ imageUrl: directUrl });
+                        }
+                    }
+                } catch (deErr: any) {
+                    console.warn('[GenerateSceneImage] DeAPI error:', deErr.message || deErr);
+                }
+            }
+
+            return res.status(500).json({ error: 'Não foi possível gerar a imagem da cena. Verifique sua chave do Gemini ou DeAPI.' });
+        } catch (e: any) {
+            console.error('[GenerateSceneImage] Error:', e);
+            res.status(500).json({ error: e.message || 'Erro ao gerar imagem' });
+        }
     });
 
     app.post('/api/ai/generate-video', async (req: any, res: any) => {
