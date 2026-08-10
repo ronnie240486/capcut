@@ -2862,32 +2862,7 @@ Responda EXCLUSIVAMENTE em JSON válido:
             const geminiKey = process.env.GEMINI_API_KEY;
             const deapiKey = getDeapiKey(req);
 
-            // Strategy 1: Try Gemini Imagen models
-            if (geminiKey) {
-                const modelsToTry = ['imagen-3.0-generate-002', 'imagen-3.0-generate-001', 'imagen-3.0-fast-generate-001'];
-                const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
-                for (const modelName of modelsToTry) {
-                    try {
-                        const response = await (ai.models as any).generateImages({
-                            model: modelName,
-                            prompt: prompt,
-                            config: {
-                                numberOfImages: 1,
-                                outputMimeType: 'image/jpeg',
-                                aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16',
-                            },
-                        });
-                        const base64Bytes = response?.generatedImages?.[0]?.image?.imageBytes;
-                        if (base64Bytes) {
-                            return res.json({ imageUrl: `data:image/jpeg;base64,${base64Bytes}` });
-                        }
-                    } catch (imgErr: any) {
-                        console.warn(`[GenerateSceneImage] Gemini Imagen (${modelName}) error:`, imgErr.message || imgErr);
-                    }
-                }
-            }
-
-            // Strategy 2: Try DeAPI Flux / text2img
+            // Strategy 1: Try DeAPI Flux / text2img if available
             if (deapiKey) {
                 try {
                     const deRes = await fetch("https://api.deapi.ai/api/v1/client/flux/text2img", {
@@ -2909,11 +2884,11 @@ Responda EXCLUSIVAMENTE em JSON válido:
                         }
                     }
                 } catch (deErr: any) {
-                    console.warn('[GenerateSceneImage] DeAPI error:', deErr.message || deErr);
+                    // silent fallback
                 }
             }
 
-            // Strategy 3: Fast, high-definition AI image fallback (Pollinations Flux)
+            // Strategy 2: Fast, high-definition AI image generator (Pollinations Flux HD)
             const width = aspectRatio === '16:9' ? 1024 : 576;
             const height = aspectRatio === '16:9' ? 576 : 1024;
             const seed = Math.floor(Math.random() * 1000000);
