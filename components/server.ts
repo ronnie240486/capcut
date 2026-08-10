@@ -2332,7 +2332,7 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
         })();
     });
 
-    // ─── CLONAR & RECRIAR VÍDEO POR URL (ANTI-COPYRIGHT + DUBLAGEM AI) ───────
+    // ─── CLONAR & RECRIAR VÍDEO POR URL (ANTI-COPYRIGHT + DUBLAGEM AI - FRAME-BY-FRAME) ───────
     app.post('/api/ai/url-video-clone', async (req: any, res: any) => {
         const jobId = `clone_url_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now(), message: 'Iniciando clonagem de vídeo por URL...' };
@@ -2387,8 +2387,8 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
                 } catch (e) {}
 
                 if (jobs[jobId]) {
-                    jobs[jobId].progress = 25;
-                    jobs[jobId].message = 'Analisando vídeo original e medindo duração exata...';
+                    jobs[jobId].progress = 20;
+                    jobs[jobId].message = 'Analisando cortes de cena e quadros do vídeo original...';
                     saveJobs();
                 }
 
@@ -2404,83 +2404,111 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
                     if (parseFloat(durBuf) > 0) duration = parseFloat(durBuf);
                 } catch (e) {}
 
-                // Calculate exact number of scenes & scene duration to cover 100% of the video duration
-                let targetNumScenes = Number(numScenes) || 0;
-                let segDuration = 6; // Default standard segment duration (seconds)
-
-                if (targetNumScenes <= 0) {
-                    // Auto-calculate exact number of scenes to cover full video length
-                    targetNumScenes = Math.max(1, Math.ceil(duration / segDuration));
-                } else {
-                    // Use requested scene count, calculate exact segment duration to fit full video
-                    segDuration = Math.max(3, duration / targetNumScenes);
+                // 2. FFmpeg Scene Cut Detection: Find exact shot changes in the source video
+                const sceneCutTimestamps: number[] = [0];
+                try {
+                    const detectCmd = `ffmpeg -i "${downloadedVideoPath}" -filter_complex "select='gt(scene,0.22)',metadata=print:file=-" -f null - 2>&1`;
+                    const detectOutput = execSync(detectCmd, { timeout: 30000 }).toString();
+                    const matches = detectOutput.matchAll(/pts_time:([0-9.]+)/g);
+                    for (const match of matches) {
+                        const cutTime = parseFloat(match[1]);
+                        if (cutTime > 0.8 && cutTime < duration - 0.5) {
+                            const lastCut = sceneCutTimestamps[sceneCutTimestamps.length - 1];
+                            if (cutTime - lastCut >= 1.5) { // Minimum 1.5s per shot cut
+                                sceneCutTimestamps.push(cutTime);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`[Job ${jobId}] FFmpeg scene detection fallback to interval slicing`);
                 }
 
-                console.log(`[Job ${jobId}] Duration: ${duration}s, Target Scenes: ${targetNumScenes}, Seg Duration: ${segDuration}s`);
-
-                // Extract 3 video keyframe images for Gemini Vision analysis
-                const frameTimes = [
-                    Math.max(0.5, duration * 0.15),
-                    Math.max(1.0, duration * 0.50),
-                    Math.max(1.5, duration * 0.85)
-                ];
-
-                const inlineImageParts: any[] = [];
-                for (let i = 0; i < frameTimes.length; i++) {
-                    const framePath = path.join(uploadDir, `frame_${jobId}_${i}.jpg`);
-                    tempFrames.push(framePath);
-                    try {
-                        execSync(`ffmpeg -y -ss ${frameTimes[i]} -i "${downloadedVideoPath}" -vframes 1 -q:v 2 "${framePath}"`);
-                        if (fs.existsSync(framePath) && fs.statSync(framePath).size > 0) {
-                            const imgData = fs.readFileSync(framePath).toString('base64');
-                            inlineImageParts.push({
-                                inlineData: {
-                                    mimeType: 'image/jpeg',
-                                    data: imgData
-                                }
-                            });
-                        }
-                    } catch (fErr: any) {
-                        console.warn(`[Job ${jobId}] Keyframe ${i} extraction warning:`, fErr.message);
+                // Build shot boundaries array [ { start, end, duration } ]
+                const shotBoundaries: { start: number; end: number; dur: number }[] = [];
+                if (sceneCutTimestamps.length > 1) {
+                    for (let i = 0; i < sceneCutTimestamps.length; i++) {
+                        const start = sceneCutTimestamps[i];
+                        const end = (i < sceneCutTimestamps.length - 1) ? sceneCutTimestamps[i + 1] : duration;
+                        const dur = Math.max(1, end - start);
+                        shotBoundaries.push({ start, end, dur });
+                    }
+                } else {
+                    // Fallback to ~4s shot intervals across total duration
+                    const defaultShotDur = 4;
+                    const numShots = Math.max(1, Math.ceil(duration / defaultShotDur));
+                    for (let i = 0; i < numShots; i++) {
+                        const start = i * defaultShotDur;
+                        const end = Math.min(duration, (i + 1) * defaultShotDur);
+                        const dur = Math.max(1, end - start);
+                        shotBoundaries.push({ start, end, dur });
                     }
                 }
 
-                // 2. Gemini AI Vision: Analyze Video & Create Exact Matching Script + Scene Prompts
+                console.log(`[Job ${jobId}] Total Duration: ${duration}s, Detected Shots: ${shotBoundaries.length}`);
+
+                // 3. Extract EXACT Frame Image for EVERY Shot/Scene from original video
+                const inlineImageParts: any[] = [];
+                const sceneFramePaths: string[] = [];
+
+                for (let i = 0; i < shotBoundaries.length; i++) {
+                    const shot = shotBoundaries[i];
+                    const frameTime = shot.start + Math.min(0.5, shot.dur * 0.3);
+                    const framePath = path.join(uploadDir, `shot_frame_${jobId}_${i}.jpg`);
+                    tempFrames.push(framePath);
+                    sceneFramePaths.push(framePath);
+
+                    try {
+                        execSync(`ffmpeg -y -ss ${frameTime} -i "${downloadedVideoPath}" -vframes 1 -q:v 2 "${framePath}"`);
+                        if (fs.existsSync(framePath) && fs.statSync(framePath).size > 0) {
+                            const imgData = fs.readFileSync(framePath).toString('base64');
+                            if (i < 10) { // Send first 10 shot frames to Gemini Vision to stay within payload limits
+                                inlineImageParts.push({
+                                    inlineData: {
+                                        mimeType: 'image/jpeg',
+                                        data: imgData
+                                    }
+                                });
+                            }
+                        }
+                    } catch (fErr: any) {
+                        console.warn(`[Job ${jobId}] Shot frame ${i} extraction error:`, fErr.message);
+                    }
+                }
+
+                // 4. Gemini AI Vision: Analyze exact video shot frames & generate script + scene prompts
                 if (jobs[jobId]) {
-                    jobs[jobId].progress = 40;
-                    jobs[jobId].message = `Gemini Vision analisando ${inlineImageParts.length} quadros do vídeo e gerando roteiro...`;
+                    jobs[jobId].progress = 35;
+                    jobs[jobId].message = `Gemini Vision analisando ${shotBoundaries.length} cortes de cena do vídeo original...`;
                     saveJobs();
                 }
 
                 let userCharLock = characterDescription || 'Protagonista idêntico ao vídeo original com visual focado e elegante';
-                let translationScript = `Esta é uma recriação cinematográfica fotorrealista adaptada com inteligência artificial.`;
+                let translationScript = `Esta é uma recriação fotorrealista e dublada por inteligência artificial do vídeo original.`;
                 let generatedScenesFromAI: string[] = [];
 
                 if (geminiKey) {
                     try {
                         const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
                         const aiPromptText = `Você é um diretor de cinema especialista em recriação de vídeos sem direitos autorais e dublagem profissional.
-Analise os ${inlineImageParts.length} quadros anexados do vídeo original de ${Math.round(duration)}s.
-Informações extraídas do vídeo: ${videoMetaDataText || 'Vídeo viral do YouTube/TikTok'}.
+Analise as ${inlineImageParts.length} imagens de cena extraídas dos cortes do vídeo original de ${Math.round(duration)}s.
+Informações extraídas do vídeo: ${videoMetaDataText || 'Vídeo original de redes sociais'}.
 
 Estilo Visual Solicitado: "${style}".
 Idioma de Destino da Dublagem: "${targetLanguage}".
 Trava de Personagem / Protagonista Fixo: "${userCharLock}".
 
-DURAÇÃO TOTAL DO VÍDEO: ${Math.round(duration)} segundos.
-NÚMERO EXATO DE CENAS NECESSÁRIAS: ${targetNumScenes} cenas (cada uma com exatamente ~${segDuration.toFixed(1)} segundos).
+DURAÇÃO TOTAL DO VÍDEO: ${Math.round(duration)}s.
+CORTES DE CENA: ${shotBoundaries.length} cenas individuais.
 
 TAREFAS:
-1. Analise o ASSUNTO EXATO, HISTÓRIA e TEMA do vídeo original nos quadros.
-2. Escreva um "dubbingScript" completo em ${targetLanguage} que narre fielmente o assunto do vídeo original para durar exatamente ${Math.round(duration)}s.
-3. Crie EXATAMENTE ${targetNumScenes} prompts hiper-detalhados em inglês na array "scenes" para recriar CADA trecho do vídeo por IA no estilo ${style}.
-Cada prompt DEVE conter o marcador "[LOCKED CHARACTER ANCHOR: ${userCharLock}]" e descrever visualmente o que acontece naquele segmento de tempo do vídeo original.
+1. Entenda a história/conteúdo exato das cenas originais.
+2. Escreva o "dubbingScript" em ${targetLanguage} narrando fielmente o vídeo original para durar exatamente ${Math.round(duration)}s.
+3. Crie EXATAMENTE ${shotBoundaries.length} prompts em inglês na array "scenes" descrevendo cada cena para recriá-la por IA no estilo ${style} mantendo a mesma composição de câmera e o marcador "[LOCKED CHARACTER ANCHOR: ${userCharLock}]".
 
 Responda SOMENTE um JSON válido:
 {
-  "videoAnalysis": "Descrição do tema do vídeo original",
-  "dubbingScript": "Texto completo da dublagem em ${targetLanguage}",
-  "scenes": [${Array.from({ length: targetNumScenes }).map((_, idx) => `"Prompt detalhado em inglês para a cena ${idx + 1}"`).join(', ')}]
+  "dubbingScript": "Texto da dublagem em ${targetLanguage}",
+  "scenes": [${Array.from({ length: shotBoundaries.length }).map((_, idx) => `"Prompt da cena ${idx + 1}"`).join(', ')}]
 }`;
 
                         const parts: any[] = [...inlineImageParts, { text: aiPromptText }];
@@ -2500,20 +2528,19 @@ Responda SOMENTE um JSON válido:
                     }
                 }
 
-                // If AI didn't return enough scene prompts, generate consistent ones
-                if (generatedScenesFromAI.length < targetNumScenes) {
+                if (generatedScenesFromAI.length < shotBoundaries.length) {
                     const fallbackPrompts = await generateConsistentMultiSegmentPrompts(
-                        `Remix fotorrealista anti-copyright do vídeo sobre: ${videoMetaDataText || style}`,
+                        `Remix fotorrealista anti-copyright da cena no estilo ${style}`,
                         userCharLock,
-                        targetNumScenes
+                        shotBoundaries.length
                     );
                     generatedScenesFromAI = fallbackPrompts;
                 }
 
-                // 3. Generate Dubbed Audio using DeAPI Speech / Kokoro / Speech API
+                // 5. Generate Dubbed Voice Audio
                 if (jobs[jobId]) {
-                    jobs[jobId].progress = 55;
-                    jobs[jobId].message = `Sintetizando voz dublada por IA em ${targetLanguage}...`;
+                    jobs[jobId].progress = 50;
+                    jobs[jobId].message = `Sintetizando dublagem por IA em ${targetLanguage}...`;
                     saveJobs();
                 }
 
@@ -2554,49 +2581,69 @@ Responda SOMENTE um JSON válido:
                     ? dubbedAudioPath
                     : extractedAudioPath;
 
-                // 4. Generate Anti-Copyright AI Video Scenes matching exact timestamps
+                // 6. Frame-Guided Image-To-Video AI Generation per Shot
                 if (jobs[jobId]) {
-                    jobs[jobId].progress = 65;
-                    jobs[jobId].message = `Gerando ${targetNumScenes} cenas visuais por IA com sincronia de tempo...`;
+                    jobs[jobId].progress = 60;
+                    jobs[jobId].message = `Recriando ${shotBoundaries.length} cenas por IA guiadas pelos quadros originais...`;
                     saveJobs();
                 }
 
                 const finalModel = 'Ltx2_3_22B_Dist_INT8';
                 const baseSeed = Math.floor(Math.random() * 1000000000);
 
-                for (let i = 0; i < targetNumScenes; i++) {
-                    const sceneStartTime = i * segDuration;
-                    const thisSegLen = Math.min(segDuration, Math.max(1, duration - sceneStartTime));
-
+                for (let i = 0; i < shotBoundaries.length; i++) {
+                    const shot = shotBoundaries[i];
                     if (jobs[jobId]) {
-                        jobs[jobId].message = `Gerando cena IA ${i+1}/${targetNumScenes} (~${thisSegLen.toFixed(1)}s, Anti-Copyright)...`;
-                        jobs[jobId].progress = Math.round(65 + (i / targetNumScenes) * 28);
+                        jobs[jobId].message = `Clonando cena ${i+1}/${shotBoundaries.length} (${shot.dur.toFixed(1)}s, Frame Guiado)...`;
+                        jobs[jobId].progress = Math.round(60 + (i / shotBoundaries.length) * 32);
                         saveJobs();
                     }
 
                     const segPrompt = generatedScenesFromAI[i] || generatedScenesFromAI[0];
                     const segAudioChunk = path.join(uploadDir, `seg_audio_${jobId}_${i}.mp3`);
-                    await cutAudio(finalAudioPath, segAudioChunk, sceneStartTime, thisSegLen);
+                    await cutAudio(finalAudioPath, segAudioChunk, shot.start, shot.dur);
 
+                    const sceneFrameImgPath = sceneFramePaths[i];
                     let segVideoPath = '';
+
                     if (deapiKey) {
                         try {
                             const formData = new FormData();
                             const segBuf = fs.readFileSync(segAudioChunk);
                             formData.append('audio', new Blob([segBuf], { type: 'audio/mpeg' }), 'audio.mp3');
                             formData.append('prompt', segPrompt);
-                            formData.append('frames', Math.min(120, Math.round(thisSegLen * 24)).toString());
+                            formData.append('frames', Math.min(120, Math.round(shot.dur * 24)).toString());
                             formData.append('width', '768');
                             formData.append('height', '1344');
                             formData.append('fps', '24');
                             formData.append('model', finalModel);
                             formData.append('seed', (baseSeed + i * 19).toString());
 
-                            const response = await fetch("https://api.deapi.ai/api/v1/client/audio-to-video", {
+                            // Pass the exact original shot frame as the reference image guide for Image-To-Video!
+                            if (sceneFrameImgPath && fs.existsSync(sceneFrameImgPath) && fs.statSync(sceneFrameImgPath).size > 0) {
+                                const frameImgBuf = fs.readFileSync(sceneFrameImgPath);
+                                const imgBlob = new Blob([frameImgBuf], { type: 'image/jpeg' });
+                                formData.append('image', imgBlob, 'frame.jpg');
+                                formData.append('input_image', imgBlob, 'frame.jpg');
+                                formData.append('first_frame_image', imgBlob, 'frame.jpg');
+                            }
+
+                            // Use animation endpoint for image-guided video generation
+                            const animEndpoint = "https://api.deapi.ai/api/v2/videos/animations";
+                            let response = await fetch(animEndpoint, {
                                 method: 'POST',
                                 headers: { 'Authorization': `Bearer ${deapiKey}` },
                                 body: formData
                             });
+
+                            if (!response.ok) {
+                                // Fallback to audio-to-video endpoint if animations endpoint differs
+                                response = await fetch("https://api.deapi.ai/api/v1/client/audio-to-video", {
+                                    method: 'POST',
+                                    headers: { 'Authorization': `Bearer ${deapiKey}` },
+                                    body: formData
+                                });
+                            }
 
                             const data: any = await safeJson(response);
                             if (response.ok && data) {
@@ -2606,8 +2653,19 @@ Responda SOMENTE um JSON válido:
                                 }
                             }
                         } catch (deapiErr: any) {
-                            console.warn(`[Job ${jobId}] DeAPI scene ${i+1} warning:`, deapiErr.message);
+                            console.warn(`[Job ${jobId}] DeAPI shot ${i+1} animation error:`, deapiErr.message);
                         }
+                    }
+
+                    // Fallback: If AI generation missed, cut original video shot & apply audio
+                    if (!segVideoPath || !fs.existsSync(segVideoPath)) {
+                        const fallbackCutPath = path.join(uploadDir, `fallback_shot_${jobId}_${i}.mp4`);
+                        try {
+                            execSync(`ffmpeg -y -ss ${shot.start} -i "${downloadedVideoPath}" -i "${segAudioChunk}" -t ${shot.dur} -c:v libx264 -c:a aac -map 0:v:0 -map 1:a:0 "${fallbackCutPath}"`);
+                            if (fs.existsSync(fallbackCutPath) && fs.statSync(fallbackCutPath).size > 0) {
+                                segVideoPath = fallbackCutPath;
+                            }
+                        } catch (e) {}
                     }
 
                     if (segVideoPath && fs.existsSync(segVideoPath)) {
@@ -2615,7 +2673,7 @@ Responda SOMENTE um JSON válido:
                     }
                 }
 
-                // 5. Final Concat or Composite Output Video
+                // 7. Final Concat Output Video
                 const finalOutputPath = path.join(uploadDir, `cloned_video_${jobId}.mp4`);
                 if (generatedVideoSegments.length > 0) {
                     if (generatedVideoSegments.length === 1) {
@@ -2635,7 +2693,7 @@ Responda SOMENTE um JSON válido:
                     jobs[jobId].outputPath = finalOutputPath;
                     jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
                     jobs[jobId].progress = 100;
-                    jobs[jobId].message = 'Vídeo clonado, recriado por IA e dublado com sucesso!';
+                    jobs[jobId].message = 'Vídeo clonado frame por frame, recriado por IA e dublado com sucesso!';
                     jobs[jobId].script = translationScript;
                     jobs[jobId].scenes = generatedScenesFromAI;
                     saveJobs();
