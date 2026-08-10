@@ -2868,7 +2868,7 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 try {
                     const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
                     const trRes = await ai.models.generateContent({
-                        model: "gemini-2.5-flash",
+                        model: "gemini-3.6-flash",
                         contents: `You are an expert prompt engineer. Translate and convert the following scene description into a vivid, photorealistic English visual prompt for AI image generation. Describe the subjects, action, clothing, setting, lighting, and mood accurately. Do not include markdown or preamble, output ONLY the final English prompt.\n\nDescription: "${prompt}"`,
                         config: { temperature: 0.3 }
                     });
@@ -2885,7 +2885,7 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 englishPrompt = prompt.replace(/\[.*?\]/g, '').replace(/[\r\n]+/g, ' ').trim();
             }
 
-            // Strategy 1: Try Gemini Imagen & Flash Image models if requested or auto with key
+            // Strategy 1: Try Gemini Flash Image models if requested or auto with key
             if (engine === 'gemini' && !geminiKey) {
                 return res.status(400).json({ error: 'Chave API do Gemini não configurada no servidor ou no navegador. Adicione sua Gemini API Key nas configurações.' });
             }
@@ -2894,57 +2894,29 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
                 let geminiLastError = '';
 
-                // Method A: Try Gemini Imagen 3 via generateImages
-                const imagenModels = [
-                    'imagen-3.0-generate-002',
-                    'imagen-3.0-fast-generate-001',
-                    'models/imagen-3.0-generate-002'
-                ];
-                for (const imgModel of imagenModels) {
-                    try {
-                        const imgRes = await ai.models.generateImages({
-                            model: imgModel,
-                            prompt: englishPrompt,
-                            config: {
-                                numberOfImages: 1,
-                                outputMimeType: 'image/jpeg',
-                                aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16'
-                            }
-                        });
-                        if (imgRes.generatedImages && imgRes.generatedImages[0]?.image?.imageBytes) {
-                            const b64 = imgRes.generatedImages[0].image.imageBytes;
-                            return res.json({ imageUrl: `data:image/jpeg;base64,${b64}`, provider: `Gemini Pro (Imagen 3)` });
-                        }
-                    } catch (geminiImgErr: any) {
-                        geminiLastError = geminiImgErr?.message || String(geminiImgErr);
-                        console.warn(`[GenerateSceneImage] Gemini model ${imgModel} error:`, geminiLastError);
-                    }
-                }
-
-                // Method B: Try Gemini Flash Image via generateContent (gemini-2.5-flash / gemini-3.1-flash-lite-image)
-                const flashModels = ['gemini-2.5-flash', 'gemini-3.1-flash-lite-image'];
+                // Try Gemini image generation models (gemini-3.1-flash-lite-image / gemini-3.1-flash-image)
+                const flashModels = ['gemini-3.1-flash-lite-image', 'gemini-3.1-flash-image'];
                 for (const fModel of flashModels) {
                     try {
                         const flashRes = await ai.models.generateContent({
                             model: fModel,
                             contents: `Generate a high quality visual image of: ${englishPrompt}`,
                             config: {
-                                responseModalities: ['IMAGE'],
                                 imageConfig: {
                                     aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16'
                                 }
-                            } as any
+                            }
                         });
                         for (const part of flashRes.candidates?.[0]?.content?.parts || []) {
                             if ((part as any).inlineData?.data) {
                                 const b64 = (part as any).inlineData.data;
                                 const mime = (part as any).inlineData.mimeType || 'image/jpeg';
-                                return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: `Gemini Pro (${fModel})` });
+                                return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: `Gemini (${fModel})` });
                             }
                         }
                     } catch (flashErr: any) {
                         geminiLastError = flashErr?.message || String(flashErr);
-                        console.warn(`[GenerateSceneImage] Gemini Flash model ${fModel} error:`, geminiLastError);
+                        console.warn(`[GenerateSceneImage] Gemini model ${fModel} error:`, geminiLastError);
                     }
                 }
 
