@@ -53,7 +53,12 @@ const app = express();
 const PORT = 3000;
 
 // Global Error Handlers to prevent "Lost Process"
-process.on('uncaughtException', (err) => {
+process.on('uncaughtException', (err: any) => {
+    // Suppress or handle broken pipe write errors gracefully when stdout/stderr or child processes close early
+    if (err && (err.code === 'EPIPE' || err.message?.includes('EPIPE'))) {
+        console.warn('[Server] Pipe closed by peer (EPIPE ignored)');
+        return;
+    }
     console.error('[CRITICAL] Uncaught Exception:', err);
 });
 process.on('unhandledRejection', (reason, promise) => {
@@ -1293,6 +1298,11 @@ async function startServer() {
     // Helper to translate and optimize prompt for video/audio models with strict character locking and Hollywood quality
     async function translatePromptIfNeeded(prompt: string, deapiKey: string, charLock?: string) {
         if (!prompt || !prompt.trim()) return prompt;
+        // Truncate overly massive prompts (e.g., base64 or giant inputs mistakenly passed) to avoid Gemini token limit error
+        let cleanPrompt = prompt.trim();
+        if (cleanPrompt.length > 4000) {
+            cleanPrompt = cleanPrompt.substring(0, 4000);
+        }
         try {
             const apiKey = process.env.GEMINI_API_KEY;
             if (!apiKey) return prompt;
@@ -1302,7 +1312,7 @@ async function startServer() {
                 httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } 
             });
             
-            console.log(`[Translate/Optimize] Processing prompt: "${prompt}" (CharLock: ${charLock || 'Auto'})`);
+            console.log(`[Translate/Optimize] Processing prompt: "${cleanPrompt.substring(0, 100)}..." (CharLock: ${charLock || 'Auto'})`);
             const systemInstruction = `You are a world-class Hollywood music video director, VFX supervisor, and AI video prompt architect.
 Your mission is to transform any user prompt (brief, simple, or in Portuguese) into an ultra-professional, photorealistic, cinema-grade English video prompt.
 
@@ -1325,7 +1335,7 @@ ${charLock && charLock.trim()
                 contents: [{ 
                     role: "user", 
                     parts: [{ 
-                        text: `Convert and elevate this request into a professional, cinematic AI video prompt with character locking and camera directives: "${prompt}"` 
+                        text: `Convert and elevate this request into a professional, cinematic AI video prompt with character locking and camera directives: "${cleanPrompt}"` 
                     }] 
                 }],
                 config: {
@@ -1335,7 +1345,7 @@ ${charLock && charLock.trim()
             
             const translation = (result as any).text?.trim().replace(/^"|"$/g, '') || (result as any).response?.text?.().trim().replace(/^"|"$/g, '');
             if (translation && translation.length > 2) {
-                console.log(`[Translate/Optimize] Success: "${prompt}" -> "${translation}"`);
+                console.log(`[Translate/Optimize] Success: "${cleanPrompt.substring(0, 50)}..." -> "${translation.substring(0, 50)}..."`);
                 return translation;
             }
             return prompt;
@@ -2546,33 +2556,44 @@ async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<
                     saveJobs();
                 }
 
-                let userCharLock = characterDescription || 'Protagonista idêntico ao vídeo original com visual focado e elegante';
-                let translationScript = `Esta é uma recriação fotorrealista e dublada por inteligência artificial do vídeo original.`;
+                let userCharLock = (characterDescription && characterDescription.trim()) ? characterDescription.trim() : '';
+                let translationScript = '';
                 let generatedScenesFromAI: string[] = [];
+
+                const isOriginalStyle = !style || style.toLowerCase().includes('original') || style.toLowerCase().includes('manter');
+                const styleInstruction = isOriginalStyle
+                    ? 'PRESERVE RIGOROSAMENTE A MESMA ESTÉTICA VISUAL, ILUMINAÇÃO, PALETA DE CORES E ESTILO ARTÍSTICO DAS IMAGENS EXTRAÍDAS DO VÍDEO ORIGINAL.'
+                    : `Mantenha a composição de câmera do vídeo original, adaptando o estilo visual para: "${style}".`;
+
+                const characterInstruction = userCharLock
+                    ? `MANTENHA ESTA TRAVA DE PERSONAGEM PRINCIPAL EM TODAS AS CENAS: "${userCharLock}".`
+                    : `ATENÇÃO CRÍTICA AOS SUJEITOS E GRUPOS DO VÍDEO: Analise cuidadosamente as imagens de cada cena. Se o vídeo mostrar um CORAL DE JOVENS CANTANDO, UM GRUPO DE PESSOAS, CRIANÇAS, BANDA, DANCE GROUP, PAISAGEM OU ANIMAÇÃO, descreva EXATAMENTE esses mesmos sujeitos e grupos em ação (ex: "A group of passionate young choir singers performing together in harmony", "A youth group singing on stage"). NUNCA substitua um coral, banda ou grupo por um único homem/apresentador falando se o vídeo original for um grupo/coral!`;
 
                 if (geminiKey) {
                     try {
                         const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
-                        const aiPromptText = `Você é um diretor de cinema especialista em recriação de vídeos sem direitos autorais e dublagem profissional.
-Analise as ${inlineImageParts.length} imagens de cena extraídas dos cortes do vídeo original de ${Math.round(duration)}s.
-Informações extraídas do vídeo: ${videoMetaDataText || 'Vídeo original de redes sociais'}.
+                        const aiPromptText = `Você é um diretor de cinema e VFX especialista em recriação fotorrealista e clonagem fiel de vídeos.
+Analise com atenção absoluta as ${inlineImageParts.length} imagens das cenas extraídas do vídeo original de ${Math.round(duration)}s.
+Informações do vídeo original: ${videoMetaDataText || 'Vídeo de redes sociais'}.
 
-Estilo Visual Solicitado: "${style}".
-Idioma de Destino da Dublagem: "${targetLanguage}".
-Trava de Personagem / Protagonista Fixo: "${userCharLock}".
+${styleInstruction}
+${characterInstruction}
+Idioma de Destino se houver fala/narração: "${targetLanguage}".
 
 DURAÇÃO TOTAL DO VÍDEO: ${Math.round(duration)}s.
-CORTES DE CENA: ${shotBoundaries.length} cenas individuais.
+QUANTIDADE DE CENAS CORTADAS: ${shotBoundaries.length} cenas.
 
-TAREFAS:
-1. Entenda a história/conteúdo exato das cenas originais.
-2. Escreva o "dubbingScript" em ${targetLanguage} narrando fielmente o vídeo original para durar exatamente ${Math.round(duration)}s.
-3. Crie EXATAMENTE ${shotBoundaries.length} prompts em inglês na array "scenes" descrevendo cada cena para recriá-la por IA no estilo ${style} mantendo a mesma composição de câmera e o marcador "[LOCKED CHARACTER ANCHOR: ${userCharLock}]".
+TAREFAS MANDATÓRIAS:
+1. Examine CADA UMA das imagens de cena enviadas e identifique EXATAMENTE quem ou o que está aparecendo (ex: coral de jovens cantando em grupo, banda, crianças, homem, mulher, paisagem, etc.).
+2. Se o vídeo for um CORAL, MÚSICA, CANÇÃO ou MÍDIA MUSICAL sem narração falada, deixe o "dubbingScript" em branco ou com a letra para que o áudio musical original seja mantido intacto sem voz sintética de narração por cima. Se for um vídeo com fala/narração humana, crie a tradução e narração em ${targetLanguage} para durar exatamente ${Math.round(duration)}s.
+3. Para cada uma das ${shotBoundaries.length} cenas, crie um prompt individual em inglês ultra-detalhado na array "scenes" para recriar essa cena por IA geradora de vídeo.
+   - Cada prompt DEVE descrever com precisão os sujeitos e a ação exata das imagens originais (ex: se for um coral de jovens cantando, descreva "A group of passionate young choir singers performing together on stage, choir uniforms, expressive faces singing in harmony, soft warm stage lighting").
+   - ${userCharLock ? `Inclua a trava de personagem "[LOCKED CHARACTER: ${userCharLock}]" em cada prompt.` : `Não force um único personagem se a cena for de um grupo, coral ou cenário.`}
 
-Responda SOMENTE um JSON válido:
+Responda EXCLUSIVAMENTE em JSON válido:
 {
-  "dubbingScript": "Texto da dublagem em ${targetLanguage}",
-  "scenes": [${Array.from({ length: shotBoundaries.length }).map((_, idx) => `"Prompt da cena ${idx + 1}"`).join(', ')}]
+  "dubbingScript": "Texto narrado em ${targetLanguage} ou string vazia se for música/coral",
+  "scenes": [${Array.from({ length: shotBoundaries.length }).map((_, idx) => `"Prompt detalhado da cena ${idx + 1}"`).join(', ')}]
 }`;
 
                         const parts: any[] = [...inlineImageParts, { text: aiPromptText }];
@@ -2593,23 +2614,29 @@ Responda SOMENTE um JSON válido:
                 }
 
                 if (generatedScenesFromAI.length < shotBoundaries.length) {
+                    const fallbackStylePrompt = isOriginalStyle ? 'Recriação fotorrealista fiel do vídeo original' : `Remix fotorrealista da cena no estilo ${style}`;
                     const fallbackPrompts = await generateConsistentMultiSegmentPrompts(
-                        `Remix fotorrealista anti-copyright da cena no estilo ${style}`,
-                        userCharLock,
+                        fallbackStylePrompt,
+                        userCharLock || 'Grupo de pessoas / Sujeitos fiéis ao vídeo original',
                         shotBoundaries.length
                     );
                     generatedScenesFromAI = fallbackPrompts;
                 }
 
-                // 5. Generate Dubbed Voice Audio
+                // 5. Generate Dubbed Voice Audio (only if there is real spoken narrative script)
                 if (jobs[jobId]) {
                     jobs[jobId].progress = 50;
-                    jobs[jobId].message = `Sintetizando dublagem por IA em ${targetLanguage}...`;
+                    jobs[jobId].message = `Processando áudio do vídeo (preservando música/coral ou sintetizando voz)...`;
                     saveJobs();
                 }
 
                 dubbedAudioPath = path.join(uploadDir, `dubbed_audio_${jobId}.mp3`);
-                if (deapiKey) {
+                const isScriptValidSpokenText = translationScript && translationScript.trim().length > 15 && 
+                    !translationScript.toLowerCase().includes('música') && 
+                    !translationScript.toLowerCase().includes('coral') && 
+                    !translationScript.toLowerCase().includes('canção');
+
+                if (deapiKey && isScriptValidSpokenText) {
                     try {
                         const form = new FormData();
                         form.append('text', translationScript);
