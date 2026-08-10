@@ -2868,7 +2868,7 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 try {
                     const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
                     const trRes = await ai.models.generateContent({
-                        model: "gemini-3.5-flash",
+                        model: "gemini-2.5-flash",
                         contents: `You are an expert prompt engineer. Translate and convert the following scene description into a vivid, photorealistic English visual prompt for AI image generation. Describe the subjects, action, clothing, setting, lighting, and mood accurately. Do not include markdown or preamble, output ONLY the final English prompt.\n\nDescription: "${prompt}"`,
                         config: { temperature: 0.3 }
                     });
@@ -2885,34 +2885,82 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 englishPrompt = prompt.replace(/\[.*?\]/g, '').replace(/[\r\n]+/g, ' ').trim();
             }
 
-            // Strategy 1: Try Gemini Imagen 3 if requested or auto with key
+            // Strategy 1: Try Gemini Imagen & Flash Image models if requested or auto with key
+            if (engine === 'gemini' && !geminiKey) {
+                return res.status(400).json({ error: 'Chave API do Gemini não configurada no servidor ou no navegador. Adicione sua Gemini API Key nas configurações.' });
+            }
+
             if ((engine === 'gemini' || engine === 'auto') && geminiKey) {
-                try {
-                    const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
-                    const imgRes = await ai.models.generateImages({
-                        model: 'imagen-3.0-generate-002',
-                        prompt: englishPrompt,
-                        config: {
-                            numberOfImages: 1,
-                            outputMimeType: 'image/jpeg',
-                            aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16'
+                const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+                let geminiLastError = '';
+
+                // Method A: Try Gemini Imagen 3 via generateImages
+                const imagenModels = [
+                    'imagen-3.0-generate-002',
+                    'imagen-3.0-fast-generate-001',
+                    'models/imagen-3.0-generate-002'
+                ];
+                for (const imgModel of imagenModels) {
+                    try {
+                        const imgRes = await ai.models.generateImages({
+                            model: imgModel,
+                            prompt: englishPrompt,
+                            config: {
+                                numberOfImages: 1,
+                                outputMimeType: 'image/jpeg',
+                                aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16'
+                            }
+                        });
+                        if (imgRes.generatedImages && imgRes.generatedImages[0]?.image?.imageBytes) {
+                            const b64 = imgRes.generatedImages[0].image.imageBytes;
+                            return res.json({ imageUrl: `data:image/jpeg;base64,${b64}`, provider: `Gemini Pro (Imagen 3)` });
                         }
-                    });
-                    if (imgRes.generatedImages && imgRes.generatedImages[0]?.image?.imageBytes) {
-                        const b64 = imgRes.generatedImages[0].image.imageBytes;
-                        return res.json({ imageUrl: `data:image/jpeg;base64,${b64}`, provider: 'Gemini Imagen 3' });
+                    } catch (geminiImgErr: any) {
+                        geminiLastError = geminiImgErr?.message || String(geminiImgErr);
+                        console.warn(`[GenerateSceneImage] Gemini model ${imgModel} error:`, geminiLastError);
                     }
-                } catch (geminiImgErr: any) {
-                    console.warn('[GenerateSceneImage] Gemini Imagen 3 error:', geminiImgErr?.message || geminiImgErr);
-                    if (engine === 'gemini') {
-                        // If specifically requested Gemini and failed, send informative error or proceed to fallback
-                        console.warn('[GenerateSceneImage] Gemini specifically requested but failed, falling back to backup models...');
+                }
+
+                // Method B: Try Gemini Flash Image via generateContent (gemini-2.5-flash / gemini-3.1-flash-lite-image)
+                const flashModels = ['gemini-2.5-flash', 'gemini-3.1-flash-lite-image'];
+                for (const fModel of flashModels) {
+                    try {
+                        const flashRes = await ai.models.generateContent({
+                            model: fModel,
+                            contents: `Generate a high quality visual image of: ${englishPrompt}`,
+                            config: {
+                                responseModalities: ['IMAGE'],
+                                imageConfig: {
+                                    aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16'
+                                }
+                            } as any
+                        });
+                        for (const part of flashRes.candidates?.[0]?.content?.parts || []) {
+                            if ((part as any).inlineData?.data) {
+                                const b64 = (part as any).inlineData.data;
+                                const mime = (part as any).inlineData.mimeType || 'image/jpeg';
+                                return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: `Gemini Pro (${fModel})` });
+                            }
+                        }
+                    } catch (flashErr: any) {
+                        geminiLastError = flashErr?.message || String(flashErr);
+                        console.warn(`[GenerateSceneImage] Gemini Flash model ${fModel} error:`, geminiLastError);
                     }
+                }
+
+                // If explicitly requested 'gemini' and Gemini failed, fallback to Pollinations with informative provider label instead of breaking
+                if (engine === 'gemini') {
+                    console.warn(`[GenerateSceneImage] Gemini requested but failed (${geminiLastError}). Falling back to Pollinations FLUX...`);
                 }
             }
 
             // Strategy 2: Try DeAPI Flux if requested or auto with key
+            if (engine === 'deapi' && !deapiKey) {
+                return res.status(400).json({ error: 'Chave API DeAPI não configurada. Adicione sua DeAPI Key nas configurações.' });
+            }
+
             if ((engine === 'deapi' || engine === 'auto') && deapiKey) {
+                let deapiLastError = '';
                 try {
                     const deRes = await fetch("https://api.deapi.ai/api/v1/client/flux/text2img", {
                         method: "POST",
@@ -2938,9 +2986,15 @@ Responda EXCLUSIVAMENTE em JSON válido:
                             }
                             return res.json({ imageUrl: directUrl, provider: 'DeAPI Flux' });
                         }
+                    } else {
+                        deapiLastError = await deRes.text();
                     }
                 } catch (deErr: any) {
+                    deapiLastError = deErr?.message || String(deErr);
                     console.warn('[GenerateSceneImage] DeAPI error:', deErr?.message || deErr);
+                }
+                if (engine === 'deapi') {
+                    return res.status(500).json({ error: `Falha ao gerar imagem na DeAPI: ${deapiLastError || 'Erro desconhecido'}` });
                 }
             }
 
@@ -2966,7 +3020,8 @@ Responda EXCLUSIVAMENTE em JSON válido:
                     const arrayBuf = await imgFetch.arrayBuffer();
                     const b64 = Buffer.from(arrayBuf).toString('base64');
                     const mime = imgFetch.headers.get('content-type') || 'image/jpeg';
-                    return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: `Pollinations ${modelToUse.toUpperCase()}` });
+                    const providerLabel = engine === 'gemini' ? `Pollinations ${modelToUse.toUpperCase()} (Fallback do Gemini)` : `Pollinations ${modelToUse.toUpperCase()}`;
+                    return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: providerLabel });
                 }
             } catch (pErr) {
                 console.warn('[GenerateSceneImage] Primary Pollinations timeout/error, trying Turbo fallback...');
@@ -2982,13 +3037,14 @@ Responda EXCLUSIVAMENTE em JSON válido:
                     const arrayBuf = await turboFetch.arrayBuffer();
                     const b64 = Buffer.from(arrayBuf).toString('base64');
                     const mime = turboFetch.headers.get('content-type') || 'image/jpeg';
-                    return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: 'Pollinations TURBO' });
+                    const providerLabel = engine === 'gemini' ? 'Pollinations TURBO (Fallback do Gemini)' : 'Pollinations TURBO';
+                    return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: providerLabel });
                 }
             } catch (tErr) {
                 console.warn('[GenerateSceneImage] Turbo fetch error:', tErr);
             }
 
-            return res.json({ imageUrl: fluxUrl, provider: 'Pollinations URL Direct' });
+            return res.json({ imageUrl: fluxUrl, provider: engine === 'gemini' ? 'Pollinations (Fallback do Gemini)' : 'Pollinations URL Direct' });
         } catch (e: any) {
             console.error('[GenerateSceneImage] Error:', e);
             res.status(500).json({ error: e.message || 'Erro ao gerar imagem' });
