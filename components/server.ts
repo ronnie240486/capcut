@@ -2682,10 +2682,37 @@ Responda EXCLUSIVAMENTE em JSON válido:
                     ? dubbedAudioPath
                     : extractedAudioPath;
 
-                // 6. Frame-Guided Image-To-Video AI Generation per Shot
+                // 6. Save extracted audio URL and auto-generate keyframe images for scenes
+                const sceneImagesMap: Record<number, string> = {};
                 if (jobs[jobId]) {
-                    jobs[jobId].progress = 60;
-                    jobs[jobId].message = `Recriando ${shotBoundaries.length} cenas por IA guiadas pelos quadros originais...`;
+                    jobs[jobId].scenes = generatedScenesFromAI;
+                    jobs[jobId].extractedAudioUrl = `/api/audio/extracted/${jobId}`;
+                    jobs[jobId].script = translationScript;
+                    jobs[jobId].progress = 55;
+                    jobs[jobId].message = `Gerando quadros de cena com IA (${generatedScenesFromAI.length} cenas)...`;
+                    saveJobs();
+                }
+
+                // Populate extracted frame images as initial keyframes
+                for (let i = 0; i < generatedScenesFromAI.length; i++) {
+                    const sceneFrameImgPath = sceneFramePaths[i];
+                    if (sceneFrameImgPath && fs.existsSync(sceneFrameImgPath)) {
+                        try {
+                            const buf = fs.readFileSync(sceneFrameImgPath);
+                            sceneImagesMap[i] = `data:image/jpeg;base64,${buf.toString('base64')}`;
+                        } catch (e) {}
+                    }
+                }
+
+                if (jobs[jobId]) {
+                    jobs[jobId].sceneImages = sceneImagesMap;
+                    saveJobs();
+                }
+
+                // 7. Frame-Guided Image-To-Video AI Generation per Shot
+                if (jobs[jobId]) {
+                    jobs[jobId].progress = 65;
+                    jobs[jobId].message = `Recriando ${shotBoundaries.length} cenas por IA...`;
                     saveJobs();
                 }
 
@@ -2695,8 +2722,8 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 for (let i = 0; i < shotBoundaries.length; i++) {
                     const shot = shotBoundaries[i];
                     if (jobs[jobId]) {
-                        jobs[jobId].message = `Clonando cena ${i+1}/${shotBoundaries.length} (${shot.dur.toFixed(1)}s, Frame Guiado)...`;
-                        jobs[jobId].progress = Math.round(60 + (i / shotBoundaries.length) * 32);
+                        jobs[jobId].message = `Clonando cena ${i+1}/${shotBoundaries.length} (${shot.dur.toFixed(1)}s)...`;
+                        jobs[jobId].progress = Math.round(65 + (i / shotBoundaries.length) * 30);
                         saveJobs();
                     }
 
@@ -2720,7 +2747,6 @@ Responda EXCLUSIVAMENTE em JSON válido:
                             formData.append('model', finalModel);
                             formData.append('seed', (baseSeed + i * 19).toString());
 
-                            // Pass the exact original shot frame as the reference image guide for Image-To-Video!
                             if (sceneFrameImgPath && fs.existsSync(sceneFrameImgPath) && fs.statSync(sceneFrameImgPath).size > 0) {
                                 const frameImgBuf = fs.readFileSync(sceneFrameImgPath);
                                 const imgBlob = new Blob([frameImgBuf], { type: 'image/jpeg' });
@@ -2729,7 +2755,6 @@ Responda EXCLUSIVAMENTE em JSON válido:
                                 formData.append('first_frame_image', imgBlob, 'frame.jpg');
                             }
 
-                            // Use animation endpoint for image-guided video generation
                             const animEndpoint = "https://api.deapi.ai/api/v2/videos/animations";
                             let response = await fetch(animEndpoint, {
                                 method: 'POST',
@@ -2738,7 +2763,6 @@ Responda EXCLUSIVAMENTE em JSON válido:
                             });
 
                             if (!response.ok) {
-                                // Fallback to audio-to-video endpoint if animations endpoint differs
                                 response = await fetch("https://api.deapi.ai/api/v1/client/audio-to-video", {
                                     method: 'POST',
                                     headers: { 'Authorization': `Bearer ${deapiKey}` },
@@ -2758,7 +2782,6 @@ Responda EXCLUSIVAMENTE em JSON válido:
                         }
                     }
 
-                    // Fallback: If AI generation missed, cut original video shot & apply audio
                     if (!segVideoPath || !fs.existsSync(segVideoPath)) {
                         const fallbackCutPath = path.join(uploadDir, `fallback_shot_${jobId}_${i}.mp4`);
                         try {
@@ -2774,7 +2797,7 @@ Responda EXCLUSIVAMENTE em JSON válido:
                     }
                 }
 
-                // 7. Final Concat Output Video
+                // 8. Final Concat Output Video
                 const finalOutputPath = path.join(uploadDir, `cloned_video_${jobId}.mp4`);
                 if (generatedVideoSegments.length > 0) {
                     if (generatedVideoSegments.length === 1) {
@@ -2783,7 +2806,6 @@ Responda EXCLUSIVAMENTE em JSON válido:
                         await concatVideos(generatedVideoSegments, finalOutputPath);
                     }
                 } else {
-                    // Fallback: merge downloaded video with new dubbed audio
                     await new Promise((resolve) => {
                         exec(`ffmpeg -y -i "${downloadedVideoPath}" -i "${finalAudioPath}" -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 "${finalOutputPath}"`, () => resolve(true));
                     });
@@ -2794,9 +2816,11 @@ Responda EXCLUSIVAMENTE em JSON válido:
                     jobs[jobId].outputPath = finalOutputPath;
                     jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
                     jobs[jobId].progress = 100;
-                    jobs[jobId].message = 'Vídeo clonado frame por frame, recriado por IA e dublado com sucesso!';
+                    jobs[jobId].message = 'Vídeo clonado com sucesso! Cenas, imagens e áudio extraídos prontos!';
                     jobs[jobId].script = translationScript;
                     jobs[jobId].scenes = generatedScenesFromAI;
+                    jobs[jobId].sceneImages = sceneImagesMap;
+                    jobs[jobId].extractedAudioUrl = `/api/audio/extracted/${jobId}`;
                     saveJobs();
                 }
 
@@ -2809,13 +2833,25 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 }
             } finally {
                 try { if (downloadedVideoPath && fs.existsSync(downloadedVideoPath)) fs.unlinkSync(downloadedVideoPath); } catch(e){}
-                try { if (extractedAudioPath && fs.existsSync(extractedAudioPath)) fs.unlinkSync(extractedAudioPath); } catch(e){}
-                try { if (dubbedAudioPath && fs.existsSync(dubbedAudioPath)) fs.unlinkSync(dubbedAudioPath); } catch(e){}
+                // Note: Keep extracted and dubbed audio files alive for player & audio tools
                 tempFrames.forEach(f => {
                     try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch(e){}
                 });
             }
         })();
+    });
+
+    app.get('/api/audio/extracted/:jobId', (req: any, res: any) => {
+        const { jobId } = req.params;
+        const dubbedPath = path.join(uploadDir, `dubbed_audio_${jobId}.mp3`);
+        const audioPath = path.join(uploadDir, `extracted_audio_${jobId}.mp3`);
+        const targetFile = (fs.existsSync(dubbedPath) && fs.statSync(dubbedPath).size > 0)
+            ? dubbedPath
+            : ((fs.existsSync(audioPath) && fs.statSync(audioPath).size > 0) ? audioPath : null);
+        if (!targetFile) return res.status(404).json({ error: 'Áudio do vídeo não encontrado' });
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Content-Disposition', `inline; filename="audio_clonado_${jobId}.mp3"`);
+        fs.createReadStream(targetFile).pipe(res);
     });
 
     app.post('/api/generate-scene-image', async (req: any, res: any) => {
