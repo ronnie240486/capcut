@@ -2856,13 +2856,63 @@ Responda EXCLUSIVAMENTE em JSON válido:
 
     app.post('/api/generate-scene-image', async (req: any, res: any) => {
         try {
-            const { prompt, aspectRatio } = req.body;
+            const { prompt, aspectRatio, engine = 'auto' } = req.body;
             if (!prompt) return res.status(400).json({ error: 'Prompt é obrigatório' });
 
             const deapiKey = getDeapiKey(req);
+            const geminiKey = getGeminiKey(req);
 
-            // Strategy 1: Try DeAPI Flux / text2img if key available
-            if (deapiKey) {
+            // 1. Translate & optimize prompt to detailed English for maximum model obedience
+            let englishPrompt = prompt;
+            if (geminiKey) {
+                try {
+                    const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+                    const trRes = await ai.models.generateContent({
+                        model: "gemini-3.5-flash",
+                        contents: `You are an expert prompt engineer. Translate and convert the following scene description into a vivid, photorealistic English visual prompt for AI image generation. Describe the subjects, action, clothing, setting, lighting, and mood accurately. Do not include markdown or preamble, output ONLY the final English prompt.\n\nDescription: "${prompt}"`,
+                        config: { temperature: 0.3 }
+                    });
+                    if (trRes.text && trRes.text.trim()) {
+                        englishPrompt = trRes.text.trim().replace(/^["']|["']$/g, '');
+                    }
+                } catch (gErr) {
+                    console.warn('[GenerateSceneImage] Gemini prompt translation skipped:', gErr);
+                }
+            }
+
+            if (englishPrompt === prompt) {
+                // Safe prompt cleaning without stripping Portuguese accents or non-ASCII characters
+                englishPrompt = prompt.replace(/\[.*?\]/g, '').replace(/[\r\n]+/g, ' ').trim();
+            }
+
+            // Strategy 1: Try Gemini Imagen 3 if requested or auto with key
+            if ((engine === 'gemini' || engine === 'auto') && geminiKey) {
+                try {
+                    const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+                    const imgRes = await ai.models.generateImages({
+                        model: 'imagen-3.0-generate-002',
+                        prompt: englishPrompt,
+                        config: {
+                            numberOfImages: 1,
+                            outputMimeType: 'image/jpeg',
+                            aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16'
+                        }
+                    });
+                    if (imgRes.generatedImages && imgRes.generatedImages[0]?.image?.imageBytes) {
+                        const b64 = imgRes.generatedImages[0].image.imageBytes;
+                        return res.json({ imageUrl: `data:image/jpeg;base64,${b64}`, provider: 'Gemini Imagen 3' });
+                    }
+                } catch (geminiImgErr: any) {
+                    console.warn('[GenerateSceneImage] Gemini Imagen 3 error:', geminiImgErr?.message || geminiImgErr);
+                    if (engine === 'gemini') {
+                        // If specifically requested Gemini and failed, send informative error or proceed to fallback
+                        console.warn('[GenerateSceneImage] Gemini specifically requested but failed, falling back to backup models...');
+                    }
+                }
+            }
+
+            // Strategy 2: Try DeAPI Flux if requested or auto with key
+            if ((engine === 'deapi' || engine === 'auto') && deapiKey) {
                 try {
                     const deRes = await fetch("https://api.deapi.ai/api/v1/client/flux/text2img", {
                         method: "POST",
@@ -2871,7 +2921,7 @@ Responda EXCLUSIVAMENTE em JSON válido:
                             "Content-Type": "application/json"
                         },
                         body: JSON.stringify({
-                            prompt: prompt,
+                            prompt: englishPrompt,
                             aspect_ratio: aspectRatio === '16:9' ? '16:9' : '9:16'
                         })
                     });
@@ -2884,41 +2934,61 @@ Responda EXCLUSIVAMENTE em JSON válido:
                                 const arrayBuf = await imgFetch.arrayBuffer();
                                 const b64 = Buffer.from(arrayBuf).toString('base64');
                                 const mime = imgFetch.headers.get('content-type') || 'image/jpeg';
-                                return res.json({ imageUrl: `data:${mime};base64,${b64}` });
+                                return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: 'DeAPI Flux' });
                             }
-                            return res.json({ imageUrl: directUrl });
+                            return res.json({ imageUrl: directUrl, provider: 'DeAPI Flux' });
                         }
                     }
                 } catch (deErr: any) {
-                    // silent fallback
+                    console.warn('[GenerateSceneImage] DeAPI error:', deErr?.message || deErr);
                 }
             }
 
-            // Strategy 2: Pollinations Flux HD with server-side fetch & Base64 encoding
+            // Strategy 3: Pollinations Flux / Turbo HD with server-side fetch & Base64 encoding
             const width = aspectRatio === '16:9' ? 1024 : 576;
             const height = aspectRatio === '16:9' ? 576 : 1024;
-            const seed = Math.floor(Math.random() * 1000000);
+            const seed = Math.floor(Math.random() * 10000000);
             
-            // Format prompt for rich visual details
-            const cleanPrompt = prompt.replace(/[^\w\s,.-]/gi, ' ').trim();
-            const enhancedPrompt = `cinematic photograph, detailed scene: ${cleanPrompt}, 8k resolution, ultra realistic, dramatic lighting`;
-            const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(enhancedPrompt)}?width=${width}&height=${height}&seed=${seed}&model=flux&nologo=true`;
+            const enhancedPrompt = `cinematic photograph, detailed scene: ${englishPrompt}, 8k resolution, ultra realistic, dramatic lighting, master shot`;
+            const modelToUse = engine === 'turbo' ? 'turbo' : 'flux';
+            const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(enhancedPrompt)}?width=${width}&height=${height}&seed=${seed}&model=${modelToUse}&nologo=true`;
 
+            // Try primary Pollinations fetch with 12s timeout
             try {
-                const imgFetch = await fetch(pollinationsUrl, {
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 12000);
+                const imgFetch = await fetch(fluxUrl, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                    signal: controller.signal
                 });
+                clearTimeout(timeoutId);
                 if (imgFetch.ok) {
                     const arrayBuf = await imgFetch.arrayBuffer();
                     const b64 = Buffer.from(arrayBuf).toString('base64');
                     const mime = imgFetch.headers.get('content-type') || 'image/jpeg';
-                    return res.json({ imageUrl: `data:${mime};base64,${b64}` });
+                    return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: `Pollinations ${modelToUse.toUpperCase()}` });
                 }
             } catch (pErr) {
-                console.warn('[GenerateSceneImage] Pollinations fetch error:', pErr);
+                console.warn('[GenerateSceneImage] Primary Pollinations timeout/error, trying Turbo fallback...');
             }
 
-            return res.json({ imageUrl: pollinationsUrl });
+            // Fallback: Try Turbo model (fast)
+            const turboUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(enhancedPrompt)}?width=${width}&height=${height}&seed=${seed}&model=turbo&nologo=true`;
+            try {
+                const turboFetch = await fetch(turboUrl, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+                });
+                if (turboFetch.ok) {
+                    const arrayBuf = await turboFetch.arrayBuffer();
+                    const b64 = Buffer.from(arrayBuf).toString('base64');
+                    const mime = turboFetch.headers.get('content-type') || 'image/jpeg';
+                    return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: 'Pollinations TURBO' });
+                }
+            } catch (tErr) {
+                console.warn('[GenerateSceneImage] Turbo fetch error:', tErr);
+            }
+
+            return res.json({ imageUrl: fluxUrl, provider: 'Pollinations URL Direct' });
         } catch (e: any) {
             console.error('[GenerateSceneImage] Error:', e);
             res.status(500).json({ error: e.message || 'Erro ao gerar imagem' });
