@@ -2859,10 +2859,9 @@ Responda EXCLUSIVAMENTE em JSON válido:
             const { prompt, aspectRatio } = req.body;
             if (!prompt) return res.status(400).json({ error: 'Prompt é obrigatório' });
 
-            const geminiKey = process.env.GEMINI_API_KEY;
             const deapiKey = getDeapiKey(req);
 
-            // Strategy 1: Try DeAPI Flux / text2img if available
+            // Strategy 1: Try DeAPI Flux / text2img if key available
             if (deapiKey) {
                 try {
                     const deRes = await fetch("https://api.deapi.ai/api/v1/client/flux/text2img", {
@@ -2880,6 +2879,13 @@ Responda EXCLUSIVAMENTE em JSON válido:
                         const deData = await deRes.json();
                         const directUrl = deData.url || deData.data?.url || deData.result_url;
                         if (directUrl) {
+                            const imgFetch = await fetch(directUrl);
+                            if (imgFetch.ok) {
+                                const arrayBuf = await imgFetch.arrayBuffer();
+                                const b64 = Buffer.from(arrayBuf).toString('base64');
+                                const mime = imgFetch.headers.get('content-type') || 'image/jpeg';
+                                return res.json({ imageUrl: `data:${mime};base64,${b64}` });
+                            }
                             return res.json({ imageUrl: directUrl });
                         }
                     }
@@ -2888,11 +2894,29 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 }
             }
 
-            // Strategy 2: Fast, high-definition AI image generator (Pollinations Flux HD)
+            // Strategy 2: Pollinations Flux HD with server-side fetch & Base64 encoding
             const width = aspectRatio === '16:9' ? 1024 : 576;
             const height = aspectRatio === '16:9' ? 576 : 1024;
             const seed = Math.floor(Math.random() * 1000000);
-            const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${width}&height=${height}&seed=${seed}&model=flux&nologo=true`;
+            
+            // Format prompt for rich visual details
+            const cleanPrompt = prompt.replace(/[^\w\s,.-]/gi, ' ').trim();
+            const enhancedPrompt = `cinematic photograph, detailed scene: ${cleanPrompt}, 8k resolution, ultra realistic, dramatic lighting`;
+            const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(enhancedPrompt)}?width=${width}&height=${height}&seed=${seed}&model=flux&nologo=true`;
+
+            try {
+                const imgFetch = await fetch(pollinationsUrl, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+                });
+                if (imgFetch.ok) {
+                    const arrayBuf = await imgFetch.arrayBuffer();
+                    const b64 = Buffer.from(arrayBuf).toString('base64');
+                    const mime = imgFetch.headers.get('content-type') || 'image/jpeg';
+                    return res.json({ imageUrl: `data:${mime};base64,${b64}` });
+                }
+            } catch (pErr) {
+                console.warn('[GenerateSceneImage] Pollinations fetch error:', pErr);
+            }
 
             return res.json({ imageUrl: pollinationsUrl });
         } catch (e: any) {
