@@ -2862,25 +2862,28 @@ Responda EXCLUSIVAMENTE em JSON válido:
             const geminiKey = process.env.GEMINI_API_KEY;
             const deapiKey = getDeapiKey(req);
 
-            // Strategy 1: Try Gemini Imagen 3
+            // Strategy 1: Try Gemini Imagen models
             if (geminiKey) {
-                try {
-                    const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
-                    const response = await (ai.models as any).generateImages({
-                        model: 'imagen-3.0-generate-002',
-                        prompt: prompt,
-                        config: {
-                            numberOfImages: 1,
-                            outputMimeType: 'image/jpeg',
-                            aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16',
-                        },
-                    });
-                    const base64Bytes = response?.generatedImages?.[0]?.image?.imageBytes;
-                    if (base64Bytes) {
-                        return res.json({ imageUrl: `data:image/jpeg;base64,${base64Bytes}` });
+                const modelsToTry = ['imagen-3.0-generate-002', 'imagen-3.0-generate-001', 'imagen-3.0-fast-generate-001'];
+                const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+                for (const modelName of modelsToTry) {
+                    try {
+                        const response = await (ai.models as any).generateImages({
+                            model: modelName,
+                            prompt: prompt,
+                            config: {
+                                numberOfImages: 1,
+                                outputMimeType: 'image/jpeg',
+                                aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16',
+                            },
+                        });
+                        const base64Bytes = response?.generatedImages?.[0]?.image?.imageBytes;
+                        if (base64Bytes) {
+                            return res.json({ imageUrl: `data:image/jpeg;base64,${base64Bytes}` });
+                        }
+                    } catch (imgErr: any) {
+                        console.warn(`[GenerateSceneImage] Gemini Imagen (${modelName}) error:`, imgErr.message || imgErr);
                     }
-                } catch (imgErr: any) {
-                    console.warn('[GenerateSceneImage] Gemini Imagen error:', imgErr.message || imgErr);
                 }
             }
 
@@ -2910,7 +2913,13 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 }
             }
 
-            return res.status(500).json({ error: 'Não foi possível gerar a imagem da cena. Verifique sua chave do Gemini ou DeAPI.' });
+            // Strategy 3: Fast, high-definition AI image fallback (Pollinations Flux)
+            const width = aspectRatio === '16:9' ? 1024 : 576;
+            const height = aspectRatio === '16:9' ? 576 : 1024;
+            const seed = Math.floor(Math.random() * 1000000);
+            const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${width}&height=${height}&seed=${seed}&model=flux&nologo=true`;
+
+            return res.json({ imageUrl: pollinationsUrl });
         } catch (e: any) {
             console.error('[GenerateSceneImage] Error:', e);
             res.status(500).json({ error: e.message || 'Erro ao gerar imagem' });
