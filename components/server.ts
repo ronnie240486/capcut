@@ -2339,7 +2339,7 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
         saveJobs();
         res.status(202).json({ jobId });
 
-        const { videoUrl, targetLanguage = 'Português', characterDescription, style = 'Cinematográfico Hollywood', numScenes = 3, apiKey } = req.body;
+        const { videoUrl, targetLanguage = 'Português', characterDescription, style = 'Cinematográfico Hollywood', numScenes = 0, apiKey } = req.body;
         const deapiKey = getDeapiKey(req);
         const geminiKey = apiKey || getGeminiKey(req);
 
@@ -2347,6 +2347,7 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
             let downloadedVideoPath = '';
             let extractedAudioPath = '';
             let dubbedAudioPath = '';
+            const tempFrames: string[] = [];
             const generatedVideoSegments: string[] = [];
 
             try {
@@ -2357,7 +2358,7 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
                 // 1. Download video via yt-dlp or curl proxy
                 if (jobs[jobId]) {
                     jobs[jobId].message = 'Baixando vídeo e extraindo mídias da URL...';
-                    jobs[jobId].progress = 15;
+                    jobs[jobId].progress = 10;
                     saveJobs();
                 }
 
@@ -2378,9 +2379,16 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
                     throw new Error('Não foi possível baixar o vídeo da URL fornecida. Verifique se a URL é pública e válida.');
                 }
 
+                // Fetch YouTube / Video Metadata (Title / Description)
+                let videoMetaDataText = '';
+                try {
+                    const metaBuf = execSync(`yt-dlp --get-title --get-description --no-playlist "${cleanUrl}"`, { timeout: 15000 }).toString().trim();
+                    if (metaBuf) videoMetaDataText = metaBuf;
+                } catch (e) {}
+
                 if (jobs[jobId]) {
-                    jobs[jobId].progress = 30;
-                    jobs[jobId].message = 'Extraindo faixa de áudio e identificando cenas visuais...';
+                    jobs[jobId].progress = 25;
+                    jobs[jobId].message = 'Analisando vídeo original e medindo duração exata...';
                     saveJobs();
                 }
 
@@ -2389,55 +2397,122 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
                     exec(`ffmpeg -y -i "${downloadedVideoPath}" -vn -acodec libmp3lame -q:a 2 "${extractedAudioPath}"`, () => resolve(true));
                 });
 
-                // Get video duration
+                // Get exact video duration
                 let duration = 15;
                 try {
                     const durBuf = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${downloadedVideoPath}"`).toString().trim();
                     if (parseFloat(durBuf) > 0) duration = parseFloat(durBuf);
                 } catch (e) {}
 
-                // 2. Gemini AI: Create Dubbing Script & Anti-Copyright Scene Prompts
+                // Calculate exact number of scenes & scene duration to cover 100% of the video duration
+                let targetNumScenes = Number(numScenes) || 0;
+                let segDuration = 6; // Default standard segment duration (seconds)
+
+                if (targetNumScenes <= 0) {
+                    // Auto-calculate exact number of scenes to cover full video length
+                    targetNumScenes = Math.max(1, Math.ceil(duration / segDuration));
+                } else {
+                    // Use requested scene count, calculate exact segment duration to fit full video
+                    segDuration = Math.max(3, duration / targetNumScenes);
+                }
+
+                console.log(`[Job ${jobId}] Duration: ${duration}s, Target Scenes: ${targetNumScenes}, Seg Duration: ${segDuration}s`);
+
+                // Extract 3 video keyframe images for Gemini Vision analysis
+                const frameTimes = [
+                    Math.max(0.5, duration * 0.15),
+                    Math.max(1.0, duration * 0.50),
+                    Math.max(1.5, duration * 0.85)
+                ];
+
+                const inlineImageParts: any[] = [];
+                for (let i = 0; i < frameTimes.length; i++) {
+                    const framePath = path.join(uploadDir, `frame_${jobId}_${i}.jpg`);
+                    tempFrames.push(framePath);
+                    try {
+                        execSync(`ffmpeg -y -ss ${frameTimes[i]} -i "${downloadedVideoPath}" -vframes 1 -q:v 2 "${framePath}"`);
+                        if (fs.existsSync(framePath) && fs.statSync(framePath).size > 0) {
+                            const imgData = fs.readFileSync(framePath).toString('base64');
+                            inlineImageParts.push({
+                                inlineData: {
+                                    mimeType: 'image/jpeg',
+                                    data: imgData
+                                }
+                            });
+                        }
+                    } catch (fErr: any) {
+                        console.warn(`[Job ${jobId}] Keyframe ${i} extraction warning:`, fErr.message);
+                    }
+                }
+
+                // 2. Gemini AI Vision: Analyze Video & Create Exact Matching Script + Scene Prompts
                 if (jobs[jobId]) {
-                    jobs[jobId].progress = 45;
-                    jobs[jobId].message = `Criando roteiro de dublagem em ${targetLanguage} e Trava de Personagem...`;
+                    jobs[jobId].progress = 40;
+                    jobs[jobId].message = `Gemini Vision analisando ${inlineImageParts.length} quadros do vídeo e gerando roteiro...`;
                     saveJobs();
                 }
 
-                let userCharLock = characterDescription || 'Protagonista jovem com roupas elegantes e olhar focado';
-                let translationScript = `Apresentamos uma nova produção cinematográfica recriada por inteligência artificial com visual de alta definição.`;
+                let userCharLock = characterDescription || 'Protagonista idêntico ao vídeo original com visual focado e elegante';
+                let translationScript = `Esta é uma recriação cinematográfica fotorrealista adaptada com inteligência artificial.`;
+                let generatedScenesFromAI: string[] = [];
 
                 if (geminiKey) {
                     try {
                         const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
-                        const aiPrompt = `Você é um diretor de cinema especialista em recriação de vídeos sem direitos autorais e dublagem profissional.
-Analise o conceito de um vídeo de ${Math.round(duration)} segundos no estilo "${style}".
-Idioma de destino da dublagem: ${targetLanguage}.
-Trava de Personagem / Protagonista: "${userCharLock}".
+                        const aiPromptText = `Você é um diretor de cinema especialista em recriação de vídeos sem direitos autorais e dublagem profissional.
+Analise os ${inlineImageParts.length} quadros anexados do vídeo original de ${Math.round(duration)}s.
+Informações extraídas do vídeo: ${videoMetaDataText || 'Vídeo viral do YouTube/TikTok'}.
 
-Gere um JSON com:
-1. "dubbingScript": Narração expressiva e fluída em ${targetLanguage} ideal para durar cerca de ${Math.round(duration)} segundos.
-2. "scenes": Lista de ${numScenes} prompts detalhados em inglês para geração de vídeo por IA sem direitos autorais contendo o marcador "[LOCKED CHARACTER ANCHOR: ${userCharLock}]".
+Estilo Visual Solicitado: "${style}".
+Idioma de Destino da Dublagem: "${targetLanguage}".
+Trava de Personagem / Protagonista Fixo: "${userCharLock}".
+
+DURAÇÃO TOTAL DO VÍDEO: ${Math.round(duration)} segundos.
+NÚMERO EXATO DE CENAS NECESSÁRIAS: ${targetNumScenes} cenas (cada uma com exatamente ~${segDuration.toFixed(1)} segundos).
+
+TAREFAS:
+1. Analise o ASSUNTO EXATO, HISTÓRIA e TEMA do vídeo original nos quadros.
+2. Escreva um "dubbingScript" completo em ${targetLanguage} que narre fielmente o assunto do vídeo original para durar exatamente ${Math.round(duration)}s.
+3. Crie EXATAMENTE ${targetNumScenes} prompts hiper-detalhados em inglês na array "scenes" para recriar CADA trecho do vídeo por IA no estilo ${style}.
+Cada prompt DEVE conter o marcador "[LOCKED CHARACTER ANCHOR: ${userCharLock}]" e descrever visualmente o que acontece naquele segmento de tempo do vídeo original.
 
 Responda SOMENTE um JSON válido:
 {
-  "dubbingScript": "...",
-  "scenes": ["...", "..."]
+  "videoAnalysis": "Descrição do tema do vídeo original",
+  "dubbingScript": "Texto completo da dublagem em ${targetLanguage}",
+  "scenes": [${Array.from({ length: targetNumScenes }).map((_, idx) => `"Prompt detalhado em inglês para a cena ${idx + 1}"`).join(', ')}]
 }`;
+
+                        const parts: any[] = [...inlineImageParts, { text: aiPromptText }];
                         const gemRes = await ai.models.generateContent({
                             model: "gemini-3.5-flash",
-                            contents: [{ role: 'user', parts: [{ text: aiPrompt }] }],
+                            contents: [{ role: 'user', parts }],
                             config: { responseMimeType: "application/json" }
                         });
+
                         const parsed = JSON.parse(gemRes.text || '{}');
                         if (parsed.dubbingScript) translationScript = parsed.dubbingScript;
+                        if (Array.isArray(parsed.scenes) && parsed.scenes.length > 0) {
+                            generatedScenesFromAI = parsed.scenes;
+                        }
                     } catch (gErr: any) {
                         console.warn(`[Job ${jobId}] Gemini script generation warning:`, gErr.message);
                     }
                 }
 
-                // 3. Generate Dubbed Audio using DeAPI Speech / Kokoro / Speech API or fallback
+                // If AI didn't return enough scene prompts, generate consistent ones
+                if (generatedScenesFromAI.length < targetNumScenes) {
+                    const fallbackPrompts = await generateConsistentMultiSegmentPrompts(
+                        `Remix fotorrealista anti-copyright do vídeo sobre: ${videoMetaDataText || style}`,
+                        userCharLock,
+                        targetNumScenes
+                    );
+                    generatedScenesFromAI = fallbackPrompts;
+                }
+
+                // 3. Generate Dubbed Audio using DeAPI Speech / Kokoro / Speech API
                 if (jobs[jobId]) {
-                    jobs[jobId].progress = 60;
+                    jobs[jobId].progress = 55;
                     jobs[jobId].message = `Sintetizando voz dublada por IA em ${targetLanguage}...`;
                     saveJobs();
                 }
@@ -2479,33 +2554,29 @@ Responda SOMENTE um JSON válido:
                     ? dubbedAudioPath
                     : extractedAudioPath;
 
-                // 4. Generate Anti-Copyright AI Video Scenes with Character Lock
+                // 4. Generate Anti-Copyright AI Video Scenes matching exact timestamps
                 if (jobs[jobId]) {
-                    jobs[jobId].progress = 75;
-                    jobs[jobId].message = `Recriando cenas visuais por IA com Trava de Personagem (Anti-Copyright)...`;
+                    jobs[jobId].progress = 65;
+                    jobs[jobId].message = `Gerando ${targetNumScenes} cenas visuais por IA com sincronia de tempo...`;
                     saveJobs();
                 }
 
-                const scenePrompts = await generateConsistentMultiSegmentPrompts(
-                    `Remix anti-copyright do vídeo no estilo ${style}`,
-                    userCharLock,
-                    numScenes
-                );
-
                 const finalModel = 'Ltx2_3_22B_Dist_INT8';
                 const baseSeed = Math.floor(Math.random() * 1000000000);
-                const segDuration = Math.min(10, Math.max(3, duration / numScenes));
 
-                for (let i = 0; i < numScenes; i++) {
+                for (let i = 0; i < targetNumScenes; i++) {
+                    const sceneStartTime = i * segDuration;
+                    const thisSegLen = Math.min(segDuration, Math.max(1, duration - sceneStartTime));
+
                     if (jobs[jobId]) {
-                        jobs[jobId].message = `Gerando cena IA ${i+1}/${numScenes} (Anti-Copyright)...`;
-                        jobs[jobId].progress = Math.round(75 + (i / numScenes) * 18);
+                        jobs[jobId].message = `Gerando cena IA ${i+1}/${targetNumScenes} (~${thisSegLen.toFixed(1)}s, Anti-Copyright)...`;
+                        jobs[jobId].progress = Math.round(65 + (i / targetNumScenes) * 28);
                         saveJobs();
                     }
 
-                    const segPrompt = scenePrompts[i] || scenePrompts[0];
+                    const segPrompt = generatedScenesFromAI[i] || generatedScenesFromAI[0];
                     const segAudioChunk = path.join(uploadDir, `seg_audio_${jobId}_${i}.mp3`);
-                    await cutAudio(finalAudioPath, segAudioChunk, i * segDuration, segDuration);
+                    await cutAudio(finalAudioPath, segAudioChunk, sceneStartTime, thisSegLen);
 
                     let segVideoPath = '';
                     if (deapiKey) {
@@ -2514,7 +2585,7 @@ Responda SOMENTE um JSON válido:
                             const segBuf = fs.readFileSync(segAudioChunk);
                             formData.append('audio', new Blob([segBuf], { type: 'audio/mpeg' }), 'audio.mp3');
                             formData.append('prompt', segPrompt);
-                            formData.append('frames', Math.min(120, Math.round(segDuration * 24)).toString());
+                            formData.append('frames', Math.min(120, Math.round(thisSegLen * 24)).toString());
                             formData.append('width', '768');
                             formData.append('height', '1344');
                             formData.append('fps', '24');
@@ -2566,7 +2637,7 @@ Responda SOMENTE um JSON válido:
                     jobs[jobId].progress = 100;
                     jobs[jobId].message = 'Vídeo clonado, recriado por IA e dublado com sucesso!';
                     jobs[jobId].script = translationScript;
-                    jobs[jobId].scenes = scenePrompts;
+                    jobs[jobId].scenes = generatedScenesFromAI;
                     saveJobs();
                 }
 
@@ -2581,6 +2652,9 @@ Responda SOMENTE um JSON válido:
                 try { if (downloadedVideoPath && fs.existsSync(downloadedVideoPath)) fs.unlinkSync(downloadedVideoPath); } catch(e){}
                 try { if (extractedAudioPath && fs.existsSync(extractedAudioPath)) fs.unlinkSync(extractedAudioPath); } catch(e){}
                 try { if (dubbedAudioPath && fs.existsSync(dubbedAudioPath)) fs.unlinkSync(dubbedAudioPath); } catch(e){}
+                tempFrames.forEach(f => {
+                    try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch(e){}
+                });
             }
         })();
     });
