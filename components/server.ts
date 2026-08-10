@@ -2332,9 +2332,19 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
         })();
     });
 
-// Helper: Download video from YouTube/TikTok via LoaderTo API if yt-dlp fails or requires authentication
+// Helper: Download video from YouTube/TikTok via LoaderTo API or direct curl if yt-dlp fails or requires authentication
 async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<boolean> {
     try {
+        // If it's a direct mp4/mov link, try downloading directly with curl
+        if (videoUrl.match(/\.(mp4|mov|webm|avi|mkv)(\?.*)?$/i) || videoUrl.includes('.mp4')) {
+            try {
+                execSync(`curl -L -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "${videoUrl}" -o "${destPath}"`, { timeout: 30000 });
+                if (fs.existsSync(destPath) && fs.statSync(destPath).size > 10000) {
+                    return true;
+                }
+            } catch (e) {}
+        }
+
         const encodeUrl = encodeURIComponent(videoUrl);
         const initRes = await fetch(`https://loader.to/ajax/download.php?start=1&end=1000&format=1080&url=${encodeUrl}`);
         const initData: any = await initRes.json();
@@ -2346,10 +2356,10 @@ async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<
             const pRes = await fetch(progressUrl);
             const pData: any = await pRes.json();
             if (pData && pData.download_url) {
-                const fileRes = await fetch(pData.download_url);
-                const arrayBuf = await fileRes.arrayBuffer();
-                fs.writeFileSync(destPath, Buffer.from(arrayBuf));
-                return fs.existsSync(destPath) && fs.statSync(destPath).size > 0;
+                execSync(`curl -L -s -A "Mozilla/5.0" "${pData.download_url}" -o "${destPath}"`, { timeout: 45000 });
+                if (fs.existsSync(destPath) && fs.statSync(destPath).size > 10000) {
+                    return true;
+                }
             }
         }
     } catch (e: any) {
@@ -2392,30 +2402,49 @@ async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<
                 downloadedVideoPath = path.join(uploadDir, `source_${jobId}.mp4`);
                 extractedAudioPath = path.join(uploadDir, `extracted_audio_${jobId}.mp3`);
 
-                const downloadCmd = `yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --no-playlist -o "${downloadedVideoPath}" "${cleanUrl}"`;
-                try {
-                    await new Promise((resolve) => {
-                        exec(downloadCmd, { timeout: 45000 }, () => resolve(true));
-                    });
-                } catch (dlErr: any) {
-                    console.warn(`[Job ${jobId}] yt-dlp warning:`, dlErr.message);
+                if (cleanUrl.startsWith('data:video/') || cleanUrl.startsWith('data:application/')) {
+                    const base64Data = cleanUrl.split(';base64,').pop();
+                    if (base64Data) {
+                        fs.writeFileSync(downloadedVideoPath, Buffer.from(base64Data, 'base64'));
+                    }
+                } else {
+                    const downloadCmd = `yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --no-playlist -o "${downloadedVideoPath}" "${cleanUrl}"`;
+                    try {
+                        await new Promise((resolve) => {
+                            exec(downloadCmd, { timeout: 45000 }, () => resolve(true));
+                        });
+                    } catch (dlErr: any) {
+                        console.warn(`[Job ${jobId}] yt-dlp warning:`, dlErr.message);
+                    }
+
+                    if (!fs.existsSync(downloadedVideoPath) || fs.statSync(downloadedVideoPath).size < 1000) {
+                        console.log(`[Job ${jobId}] Direct yt-dlp blocked or empty, trying LoaderTo service...`);
+                        await downloadViaLoaderTo(cleanUrl, downloadedVideoPath);
+                    }
                 }
 
                 if (!fs.existsSync(downloadedVideoPath) || fs.statSync(downloadedVideoPath).size < 1000) {
-                    console.log(`[Job ${jobId}] Direct yt-dlp blocked or empty, trying LoaderTo service...`);
-                    await downloadViaLoaderTo(cleanUrl, downloadedVideoPath);
+                    throw new Error('Não foi possível carregar ou baixar o vídeo. Se a URL do YouTube estiver bloqueada por proteção de robôs do servidor Cloud, faça o upload direto do arquivo MP4.');
                 }
 
-                if (!fs.existsSync(downloadedVideoPath) || fs.statSync(downloadedVideoPath).size < 1000) {
-                    throw new Error('Não foi possível baixar o vídeo da URL fornecida (Bloqueado pelo YouTube/provedor). Tente colar o arquivo de vídeo diretamente ou usar outra URL pública.');
-                }
-
-                // Fetch YouTube / Video Metadata (Title / Description)
+                // Fetch YouTube / Video Metadata (Title / Description / oEmbed)
                 let videoMetaDataText = '';
                 try {
-                    const metaBuf = execSync(`yt-dlp --get-title --get-description --no-playlist "${cleanUrl}"`, { timeout: 15000 }).toString().trim();
-                    if (metaBuf) videoMetaDataText = metaBuf;
-                } catch (e) {}
+                    const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(cleanUrl)}&format=json`);
+                    if (oembedRes.ok) {
+                        const odata: any = await oembedRes.json();
+                        if (odata && odata.title) {
+                            videoMetaDataText = `Título: ${odata.title}. Autor: ${odata.author_name || ''}`;
+                        }
+                    }
+                } catch(e) {}
+
+                if (!videoMetaDataText) {
+                    try {
+                        const metaBuf = execSync(`yt-dlp --get-title --get-description --no-playlist "${cleanUrl}"`, { timeout: 15000 }).toString().trim();
+                        if (metaBuf) videoMetaDataText = metaBuf;
+                    } catch (e) {}
+                }
 
                 if (jobs[jobId]) {
                     jobs[jobId].progress = 20;
