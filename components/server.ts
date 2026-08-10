@@ -2332,6 +2332,32 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
         })();
     });
 
+// Helper: Download video from YouTube/TikTok via LoaderTo API if yt-dlp fails or requires authentication
+async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<boolean> {
+    try {
+        const encodeUrl = encodeURIComponent(videoUrl);
+        const initRes = await fetch(`https://loader.to/ajax/download.php?start=1&end=1000&format=1080&url=${encodeUrl}`);
+        const initData: any = await initRes.json();
+        if (!initData || !initData.id) return false;
+        const progressUrl = initData.progress_url || `https://lto2.affadaffa.com/api/progress?id=${initData.id}`;
+        
+        for (let i = 0; i < 25; i++) {
+            await new Promise(r => setTimeout(r, 1500));
+            const pRes = await fetch(progressUrl);
+            const pData: any = await pRes.json();
+            if (pData && pData.download_url) {
+                const fileRes = await fetch(pData.download_url);
+                const arrayBuf = await fileRes.arrayBuffer();
+                fs.writeFileSync(destPath, Buffer.from(arrayBuf));
+                return fs.existsSync(destPath) && fs.statSync(destPath).size > 0;
+            }
+        }
+    } catch (e: any) {
+        console.warn('LoaderTo download error:', e.message);
+    }
+    return false;
+}
+
     // ─── CLONAR & RECRIAR VÍDEO POR URL (ANTI-COPYRIGHT + DUBLAGEM AI - FRAME-BY-FRAME) ───────
     app.post('/api/ai/url-video-clone', async (req: any, res: any) => {
         const jobId = `clone_url_${Date.now()}`;
@@ -2366,17 +2392,22 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
                 downloadedVideoPath = path.join(uploadDir, `source_${jobId}.mp4`);
                 extractedAudioPath = path.join(uploadDir, `extracted_audio_${jobId}.mp3`);
 
-                const downloadCmd = `yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --no-playlist -o "${downloadedVideoPath}" "${cleanUrl}" || curl -L -s "${cleanUrl}" -o "${downloadedVideoPath}"`;
+                const downloadCmd = `yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --no-playlist -o "${downloadedVideoPath}" "${cleanUrl}"`;
                 try {
                     await new Promise((resolve) => {
-                        exec(downloadCmd, { timeout: 90000 }, () => resolve(true));
+                        exec(downloadCmd, { timeout: 45000 }, () => resolve(true));
                     });
                 } catch (dlErr: any) {
-                    console.warn(`[Job ${jobId}] Download warning:`, dlErr.message);
+                    console.warn(`[Job ${jobId}] yt-dlp warning:`, dlErr.message);
                 }
 
-                if (!fs.existsSync(downloadedVideoPath) || fs.statSync(downloadedVideoPath).size === 0) {
-                    throw new Error('Não foi possível baixar o vídeo da URL fornecida. Verifique se a URL é pública e válida.');
+                if (!fs.existsSync(downloadedVideoPath) || fs.statSync(downloadedVideoPath).size < 1000) {
+                    console.log(`[Job ${jobId}] Direct yt-dlp blocked or empty, trying LoaderTo service...`);
+                    await downloadViaLoaderTo(cleanUrl, downloadedVideoPath);
+                }
+
+                if (!fs.existsSync(downloadedVideoPath) || fs.statSync(downloadedVideoPath).size < 1000) {
+                    throw new Error('Não foi possível baixar o vídeo da URL fornecida (Bloqueado pelo YouTube/provedor). Tente colar o arquivo de vídeo diretamente ou usar outra URL pública.');
                 }
 
                 // Fetch YouTube / Video Metadata (Title / Description)
@@ -2458,7 +2489,11 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
                     sceneFramePaths.push(framePath);
 
                     try {
-                        execSync(`ffmpeg -y -ss ${frameTime} -i "${downloadedVideoPath}" -vframes 1 -q:v 2 "${framePath}"`);
+                        // Place -ss before -i for fast seek, and fallback if needed
+                        execSync(`ffmpeg -y -ss ${frameTime.toFixed(2)} -i "${downloadedVideoPath}" -vframes 1 -q:v 2 "${framePath}"`);
+                        if (!fs.existsSync(framePath) || fs.statSync(framePath).size === 0) {
+                            execSync(`ffmpeg -y -i "${downloadedVideoPath}" -ss ${frameTime.toFixed(2)} -vframes 1 -q:v 2 "${framePath}"`);
+                        }
                         if (fs.existsSync(framePath) && fs.statSync(framePath).size > 0) {
                             const imgData = fs.readFileSync(framePath).toString('base64');
                             if (i < 10) { // Send first 10 shot frames to Gemini Vision to stay within payload limits
@@ -2471,7 +2506,7 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
                             }
                         }
                     } catch (fErr: any) {
-                        console.warn(`[Job ${jobId}] Shot frame ${i} extraction error:`, fErr.message);
+                        console.warn(`[Job ${jobId}] Shot frame ${i} extraction warning:`, fErr.message);
                     }
                 }
 
