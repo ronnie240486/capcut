@@ -3075,8 +3075,9 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 
                 // Fallback dinâmico caso o mapeamento estático falhe
                 try {
-                    console.log(`[Job ${jobId}] Verificando modelos disponíveis na Deapi...`);
-                    const modelsRes = await fetchWithRetry(`${baseUrl}/api/v2/models?filter[inference_types]=img2video,txt2video`, {
+                    console.log(`[Job ${jobId}] Verificando modelos disponíveis na Deapi (Animation: ${isImageToVideo})...`);
+                    const filterType = isImageToVideo ? 'img2video' : 'txt2video';
+                    const modelsRes = await fetchWithRetry(`${baseUrl}/api/v2/models?filter[inference_types]=${filterType}`, {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     }, 3);
                     if (modelsRes.ok) {
@@ -3084,11 +3085,11 @@ Responda EXCLUSIVAMENTE em JSON válido:
                         const availableModels = modelsData.data || [];
                         const slugs = availableModels.map((m: any) => m.slug);
                         
-                        // Se o modelo mapeado não estiver na lista, tenta o melhor match
-                        if (!slugs.includes(mappedModel)) {
+                        // Se o modelo mapeado não estiver na lista do tipo selecionado, tenta o melhor match do mesmo tipo
+                        if (!slugs.includes(mappedModel) && availableModels.length > 0) {
                             const bestMatch = availableModels.find((m: any) => 
                                 m.slug.toLowerCase().includes(deapiModel.split('-')[0])
-                            );
+                            ) || availableModels[0];
                             if (bestMatch) mappedModel = bestMatch.slug;
                         }
                     }
