@@ -53,7 +53,12 @@ const app = express();
 const PORT = 3000;
 
 // Global Error Handlers to prevent "Lost Process"
-process.on('uncaughtException', (err) => {
+process.on('uncaughtException', (err: any) => {
+    // Suppress or handle broken pipe write errors gracefully when stdout/stderr or child processes close early
+    if (err && (err.code === 'EPIPE' || err.message?.includes('EPIPE'))) {
+        console.warn('[Server] Pipe closed by peer (EPIPE ignored)');
+        return;
+    }
     console.error('[CRITICAL] Uncaught Exception:', err);
 });
 process.on('unhandledRejection', (reason, promise) => {
@@ -228,7 +233,7 @@ async function startServer() {
     }
 
     // Helper for fetch with exponential backoff for 429
-    async function fetchWithRetry(url: string, options: any, maxRetries = 7) {
+    async function fetchWithRetry(url: string, options: any, maxRetries = 7, onRetry?: (waitMs: number, attempt: number) => void) {
         let lastStatus = 0;
         
         for (let i = 0; i <= maxRetries; i++) {
@@ -236,9 +241,29 @@ async function startServer() {
                 const response = await fetch(url, options);
                 lastStatus = response.status;
                 
-                if (response.status === 429 && i < maxRetries) {
-                    const wait = Math.min(120000, Math.pow(2, i) * 5000 + (Math.random() * 2000)); 
-                    console.warn(`[Retry] Status 429 on ${url}. Waiting ${Math.round(wait)}ms before retry ${i + 1}/${maxRetries}`);
+                let isRateLimit = response.status === 429;
+                
+                // Detect rate limits in non-429 responses (some APIs use 400, 403 or even 200 with error message)
+                if (!isRateLimit && !response.ok) {
+                    try {
+                        const cloned = response.clone();
+                        const body = await cloned.json();
+                        const msg = (body?.message || body?.error || JSON.stringify(body)).toLowerCase();
+                        if (msg.includes('too many attempts') || msg.includes('rate limit') || msg.includes('too many requests')) {
+                            isRateLimit = true;
+                        }
+                    } catch (e) {
+                        // ignore json parse error
+                    }
+                }
+
+                if (isRateLimit && i < maxRetries) {
+                    // Start with 10s wait and increase exponentially
+                    const wait = Math.min(150000, Math.pow(2, i) * 10000 + (Math.random() * 5000)); 
+                    console.warn(`[Retry] Rate limit detected on ${url} (Status: ${lastStatus}). Waiting ${Math.round(wait)}ms before retry ${i + 1}/${maxRetries}`);
+                    
+                    if (onRetry) onRetry(wait, i + 1);
+                    
                     await new Promise(r => setTimeout(r, wait));
                     continue;
                 }
@@ -373,12 +398,37 @@ async function startServer() {
     };
 
     const getDeapiKey = (req?: express.Request) => {
-        const headerKey = (req?.headers['x-deapi-api-key'] || "").toString().trim();
-        let key = headerKey || (process.env.DEAPI_API_KEY || "").trim();
-        if (key.toLowerCase().startsWith("bearer ")) {
-            return key.substring(7).trim();
+        if (!req) return (process.env.DEAPI_API_KEY || process.env.DE_API_KEY || "").trim();
+
+        const isGeminiKey = (k: string) => !k || k.startsWith("AIza") || k.length > 150;
+
+        const bodyDeapiKey = (req.body?.deapiKey || req.body?.deapiApiKey || req.body?.deapi_api_key || req.body?.deapi_key || req.body?.deapi || req.body?.deapiKeyVal || "").toString().trim().replace(/^["']|["']$/g, '');
+        const bodyApiKey = (req.body?.apiKey || "").toString().trim().replace(/^["']|["']$/g, '');
+        const headerDeapiKey = (req.headers?.['x-deapi-api-key'] || "").toString().trim().replace(/^["']|["']$/g, '');
+        const headerApiKey = (req.headers?.['x-api-key'] || "").toString().trim().replace(/^["']|["']$/g, '');
+        let authHeader = (req.headers?.['authorization'] || "").toString().trim().replace(/^["']|["']$/g, '');
+
+        const candidates = [
+            bodyDeapiKey,
+            headerDeapiKey,
+            bodyApiKey,
+            headerApiKey,
+            authHeader,
+            process.env.DEAPI_API_KEY || "",
+            process.env.DE_API_KEY || ""
+        ];
+
+        for (let key of candidates) {
+            key = (key || "").trim();
+            if (key.toLowerCase().startsWith("bearer ")) {
+                key = key.substring(7).trim();
+            }
+            if (key && !isGeminiKey(key)) {
+                return key;
+            }
         }
-        return key;
+
+        return "";
     };
 
     const parseGeminiError = (e: any) => {
@@ -571,6 +621,35 @@ async function startServer() {
             res.json({ base64 });
         } catch (e: any) {
             console.error("[Gemini Img Server] Error:", e);
+            const parsed = parseGeminiError(e);
+            res.status(parsed.status).json({ 
+                error: parsed.error, 
+                details: parsed.details,
+                code: parsed.code
+            });
+        }
+    });
+
+    app.post('/api/ai/gemini/generate-content', async (req: any, res: any) => {
+        const { contents, model = "gemini-3-flash-preview", config } = req.body;
+        const apiKey = getGeminiKey(req);
+        if (!apiKey) {
+            return res.status(401).json({ 
+                error: "Nenhuma chave Gemini válida encontrada.",
+                details: "Configure sua chave API nas configurações do AI Studio."
+            });
+        }
+
+        try {
+            const ai = new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+            const result = await executeWithRetry(() => ai.models.generateContent({
+                model,
+                contents,
+                config
+            }));
+            res.json({ text: result.text });
+        } catch (e: any) {
+            console.error("[Gemini Content Server] Error:", e);
             const parsed = parseGeminiError(e);
             res.status(parsed.status).json({ 
                 error: parsed.error, 
@@ -994,9 +1073,9 @@ async function startServer() {
     });
 
     // ─── FFPROBE HELPER ────────────────────────────────────────────────────────
-    const getStreamInfo = (filePath: string): Promise<{ hasAudio: boolean; hasVideo: boolean }> => {
+    const getStreamInfo = (filePath: string): Promise<{ hasAudio: boolean; hasVideo: boolean; duration?: number }> => {
         return new Promise((resolve) => {
-            const ffprobe = spawn('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', filePath]);
+            const ffprobe = spawn('ffprobe', ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', filePath]);
             let output = '';
             ffprobe.stdout.on('data', (d: Buffer) => output += d);
             ffprobe.on('close', () => {
@@ -1004,7 +1083,8 @@ async function startServer() {
                     const json = JSON.parse(output);
                     resolve({
                         hasAudio: json.streams?.some((s: any) => s.codec_type === 'audio') ?? false,
-                        hasVideo: json.streams?.some((s: any) => s.codec_type === 'video') ?? false
+                        hasVideo: json.streams?.some((s: any) => s.codec_type === 'video') ?? false,
+                        duration: json.format?.duration ? parseFloat(json.format.duration) : undefined
                     });
                 } catch { resolve({ hasAudio: false, hasVideo: false }); }
             });
@@ -1197,7 +1277,174 @@ async function startServer() {
     const jobs: Record<string, any> = {};
     const JOBS_FILE = path.join(process.cwd(), 'jobs_persistence.json');
 
+    // Helper to format Deapi & API errors into user-friendly Portuguese messages
+    function formatDeapiErrorMessage(rawMsg: any, statusCode?: number): string {
+        const msgStr = typeof rawMsg === 'object' ? (rawMsg.message || rawMsg.error || JSON.stringify(rawMsg)) : String(rawMsg || '');
+        const msgLower = msgStr.toLowerCase();
+
+        if (statusCode === 401 || msgLower.includes('unauthenticated') || msgLower.includes('unauthorized') || msgLower.includes('invalid key')) {
+            return "Chave API Deapi não autenticada ou inválida. Por favor, acesse as Configurações (ícone de engrenagem) e atualize sua chave de API do Deapi.ai.";
+        }
+        if (statusCode === 429 || msgLower.includes('too many attempts') || msgLower.includes('rate limit') || msgLower.includes('too many requests')) {
+            return "A API do Deapi atingiu o limite de requisições simultâneas (Too Many Attempts). Por favor, aguarde de 30 a 60 segundos antes de tentar gerar novamente.";
+        }
+        if (statusCode === 402 || msgLower.includes('insufficient funds') || msgLower.includes('credits') || msgLower.includes('payment required')) {
+            return "Saldo de créditos insuficiente na sua conta Deapi.ai. Adicione mais créditos em Deapi.ai para continuar gerando vídeos.";
+        }
+        return msgStr || `Erro na API Deapi${statusCode ? ` (${statusCode})` : ''}`;
+    }
+
     // Helper to handle Deapi task/job response
+    // Helper to translate and optimize prompt for video/audio models with strict character locking and Hollywood quality
+    async function translatePromptIfNeeded(prompt: string, deapiKey: string, charLock?: string) {
+        if (!prompt || !prompt.trim()) return prompt;
+        // Truncate overly massive prompts (e.g., base64 or giant inputs mistakenly passed) to avoid Gemini token limit error
+        let cleanPrompt = prompt.trim();
+        if (cleanPrompt.length > 4000) {
+            cleanPrompt = cleanPrompt.substring(0, 4000);
+        }
+        try {
+            const apiKey = process.env.GEMINI_API_KEY;
+            if (!apiKey) return prompt;
+            
+            const ai = new GoogleGenAI({ 
+                apiKey,
+                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } 
+            });
+            
+            console.log(`[Translate/Optimize] Processing prompt: "${cleanPrompt.substring(0, 100)}..." (CharLock: ${charLock || 'Auto'})`);
+            const systemInstruction = `You are a world-class Hollywood music video director, VFX supervisor, and AI video prompt architect.
+Your mission is to transform any user prompt (brief, simple, or in Portuguese) into an ultra-professional, photorealistic, cinema-grade English video prompt.
+
+CRITICAL DIRECTIVES FOR CHARACTER CONSISTENCY & HOLLYWOOD QUALITY:
+
+1. LOCKED CHARACTER ANCHOR (Protagonista Idêntico):
+${charLock && charLock.trim() 
+    ? `- EXPLICIT USER CHARACTER SPECIFIED: "${charLock.trim()}". You MUST start the prompt with "[LOCKED CHARACTER ANCHOR: ${charLock.trim()}. Exact facial features, hairstyle, body build, skin tone, clothing items, and outfit preserved 100% identically.]"`
+    : `- Identify or define the protagonist in the prompt. Formulate an explicit visual character description anchor: e.g. "[LOCKED CHARACTER ANCHOR: A 28-year-old male artist with short styled dark hair, light beard stubble, wearing a fitted black leather jacket over a white t-shirt and dark jeans. Facial features, hair, and clothing remain 100% visually consistent.]"`}
+
+2. HOLLYWOOD CINEMATOGRAPHY & LIGHTING DIRECTIVES:
+- Camera Motion: Add an explicit cinematic camera directive (e.g., [360-degree orbiting camera shot], [low-angle tracking shot], [slow-motion close-up push-in], [35mm anamorphic lens with shallow depth of field]).
+- Lighting & Atmosphere: Add high-end lighting details (e.g., [volumetric stage haze], [anamorphic blue lens flares], [dramatic rim lighting], [warm golden hour reflections], [8k RED V-Raptor digital cinema render]).
+- Physics & Realism: Photorealistic skin textures, natural hair and clothing physics, photorealistic lighting reflections.
+
+3. STRICT RULE: Output ONLY the final detailed English prompt. No quotes, no markdown, no explanation.`;
+
+            const result = await ai.models.generateContent({
+                model: "gemini-2.5-flash",
+                contents: [{ 
+                    role: "user", 
+                    parts: [{ 
+                        text: `Convert and elevate this request into a professional, cinematic AI video prompt with character locking and camera directives: "${cleanPrompt}"` 
+                    }] 
+                }],
+                config: {
+                    systemInstruction
+                }
+            });
+            
+            const translation = (result as any).text?.trim().replace(/^"|"$/g, '') || (result as any).response?.text?.().trim().replace(/^"|"$/g, '');
+            if (translation && translation.length > 2) {
+                console.log(`[Translate/Optimize] Success: "${cleanPrompt.substring(0, 50)}..." -> "${translation.substring(0, 50)}..."`);
+                return translation;
+            }
+            return prompt;
+        } catch (e: any) {
+            if (e.message?.includes('429') || e.message?.includes('RESOURCE_EXHAUSTED') || e.status === 429) {
+                console.warn("[Translate/Optimize] Gemini API quota limit reached. Using original prompt.");
+            } else {
+                console.warn("[Translate/Optimize] Bypassed prompt translation:", e.message || e);
+            }
+            return prompt;
+        }
+    }
+
+    // Generator for multi-segment video clips ensuring 100% character anchor consistency across all scenes
+    async function generateConsistentMultiSegmentPrompts(
+        basePrompt: string, 
+        charLock: string | undefined, 
+        numSegments: number
+    ): Promise<string[]> {
+        const apiKey = process.env.GEMINI_API_KEY;
+        const fallbackPrompts: string[] = [];
+
+        // Base visual character anchor fallback
+        const cleanCharLock = charLock && charLock.trim() ? charLock.trim() : '';
+        const defaultAnchor = cleanCharLock
+            ? `[LOCKED CHARACTER ANCHOR: ${cleanCharLock}. Exact facial features, hairstyle, body build, skin tone, clothing items, and visual identity preserved strictly identical across all scenes.]`
+            : `[FAITHFUL SUBJECT ANCHOR: High quality photorealistic scene based on '${basePrompt || 'original video performance'}'. Exact singers/performers, facial features, group composition, clothing, setting, stage lighting, and emotional performance preserved.]`;
+
+        // Camera movements for sequential segments
+        const cameraMoves = [
+            "Opening wide establishing shot with sweeping camera movement",
+            "Slow-motion close-up vocal performance shot with shallow depth of field",
+            "360-degree orbiting camera tracking shot around the protagonist",
+            "Dynamic low-angle tracking shot with volumetric stage haze and lens flares",
+            "Intense crescendo shot with dramatic rim lighting and stage pyrotechnics",
+            "Wide concert stage shot with crowd reflections and sweeping light beams",
+            "Emotional close-up camera push-in showing expressive performance",
+            "High-energy tracking camera shot following character motion across stage"
+        ];
+
+        // Build fallback prompts array in case Gemini API is offline or slow
+        for (let i = 0; i < numSegments; i++) {
+            const move = cameraMoves[i % cameraMoves.length];
+            fallbackPrompts.push(`${defaultAnchor} ${move}. Scene action: ${basePrompt || 'High energy music performance'}, 35mm anamorphic cinema lens, 8k resolution RED V-Raptor camera render, photorealistic skin texture, dramatic lighting, masterpiece cinematography quality.`);
+        }
+
+        if (!apiKey) return fallbackPrompts;
+
+        try {
+            const ai = new GoogleGenAI({ 
+                apiKey,
+                httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } 
+            });
+
+            const prompt = `You are a Hollywood director and AI video prompt architect.
+Create a multi-scene visual storyboard for a video clip with EXACTLY ${numSegments} sequential video scenes.
+
+STRICT CHARACTER CONSISTENCY RULE:
+1. Define a crystal-clear [LOCKED CHARACTER ANCHOR] describing the protagonist's exact physical look (age, face, hairstyle, facial hair, skin tone, exact clothing items and colors).
+${cleanCharLock ? `Explicit user character: "${cleanCharLock}". Use this explicitly as the core anchor.` : `If user prompt implies a character, create a distinct, photorealistic character description.`}
+
+2. Every single scene prompt in the output array MUST start with the EXACT SAME [LOCKED CHARACTER ANCHOR] text prefix!
+
+3. Vary the camera movement, lighting, and action for each scene to make a cinematic music video sequence (e.g. wide shot, orbiting 360 camera, intense close-up, low-angle tracking, climax pyrotechnics).
+
+User Inspiration / Prompt: "${basePrompt || 'music video performance'}"
+
+Return ONLY a JSON array of strings containing exactly ${numSegments} detailed English prompts:
+["[LOCKED CHARACTER ANCHOR: ...] Scene 1 details...", "[LOCKED CHARACTER ANCHOR: ...] Scene 2 details...", ...]`;
+
+            const result = await Promise.race([
+                ai.models.generateContent({
+                    model: "gemini-2.5-flash",
+                    contents: [{ role: "user", parts: [{ text: prompt }] }],
+                    config: {
+                        responseMimeType: "application/json"
+                    }
+                }),
+                new Promise<any>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 12000))
+            ]);
+
+            const jsonText = (result as any).text || (result as any).response?.text?.();
+            if (jsonText) {
+                const parsed = JSON.parse(jsonText);
+                if (Array.isArray(parsed) && parsed.length === numSegments) {
+                    console.log(`[MultiSegmentPrompts] Generated ${numSegments} consistent character prompts successfully.`);
+                    return parsed.map(p => String(p));
+                }
+                if (parsed.scenes && Array.isArray(parsed.scenes) && parsed.scenes.length === numSegments) {
+                    return parsed.scenes.map((s: any) => typeof s === 'string' ? s : s.prompt);
+                }
+            }
+        } catch (e: any) {
+            console.log(`[MultiSegmentPrompts] Utilizando motor local de prompts (Gemini offline ou limite atingido).`);
+        }
+
+        return fallbackPrompts;
+    }
+
     async function handleDeapiTask(jobId: string, data: any, deapiKey: string, baseUrl: string, shouldDownload = false) {
         const taskId = data.data?.request_id || data.request_id || data.id || data.task_id || data.data?.id || data.job_id || data.data?.job_id;
         
@@ -1251,6 +1498,10 @@ async function startServer() {
                     }, 3);
                 }
                 
+                if (pollRes.status === 401) {
+                    throw new Error("Erro de Autenticação na DeAPI (401): Chave API ausente, inválida ou expirada. Verifique suas configurações.");
+                }
+
                 if (pollRes.status === 429) {
                     console.warn(`[Job ${jobId}] Rate limit atingido (429). Aguardando 45s...`);
                     if (jobs[jobId]) jobs[jobId].message = "API Ocupada (429). Aguardando fôlego...";
@@ -1282,7 +1533,12 @@ async function startServer() {
                             if (shouldDownload) {
                                 try {
                                     console.log(`[Job ${jobId}] Baixando ativo Deapi: ${resultUrl}`);
-                                    const dlRes = await fetch(resultUrl);
+                                    let dlRes = await fetch(resultUrl);
+                                    if (!dlRes.ok && deapiKey) {
+                                        dlRes = await fetch(resultUrl, {
+                                            headers: { 'Authorization': `Bearer ${deapiKey}` }
+                                        });
+                                    }
                                     if (dlRes.ok) {
                                         const buffer = Buffer.from(await dlRes.arrayBuffer());
                                         const contentType = dlRes.headers.get('content-type') || '';
@@ -1324,6 +1580,13 @@ async function startServer() {
                 }
             } catch (e: any) { 
                 console.warn(`[Job ${jobId}] Polling error:`, e); 
+                if (e.message?.includes("401") || e.message?.includes("Autenticação") || e.message?.includes("Unauthenticated")) {
+                    if (jobs[jobId]) {
+                        jobs[jobId].status = 'failed';
+                        jobs[jobId].error = e.message;
+                    }
+                    return;
+                }
                 pollFailures++;
                 if (pollFailures > 15) throw new Error(e.message || "Erro persistente na verificação de status.");
             }
@@ -1331,6 +1594,50 @@ async function startServer() {
         }
         if (!completed && jobs[jobId]) { jobs[jobId].status = 'failed'; jobs[jobId].error = 'A geração demorou demais ou o servidor externo parou de responder.'; }
     }
+
+    const cutAudio = async (input: string, output: string, ss: number, t: number): Promise<void> => {
+        const segDuration = Math.max(1, t);
+        if (!fs.existsSync(input) || fs.statSync(input).size === 0) {
+            await new Promise((resolve) => {
+                exec(`ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${segDuration} -c:a libmp3lame -b:a 128k "${output}"`, () => resolve(true));
+            });
+            return;
+        }
+
+        return new Promise((resolve) => {
+            const startSec = Math.max(0, ss);
+            const args = ['-y', '-i', input, '-ss', startSec.toString(), '-t', segDuration.toString(), '-c:a', 'libmp3lame', '-b:a', '192k', output];
+            const ff = spawn('ffmpeg', args);
+            let stderr = '';
+            ff.stderr.on('data', (d) => stderr += d.toString());
+            ff.on('close', (code) => {
+                if (code === 0 && fs.existsSync(output) && fs.statSync(output).size > 0) {
+                    resolve();
+                } else {
+                    console.warn(`[FFmpeg Cut Warning] Code ${code}, Stderr: ${stderr}. Usando áudio silencioso de fallback.`);
+                    exec(`ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${segDuration} -c:a libmp3lame -b:a 128k "${output}"`, () => resolve());
+                }
+            });
+            ff.on('error', (err) => {
+                console.warn(`[FFmpeg Cut Error] ${err.message}. Usando áudio silencioso de fallback.`);
+                exec(`ffmpeg -y -f lavfi -i anullsrc=r=44100:cl=stereo -t ${segDuration} -c:a libmp3lame -b:a 128k "${output}"`, () => resolve());
+            });
+        });
+    };
+
+    const concatVideos = (videoPaths: string[], outputPath: string): Promise<void> => {
+        return new Promise((resolve, reject) => {
+            const listPath = path.join(uploadDir, `list_${Date.now()}.txt`);
+            const content = videoPaths.map(p => `file '${path.resolve(p)}'`).join('\n');
+            fs.writeFileSync(listPath, content);
+            const ff = spawn('ffmpeg', ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', outputPath]);
+            ff.on('close', (code) => {
+                try { if (fs.existsSync(listPath)) fs.unlinkSync(listPath); } catch(e) {}
+                code === 0 ? resolve() : reject(new Error(`FFmpeg concat failed with code ${code}`));
+            });
+            ff.on('error', reject);
+        });
+    };
 
     // Load jobs from disk on startup
     try {
@@ -1685,10 +1992,12 @@ async function startServer() {
 
     // ─── AI VIDEO GENERATION ──────────────────────────────────────────────────
     app.post('/api/ai/audio-to-video', async (req: any, res: any) => {
+        console.log("[API] Received audio-to-video request");
         // Support for both English and Portuguese keys from frontend
         const { 
             audioUrl, áudio, 
             prompt, 
+            characterDescription, characterLock, protagonist, personagem,
             frames, quadros, 
             width, largura, 
             height, altura, 
@@ -1698,81 +2007,1102 @@ async function startServer() {
             apiKey 
         } = req.body;
 
-        const deapiKey = apiKey || getDeapiKey(req);
-        if (!deapiKey) return res.status(401).json({ error: "DEAPI_API_KEY não configurada." });
+        const userCharLock = characterDescription || characterLock || protagonist || personagem;
+
+        const deapiKey = getDeapiKey(req);
+        if (!deapiKey) {
+            console.error("[API] audio-to-video: DEAPI_API_KEY missing");
+            return res.status(401).json({ error: "DEAPI_API_KEY não configurada." });
+        }
 
         const finalAudioUrl = audioUrl || áudio;
-        const finalFrames = frames || quadros || 120;
-        const finalWidth = width || largura || 768;
-        const finalHeight = height || altura || 768;
-        const finalModel = model || modelo || 'Ltx2_3_22B_Dist_INT8';
+        if (!finalAudioUrl) {
+            console.error("[API] audio-to-video: audioUrl missing");
+            return res.status(400).json({ error: "URL ou dados do áudio são obrigatórios." });
+        }
+
+        const finalFrames = Math.min(120, Math.max(24, Number(frames || quadros || 120)));
+        const finalWidth = Math.max(512, Number(width || largura || 768));
+        const finalHeight = Math.max(512, Number(height || altura || 768));
+        const deapiModel = String(model || modelo || 'Ltx2_3_22B_Dist_INT8');
+        const finalFps = Math.min(24, Math.max(1, Number(fps || 24)));
+
+        console.log(`[API] Processing aud2vid: model=${deapiModel}, frames=${finalFrames}, res=${finalWidth}x${finalHeight}, charLock=${userCharLock || 'auto'}`);
+
+        // Mapeamento de modelos para Deapi V1/V2
+        const modelMap: Record<string, string> = {
+            "ltx-2.3-22b": "Ltx2_3_22B_Dist_INT8", 
+            "deapi-ltx-2.3-22b": "Ltx2_3_22B_Dist_INT8",
+            "ltx2_3_22b_dist_int8": "Ltx2_3_22B_Dist_INT8",
+            "ltx-video-13b": "Ltx2_3_22B_Dist_INT8",
+            "ltx-2-19b-fp8": "Ltx2_3_22B_Dist_INT8",
+            "deapi-ltx-2-19b-fp8": "Ltx2_3_22B_Dist_INT8",
+            "ltx-video": "Ltx2_3_22B_Dist_INT8",
+            "ltx-video-v2": "Ltx2_3_22B_Dist_INT8",
+            "morpheus": "Ltx2_3_22B_Dist_INT8"
+        };
+        const finalModel = modelMap[deapiModel.toLowerCase()] || 'Ltx2_3_22B_Dist_INT8';
 
         const jobId = `aud2vid_${Date.now()}`;
-        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
+        jobs[jobId] = { id: jobId, status: 'processing', progress: 2, startTime: Date.now(), message: 'Iniciando Processamento Inteligente...' };
+        saveJobs();
+        
+        console.log(`[API] Returning job ID: ${jobId}`);
         res.status(202).json({ jobId });
 
         (async () => {
+            let tempAudioPath = '';
             try {
-                if (!finalAudioUrl) throw new Error("URL ou dados do áudio são obrigatórios.");
+                if (jobs[jobId]) jobs[jobId].message = "Iniciando motor de IA e Trava de Personagem...";
+                console.log(`[Job ${jobId}] Starting Audio2Video task...`);
 
+                // 1. Traduzir e estruturar o prompt com Trava de Personagem
+                jobs[jobId].message = "Criando Trava Visual do Protagonista...";
+                let translatedPrompt = prompt || 'Music video';
+                try {
+                    const t = await Promise.race([
+                        translatePromptIfNeeded(prompt || 'Music video', deapiKey, userCharLock),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
+                    ]);
+                    if (t) translatedPrompt = t as string;
+                } catch (te) {
+                    console.warn(`[Job ${jobId}] Translation timed out or failed, using original prompt`);
+                }
+                console.log(`[Job ${jobId}] Base Prompt: ${translatedPrompt}`);
+
+                // 2. Carregar áudio e verificar duração
+                jobs[jobId].message = "Harmonizando áudio com a rede neural...";
                 let audioBuffer: Buffer;
-                let audioMime = 'audio/mpeg';
-
                 if (finalAudioUrl.startsWith('data:')) {
-                    const [header, base64Data] = finalAudioUrl.split(',');
+                    const commaIndex = finalAudioUrl.indexOf(',');
+                    if (commaIndex === -1) throw new Error("Formato de DataURL de áudio inválido.");
+                    const base64Data = finalAudioUrl.substring(commaIndex + 1);
                     audioBuffer = Buffer.from(base64Data, 'base64');
-                    audioMime = header.split(':')[1].split(';')[0] || 'audio/mpeg';
                 } else {
-                    // Fetch audio from URL
                     const audioRes = await fetch(finalAudioUrl);
                     if (!audioRes.ok) throw new Error(`Falha ao carregar áudio (${audioRes.status})`);
-                    const arrayBuffer = await audioRes.arrayBuffer();
-                    audioBuffer = Buffer.from(arrayBuffer);
+                    audioBuffer = Buffer.from(await audioRes.arrayBuffer());
                 }
 
-                const formData = new FormData();
-                // Using Blob with type for multipart/form-data compatibility
-                formData.append('audio', new Blob([audioBuffer], { type: audioMime }), 'audio.mp3');
-                formData.append('prompt', (prompt || 'Music video').toString());
-                formData.append('frames', finalFrames.toString());
-                formData.append('width', finalWidth.toString()); 
-                formData.append('height', finalHeight.toString());
-                formData.append('fps', (fps || '24').toString());
-                formData.append('model', finalModel.toString());
+                tempAudioPath = path.join(uploadDir, `src_${jobId}.mp3`);
+                if (audioBuffer.length === 0) throw new Error("O áudio recebido está vazio.");
+                fs.writeFileSync(tempAudioPath, audioBuffer);
                 
-                // Seed is recommended for reproducibility
-                const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
-                formData.append('seed', finalSeed.toString());
+                jobs[jobId].message = "Analisando estrutura rítmica...";
+                const si = await getStreamInfo(tempAudioPath);
+                if (!si.hasAudio && audioBuffer.length > 0) {
+                    console.warn(`[Job ${jobId}] Stream info failed or no audio detected, but buffer has data. Proceeding with caution.`);
+                }
+                
+                const totalDuration = si.duration || 5;
+                const segmentDuration = finalFrames / finalFps;
 
-                console.log(`[Job ${jobId}] Calling Deapi Aud2Video: ${finalModel}, size=${finalWidth}x${finalHeight}, frames=${finalFrames}`);
+                console.log(`[Job ${jobId}] Audio duration: ${totalDuration}s, Segment duration: ${segmentDuration}s`);
+                jobs[jobId].message = "Conectando ao núcleo de geração de vídeo...";
 
-                const deapiRes = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${deapiKey}`,
-                        'accept': 'application/json'
-                    },
-                    body: formData
-                });
-
-                const data = await deapiRes.json();
-                if (!deapiRes.ok) {
-                    if (deapiRes.status === 429 || (data.message && data.message.includes("Too Many Attempts"))) {
-                        throw new Error("A API externa está com alta demanda (Rate Limit). Por favor, aguarde de 2 a 5 minutos e tente novamente.");
+                // Se o áudio for significativamente maior que a duração do segmento pedida, dividir.
+                if (totalDuration <= segmentDuration * 1.1) {
+                    // Lógica de segmento único
+                    const formData = new FormData();
+                    if (audioBuffer.length < 5 * 1024 * 1024) {
+                        formData.append('audio', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'audio.mp3');
+                    } else if (finalAudioUrl && finalAudioUrl.startsWith('http')) {
+                        formData.append('audio', finalAudioUrl);
+                        formData.append('audio_url', finalAudioUrl);
+                    } else {
+                        formData.append('audio', new Blob([audioBuffer], { type: 'audio/mpeg' }), 'audio.mp3');
                     }
-                    throw new Error(data.message || "Erro no Deapi");
+
+                    formData.append('prompt', translatedPrompt || 'cinematic music video style');
+                    formData.append('frames', Math.min(120, finalFrames).toString());
+                    formData.append('width', finalWidth.toString()); 
+                    formData.append('height', finalHeight.toString());
+                    formData.append('fps', finalFps.toString());
+                    formData.append('model', finalModel);
+                    const finalSeed = seed !== undefined ? seed : Math.floor(Math.random() * 1000000000);
+                    formData.append('seed', finalSeed.toString());
+
+                    console.log(`[Job ${jobId}] Sending request to Deapi: https://api.deapi.ai/api/v1/client/aud2video (Model: ${finalModel})`);
+                    jobs[jobId].message = "Iniciando upload e geração na DeAPI...";
+                    saveJobs();
+                    
+                    const deapiRes = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
+                        method: 'POST',
+                        headers: { 
+                            'Authorization': `Bearer ${deapiKey}`,
+                            'x-api-key': deapiKey,
+                            'Accept': 'application/json'
+                        },
+                        body: formData
+                    }, 5, (wait, attempt) => {
+                        if (jobs[jobId]) {
+                            jobs[jobId].message = `Aguardando liberação da fila da DeAPI (${Math.round(wait/1000)}s - Tentativa ${attempt}/5)...`;
+                            jobs[jobId].progress = 5;
+                            saveJobs();
+                        }
+                    });
+                    const data = await deapiRes.json();
+                    console.log(`[Job ${jobId}] Deapi response status: ${deapiRes.status}`);
+                    if (!deapiRes.ok) throw new Error(formatDeapiErrorMessage(data.message || data, deapiRes.status));
+                    
+                    await handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai", true);
+                } else {
+                    // Lógica multi-segmento com Trava de Personagem Sequencial
+                    const numSegments = Math.ceil(totalDuration / segmentDuration);
+                    const videoPaths: string[] = [];
+
+                    jobs[jobId].message = `Gerando roteiro visual para ${numSegments} partes com Protagonista Fixo...`;
+                    saveJobs();
+
+                    const multiPrompts = await generateConsistentMultiSegmentPrompts(prompt || 'Music video', userCharLock, numSegments);
+                    const baseSeed = seed !== undefined ? Number(seed) : Math.floor(Math.random() * 1000000000);
+
+                    for (let i = 0; i < numSegments; i++) {
+                        // Pausa de resfriamento entre segmentos para não saturar a conta na DeAPI
+                        if (i > 0) {
+                            if (jobs[jobId]) jobs[jobId].message = `Aguardando resfriamento de API para parte ${i+1}/${numSegments}...`;
+                            await new Promise(r => setTimeout(r, 4000));
+                        }
+
+                        const start = i * segmentDuration;
+                        const duration = Math.min(segmentDuration, totalDuration - start);
+                        if (duration < 0.5) continue; // Pular restos muito pequenos
+
+                        const segPath = path.join(uploadDir, `seg_${jobId}_${i}.mp3`);
+                        await cutAudio(tempAudioPath, segPath, start, duration);
+                        const segAudioBuf = fs.readFileSync(segPath);
+                        
+                        const segPrompt = multiPrompts[i] || multiPrompts[0] || translatedPrompt;
+                        console.log(`[Job ${jobId}] Segment ${i+1}/${numSegments} Prompt: "${segPrompt.substring(0, 100)}..."`);
+
+                        const formData = new FormData();
+                        formData.append('audio', new Blob([segAudioBuf], { type: 'audio/mpeg' }), 'audio.mp3');
+                        formData.append('prompt', segPrompt);
+                        const segmentFrames = Math.min(120, Math.round(duration * finalFps));
+                        formData.append('frames', segmentFrames.toString());
+                        formData.append('width', finalWidth.toString()); 
+                        formData.append('height', finalHeight.toString());
+                        formData.append('fps', finalFps.toString());
+                        formData.append('model', finalModel);
+                        // Semente consistente com variação controlada
+                        formData.append('seed', (baseSeed + i * 17).toString());
+
+                        console.log(`[Job ${jobId}] Submitting segment ${i+1}/${numSegments}...`);
+                        if (jobs[jobId]) {
+                            jobs[jobId].message = `Enviando parte ${i+1}/${numSegments} com Protagonista Fixo para a DeAPI...`;
+                            jobs[jobId].progress = Math.round(10 + (i / numSegments) * 80);
+                            saveJobs();
+                        }
+                        
+                        try {
+                            const res = await fetchWithRetry('https://api.deapi.ai/api/v1/client/aud2video', {
+                                method: 'POST',
+                                headers: { 
+                                    'Authorization': `Bearer ${deapiKey}`,
+                                    'x-api-key': deapiKey,
+                                    'Accept': 'application/json'
+                                },
+                                body: formData
+                            }, 5, (wait, attempt) => {
+                                if (jobs[jobId]) {
+                                    jobs[jobId].message = `Aguardando fila para parte ${i+1}/${numSegments} (${Math.round(wait/1000)}s - Tentativa ${attempt}/5)...`;
+                                    saveJobs();
+                                }
+                            });
+                            
+                            const data = await res.json();
+                            console.log(`[Job ${jobId}] Segment ${i+1} response:`, data);
+                            if (!res.ok) {
+                                console.error(`[Job ${jobId}] Segment ${i+1} initiation failed:`, data);
+                                throw new Error(formatDeapiErrorMessage(data.message || data, res.status));
+                            }
+
+                            const tid = data.data?.request_id || data.request_id || data.id || data.task_id;
+                            if (!tid) {
+                                console.error(`[Job ${jobId}] Segment ${i+1} missing taskId in response:`, data);
+                                throw new Error(`Falha ao obter ID da tarefa para parte ${i+1}`);
+                            }
+                            
+                            // Polling sequencial do segmento i até concluir antes de enviar o próximo
+                            let segCompleted = false;
+                            let segAttempts = 0;
+                            let segPollFailures = 0;
+
+                            while (!segCompleted && segAttempts < 180 && jobs[jobId]) {
+                                segAttempts++;
+                                await new Promise(r => setTimeout(r, 10000));
+
+                                try {
+                                    let poll = await fetchWithRetry(`https://api.deapi.ai/api/v1/client/task_status?request_id=${tid}`, {
+                                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                                    }, 3);
+
+                                    if (!poll.ok) {
+                                        poll = await fetchWithRetry(`https://api.deapi.ai/api/v2/jobs/${tid}`, {
+                                            headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                                        }, 3);
+                                    }
+
+                                    if (poll.ok) {
+                                        segPollFailures = 0;
+                                        const r = await poll.json();
+                                        const task = r.data || r;
+                                        const st = (task.status || "").toLowerCase();
+                                        
+                                        const rawProg = task.progress || task.percentage || (segAttempts * 2);
+                                        if (jobs[jobId]) {
+                                            jobs[jobId].message = `Morpheus esculpindo parte ${i+1}/${numSegments}...`;
+                                            const segBase = (i / numSegments) * 80;
+                                            const segAdd = (1 / numSegments) * Math.min(rawProg, 80);
+                                            jobs[jobId].progress = Math.min(95, Math.round(10 + segBase + segAdd));
+                                            saveJobs();
+                                        }
+
+                                        if (['completed', 'succeeded', 'success', 'done', 'finished', 'ready'].includes(st)) {
+                                            const vUrl = task.result_url || task.video_url || task.url || task.download_url || task.data?.url;
+                                            if (vUrl) {
+                                                const vRes = await fetch(vUrl);
+                                                if (!vRes.ok) throw new Error(`Falha ao baixar vídeo da parte ${i+1}`);
+                                                const vPath = path.join(uploadDir, `v_${jobId}_${i}.mp4`);
+                                                fs.writeFileSync(vPath, Buffer.from(await vRes.arrayBuffer()));
+                                                videoPaths.push(vPath);
+                                                segCompleted = true;
+                                            } else {
+                                                throw new Error(`Parte ${i+1} concluída sem URL de vídeo.`);
+                                            }
+                                        } else if (st === 'failed' || st === 'error') {
+                                            throw new Error(task.error || task.message || `Geração da parte ${i+1} falhou.`);
+                                        }
+                                    } else {
+                                        segPollFailures++;
+                                        if (segPollFailures > 25) throw new Error(`Erro ao consultar status da parte ${i+1}`);
+                                    }
+                                } catch (e: any) {
+                                    console.warn(`[Job ${jobId}] Poll segment ${i+1} fail:`, e.message);
+                                    segPollFailures++;
+                                    if (segPollFailures > 25) throw new Error(e.message || `Erro de conexão na parte ${i+1}`);
+                                }
+                            }
+
+                            if (!segCompleted) {
+                                throw new Error(`Tempo limite excedido na parte ${i+1}`);
+                            }
+
+                            try { if (fs.existsSync(segPath)) fs.unlinkSync(segPath); } catch(e) {}
+                        } catch (segErr: any) {
+                            console.warn(`[Job ${jobId}] Segment ${i+1}/${numSegments} error:`, segErr.message || segErr);
+                            // Se já temos pelo menos 1 vídeo gerado, FINALIZA COM O QUE JÁ FEZ!
+                            if (videoPaths.length > 0) {
+                                console.log(`[Job ${jobId}] Interrompido na parte ${i+1}. Concluindo com ${videoPaths.length} parte(s) já gerada(s)...`);
+                                if (jobs[jobId]) {
+                                    jobs[jobId].message = `Finalizando e unindo ${videoPaths.length} parte(s) já gerada(s)...`;
+                                }
+                                break; // Encerra o loop e vai direto para a união dos vídeos gerados!
+                            } else {
+                                // Nenhuma parte gerada ainda: repassa o erro para falhar o trabalho
+                                throw segErr;
+                            }
+                        }
+                    }
+
+                    if (videoPaths.length > 0) {
+                        if (jobs[jobId]) jobs[jobId].message = `Unindo ${videoPaths.length} parte(s) do videoclipe...`;
+                        const finalVideoPath = path.join(uploadDir, `final_${jobId}.mp4`);
+
+                        if (videoPaths.length === 1) {
+                            fs.copyFileSync(videoPaths[0], finalVideoPath);
+                        } else {
+                            await concatVideos(videoPaths, finalVideoPath);
+                        }
+                        videoPaths.forEach(p => { try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch(e) {} });
+                        
+                        if (jobs[jobId]) {
+                            jobs[jobId].status = 'completed';
+                            jobs[jobId].outputPath = finalVideoPath;
+                            jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                            jobs[jobId].progress = 100;
+                            jobs[jobId].message = `Processo concluído com ${videoPaths.length} parte(s)!`;
+                            saveJobs();
+                        }
+                    } else {
+                        throw new Error("Nenhuma parte do videoclipe pôde ser gerada.");
+                    }
                 }
 
-                // Use the same task handler as other Deapi endpoints
-                handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai", true);
             } catch (error: any) {
-                console.error(`[Job ${jobId}] Background Error:`, error);
-                if (jobs[jobId]) {
-                    jobs[jobId].status = 'failed';
-                    jobs[jobId].error = error.message;
+                console.error(`[Job ${jobId}] Error:`, error);
+                if (jobs[jobId]) { 
+                    jobs[jobId].status = 'failed'; 
+                    jobs[jobId].error = formatDeapiErrorMessage(error.message || error);
+                    saveJobs();
                 }
+            } finally {
+                try { if (tempAudioPath && fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath); } catch(e) {}
             }
         })();
+    });
+
+// Helper: Download video from YouTube/TikTok via LoaderTo API, Cobalt, or direct fetch if yt-dlp fails or requires authentication
+async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<boolean> {
+    try {
+        // If it's a direct mp4/mov link, try downloading directly with native fetch
+        if (videoUrl.match(/\.(mp4|mov|webm|avi|mkv)(\?.*)?$/i) || videoUrl.includes('.mp4')) {
+            try {
+                const directRes = await fetch(videoUrl, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+                });
+                if (directRes.ok) {
+                    const buf = Buffer.from(await directRes.arrayBuffer());
+                    if (buf.length > 10000) {
+                        fs.writeFileSync(destPath, buf);
+                        return true;
+                    }
+                }
+            } catch (e) {}
+        }
+
+        // Try Cobalt API endpoints as an ultra-fast modern resolver
+        const cobaltInstances = ['https://api.cobalt.tools', 'https://cobalt-api.kwiatekm.tokyo', 'https://co.wuk.sh'];
+        for (const instance of cobaltInstances) {
+            try {
+                const cobRes = await fetch(`${instance}/api/json`, {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'Mozilla/5.0'
+                    },
+                    body: JSON.stringify({
+                        url: videoUrl,
+                        vQuality: '720',
+                        filenamePattern: 'basic'
+                    })
+                });
+                if (cobRes.ok) {
+                    const cData: any = await cobRes.json();
+                    if (cData && cData.url) {
+                        const dlCobalt = await fetch(cData.url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                        if (dlCobalt.ok) {
+                            const buf = Buffer.from(await dlCobalt.arrayBuffer());
+                            if (buf.length > 10000) {
+                                fs.writeFileSync(destPath, buf);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            } catch (cobErr) {}
+        }
+
+        // Fallback: LoaderTo API
+        const encodeUrl = encodeURIComponent(videoUrl);
+        const initRes = await fetch(`https://loader.to/ajax/download.php?start=1&end=1000&format=1080&url=${encodeUrl}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        const initData: any = await initRes.json();
+        if (!initData || !initData.id) return false;
+        const progressUrl = initData.progress_url || `https://lto2.affadaffa.com/api/progress?id=${initData.id}`;
+        
+        for (let i = 0; i < 25; i++) {
+            await new Promise(r => setTimeout(r, 1500));
+            const pRes = await fetch(progressUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
+            const pData: any = await pRes.json();
+            if (pData && pData.download_url) {
+                try {
+                    const dlRes = await fetch(pData.download_url, {
+                        headers: { 'User-Agent': 'Mozilla/5.0' }
+                    });
+                    if (dlRes.ok) {
+                        const dlBuf = Buffer.from(await dlRes.arrayBuffer());
+                        if (dlBuf.length > 10000) {
+                            fs.writeFileSync(destPath, dlBuf);
+                            return true;
+                        }
+                    }
+                } catch (dlErr: any) {
+                    console.warn('LoaderTo fetch file error:', dlErr.message);
+                }
+            }
+        }
+    } catch (e: any) {
+        console.warn('LoaderTo download error:', e.message);
+    }
+    return false;
+}
+
+    // ─── CLONAR & RECRIAR VÍDEO POR URL (ANTI-COPYRIGHT + DUBLAGEM AI - FRAME-BY-FRAME) ───────
+    app.post('/api/ai/url-video-clone', async (req: any, res: any) => {
+        const rawUrl = req.body?.videoUrl || req.body?.url || req.body?.link;
+        if (!rawUrl || typeof rawUrl !== 'string' || !rawUrl.trim()) {
+            return res.status(400).json({ error: 'URL do vídeo de origem não fornecida. Por favor insira um link ou envie um vídeo.' });
+        }
+
+        const jobId = `clone_url_${Date.now()}`;
+        jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now(), message: 'Iniciando clonagem de vídeo por URL...' };
+        saveJobs();
+        res.status(202).json({ jobId });
+
+        const { videoUrl, url, link, targetLanguage = 'Português', characterDescription, style = 'Cinematográfico Hollywood', numScenes = 0, apiKey } = req.body;
+        const inputUrl = (rawUrl as string).trim();
+        const deapiKey = getDeapiKey(req);
+        const geminiKey = apiKey || getGeminiKey(req);
+
+        (async () => {
+            let downloadedVideoPath = '';
+            let extractedAudioPath = '';
+            let dubbedAudioPath = '';
+            const tempFrames: string[] = [];
+            const generatedVideoSegments: string[] = [];
+
+            try {
+                // 1. Download video via yt-dlp or curl proxy
+                if (jobs[jobId]) {
+                    jobs[jobId].message = 'Baixando vídeo e extraindo mídias da URL...';
+                    jobs[jobId].progress = 10;
+                    saveJobs();
+                }
+
+                const cleanUrl = inputUrl;
+                downloadedVideoPath = path.join(uploadDir, `source_${jobId}.mp4`);
+                extractedAudioPath = path.join(uploadDir, `extracted_audio_${jobId}.mp3`);
+
+                if (cleanUrl.startsWith('data:video/') || cleanUrl.startsWith('data:application/')) {
+                    const base64Data = cleanUrl.split(';base64,').pop();
+                    if (base64Data) {
+                        fs.writeFileSync(downloadedVideoPath, Buffer.from(base64Data, 'base64'));
+                    }
+                } else {
+                    const downloadCmd = `yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --no-playlist -o "${downloadedVideoPath}" "${cleanUrl}"`;
+                    try {
+                        await new Promise((resolve) => {
+                            exec(downloadCmd, { timeout: 45000 }, () => resolve(true));
+                        });
+                    } catch (dlErr: any) {
+                        console.warn(`[Job ${jobId}] yt-dlp warning:`, dlErr.message);
+                    }
+
+                    if (!fs.existsSync(downloadedVideoPath) || fs.statSync(downloadedVideoPath).size < 1000) {
+                        console.log(`[Job ${jobId}] Direct yt-dlp blocked or empty, trying LoaderTo service...`);
+                        await downloadViaLoaderTo(cleanUrl, downloadedVideoPath);
+                    }
+                }
+
+                if (!fs.existsSync(downloadedVideoPath) || fs.statSync(downloadedVideoPath).size < 1000) {
+                    throw new Error('Não foi possível carregar ou baixar o vídeo. Se a URL do YouTube estiver bloqueada por proteção de robôs do servidor Cloud, faça o upload direto do arquivo MP4.');
+                }
+
+                // Fetch YouTube / Video Metadata (Title / Description / oEmbed)
+                let videoMetaDataText = '';
+                try {
+                    const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(cleanUrl)}&format=json`);
+                    if (oembedRes.ok) {
+                        const odata: any = await oembedRes.json();
+                        if (odata && odata.title) {
+                            videoMetaDataText = `Título: ${odata.title}. Autor: ${odata.author_name || ''}`;
+                        }
+                    }
+                } catch(e) {}
+
+                if (!videoMetaDataText) {
+                    try {
+                        const metaBuf = execSync(`yt-dlp --get-title --get-description --no-playlist "${cleanUrl}"`, { timeout: 15000 }).toString().trim();
+                        if (metaBuf) videoMetaDataText = metaBuf;
+                    } catch (e) {}
+                }
+
+                if (jobs[jobId]) {
+                    jobs[jobId].progress = 20;
+                    jobs[jobId].message = 'Analisando cortes de cena e quadros do vídeo original...';
+                    saveJobs();
+                }
+
+                // Extract audio from video
+                await new Promise((resolve) => {
+                    exec(`ffmpeg -y -i "${downloadedVideoPath}" -vn -acodec libmp3lame -q:a 2 "${extractedAudioPath}"`, () => resolve(true));
+                });
+
+                // Get exact video duration
+                let duration = 15;
+                try {
+                    const durBuf = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${downloadedVideoPath}"`).toString().trim();
+                    if (parseFloat(durBuf) > 0) duration = parseFloat(durBuf);
+                } catch (e) {}
+
+                // 2. FFmpeg Scene Cut Detection: Find exact shot changes in the source video
+                const sceneCutTimestamps: number[] = [0];
+                try {
+                    const detectCmd = `ffmpeg -i "${downloadedVideoPath}" -filter_complex "select='gt(scene,0.22)',metadata=print:file=-" -f null - 2>&1`;
+                    const detectOutput = execSync(detectCmd, { timeout: 30000 }).toString();
+                    const matches = detectOutput.matchAll(/pts_time:([0-9.]+)/g);
+                    for (const match of matches) {
+                        const cutTime = parseFloat(match[1]);
+                        if (cutTime > 0.8 && cutTime < duration - 0.5) {
+                            const lastCut = sceneCutTimestamps[sceneCutTimestamps.length - 1];
+                            if (cutTime - lastCut >= 1.5) { // Minimum 1.5s per shot cut
+                                sceneCutTimestamps.push(cutTime);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`[Job ${jobId}] FFmpeg scene detection fallback to interval slicing`);
+                }
+
+                // Build shot boundaries array [ { start, end, duration } ]
+                const rawBoundaries: { start: number; end: number; dur: number }[] = [];
+                if (sceneCutTimestamps.length > 1) {
+                    for (let i = 0; i < sceneCutTimestamps.length; i++) {
+                        const start = sceneCutTimestamps[i];
+                        const end = (i < sceneCutTimestamps.length - 1) ? sceneCutTimestamps[i + 1] : duration;
+                        const dur = Math.max(1, end - start);
+                        rawBoundaries.push({ start, end, dur });
+                    }
+                } else {
+                    rawBoundaries.push({ start: 0, end: duration, dur: duration });
+                }
+
+                // Subdivide any boundary longer than 4.5s into ~4.0s sub-shots so DeAPI frame caps do NOT shorten the video
+                const MAX_SHOT_DUR = 4.0;
+                const shotBoundaries: { start: number; end: number; dur: number }[] = [];
+                for (const b of rawBoundaries) {
+                    if (b.dur <= MAX_SHOT_DUR + 0.5) {
+                        shotBoundaries.push(b);
+                    } else {
+                        const subCount = Math.ceil(b.dur / MAX_SHOT_DUR);
+                        const subDur = b.dur / subCount;
+                        for (let s = 0; s < subCount; s++) {
+                            const start = b.start + (s * subDur);
+                            const end = (s === subCount - 1) ? b.end : (b.start + ((s + 1) * subDur));
+                            shotBoundaries.push({ start, end, dur: Math.max(1, end - start) });
+                        }
+                    }
+                }
+
+                console.log(`[Job ${jobId}] Total Duration: ${duration.toFixed(1)}s, Calculated Sub-Shots: ${shotBoundaries.length}`);
+
+                // 3. Extract EXACT Frame Image for EVERY Shot/Scene from original video
+                const inlineImageParts: any[] = [];
+                const sceneFramePaths: string[] = [];
+
+                for (let i = 0; i < shotBoundaries.length; i++) {
+                    const shot = shotBoundaries[i];
+                    const frameTime = shot.start + Math.min(0.5, shot.dur * 0.3);
+                    const framePath = path.join(uploadDir, `shot_frame_${jobId}_${i}.jpg`);
+                    tempFrames.push(framePath);
+                    sceneFramePaths.push(framePath);
+
+                    try {
+                        // Place -ss before -i for fast seek, and fallback if needed
+                        execSync(`ffmpeg -y -ss ${frameTime.toFixed(2)} -i "${downloadedVideoPath}" -vframes 1 -q:v 2 "${framePath}"`);
+                        if (!fs.existsSync(framePath) || fs.statSync(framePath).size === 0) {
+                            execSync(`ffmpeg -y -i "${downloadedVideoPath}" -ss ${frameTime.toFixed(2)} -vframes 1 -q:v 2 "${framePath}"`);
+                        }
+                        if (fs.existsSync(framePath) && fs.statSync(framePath).size > 0) {
+                            const imgData = fs.readFileSync(framePath).toString('base64');
+                            if (i < 10) { // Send first 10 shot frames to Gemini Vision to stay within payload limits
+                                inlineImageParts.push({
+                                    inlineData: {
+                                        mimeType: 'image/jpeg',
+                                        data: imgData
+                                    }
+                                });
+                            }
+                        }
+                    } catch (fErr: any) {
+                        console.warn(`[Job ${jobId}] Shot frame ${i} extraction warning:`, fErr.message);
+                    }
+                }
+
+                // 4. Gemini AI Vision: Analyze exact video shot frames & generate script + scene prompts
+                if (jobs[jobId]) {
+                    jobs[jobId].progress = 35;
+                    jobs[jobId].message = `Gemini Vision analisando ${shotBoundaries.length} cortes de cena do vídeo original...`;
+                    saveJobs();
+                }
+
+                let userCharLock = (characterDescription && characterDescription.trim()) ? characterDescription.trim() : '';
+                let translationScript = '';
+                let generatedScenesFromAI: string[] = [];
+                let detectedVideoType: 'music' | 'story' | 'general' = 'general';
+                let detectedMusicGenre = '';
+                let detectedStyleSummary = '';
+
+                const isOriginalStyle = !style || style.toLowerCase().includes('original') || style.toLowerCase().includes('manter');
+                const styleInstruction = isOriginalStyle
+                    ? 'PRESERVE RIGOROSAMENTE A MESMA ESTÉTICA VISUAL, ILUMINAÇÃO, PALETA DE CORES E ESTILO ARTÍSTICO DAS IMAGENS EXTRAÍDAS DO VÍDEO ORIGINAL.'
+                    : `Mantenha a composição de câmera do vídeo original, adaptando o estilo visual para: "${style}".`;
+
+                const characterInstruction = userCharLock
+                    ? `MANTENHA ESTA TRAVA DE PERSONAGEM PRINCIPAL EM TODAS AS CENAS: "${userCharLock}".`
+                    : `ATENÇÃO CRÍTICA AOS SUJEITOS E GRUPOS DO VÍDEO: Analise cuidadosamente as imagens de cada cena. Se o vídeo mostrar um CORAL DE JOVENS CANTANDO, UM GRUPO DE PESSOAS, CRIANÇAS, BANDA, DANCE GROUP, PAISAGEM OU ANIMAÇÃO, descreva EXATAMENTE esses mesmos sujeitos e grupos em ação (ex: "A group of passionate young choir singers performing together in harmony", "A youth group singing on stage"). NUNCA substitua um coral, banda ou grupo por um único homem/apresentador falando se o vídeo original for um grupo/coral!`;
+
+                if (geminiKey) {
+                    try {
+                        const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+                        const aiPromptText = `Você é um diretor de cinema, produtor musical e especialista em VFX de altíssimo nível.
+Analise com atenção absoluta as ${inlineImageParts.length} imagens das cenas extraídas do vídeo original de ${Math.round(duration)}s.
+Informações do vídeo original: ${videoMetaDataText || 'Vídeo de redes sociais'}.
+
+${styleInstruction}
+${characterInstruction}
+Idioma de Destino se houver fala/narração: "${targetLanguage}".
+
+DURAÇÃO TOTAL DO VÍDEO: ${Math.round(duration)}s.
+QUANTIDADE DE CENAS CORTADAS: ${shotBoundaries.length} cenas.
+
+CLASSIFICAÇÃO INTELIGENTE DO TIPO DE VÍDEO:
+1. Determine se o vídeo é "music" (videoclipe musical, coral, banda, música/canção, dança com música, show ao vivo) OU "story" (história narrativa falada, documentário, vlog, conto, explicação, reel com narração/fala) OU "general".
+2. Se for "music", identifique o gênero musical e estilo visual (ex: "Gospel Choir / Coral Jovem Acústico", "Pop Urbano", "Cinematic Ballad", "Trap", "Electronic", etc.) e descreva o estilo de iluminação e figurino.
+3. Se for "music" (coral, banda, cantores), o áudio original é musical: defina "dubbingScript" como "" (string vazia) ou com a letra poética cantada, NUNCA gere uma narração artificial de narrador por cima de uma música ou coral!
+4. Se for "story" (vídeo de história falada/narrada), forneça em "dubbingScript" a narração narrativa completa e fluida adaptada para ${targetLanguage} sincronizada para os ${Math.round(duration)}s.
+
+RECRIAÇÃO DAS CENAS NO MESMO ESTILO E QUALIDADE:
+Para cada uma das ${shotBoundaries.length} cenas, crie um prompt ultra-detalhado em inglês na array "scenes" para recriar fielmente o estilo visual, ângulo de câmera, iluminação e sujeitos da cena original:
+- Se for um coral ou grupo cantando, descreva detalhadamente os cantores, expressões faciais emotivas cantando em harmonia, roupas coordenadas, palco ou cenário com iluminação cinematográfica.
+- Não substitua corais ou grupos por um único homem falando.
+${userCharLock ? `- Inclua a trava "[LOCKED CHARACTER: ${userCharLock}]" em cada prompt.` : ''}
+
+Responda EXCLUSIVAMENTE em JSON válido:
+{
+  "videoType": "music" | "story" | "general",
+  "musicGenre": "Nome do gênero musical se for música/coral, ex: 'Gospel Youth Choir' ou ''",
+  "styleSummary": "Resumo do estilo visual e cinematográfico identificado nas imagens",
+  "dubbingScript": "Texto narrado em ${targetLanguage} se for história falada, ou string vazia se for música/coral",
+  "scenes": [${Array.from({ length: shotBoundaries.length }).map((_, idx) => `"Prompt cinematográfico detalhado da cena ${idx + 1}"`).join(', ')}]
+}`;
+
+                        const parts: any[] = [...inlineImageParts, { text: aiPromptText }];
+                        const gemRes = await ai.models.generateContent({
+                            model: "gemini-2.5-flash",
+                            contents: [{ role: 'user', parts }],
+                            config: { responseMimeType: "application/json" }
+                        });
+
+                        const parsed = JSON.parse(gemRes.text || '{}');
+                        if (parsed.videoType === 'music' || parsed.videoType === 'story') {
+                            detectedVideoType = parsed.videoType;
+                        }
+                        if (parsed.musicGenre) detectedMusicGenre = parsed.musicGenre;
+                        if (parsed.styleSummary) detectedStyleSummary = parsed.styleSummary;
+                        if (parsed.dubbingScript) translationScript = parsed.dubbingScript;
+                        if (Array.isArray(parsed.scenes) && parsed.scenes.length > 0) {
+                            generatedScenesFromAI = parsed.scenes;
+                            console.log(`[Job ${jobId}] Gemini Vision classified as "${detectedVideoType}" (${detectedMusicGenre || detectedStyleSummary}) and extracted ${generatedScenesFromAI.length} scene prompts!`);
+                        }
+                    } catch (gErr: any) {
+                        console.error(`[Job ${jobId}] Gemini Vision error:`, gErr.message || gErr);
+                    }
+                }
+
+                if (generatedScenesFromAI.length < shotBoundaries.length) {
+                    const fallbackStylePrompt = isOriginalStyle ? 'Recriação fotorrealista fiel do vídeo original' : `Remix fotorrealista da cena no estilo ${style}`;
+                    const fallbackPrompts = await generateConsistentMultiSegmentPrompts(
+                        fallbackStylePrompt,
+                        userCharLock || 'Grupo de pessoas / Sujeitos fiéis ao vídeo original',
+                        shotBoundaries.length
+                    );
+                    generatedScenesFromAI = fallbackPrompts;
+                }
+
+                // 5. Generate Dubbed Voice Audio (only if there is real spoken narrative script)
+                if (jobs[jobId]) {
+                    jobs[jobId].progress = 50;
+                    jobs[jobId].message = `Processando áudio do vídeo (preservando música/coral ou sintetizando voz)...`;
+                    saveJobs();
+                }
+
+                dubbedAudioPath = path.join(uploadDir, `dubbed_audio_${jobId}.mp3`);
+                const isScriptValidSpokenText = translationScript && translationScript.trim().length > 15 && 
+                    !translationScript.toLowerCase().includes('música') && 
+                    !translationScript.toLowerCase().includes('coral') && 
+                    !translationScript.toLowerCase().includes('canção');
+
+                if (deapiKey && isScriptValidSpokenText) {
+                    try {
+                        const form = new FormData();
+                        form.append('text', translationScript);
+                        form.append('model', 'Kokoro');
+                        form.append('format', 'mp3');
+                        form.append('lang', targetLanguage.toLowerCase().includes('ing') ? 'en' : 'pt-br');
+                        form.append('speed', '1.0');
+                        form.append('sample_rate', '24000');
+                        form.append('mode', 'custom_voice');
+                        form.append('voice', 'af_bella');
+
+                        const speechRes = await fetch(`https://api.deapi.ai/api/v2/audio/speech`, {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${deapiKey}` },
+                            body: form
+                        });
+                        if (speechRes.ok) {
+                            const data: any = await speechRes.json();
+                            const resObj = data.data || data;
+                            const dlUrl = resObj.output_file_url || resObj.url || resObj.audio_url || resObj.download_url;
+                            if (dlUrl) {
+                                const audioRes = await fetch(dlUrl);
+                                const buf = Buffer.from(await audioRes.arrayBuffer());
+                                fs.writeFileSync(dubbedAudioPath, buf);
+                            }
+                        }
+                    } catch (speechErr: any) {
+                        console.warn(`[Job ${jobId}] DeAPI speech dubbing warning:`, speechErr.message);
+                    }
+                }
+
+                const finalAudioPath = (fs.existsSync(dubbedAudioPath) && fs.statSync(dubbedAudioPath).size > 0)
+                    ? dubbedAudioPath
+                    : extractedAudioPath;
+
+                // 6. Save extracted audio URL and auto-generate keyframe images for scenes
+                const sceneImagesMap: Record<number, string> = {};
+                if (jobs[jobId]) {
+                    jobs[jobId].scenes = generatedScenesFromAI;
+                    jobs[jobId].extractedAudioUrl = `/api/audio/extracted/${jobId}`;
+                    jobs[jobId].script = translationScript;
+                    jobs[jobId].videoType = detectedVideoType;
+                    jobs[jobId].musicGenre = detectedMusicGenre;
+                    jobs[jobId].styleSummary = detectedStyleSummary;
+                    jobs[jobId].progress = 55;
+                    jobs[jobId].message = detectedVideoType === 'music'
+                        ? `Identificado como VÍDEO MUSICAL (${detectedMusicGenre || 'Música/Coral'})! Gerando quadros no estilo original...`
+                        : `Identificado como HISTÓRIA/NARRATIVA! Gerando quadros no estilo original...`;
+                    saveJobs();
+                }
+
+                // Populate extracted frame images as initial keyframes
+                for (let i = 0; i < generatedScenesFromAI.length; i++) {
+                    const sceneFrameImgPath = sceneFramePaths[i];
+                    if (sceneFrameImgPath && fs.existsSync(sceneFrameImgPath)) {
+                        try {
+                            const buf = fs.readFileSync(sceneFrameImgPath);
+                            sceneImagesMap[i] = `data:image/jpeg;base64,${buf.toString('base64')}`;
+                        } catch (e) {}
+                    }
+                }
+
+                if (jobs[jobId]) {
+                    jobs[jobId].sceneImages = sceneImagesMap;
+                    saveJobs();
+                }
+
+                // 7. Frame-Guided Image-To-Video AI Generation per Shot
+                if (jobs[jobId]) {
+                    jobs[jobId].progress = 65;
+                    jobs[jobId].message = `Recriando ${shotBoundaries.length} cenas por IA...`;
+                    saveJobs();
+                }
+
+                const finalModel = 'Ltx2_3_22B_Dist_INT8';
+                const baseSeed = Math.floor(Math.random() * 1000000000);
+
+                for (let i = 0; i < shotBoundaries.length; i++) {
+                    const shot = shotBoundaries[i];
+                    if (jobs[jobId]) {
+                        jobs[jobId].message = `Clonando cena ${i+1}/${shotBoundaries.length} (${shot.dur.toFixed(1)}s)...`;
+                        jobs[jobId].progress = Math.round(65 + (i / shotBoundaries.length) * 30);
+                        saveJobs();
+                    }
+
+                    const segPrompt = generatedScenesFromAI[i] || generatedScenesFromAI[0];
+                    const segAudioChunk = path.join(uploadDir, `seg_audio_${jobId}_${i}.mp3`);
+                    await cutAudio(finalAudioPath, segAudioChunk, shot.start, shot.dur);
+
+                    const sceneFrameImgPath = sceneFramePaths[i];
+                    let segVideoPath = '';
+
+                    if (deapiKey) {
+                        try {
+                            const formData = new FormData();
+                            const segBuf = fs.readFileSync(segAudioChunk);
+                            formData.append('audio', new Blob([segBuf], { type: 'audio/mpeg' }), 'audio.mp3');
+                            formData.append('prompt', segPrompt);
+                            formData.append('frames', Math.min(120, Math.round(shot.dur * 24)).toString());
+                            formData.append('width', '768');
+                            formData.append('height', '1344');
+                            formData.append('fps', '24');
+                            formData.append('model', finalModel);
+                            formData.append('seed', (baseSeed + i * 19).toString());
+
+                            if (sceneFrameImgPath && fs.existsSync(sceneFrameImgPath) && fs.statSync(sceneFrameImgPath).size > 0) {
+                                const frameImgBuf = fs.readFileSync(sceneFrameImgPath);
+                                const imgBlob = new Blob([frameImgBuf], { type: 'image/jpeg' });
+                                formData.append('image', imgBlob, 'frame.jpg');
+                                formData.append('input_image', imgBlob, 'frame.jpg');
+                                formData.append('first_frame_image', imgBlob, 'frame.jpg');
+                            }
+
+                            const animEndpoint = "https://api.deapi.ai/api/v2/videos/animations";
+                            let response = await fetch(animEndpoint, {
+                                method: 'POST',
+                                headers: { 'Authorization': `Bearer ${deapiKey}` },
+                                body: formData
+                            });
+
+                            if (!response.ok) {
+                                response = await fetch("https://api.deapi.ai/api/v1/client/audio-to-video", {
+                                    method: 'POST',
+                                    headers: { 'Authorization': `Bearer ${deapiKey}` },
+                                    body: formData
+                                });
+                            }
+
+                            const data: any = await safeJson(response);
+                            if (response.ok && data) {
+                                await handleDeapiTask(jobId, data, deapiKey, "https://api.deapi.ai", true);
+                                if (jobs[jobId]?.outputPath && fs.existsSync(jobs[jobId].outputPath)) {
+                                    segVideoPath = jobs[jobId].outputPath;
+                                }
+                            }
+                        } catch (deapiErr: any) {
+                            console.warn(`[Job ${jobId}] DeAPI shot ${i+1} animation error:`, deapiErr.message);
+                        }
+                    }
+
+                    if (!segVideoPath || !fs.existsSync(segVideoPath)) {
+                        const fallbackCutPath = path.join(uploadDir, `fallback_shot_${jobId}_${i}.mp4`);
+                        try {
+                            execSync(`ffmpeg -y -ss ${shot.start} -i "${downloadedVideoPath}" -i "${segAudioChunk}" -t ${shot.dur} -c:v libx264 -c:a aac -map 0:v:0 -map 1:a:0 "${fallbackCutPath}"`);
+                            if (fs.existsSync(fallbackCutPath) && fs.statSync(fallbackCutPath).size > 0) {
+                                segVideoPath = fallbackCutPath;
+                            }
+                        } catch (e) {}
+                    }
+
+                    if (segVideoPath && fs.existsSync(segVideoPath)) {
+                        generatedVideoSegments.push(segVideoPath);
+                    }
+                }
+
+                // 8. Final Concat Output Video
+                const finalOutputPath = path.join(uploadDir, `cloned_video_${jobId}.mp4`);
+                if (generatedVideoSegments.length > 0) {
+                    if (generatedVideoSegments.length === 1) {
+                        fs.copyFileSync(generatedVideoSegments[0], finalOutputPath);
+                    } else {
+                        await concatVideos(generatedVideoSegments, finalOutputPath);
+                    }
+                } else {
+                    await new Promise((resolve) => {
+                        exec(`ffmpeg -y -i "${downloadedVideoPath}" -i "${finalAudioPath}" -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 "${finalOutputPath}"`, () => resolve(true));
+                    });
+                }
+
+                if (jobs[jobId]) {
+                    jobs[jobId].status = 'completed';
+                    jobs[jobId].outputPath = finalOutputPath;
+                    jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                    jobs[jobId].progress = 100;
+                    jobs[jobId].message = detectedVideoType === 'music'
+                        ? `Vídeo musical (${detectedMusicGenre || 'Música'}) clonado no estilo original! Cenas, imagens e áudio prontos!`
+                        : `Vídeo de história clonado no estilo original! Cenas, roteiro e áudio prontos!`;
+                    jobs[jobId].videoType = detectedVideoType;
+                    jobs[jobId].musicGenre = detectedMusicGenre;
+                    jobs[jobId].styleSummary = detectedStyleSummary;
+                    jobs[jobId].script = translationScript;
+                    jobs[jobId].scenes = generatedScenesFromAI;
+                    jobs[jobId].sceneImages = sceneImagesMap;
+                    jobs[jobId].extractedAudioUrl = `/api/audio/extracted/${jobId}`;
+                    saveJobs();
+                }
+
+            } catch (err: any) {
+                console.error(`[Job ${jobId}] Error:`, err);
+                if (jobs[jobId]) {
+                    jobs[jobId].status = 'failed';
+                    jobs[jobId].error = err.message || 'Falha ao clonar e recriar vídeo da URL';
+                    saveJobs();
+                }
+            } finally {
+                try { if (downloadedVideoPath && fs.existsSync(downloadedVideoPath)) fs.unlinkSync(downloadedVideoPath); } catch(e){}
+                // Note: Keep extracted and dubbed audio files alive for player & audio tools
+                tempFrames.forEach(f => {
+                    try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch(e){}
+                });
+            }
+        })();
+    });
+
+    app.get('/api/audio/extracted/:jobId', (req: any, res: any) => {
+        const { jobId } = req.params;
+        const dubbedPath = path.join(uploadDir, `dubbed_audio_${jobId}.mp3`);
+        const audioPath = path.join(uploadDir, `extracted_audio_${jobId}.mp3`);
+        const targetFile = (fs.existsSync(dubbedPath) && fs.statSync(dubbedPath).size > 0)
+            ? dubbedPath
+            : ((fs.existsSync(audioPath) && fs.statSync(audioPath).size > 0) ? audioPath : null);
+        if (!targetFile) return res.status(404).json({ error: 'Áudio do vídeo não encontrado' });
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.setHeader('Content-Disposition', `inline; filename="audio_clonado_${jobId}.mp3"`);
+        fs.createReadStream(targetFile).pipe(res);
+    });
+
+    app.post('/api/generate-scene-image', async (req: any, res: any) => {
+        try {
+            const { prompt, aspectRatio, engine = 'auto' } = req.body;
+            if (!prompt) return res.status(400).json({ error: 'Prompt é obrigatório' });
+
+            const deapiKey = getDeapiKey(req);
+            const geminiKey = getGeminiKey(req);
+
+            // 1. Translate & optimize prompt to detailed English for maximum model obedience
+            let englishPrompt = prompt;
+            if (geminiKey) {
+                try {
+                    const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+                    const trRes = await ai.models.generateContent({
+                        model: "gemini-3.6-flash",
+                        contents: `You are an expert prompt engineer. Translate and convert the following scene description into a vivid, photorealistic English visual prompt for AI image generation. Describe the subjects, action, clothing, setting, lighting, and mood accurately. Do not include markdown or preamble, output ONLY the final English prompt.\n\nDescription: "${prompt}"`,
+                        config: { temperature: 0.3 }
+                    });
+                    if (trRes.text && trRes.text.trim()) {
+                        englishPrompt = trRes.text.trim().replace(/^["']|["']$/g, '');
+                    }
+                } catch (gErr) {
+                    console.warn('[GenerateSceneImage] Gemini prompt translation skipped:', gErr);
+                }
+            }
+
+            if (englishPrompt === prompt) {
+                // Safe prompt cleaning without stripping Portuguese accents or non-ASCII characters
+                englishPrompt = prompt.replace(/\[.*?\]/g, '').replace(/[\r\n]+/g, ' ').trim();
+            }
+
+            // Strategy 1: Try Gemini Flash Image models if requested or auto with key
+            if (engine === 'gemini' && !geminiKey) {
+                return res.status(400).json({ error: 'Chave API do Gemini não configurada no servidor ou no navegador. Adicione sua Gemini API Key nas configurações.' });
+            }
+
+            if ((engine === 'gemini' || engine === 'auto') && geminiKey) {
+                const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+                let geminiLastError = '';
+
+                // Try Gemini image generation models (gemini-3.1-flash-lite-image / gemini-3.1-flash-image)
+                const flashModels = ['gemini-3.1-flash-lite-image', 'gemini-3.1-flash-image'];
+                for (const fModel of flashModels) {
+                    try {
+                        const flashRes = await ai.models.generateContent({
+                            model: fModel,
+                            contents: `Generate a high quality visual image of: ${englishPrompt}`,
+                            config: {
+                                imageConfig: {
+                                    aspectRatio: aspectRatio === '16:9' ? '16:9' : '9:16'
+                                }
+                            }
+                        });
+                        for (const part of flashRes.candidates?.[0]?.content?.parts || []) {
+                            if ((part as any).inlineData?.data) {
+                                const b64 = (part as any).inlineData.data;
+                                const mime = (part as any).inlineData.mimeType || 'image/jpeg';
+                                return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: `Gemini (${fModel})` });
+                            }
+                        }
+                    } catch (flashErr: any) {
+                        geminiLastError = flashErr?.message || String(flashErr);
+                        console.warn(`[GenerateSceneImage] Gemini model ${fModel} error:`, geminiLastError);
+                    }
+                }
+
+                // If explicitly requested 'gemini' and Gemini failed, fallback to Pollinations with informative provider label instead of breaking
+                if (engine === 'gemini') {
+                    console.warn(`[GenerateSceneImage] Gemini requested but failed (${geminiLastError}). Falling back to Pollinations FLUX...`);
+                }
+            }
+
+            // Strategy 2: Try DeAPI Flux if requested or auto with key
+            if (engine === 'deapi' && !deapiKey) {
+                return res.status(400).json({ error: 'Chave API DeAPI não configurada. Adicione sua DeAPI Key nas configurações.' });
+            }
+
+            if ((engine === 'deapi' || engine === 'auto') && deapiKey) {
+                let deapiLastError = '';
+                try {
+                    const deRes = await fetch("https://api.deapi.ai/api/v1/client/flux/text2img", {
+                        method: "POST",
+                        headers: {
+                            "Authorization": `Bearer ${deapiKey}`,
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            prompt: englishPrompt,
+                            aspect_ratio: aspectRatio === '16:9' ? '16:9' : '9:16'
+                        })
+                    });
+                    if (deRes.ok) {
+                        const deData = await deRes.json();
+                        const directUrl = deData.url || deData.data?.url || deData.result_url;
+                        if (directUrl) {
+                            const imgFetch = await fetch(directUrl);
+                            if (imgFetch.ok) {
+                                const arrayBuf = await imgFetch.arrayBuffer();
+                                const b64 = Buffer.from(arrayBuf).toString('base64');
+                                const mime = imgFetch.headers.get('content-type') || 'image/jpeg';
+                                return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: 'DeAPI Flux' });
+                            }
+                            return res.json({ imageUrl: directUrl, provider: 'DeAPI Flux' });
+                        }
+                    } else {
+                        deapiLastError = await deRes.text();
+                    }
+                } catch (deErr: any) {
+                    deapiLastError = deErr?.message || String(deErr);
+                    console.warn('[GenerateSceneImage] DeAPI error:', deErr?.message || deErr);
+                }
+                if (engine === 'deapi') {
+                    return res.status(500).json({ error: `Falha ao gerar imagem na DeAPI: ${deapiLastError || 'Erro desconhecido'}` });
+                }
+            }
+
+            // Strategy 3: Pollinations Flux / Turbo HD with server-side fetch & Base64 encoding
+            const width = aspectRatio === '16:9' ? 1024 : 576;
+            const height = aspectRatio === '16:9' ? 576 : 1024;
+            const seed = Math.floor(Math.random() * 10000000);
+            
+            const enhancedPrompt = `cinematic photograph, detailed scene: ${englishPrompt}, 8k resolution, ultra realistic, dramatic lighting, master shot`;
+            const modelToUse = engine === 'turbo' ? 'turbo' : 'flux';
+            const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(enhancedPrompt)}?width=${width}&height=${height}&seed=${seed}&model=${modelToUse}&nologo=true`;
+
+            // Try primary Pollinations fetch with 12s timeout
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 12000);
+                const imgFetch = await fetch(fluxUrl, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                if (imgFetch.ok) {
+                    const arrayBuf = await imgFetch.arrayBuffer();
+                    const b64 = Buffer.from(arrayBuf).toString('base64');
+                    const mime = imgFetch.headers.get('content-type') || 'image/jpeg';
+                    const providerLabel = engine === 'gemini' ? `Pollinations ${modelToUse.toUpperCase()} (Fallback do Gemini)` : `Pollinations ${modelToUse.toUpperCase()}`;
+                    return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: providerLabel });
+                }
+            } catch (pErr) {
+                console.warn('[GenerateSceneImage] Primary Pollinations timeout/error, trying Turbo fallback...');
+            }
+
+            // Fallback: Try Turbo model (fast)
+            const turboUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(enhancedPrompt)}?width=${width}&height=${height}&seed=${seed}&model=turbo&nologo=true`;
+            try {
+                const turboFetch = await fetch(turboUrl, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+                });
+                if (turboFetch.ok) {
+                    const arrayBuf = await turboFetch.arrayBuffer();
+                    const b64 = Buffer.from(arrayBuf).toString('base64');
+                    const mime = turboFetch.headers.get('content-type') || 'image/jpeg';
+                    const providerLabel = engine === 'gemini' ? 'Pollinations TURBO (Fallback do Gemini)' : 'Pollinations TURBO';
+                    return res.json({ imageUrl: `data:${mime};base64,${b64}`, provider: providerLabel });
+                }
+            } catch (tErr) {
+                console.warn('[GenerateSceneImage] Turbo fetch error:', tErr);
+            }
+
+            return res.json({ imageUrl: fluxUrl, provider: engine === 'gemini' ? 'Pollinations (Fallback do Gemini)' : 'Pollinations URL Direct' });
+        } catch (e: any) {
+            console.error('[GenerateSceneImage] Error:', e);
+            res.status(500).json({ error: e.message || 'Erro ao gerar imagem' });
+        }
     });
 
     app.post('/api/ai/generate-video', async (req: any, res: any) => {
@@ -1780,15 +3110,24 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const { prompt, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, frames, fps, format, sample_rate, speed } = req.body;
+        const { prompt, characterDescription, characterLock, protagonist, personagem, aspectRatio, resolution, model, image, lastFrame, referenceImages, apiKey, frames, fps, format, sample_rate, speed } = req.body;
+        const userCharLock = characterDescription || characterLock || protagonist || personagem;
         
-        if (model && model.startsWith('deapi-')) {
-            const deapiModel = model.replace('deapi-', '');
-            const deapiKey = apiKey || getDeapiKey(req);
+        const isDeapiModel = model && (
+            model.startsWith('deapi-') || 
+            model.toLowerCase().includes('ltx') || 
+            model === 'animate-diff' || 
+            model === 'svd' ||
+            model === 'morpheus'
+        );
+        
+        if (isDeapiModel) {
+            const deapiModel = model.startsWith('deapi-') ? model.replace('deapi-', '') : model;
+            const deapiKey = getDeapiKey(req);
 
             if (!deapiKey) {
                 jobs[jobId].status = 'failed';
-                jobs[jobId].error = 'Chave API Deapi não configurada no servidor.';
+                jobs[jobId].error = 'Chave API Deapi não configurada. Por favor, adicione sua chave de API nas Configurações (ícone de engrenagem) em Deapi.ai ou selecione o provedor Gemini (Veo).';
                 return;
             }
 
@@ -1803,20 +3142,24 @@ async function startServer() {
                 
                 // Mapeamento exato baseado no painel Deapi (Imagem do usuário)
                 const modelMap: Record<string, string> = {
-                    "ltx-2.3-22b": "ltx-video-v2.3",
-                    "ltx-video-13b": "ltx-video-v1.3",
-                    "ltx-2-19b-fp8": "ltx-video-v2.0",
-                    "ltx-video": "ltx-video-v1.3",
+                    "ltx-2.3-22b": "Ltx2_3_22B_Dist_INT8",
+                    "deapi-ltx-2.3-22b": "Ltx2_3_22B_Dist_INT8",
+                    "ltx2_3_22b_dist_int8": "Ltx2_3_22B_Dist_INT8",
+                    "ltx-video-13b": "Ltx2_3_22B_Dist_INT8",
+                    "ltx-2-19b-fp8": "Ltx2_3_22B_Dist_INT8",
+                    "deapi-ltx-2-19b-fp8": "Ltx2_3_22B_Dist_INT8",
+                    "ltx-video": "Ltx2_3_22B_Dist_INT8",
                     "animate-diff": "animate-diff-v3",
                     "svd": "svd-xt-1.1"
                 };
                 
-                let mappedModel = modelMap[deapiModel] || deapiModel;
+                let mappedModel = modelMap[deapiModel.toLowerCase()] || deapiModel;
                 
                 // Fallback dinâmico caso o mapeamento estático falhe
                 try {
-                    console.log(`[Job ${jobId}] Verificando modelos disponíveis na Deapi...`);
-                    const modelsRes = await fetchWithRetry(`${baseUrl}/api/v2/models?filter[inference_types]=img2video,txt2video`, {
+                    console.log(`[Job ${jobId}] Verificando modelos disponíveis na Deapi (Animation: ${isImageToVideo})...`);
+                    const filterType = isImageToVideo ? 'img2video' : 'txt2video';
+                    const modelsRes = await fetchWithRetry(`${baseUrl}/api/v2/models?filter[inference_types]=${filterType}`, {
                         headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
                     }, 3);
                     if (modelsRes.ok) {
@@ -1824,11 +3167,11 @@ async function startServer() {
                         const availableModels = modelsData.data || [];
                         const slugs = availableModels.map((m: any) => m.slug);
                         
-                        // Se o modelo mapeado não estiver na lista, tenta o melhor match
-                        if (!slugs.includes(mappedModel)) {
+                        // Se o modelo mapeado não estiver na lista do tipo selecionado, tenta o melhor match do mesmo tipo
+                        if (!slugs.includes(mappedModel) && availableModels.length > 0) {
                             const bestMatch = availableModels.find((m: any) => 
                                 m.slug.toLowerCase().includes(deapiModel.split('-')[0])
-                            );
+                            ) || availableModels[0];
                             if (bestMatch) mappedModel = bestMatch.slug;
                         }
                     }
@@ -1846,19 +3189,34 @@ async function startServer() {
                 let lastFetchError = "";
                 const randomSeed = Math.floor(Math.random() * 2147483647).toString();
 
+                // Optimize/translate prompt to English to guarantee full model obedience to scene details
+                let optimizedPrompt = prompt || 'cinematic video generation';
+                try {
+                    const opt = await Promise.race([
+                        translatePromptIfNeeded(optimizedPrompt, deapiKey, userCharLock),
+                        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Timeout')), 8000))
+                    ]);
+                    if (opt) optimizedPrompt = opt;
+                } catch (pe) {
+                    console.warn(`[Job ${jobId}] Prompt optimization timed out, using raw prompt`);
+                }
+
                 // Limite de 5 tentativas com backoff linear de 30s para não saturar a fila
                 const MAX_SUBMIT_ATTEMPTS = 5;
                 while (fetchAttempts < MAX_SUBMIT_ATTEMPTS) {
                     fetchAttempts++;
                     
-                    // Ajuste de limites conforme imagem do painel e erros anteriores
+                    // Ajuste de limites conforme exigências do Deapi (Height/Width >= 512, FPS <= 24)
+                    let calcW = aspectRatio === '9:16' ? 512 : (aspectRatio === '16:9' ? 896 : 768);
+                    let calcH = aspectRatio === '9:16' ? 896 : (aspectRatio === '16:9' ? 512 : 768);
+                    
                     const payload: any = {
-                        prompt: prompt || 'cinematic video generation',
+                        prompt: optimizedPrompt,
                         model: mappedModel,
-                        width: aspectRatio === '9:16' ? 432 : (aspectRatio === '16:9' ? 768 : 768),
-                        height: aspectRatio === '9:16' ? 768 : (aspectRatio === '16:9' ? 432 : 768),
+                        width: Math.max(512, calcW),
+                        height: Math.max(512, calcH),
                         frames: Math.min(frames || 120, 120), 
-                        fps: Math.max(fps || 30, 30),
+                        fps: Math.min(24, Math.max(1, Number(fps || 24))),
                         steps: 1,   
                         seed: parseInt(randomSeed),
                         include_audio: mappedModel.includes('ltx-video-v2.0') || mappedModel.includes('ltx-2-19b') || !!format,
@@ -1927,8 +3285,12 @@ async function startServer() {
 
                     if (!response.ok) {
                         const text = await response.text();
-                        if (response.status === 429) {
-                            lastFetchError = "A API externa está com alta demanda (Rate Limit: Too Many Attempts). Por favor, aguarde de 2 a 5 minutos e tente novamente.";
+                        if (response.status === 401) {
+                            lastFetchError = "Erro de Autenticação na DeAPI (401): Chave API do DeAPI ausente, inválida ou expirada. Verifique suas configurações de API.";
+                        } else if (response.status === 402) {
+                            lastFetchError = "Saldo insuficiente na sua conta DeAPI. Por favor, recarreague seus créditos no painel DeAPI.";
+                        } else if (response.status === 429) {
+                            lastFetchError = "A API externa (Deapi) atingiu o limite de frequência (Rate Limit). Como você tem saldo, isso significa que muitas solicitações foram feitas em pouco tempo. Por favor, aguarde alguns minutos para o limite resetar e tente novamente.";
                         } else {
                             lastFetchError = `Deapi API error (${response.status}): ${text.substring(0, 200)}`;
                         }
@@ -1997,6 +3359,9 @@ async function startServer() {
                         }, 10);
                         
                         if (!pollRes.ok) {
+                            if (pollRes.status === 401) {
+                                throw new Error("Erro de Autenticação na DeAPI (401): Chave API ausente, inválida ou expirada. Verifique suas configurações.");
+                            }
                             pollFailures++;
                             console.error(`[Job ${jobId}] Poll HTTP Error ${pollRes.status} (Failure ${pollFailures}/5)`);
                             if (pollFailures > 5) break; 
@@ -2017,7 +3382,12 @@ async function startServer() {
                                 // para que o frontend possa buscar sem problemas de CORS/autenticação
                                 try {
                                     console.log(`[Job ${jobId}] Baixando vídeo Deapi de: ${videoUrl}`);
-                                    const dlRes = await fetch(videoUrl);
+                                    let dlRes = await fetch(videoUrl);
+                                    if (!dlRes.ok && deapiKey) {
+                                        dlRes = await fetch(videoUrl, {
+                                            headers: { 'Authorization': `Bearer ${deapiKey}` }
+                                        });
+                                    }
                                     if (dlRes.ok) {
                                         const buffer = Buffer.from(await dlRes.arrayBuffer());
                                         const contentType = dlRes.headers.get('content-type') || '';
@@ -2075,7 +3445,7 @@ async function startServer() {
                 console.error(`[Job ${jobId}] Deapi Error:`, err);
                 if (jobs[jobId]) {
                     jobs[jobId].status = 'failed';
-                    jobs[jobId].error = err.message || String(err);
+                    jobs[jobId].error = formatDeapiErrorMessage(err.message || String(err));
                 }
             }
             return;
@@ -2232,10 +3602,10 @@ async function startServer() {
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now() };
         res.status(202).json({ jobId });
 
-        const deapiKey = apiKey || getDeapiKey(req);
+        const deapiKey = getDeapiKey(req);
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            jobs[jobId].error = 'Chave API Deapi não configurada. Por favor, adicione sua chave de API nas Configurações (ícone de engrenagem) em Deapi.ai.';
             return;
         }
 
@@ -2249,15 +3619,21 @@ async function startServer() {
             else if (action === 'upscale') endpoint = `${baseUrl}/api/v2/images/upscales`;
             else if (action === 'edit') endpoint = `${baseUrl}/api/v2/images/edits`;
 
-            const width = aspectRatio === '16:9' ? 1792 : (aspectRatio === '9:16' ? 1024 : 1024);
-            const height = aspectRatio === '16:9' ? 1024 : (aspectRatio === '9:16' ? 1792 : 1024);
+            const width = aspectRatio === '16:9' ? 1024 : (aspectRatio === '9:16' ? 576 : 1024);
+            const height = aspectRatio === '16:9' ? 576 : (aspectRatio === '9:16' ? 1024 : 1024);
+
+            // Normalize model slug to match Deapi official slugs (e.g. Flux1schnell)
+            let normalizedModel = model || 'Flux1schnell';
+            if (typeof normalizedModel === 'string' && (normalizedModel.toLowerCase().includes('flux') || normalizedModel.toLowerCase().includes('schnell'))) {
+                normalizedModel = 'Flux1schnell';
+            }
 
             const payload: any = {
                 prompt: prompt || '',
-                model: model === 'Flux1schnell' ? 'flux-1-schnell' : (model || 'flux-1-schnell'),
+                model: normalizedModel,
                 width,
                 height,
-                guidance: 1,
+                guidance: 3.5,
                 steps: 4,
                 seed: -1
             };
@@ -2268,9 +3644,9 @@ async function startServer() {
                 payload.input_image = imageUrl;
             }
 
-            console.log(`[Deapi Image] Action: ${action || 'generation'} -> ${endpoint}`);
+            console.log(`[Deapi Image] Action: ${action || 'generation'} -> ${endpoint} (model: ${payload.model})`);
 
-            const response = await fetchWithRetry(endpoint, {
+            let response = await fetchWithRetry(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -2278,6 +3654,35 @@ async function startServer() {
                 },
                 body: JSON.stringify(payload)
             });
+
+            // If 422 with model error, auto-discover valid txt2img models from DeAPI and retry
+            if (!response.ok && response.status === 422) {
+                const errText = await response.text();
+                console.warn(`[Deapi Image] 422 with model ${payload.model}: ${errText}. Attempting model discovery...`);
+                try {
+                    const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2img`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                    });
+                    if (mRes.ok) {
+                        const mData = await mRes.json();
+                        const available = mData.data || [];
+                        if (available.length > 0 && available[0].slug && available[0].slug !== payload.model) {
+                            payload.model = available[0].slug;
+                            console.log(`[Deapi Image] Retrying with discovered model slug: ${payload.model}`);
+                            response = await fetchWithRetry(endpoint, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Authorization': `Bearer ${deapiKey}`
+                                },
+                                body: JSON.stringify(payload)
+                            });
+                        }
+                    }
+                } catch (discErr) {
+                    console.warn('[Deapi Image] Model discovery failed:', discErr);
+                }
+            }
 
             if (response.ok) {
                 const data: any = await response.json();
@@ -2288,6 +3693,65 @@ async function startServer() {
             }
         } catch (e: any) {
             console.error(`[Job ${jobId}] Deapi Image Error:`, e);
+
+            // Fallback strategy: Gemini Image or Pollinations Flux to ensure clip/music video generation never crashes
+            try {
+                console.log(`[Job ${jobId}] Attempting fallback image generation...`);
+                const geminiKey = getGeminiKey(req);
+                let imageBuffer: Buffer | null = null;
+
+                if (geminiKey) {
+                    try {
+                        const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+                        const flashRes = await ai.models.generateContent({
+                            model: 'gemini-3.1-flash-image',
+                            contents: `Generate a high quality visual image of: ${prompt}`,
+                            config: {
+                                imageConfig: {
+                                    aspectRatio: aspectRatio === '16:9' ? '16:9' : (aspectRatio === '9:16' ? '9:16' : '1:1')
+                                }
+                            }
+                        });
+                        for (const part of flashRes.candidates?.[0]?.content?.parts || []) {
+                            if ((part as any).inlineData?.data) {
+                                imageBuffer = Buffer.from((part as any).inlineData.data, 'base64');
+                                break;
+                            }
+                        }
+                    } catch (gErr) {
+                        console.warn(`[Job ${jobId}] Gemini image fallback failed:`, gErr);
+                    }
+                }
+
+                if (!imageBuffer) {
+                    const pWidth = aspectRatio === '16:9' ? 1024 : (aspectRatio === '9:16' ? 576 : 1024);
+                    const pHeight = aspectRatio === '16:9' ? 576 : (aspectRatio === '9:16' ? 1024 : 1024);
+                    const safePrompt = encodeURIComponent((prompt || 'cinematic visual scene').slice(0, 300));
+                    const seed = Math.floor(Math.random() * 1000000);
+                    const pollUrl = `https://image.pollinations.ai/prompt/${safePrompt}?width=${pWidth}&height=${pHeight}&seed=${seed}&nologo=true&model=flux`;
+                    const pRes = await fetch(pollUrl);
+                    if (pRes.ok) {
+                        imageBuffer = Buffer.from(await pRes.arrayBuffer());
+                    }
+                }
+
+                if (imageBuffer) {
+                    const filename = `ai_gen_${jobId}_${Date.now()}.png`;
+                    const outputPath = path.join(uploadDir, filename);
+                    fs.writeFileSync(outputPath, imageBuffer);
+                    if (jobs[jobId]) {
+                        jobs[jobId].status = 'completed';
+                        jobs[jobId].progress = 100;
+                        jobs[jobId].outputPath = outputPath;
+                        jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                    }
+                    console.log(`[Job ${jobId}] Fallback image saved successfully to ${outputPath}`);
+                    return;
+                }
+            } catch (fallbackErr) {
+                console.error(`[Job ${jobId}] Fallback generation also failed:`, fallbackErr);
+            }
+
             if (jobs[jobId]) {
                 jobs[jobId].status = 'failed';
                 jobs[jobId].error = e.message;
@@ -2698,7 +4162,7 @@ async function startServer() {
         res.status(202).json({ jobId });
 
         const { prompt, model, type, audioUrl, audioFile, voiceBase64, apiKey, text, targetLanguage, voice, voiceDescription, refText, ref_text, retries } = req.body;
-        const deapiKey = apiKey || getDeapiKey(req);
+        const deapiKey = getDeapiKey(req);
         const resolvedType = type || 'speech';
         const resolvedLang = text || targetLanguage || 'pt-br';
         const selectedVoice = voice || '';
@@ -2706,7 +4170,7 @@ async function startServer() {
 
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            jobs[jobId].error = 'Chave API Deapi não configurada. Por favor, adicione sua chave de API nas Configurações (ícone de engrenagem) em Deapi.ai.';
             return;
         }
 
@@ -3000,7 +4464,7 @@ async function startServer() {
                     } else {
                         const text = await response.text();
                         if (response.status === 429) {
-                            lastError = "A API externa está com alta demanda (Rate Limit: Too Many Attempts). Por favor, aguarde de 2 a 5 minutos e tente novamente.";
+                            lastError = "A API externa (Deapi) atingiu o limite de frequência (Rate Limit). Como você tem saldo, isso significa que muitas solicitações foram feitas em pouco tempo. Por favor, aguarde alguns minutos e tente novamente.";
                         } else {
                             lastError = `Status ${response.status}: ${text.substring(0, 200)}`;
                         }
@@ -3039,11 +4503,11 @@ async function startServer() {
             steps, seed, guidanceScale: userGuidance, 
             outputFormat, referenceAudio, retries
         } = req.body;
-        const deapiKey = apiKey || getDeapiKey(req);
+        const deapiKey = getDeapiKey(req);
 
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            jobs[jobId].error = 'Chave API Deapi não configurada. Por favor, adicione sua chave de API nas Configurações (ícone de engrenagem) em Deapi.ai.';
             return;
         }
 
@@ -3454,11 +4918,11 @@ async function startServer() {
         res.status(202).json({ jobId });
 
         const { url, file, audioUrl, audioFile, apiKey, retries } = req.body;
-        const deapiKey = apiKey || getDeapiKey(req);
+        const deapiKey = getDeapiKey(req);
 
         if (!deapiKey) {
             jobs[jobId].status = 'failed';
-            jobs[jobId].error = 'Chave API Deapi não configurada.';
+            jobs[jobId].error = 'Chave API Deapi não configurada. Por favor, adicione sua chave de API nas Configurações (ícone de engrenagem) em Deapi.ai.';
             return;
         }
 
@@ -3612,7 +5076,8 @@ async function startServer() {
     // Cleanup finally complete
 
     app.post('/api/ai/visual-plan', async (req: any, res: any) => {
-        const { lyrics, name, theme, count = 5, duration = 30 } = req.body;
+        const { lyrics, name, theme, characterDescription, characterLock, protagonist, personagem, count = 5, duration = 30 } = req.body;
+        const userCharLock = characterDescription || characterLock || protagonist || personagem;
         const apiKey = getGeminiKey(req);
         if (!apiKey) return res.status(401).json({ error: "Gemini API key required" });
 
@@ -3621,25 +5086,26 @@ async function startServer() {
                 apiKey,
                 httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
             });
-            const prompt = `You are a cinematic director and visual artist. 
-            Create a detailed visual storyboard for a music video.
+            const prompt = `You are a top Hollywood music video director and VFX supervisor (specialized in viral high-energy music videos). 
+            Create a detailed visual storyboard for a music video based on the provided song/audio details.
             Song Name: ${name || 'Unknown'}
-            Theme: ${theme || 'Abstract'}
+            Theme: ${theme || 'High-Energy Music Video Show & Action'}
+            ${userCharLock ? `Protagonist / Character Lock: "${userCharLock}"` : 'Protagonist: Auto-generate a distinct, photorealistic character lock anchor.'}
             Total Duration: ${duration} seconds
             Lyrics: ${lyrics || 'No lyrics available'}
 
-            INSTRUCTIONS:
-            1. If lyrics are provided, the scenes MUST strictly follow the narrative and chronological flow of the lyrics.
-            2. Create exactly ${count} scenes.
-            3. For each scene, provide a "startTime" (in seconds) and a "prompt" (detailed English description).
-            4. Start time for scene 1 MUST be 0.
-            5. Prompts must be highly detailed (lighting, lens, style, atmosphere).
-            6. Distribute scenes evenly or logically across the ${duration}s.
+            DIRECTOR INSTRUCTIONS FOR MAXIMUM VISUAL IMPACT & CHARACTER CONSISTENCY:
+            1. CHARACTER LOCK (MANDATORY): Define an explicit [LOCKED CHARACTER ANCHOR: ...] describing the main character's age, facial features, hairstyle, clothing items, and colors. PREPEND this EXACT same anchor to EVERY scene prompt.
+            2. Every scene must feel like an ultra-professional music video shot (e.g., live concert stage with pyrotechnics, orbiting 360° camera, low-angle tracking shots, paparazzi flashes, cinematic lighting).
+            3. Incorporate explicit camera directives into every prompt: [360° orbiting camera shot], [low-angle drone tracking shot], [whip zoom close-up], [cinematic lens flare], [35mm anamorphic lens, 8k render].
+            4. Ensure high visual contrast, vibrant lighting, and dynamic subject motion.
+            5. Create exactly ${count} scenes distributed chronologically.
+            6. Prompts MUST be in descriptive, vivid English for AI video models.
 
             Format your response as strict JSON:
             {
               "scenes": [
-                { "startTime": 0, "prompt": "..." },
+                { "startTime": 0, "prompt": "[LOCKED CHARACTER ANCHOR: ...] Opening wide establishing shot..." },
                 ...
               ]
             }`;
@@ -3777,8 +5243,21 @@ async function startServer() {
 
     // ─── STATUS / DOWNLOAD ────────────────────────────────────────────────────
     app.get('/api/process/status/:jobId', (req: any, res: any) => {
-        const job = jobs[req.params.jobId];
-        if (!job) return res.status(404).json({ status: 'not_found' });
+        const jobId = req.params.jobId;
+        let job = jobs[jobId];
+
+        if (!job && fs.existsSync(JOBS_FILE)) {
+            try {
+                const data = fs.readFileSync(JOBS_FILE, 'utf8');
+                const persisted = JSON.parse(data);
+                if (persisted[jobId]) {
+                    jobs[jobId] = persisted[jobId];
+                    job = jobs[jobId];
+                }
+            } catch (e) {}
+        }
+        
+        if (!job) return res.status(404).json({ status: 'not_found', error: 'Trabalho não encontrado no servidor.' });
         
         // Optimize: Don't echo back massive input params or file lists in status checks
         // Also strip long error messages that might truncate JSON
@@ -4198,13 +5677,21 @@ Please output beautiful, rhyming, and highly rhythmic lyrics.`;
             });
             const modelName = "gemini-3.5-flash";
 
-            const systemInstruction = `You are an elite music producer and prompt engineer. Your job is to take a simple music description or script prompt and elevate it into a vivid, descriptive, high-fidelity prompt for state-of-the-art AI sound and music generation systems (like Suno AI, Lyria, or AceStep). 
+            const isVideo = type === 'video' || type === 'visual' || type === 'image' || type === 'txt2vid' || type === 'img2vid';
+            const systemInstruction = isVideo
+                ? `You are an elite Hollywood director and AI video prompt engineer. Your job is to take a video description or prompt (in Portuguese or English) and elevate it into a vivid, highly descriptive, cinematic English prompt for AI video generation models (like LTX-2.3, Veo, Kling, Sora).
+CRITICAL RULES:
+1. Translate all non-English terms accurately to English.
+2. STRICTLY PRESERVE AND ENFORCE every subject, setting, and action requested (e.g. if user asks for 'rock musician on stage', explicitly describe the musician, stage, guitar, lighting, action, and energy).
+3. Include visual details: camera movement, lighting, colors, energy, subject motion, framing.
+4. Output ONLY the final continuous prompt text under 60 words without preambles or markdown.`
+                : `You are an elite music producer and prompt engineer. Your job is to take a simple music description or script prompt and elevate it into a vivid, descriptive, high-fidelity prompt for state-of-the-art AI sound and music generation systems (like Suno AI, Lyria, or AceStep). 
 Include specific music descriptors such as professional equipment (e.g. vintage tube amp, pristine console preamps), specific acoustic or synthesized instruments, tempo (BPM), mix details (e.g., warm tape saturation, wider stereo imaging, crisp transient snap), and emotional cadence.
 Ensure your response is highly concise, direct, and under 60 words, formatted perfectly as a single continuous prompt. Avoid preambles, introductory words, or markdown structures. Output only the final prompt.`;
 
             const response = await executeWithRetry(() => ai.models.generateContent({
                 model: modelName,
-                contents: `Enhance this music prompt: "${rawPrompt}". Type/Context: ${type || 'music'}.`,
+                contents: isVideo ? `Enhance and strictly enforce this video prompt: "${rawPrompt}".` : `Enhance this music prompt: "${rawPrompt}". Type/Context: ${type || 'music'}.`,
                 config: {
                     systemInstruction,
                     temperature: 0.82
@@ -4609,6 +6096,14 @@ Ensure your entire output is valid, parsable JSON matching this schema. Do not w
     }
 
     app.listen(PORT, '0.0.0.0', () => console.log(`Server running on http://localhost:${PORT}`));
+
+    process.on('uncaughtException', (err) => {
+        console.error('[CRITICAL] Uncaught Exception:', err);
+    });
+
+    process.on('unhandledRejection', (reason, promise) => {
+        console.error('[CRITICAL] Unhandled Rejection at:', promise, 'reason:', reason);
+    });
 
     // ─── UTILS & CLEANER ──────────────────────────────────────────────────────
     setInterval(() => {
