@@ -2342,33 +2342,87 @@ Return ONLY a JSON array of strings containing exactly ${numSegments} detailed E
         })();
     });
 
-// Helper: Download video from YouTube/TikTok via LoaderTo API or direct curl if yt-dlp fails or requires authentication
+// Helper: Download video from YouTube/TikTok via LoaderTo API, Cobalt, or direct fetch if yt-dlp fails or requires authentication
 async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<boolean> {
     try {
-        // If it's a direct mp4/mov link, try downloading directly with curl
+        // If it's a direct mp4/mov link, try downloading directly with native fetch
         if (videoUrl.match(/\.(mp4|mov|webm|avi|mkv)(\?.*)?$/i) || videoUrl.includes('.mp4')) {
             try {
-                execSync(`curl -L -s -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "${videoUrl}" -o "${destPath}"`, { timeout: 30000 });
-                if (fs.existsSync(destPath) && fs.statSync(destPath).size > 10000) {
-                    return true;
+                const directRes = await fetch(videoUrl, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+                });
+                if (directRes.ok) {
+                    const buf = Buffer.from(await directRes.arrayBuffer());
+                    if (buf.length > 10000) {
+                        fs.writeFileSync(destPath, buf);
+                        return true;
+                    }
                 }
             } catch (e) {}
         }
 
+        // Try Cobalt API endpoints as an ultra-fast modern resolver
+        const cobaltInstances = ['https://api.cobalt.tools', 'https://cobalt-api.kwiatekm.tokyo', 'https://co.wuk.sh'];
+        for (const instance of cobaltInstances) {
+            try {
+                const cobRes = await fetch(`${instance}/api/json`, {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'Mozilla/5.0'
+                    },
+                    body: JSON.stringify({
+                        url: videoUrl,
+                        vQuality: '720',
+                        filenamePattern: 'basic'
+                    })
+                });
+                if (cobRes.ok) {
+                    const cData: any = await cobRes.json();
+                    if (cData && cData.url) {
+                        const dlCobalt = await fetch(cData.url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+                        if (dlCobalt.ok) {
+                            const buf = Buffer.from(await dlCobalt.arrayBuffer());
+                            if (buf.length > 10000) {
+                                fs.writeFileSync(destPath, buf);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            } catch (cobErr) {}
+        }
+
+        // Fallback: LoaderTo API
         const encodeUrl = encodeURIComponent(videoUrl);
-        const initRes = await fetch(`https://loader.to/ajax/download.php?start=1&end=1000&format=1080&url=${encodeUrl}`);
+        const initRes = await fetch(`https://loader.to/ajax/download.php?start=1&end=1000&format=1080&url=${encodeUrl}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
         const initData: any = await initRes.json();
         if (!initData || !initData.id) return false;
         const progressUrl = initData.progress_url || `https://lto2.affadaffa.com/api/progress?id=${initData.id}`;
         
         for (let i = 0; i < 25; i++) {
             await new Promise(r => setTimeout(r, 1500));
-            const pRes = await fetch(progressUrl);
+            const pRes = await fetch(progressUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
             const pData: any = await pRes.json();
             if (pData && pData.download_url) {
-                execSync(`curl -L -s -A "Mozilla/5.0" "${pData.download_url}" -o "${destPath}"`, { timeout: 45000 });
-                if (fs.existsSync(destPath) && fs.statSync(destPath).size > 10000) {
-                    return true;
+                try {
+                    const dlRes = await fetch(pData.download_url, {
+                        headers: { 'User-Agent': 'Mozilla/5.0' }
+                    });
+                    if (dlRes.ok) {
+                        const dlBuf = Buffer.from(await dlRes.arrayBuffer());
+                        if (dlBuf.length > 10000) {
+                            fs.writeFileSync(destPath, dlBuf);
+                            return true;
+                        }
+                    }
+                } catch (dlErr: any) {
+                    console.warn('LoaderTo fetch file error:', dlErr.message);
                 }
             }
         }
@@ -2380,12 +2434,18 @@ async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<
 
     // ─── CLONAR & RECRIAR VÍDEO POR URL (ANTI-COPYRIGHT + DUBLAGEM AI - FRAME-BY-FRAME) ───────
     app.post('/api/ai/url-video-clone', async (req: any, res: any) => {
+        const rawUrl = req.body?.videoUrl || req.body?.url || req.body?.link;
+        if (!rawUrl || typeof rawUrl !== 'string' || !rawUrl.trim()) {
+            return res.status(400).json({ error: 'URL do vídeo de origem não fornecida. Por favor insira um link ou envie um vídeo.' });
+        }
+
         const jobId = `clone_url_${Date.now()}`;
         jobs[jobId] = { id: jobId, status: 'processing', progress: 5, startTime: Date.now(), message: 'Iniciando clonagem de vídeo por URL...' };
         saveJobs();
         res.status(202).json({ jobId });
 
-        const { videoUrl, targetLanguage = 'Português', characterDescription, style = 'Cinematográfico Hollywood', numScenes = 0, apiKey } = req.body;
+        const { videoUrl, url, link, targetLanguage = 'Português', characterDescription, style = 'Cinematográfico Hollywood', numScenes = 0, apiKey } = req.body;
+        const inputUrl = (rawUrl as string).trim();
         const deapiKey = getDeapiKey(req);
         const geminiKey = apiKey || getGeminiKey(req);
 
@@ -2397,10 +2457,6 @@ async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<
             const generatedVideoSegments: string[] = [];
 
             try {
-                if (!videoUrl || typeof videoUrl !== 'string' || !videoUrl.trim()) {
-                    throw new Error('URL do vídeo de origem não fornecida');
-                }
-
                 // 1. Download video via yt-dlp or curl proxy
                 if (jobs[jobId]) {
                     jobs[jobId].message = 'Baixando vídeo e extraindo mídias da URL...';
@@ -2408,7 +2464,7 @@ async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<
                     saveJobs();
                 }
 
-                const cleanUrl = videoUrl.trim();
+                const cleanUrl = inputUrl;
                 downloadedVideoPath = path.join(uploadDir, `source_${jobId}.mp4`);
                 extractedAudioPath = path.join(uploadDir, `extracted_audio_${jobId}.mp3`);
 
@@ -2568,6 +2624,9 @@ async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<
                 let userCharLock = (characterDescription && characterDescription.trim()) ? characterDescription.trim() : '';
                 let translationScript = '';
                 let generatedScenesFromAI: string[] = [];
+                let detectedVideoType: 'music' | 'story' | 'general' = 'general';
+                let detectedMusicGenre = '';
+                let detectedStyleSummary = '';
 
                 const isOriginalStyle = !style || style.toLowerCase().includes('original') || style.toLowerCase().includes('manter');
                 const styleInstruction = isOriginalStyle
@@ -2581,7 +2640,7 @@ async function downloadViaLoaderTo(videoUrl: string, destPath: string): Promise<
                 if (geminiKey) {
                     try {
                         const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
-                        const aiPromptText = `Você é um diretor de cinema e VFX especialista em recriação fotorrealista e clonagem fiel de vídeos.
+                        const aiPromptText = `Você é um diretor de cinema, produtor musical e especialista em VFX de altíssimo nível.
 Analise com atenção absoluta as ${inlineImageParts.length} imagens das cenas extraídas do vídeo original de ${Math.round(duration)}s.
 Informações do vídeo original: ${videoMetaDataText || 'Vídeo de redes sociais'}.
 
@@ -2592,17 +2651,25 @@ Idioma de Destino se houver fala/narração: "${targetLanguage}".
 DURAÇÃO TOTAL DO VÍDEO: ${Math.round(duration)}s.
 QUANTIDADE DE CENAS CORTADAS: ${shotBoundaries.length} cenas.
 
-TAREFAS MANDATÓRIAS:
-1. Examine CADA UMA das imagens de cena enviadas e identifique EXATAMENTE quem ou o que está aparecendo (ex: coral de jovens cantando em grupo, banda, crianças, homem, mulher, paisagem, etc.).
-2. Se o vídeo for um CORAL, MÚSICA, CANÇÃO ou MÍDIA MUSICAL sem narração falada, deixe o "dubbingScript" em branco ou com a letra para que o áudio musical original seja mantido intacto sem voz sintética de narração por cima. Se for um vídeo com fala/narração humana, crie a tradução e narração em ${targetLanguage} para durar exatamente ${Math.round(duration)}s.
-3. Para cada uma das ${shotBoundaries.length} cenas, crie um prompt individual em inglês ultra-detalhado na array "scenes" para recriar essa cena por IA geradora de vídeo.
-   - Cada prompt DEVE descrever com precisão os sujeitos e a ação exata das imagens originais (ex: se for um coral de jovens cantando, descreva "A group of passionate young choir singers performing together on stage, choir uniforms, expressive faces singing in harmony, soft warm stage lighting").
-   - ${userCharLock ? `Inclua a trava de personagem "[LOCKED CHARACTER: ${userCharLock}]" em cada prompt.` : `Não force um único personagem se a cena for de um grupo, coral ou cenário.`}
+CLASSIFICAÇÃO INTELIGENTE DO TIPO DE VÍDEO:
+1. Determine se o vídeo é "music" (videoclipe musical, coral, banda, música/canção, dança com música, show ao vivo) OU "story" (história narrativa falada, documentário, vlog, conto, explicação, reel com narração/fala) OU "general".
+2. Se for "music", identifique o gênero musical e estilo visual (ex: "Gospel Choir / Coral Jovem Acústico", "Pop Urbano", "Cinematic Ballad", "Trap", "Electronic", etc.) e descreva o estilo de iluminação e figurino.
+3. Se for "music" (coral, banda, cantores), o áudio original é musical: defina "dubbingScript" como "" (string vazia) ou com a letra poética cantada, NUNCA gere uma narração artificial de narrador por cima de uma música ou coral!
+4. Se for "story" (vídeo de história falada/narrada), forneça em "dubbingScript" a narração narrativa completa e fluida adaptada para ${targetLanguage} sincronizada para os ${Math.round(duration)}s.
+
+RECRIAÇÃO DAS CENAS NO MESMO ESTILO E QUALIDADE:
+Para cada uma das ${shotBoundaries.length} cenas, crie um prompt ultra-detalhado em inglês na array "scenes" para recriar fielmente o estilo visual, ângulo de câmera, iluminação e sujeitos da cena original:
+- Se for um coral ou grupo cantando, descreva detalhadamente os cantores, expressões faciais emotivas cantando em harmonia, roupas coordenadas, palco ou cenário com iluminação cinematográfica.
+- Não substitua corais ou grupos por um único homem falando.
+${userCharLock ? `- Inclua a trava "[LOCKED CHARACTER: ${userCharLock}]" em cada prompt.` : ''}
 
 Responda EXCLUSIVAMENTE em JSON válido:
 {
-  "dubbingScript": "Texto narrado em ${targetLanguage} ou string vazia se for música/coral",
-  "scenes": [${Array.from({ length: shotBoundaries.length }).map((_, idx) => `"Prompt detalhado da cena ${idx + 1}"`).join(', ')}]
+  "videoType": "music" | "story" | "general",
+  "musicGenre": "Nome do gênero musical se for música/coral, ex: 'Gospel Youth Choir' ou ''",
+  "styleSummary": "Resumo do estilo visual e cinematográfico identificado nas imagens",
+  "dubbingScript": "Texto narrado em ${targetLanguage} se for história falada, ou string vazia se for música/coral",
+  "scenes": [${Array.from({ length: shotBoundaries.length }).map((_, idx) => `"Prompt cinematográfico detalhado da cena ${idx + 1}"`).join(', ')}]
 }`;
 
                         const parts: any[] = [...inlineImageParts, { text: aiPromptText }];
@@ -2613,10 +2680,15 @@ Responda EXCLUSIVAMENTE em JSON válido:
                         });
 
                         const parsed = JSON.parse(gemRes.text || '{}');
+                        if (parsed.videoType === 'music' || parsed.videoType === 'story') {
+                            detectedVideoType = parsed.videoType;
+                        }
+                        if (parsed.musicGenre) detectedMusicGenre = parsed.musicGenre;
+                        if (parsed.styleSummary) detectedStyleSummary = parsed.styleSummary;
                         if (parsed.dubbingScript) translationScript = parsed.dubbingScript;
                         if (Array.isArray(parsed.scenes) && parsed.scenes.length > 0) {
                             generatedScenesFromAI = parsed.scenes;
-                            console.log(`[Job ${jobId}] Gemini Vision successfully extracted ${generatedScenesFromAI.length} scene prompts from video frames!`);
+                            console.log(`[Job ${jobId}] Gemini Vision classified as "${detectedVideoType}" (${detectedMusicGenre || detectedStyleSummary}) and extracted ${generatedScenesFromAI.length} scene prompts!`);
                         }
                     } catch (gErr: any) {
                         console.error(`[Job ${jobId}] Gemini Vision error:`, gErr.message || gErr);
@@ -2688,8 +2760,13 @@ Responda EXCLUSIVAMENTE em JSON válido:
                     jobs[jobId].scenes = generatedScenesFromAI;
                     jobs[jobId].extractedAudioUrl = `/api/audio/extracted/${jobId}`;
                     jobs[jobId].script = translationScript;
+                    jobs[jobId].videoType = detectedVideoType;
+                    jobs[jobId].musicGenre = detectedMusicGenre;
+                    jobs[jobId].styleSummary = detectedStyleSummary;
                     jobs[jobId].progress = 55;
-                    jobs[jobId].message = `Gerando quadros de cena com IA (${generatedScenesFromAI.length} cenas)...`;
+                    jobs[jobId].message = detectedVideoType === 'music'
+                        ? `Identificado como VÍDEO MUSICAL (${detectedMusicGenre || 'Música/Coral'})! Gerando quadros no estilo original...`
+                        : `Identificado como HISTÓRIA/NARRATIVA! Gerando quadros no estilo original...`;
                     saveJobs();
                 }
 
@@ -2816,7 +2893,12 @@ Responda EXCLUSIVAMENTE em JSON válido:
                     jobs[jobId].outputPath = finalOutputPath;
                     jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
                     jobs[jobId].progress = 100;
-                    jobs[jobId].message = 'Vídeo clonado com sucesso! Cenas, imagens e áudio extraídos prontos!';
+                    jobs[jobId].message = detectedVideoType === 'music'
+                        ? `Vídeo musical (${detectedMusicGenre || 'Música'}) clonado no estilo original! Cenas, imagens e áudio prontos!`
+                        : `Vídeo de história clonado no estilo original! Cenas, roteiro e áudio prontos!`;
+                    jobs[jobId].videoType = detectedVideoType;
+                    jobs[jobId].musicGenre = detectedMusicGenre;
+                    jobs[jobId].styleSummary = detectedStyleSummary;
                     jobs[jobId].script = translationScript;
                     jobs[jobId].scenes = generatedScenesFromAI;
                     jobs[jobId].sceneImages = sceneImagesMap;
@@ -3537,15 +3619,21 @@ Responda EXCLUSIVAMENTE em JSON válido:
             else if (action === 'upscale') endpoint = `${baseUrl}/api/v2/images/upscales`;
             else if (action === 'edit') endpoint = `${baseUrl}/api/v2/images/edits`;
 
-            const width = aspectRatio === '16:9' ? 1792 : (aspectRatio === '9:16' ? 1024 : 1024);
-            const height = aspectRatio === '16:9' ? 1024 : (aspectRatio === '9:16' ? 1792 : 1024);
+            const width = aspectRatio === '16:9' ? 1024 : (aspectRatio === '9:16' ? 576 : 1024);
+            const height = aspectRatio === '16:9' ? 576 : (aspectRatio === '9:16' ? 1024 : 1024);
+
+            // Normalize model slug to match Deapi official slugs (e.g. Flux1schnell)
+            let normalizedModel = model || 'Flux1schnell';
+            if (typeof normalizedModel === 'string' && (normalizedModel.toLowerCase().includes('flux') || normalizedModel.toLowerCase().includes('schnell'))) {
+                normalizedModel = 'Flux1schnell';
+            }
 
             const payload: any = {
                 prompt: prompt || '',
-                model: model === 'Flux1schnell' ? 'flux-1-schnell' : (model || 'flux-1-schnell'),
+                model: normalizedModel,
                 width,
                 height,
-                guidance: 1,
+                guidance: 3.5,
                 steps: 4,
                 seed: -1
             };
@@ -3556,9 +3644,9 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 payload.input_image = imageUrl;
             }
 
-            console.log(`[Deapi Image] Action: ${action || 'generation'} -> ${endpoint}`);
+            console.log(`[Deapi Image] Action: ${action || 'generation'} -> ${endpoint} (model: ${payload.model})`);
 
-            const response = await fetchWithRetry(endpoint, {
+            let response = await fetchWithRetry(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -3566,6 +3654,35 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 },
                 body: JSON.stringify(payload)
             });
+
+            // If 422 with model error, auto-discover valid txt2img models from DeAPI and retry
+            if (!response.ok && response.status === 422) {
+                const errText = await response.text();
+                console.warn(`[Deapi Image] 422 with model ${payload.model}: ${errText}. Attempting model discovery...`);
+                try {
+                    const mRes = await fetch(`${baseUrl}/api/v2/models?filter[inference_types]=txt2img`, {
+                        headers: { 'Authorization': `Bearer ${deapiKey}`, 'Accept': 'application/json' }
+                    });
+                    if (mRes.ok) {
+                        const mData = await mRes.json();
+                        const available = mData.data || [];
+                        if (available.length > 0 && available[0].slug && available[0].slug !== payload.model) {
+                            payload.model = available[0].slug;
+                            console.log(`[Deapi Image] Retrying with discovered model slug: ${payload.model}`);
+                            response = await fetchWithRetry(endpoint, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'Authorization': `Bearer ${deapiKey}`
+                                },
+                                body: JSON.stringify(payload)
+                            });
+                        }
+                    }
+                } catch (discErr) {
+                    console.warn('[Deapi Image] Model discovery failed:', discErr);
+                }
+            }
 
             if (response.ok) {
                 const data: any = await response.json();
@@ -3576,6 +3693,65 @@ Responda EXCLUSIVAMENTE em JSON válido:
             }
         } catch (e: any) {
             console.error(`[Job ${jobId}] Deapi Image Error:`, e);
+
+            // Fallback strategy: Gemini Image or Pollinations Flux to ensure clip/music video generation never crashes
+            try {
+                console.log(`[Job ${jobId}] Attempting fallback image generation...`);
+                const geminiKey = getGeminiKey(req);
+                let imageBuffer: Buffer | null = null;
+
+                if (geminiKey) {
+                    try {
+                        const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+                        const flashRes = await ai.models.generateContent({
+                            model: 'gemini-3.1-flash-image',
+                            contents: `Generate a high quality visual image of: ${prompt}`,
+                            config: {
+                                imageConfig: {
+                                    aspectRatio: aspectRatio === '16:9' ? '16:9' : (aspectRatio === '9:16' ? '9:16' : '1:1')
+                                }
+                            }
+                        });
+                        for (const part of flashRes.candidates?.[0]?.content?.parts || []) {
+                            if ((part as any).inlineData?.data) {
+                                imageBuffer = Buffer.from((part as any).inlineData.data, 'base64');
+                                break;
+                            }
+                        }
+                    } catch (gErr) {
+                        console.warn(`[Job ${jobId}] Gemini image fallback failed:`, gErr);
+                    }
+                }
+
+                if (!imageBuffer) {
+                    const pWidth = aspectRatio === '16:9' ? 1024 : (aspectRatio === '9:16' ? 576 : 1024);
+                    const pHeight = aspectRatio === '16:9' ? 576 : (aspectRatio === '9:16' ? 1024 : 1024);
+                    const safePrompt = encodeURIComponent((prompt || 'cinematic visual scene').slice(0, 300));
+                    const seed = Math.floor(Math.random() * 1000000);
+                    const pollUrl = `https://image.pollinations.ai/prompt/${safePrompt}?width=${pWidth}&height=${pHeight}&seed=${seed}&nologo=true&model=flux`;
+                    const pRes = await fetch(pollUrl);
+                    if (pRes.ok) {
+                        imageBuffer = Buffer.from(await pRes.arrayBuffer());
+                    }
+                }
+
+                if (imageBuffer) {
+                    const filename = `ai_gen_${jobId}_${Date.now()}.png`;
+                    const outputPath = path.join(uploadDir, filename);
+                    fs.writeFileSync(outputPath, imageBuffer);
+                    if (jobs[jobId]) {
+                        jobs[jobId].status = 'completed';
+                        jobs[jobId].progress = 100;
+                        jobs[jobId].outputPath = outputPath;
+                        jobs[jobId].downloadUrl = `/api/process/download/${jobId}`;
+                    }
+                    console.log(`[Job ${jobId}] Fallback image saved successfully to ${outputPath}`);
+                    return;
+                }
+            } catch (fallbackErr) {
+                console.error(`[Job ${jobId}] Fallback generation also failed:`, fallbackErr);
+            }
+
             if (jobs[jobId]) {
                 jobs[jobId].status = 'failed';
                 jobs[jobId].error = e.message;
