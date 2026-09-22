@@ -5425,9 +5425,14 @@ Responda EXCLUSIVAMENTE em JSON válido:
     app.get('/api/proxy/media', async (req: any, res: any) => {
         const { url } = req.query;
         if (!url) return res.status(400).send('URL missing');
-        const decodedUrl = decodeURIComponent(url as string);
+        let decodedUrl = decodeURIComponent(url as string).trim();
         
         try {
+            // If it's a relative path (e.g. /api/audio/extracted/... or /uploads/...), resolve with local server host
+            if (decodedUrl.startsWith('/')) {
+                decodedUrl = `http://127.0.0.1:${PORT}${decodedUrl}`;
+            }
+
             console.log(`[Proxy] Fetching: ${decodedUrl}`);
             const headers: Record<string, string> = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
