@@ -4588,7 +4588,10 @@ Responda EXCLUSIVAMENTE em JSON válido:
             const defaultTargetGuidance = isTurbo ? 1.0 : 3.5;
             const guidanceScale = Math.min(Math.max(defaultTargetGuidance, minGuidance), maxGuidance);
 
-            const resolvedDuration = duration || 30;
+            // Deapi API enforces max duration 300s (and per-model limits)
+            const modelMaxDuration = Math.min(240, modelLimits.max_duration ?? modelLimits.max_seconds ?? 240);
+            const modelMinDuration = Math.max(5, modelLimits.min_duration ?? modelLimits.min_seconds ?? 10);
+            let resolvedDuration = Math.min(modelMaxDuration, Math.max(modelMinDuration, Math.round(Number(duration || 30))));
             let resolvedSteps = steps ? Number(steps) : (isTurbo ? 8 : 25);
             let resolvedGuidance = userGuidance ? Number(userGuidance) : guidanceScale;
 
@@ -4602,43 +4605,33 @@ Responda EXCLUSIVAMENTE em JSON válido:
                 if (maxGuidance <= 1.0 || resolvedGuidance < 1.0) resolvedGuidance = 1.0;
             }
 
-            // Force vocal emphasis if lyrics are provided
-            let finalPrompt = prompt || '';
+            // Build prompt: keep core prompt clean, add concise tags, strictly cap at 240 chars (Deapi limit is 300)
+            let corePrompt = (prompt || '').trim();
+            const tags: string[] = [];
             
-            // AceStep often needs specific pace instructions to avoid "rushing" or "accelerated" audio
             if (mappedModel.toLowerCase().includes('ace')) {
-                // Lower BPM and steady pace prevents the model from rushing through content
-                finalPrompt = `[PACE: Very Steady, calm, slow tempo] [BPM: 85] [VOCAL: Clear, emotional, articulate] ${finalPrompt}`;
+                tags.push('[PACE: Steady]');
             }
-
-            // Language hint for models that might struggle
             if (vocalLanguage && vocalLanguage.toLowerCase().includes('português')) {
-                finalPrompt = `[SINGING LANGUAGE: Portuguese] [DICÇÃO CLARA E NATURAL] ${finalPrompt}`;
+                tags.push('[Portuguese]');
             }
-
-            // Enforce heavy styles if detected
-            const lowPrompt = finalPrompt.toLowerCase();
-            if (lowPrompt.includes('hard rock')) {
-                finalPrompt = `[HARD ROCK: Aggressive Distorted Guitars, Heavy Driving Drums] ${finalPrompt}`;
-            } else if (lowPrompt.includes('metal')) {
-                finalPrompt = `[HEAVY METAL: High-Gain Distortion, Powerful Double Kick Drums] ${finalPrompt}`;
-            }
-
-            if (lyrics && lyrics !== '[Instrumental]' && !finalPrompt.toLowerCase().includes('vocal')) {
-                finalPrompt = `[Vocal] ${finalPrompt}`;
-            }
-
-            // Instrumental enforcement - AceStep needs very strong negatives for instrumental to avoid artifacts
             if (lyrics === '[Instrumental]') {
-                finalPrompt = `[PURE INSTRUMENTAL: Absolutely NO vocals, NO voices, NO singing, NO background talking. High-fidelity professional studio musical recording] ${finalPrompt}`;
+                tags.push('[Instrumental]');
+            } else if (lyrics && !corePrompt.toLowerCase().includes('vocal')) {
+                tags.push('[Vocal]');
             }
 
-            // API Limit: 300 characters for caption
-            if (finalPrompt.length > 300) {
-                finalPrompt = finalPrompt.substring(0, 297) + '...';
+            const prefix = tags.length > 0 ? tags.join(' ') + ' ' : '';
+            const maxCoreLen = Math.max(20, 240 - prefix.length);
+            if (corePrompt.length > maxCoreLen) {
+                corePrompt = corePrompt.substring(0, maxCoreLen - 3) + '...';
+            }
+            let finalPrompt = (prefix + corePrompt).trim();
+            if (finalPrompt.length > 240) {
+                finalPrompt = finalPrompt.substring(0, 237) + '...';
             }
 
-            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s steps=${resolvedSteps} guidance=${resolvedGuidance.toFixed(1)}`);
+            console.log(`[Deapi Music] model=${mappedModel} duration=${resolvedDuration}s steps=${resolvedSteps} guidance=${resolvedGuidance.toFixed(1)} captionLen=${finalPrompt.length}`);
 
             let response: any;
             let success = false;
@@ -4713,7 +4706,7 @@ Responda EXCLUSIVAMENTE em JSON válido:
                         // Clone response to read text and still have a chance to handle JSON if needed
                         const text = await response.text();
                         
-                        // Handle guidance_scale and inference_steps specifically with a retry
+                        // Handle guidance_scale, inference_steps, duration, and caption specifically with a retry
                         if (response.status === 422) {
                             const lowText = text.toLowerCase();
                             let adjusted = false;
@@ -4731,8 +4724,26 @@ Responda EXCLUSIVAMENTE em JSON válido:
                                 else if (text.includes('at least')) { resolvedSteps = 25; adjusted = true; }
                             }
 
+                            if (lowText.includes('duration')) {
+                                console.log(`[Deapi Music] Duration error detected: ${text}`);
+                                if (resolvedDuration > 120) {
+                                    resolvedDuration = 120;
+                                } else if (resolvedDuration > 60) {
+                                    resolvedDuration = 60;
+                                } else {
+                                    resolvedDuration = 30;
+                                }
+                                adjusted = true;
+                            }
+
+                            if (lowText.includes('caption') || lowText.includes('characters')) {
+                                console.log(`[Deapi Music] Caption length error detected: ${text}`);
+                                finalPrompt = finalPrompt.substring(0, Math.min(180, finalPrompt.length - 30)).trim();
+                                adjusted = true;
+                            }
+
                             if (adjusted) {
-                                console.log(`[Deapi Music] Retrying with adjusted parameters: guidance=${resolvedGuidance.toFixed(1)}, steps=${resolvedSteps}`);
+                                console.log(`[Deapi Music] Retrying with adjusted parameters: duration=${resolvedDuration}s, captionLen=${finalPrompt.length}, guidance=${resolvedGuidance.toFixed(1)}, steps=${resolvedSteps}`);
                                 continue; // Retry current endpoint with new params in the next loop iteration
                             }
                         }
